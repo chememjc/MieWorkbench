@@ -1,0 +1,547 @@
+#!/usr/bin/env python3
+"""run_pipeline.py — top-level orchestrator for the optical ray tracer
+pipeline.
+
+Runs under **plain system python3** (stdlib only): unlike the stage scripts
+it touches none of the FreeCAD / optics-env / ParaView python stacks
+itself. It only composes argv lists and launches each stage as a
+subprocess, each under its own pinned interpreter (see common.py):
+
+    0. permute  FreeCAD headless   scripts/permute_model.py   (FREECAD)
+                (only if --var is given: sweeps one base model into a
+                cross-product of variant .FCStd files in basemodels/)
+    1. extract  FreeCAD headless   scripts/extract_geometry.py (FREECAD)
+    2. trace    optics env python  scripts/run_trace.py        (OPTICS_PYTHON)
+    3. post     optics env python  scripts/post_process.py     (OPTICS_PYTHON)
+    4. viz      ParaView pvpython  scripts/make_viz.py         (PVPYTHON)
+
+Key design decisions (cloned from the antenna project's run_pipeline.py):
+  * extract runs ONCE for the whole model batch (one FreeCAD launch handles
+    every .FCStd file, original or permuted); trace/post/viz then loop per
+    model SEQUENTIALLY — a single trace run can already saturate every
+    core/GPU, so running models in parallel would only oversubscribe the
+    machine.
+  * The case directory name is computed here with the SAME rule
+    common.case_name() uses (results/<model_stem>/<preset>[-<tag>]/), so
+    post/viz always look in the directory trace actually wrote to.
+  * Physics options (--rays/--resolution/--nlambda/--seeds/--backend/
+    --source-face/--detector-face/--grating/--rough/--particles/
+    --particle-threshold/--suppress-body/--dry-run) are forwarded to the
+    trace stage ONLY, verbatim; --preset fills rays/resolution/nlambda/
+    spectral-bins/viz-rays from common.PRESETS unless explicitly
+    overridden on this command line.
+  * --dry-run means "trace estimates only, does not actually run": trace's
+    case.json status then stays 'estimated' (never 'completed'), so post
+    and viz are skipped for that model with a NOTICE — this is enforced
+    generically via the case.json status gate (common.read_case_status),
+    not a special-cased dry-run branch, so it also covers any other reason
+    trace didn't reach 'completed'.
+  * --keep-going turns a stage failure into a FAILED notice + skip-to-
+    next-model instead of an abort; the process still exits nonzero if
+    anything failed.
+  * --print-only composes and prints every stage command WITHOUT
+    executing anything.
+
+Logs: extract/permute (batch-level) log to results/log.<step>; trace/post/
+viz (per model) log to results/<model_stem>/<case>/log.<step>.
+"""
+
+import argparse
+import itertools
+import json
+import subprocess
+import sys
+from glob import glob
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import common  # noqa: E402  (stdlib-only shared contract hub)
+
+STEPS_ORDER = ["extract", "trace", "post", "viz"]
+GLOB_CHARS = "*?["
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(
+        prog="run_pipeline.py",
+        description="Chain FreeCAD -> optics -> ParaView optical ray "
+                    "tracer stages for one or more models.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--models", nargs="+", required=True, metavar="FCSTD",
+                   help="one or more .FCStd paths or globs (model stem = "
+                        "file name without .FCStd)")
+    p.add_argument("--preset", default="quick",
+                   choices=sorted(common.PRESETS),
+                   help="fidelity preset filling rays/resolution/nlambda/"
+                        "spectral-bins/viz-rays defaults (default: quick)")
+    p.add_argument("--tag", default=None,
+                   help="appended to the case name: results/<model>/"
+                        "<preset>-<tag>/")
+    p.add_argument("--steps", default=",".join(STEPS_ORDER), metavar="LIST",
+                   help="comma-separated subset of %s to run, executed in "
+                        "that fixed order (default: all)"
+                        % ",".join(STEPS_ORDER))
+
+    g = p.add_argument_group("parameter sweep (stage: permute, before "
+                             "extract)")
+    g.add_argument("--var", action="append", default=[],
+                   help="spreadsheet cell alias to sweep (repeatable, "
+                        "paired in order with --min/--max/--n)")
+    g.add_argument("--min", action="append", default=[], type=float)
+    g.add_argument("--max", action="append", default=[], type=float)
+    g.add_argument("--n", action="append", default=[], type=int)
+
+    g = p.add_argument_group("physics options (stage: trace)")
+    g.add_argument("--dry-run", action="store_true",
+                   help="trace builds estimates but does not run; post/viz "
+                        "are then skipped per model with a NOTICE")
+    g.add_argument("--seeds", type=int, default=None)
+    g.add_argument("--rays", type=float, default=None,
+                   help="primary rays per source (default: from --preset)")
+    g.add_argument("--resolution", type=int, default=None,
+                   help="detector grid resolution (default: from --preset)")
+    g.add_argument("--nlambda", type=int, default=None,
+                   help="wavelength strata (default: from --preset)")
+    g.add_argument("--spectral-bins", type=int, default=None,
+                   help="detector spectral bins (default: from --preset)")
+    g.add_argument("--viz-rays", type=int, default=None,
+                   help="absolute viz-ray cap per source (set this to "
+                        "override --viz-density; preset value acts as the "
+                        "density cap instead)")
+    g.add_argument("--viz-density", type=float, default=None,
+                   help="viz rays per mm^2 of source emit area "
+                        "(default 1.0; visualization only)")
+    g.add_argument("--backend", default=None,
+                   choices=["auto", "torch", "numpy"])
+    g.add_argument("--rough-fresnel", default=None,
+                   choices=["micro", "macro"],
+                   help="roughness-lobe Fresnel model (default micro)")
+    g.add_argument("--ray-differentials", action="store_true",
+                   help="per-ray wavefront-patch dA tracking (exact "
+                        "gather normalization; costs memory)")
+    g.add_argument("--gather-occlusion", action="store_true",
+                   help="shadow-test gather samples against scene bodies")
+    g.add_argument("--no-pol-scatter", action="store_true",
+                   help="legacy unpolarized Mie azimuth sampling")
+    g.add_argument("--mesh-flat-normals", action="store_true")
+    g.add_argument("--save-fields", action="store_true",
+                   help="save complex Ex/Ey detector field maps "
+                        "(enables Stokes polarization maps in post)")
+    g.add_argument("--strict-analytic", action="store_true",
+                   help="hard-error on mesh-type faces (v1 behavior)")
+    g.add_argument("--optical-properties", default=None,
+                   help="override the opticalproperties/ library root")
+    g.add_argument("--source-face", action="append", default=[],
+                   metavar="Body.Feature.FaceN")
+    g.add_argument("--detector-face", action="append", default=[],
+                   metavar="Body.Feature.FaceN")
+    g.add_argument("--grating", action="append", default=[], metavar="SPEC")
+    g.add_argument("--rough", action="append", default=[], metavar="SPEC")
+    g.add_argument("--particles", default=None, metavar="SPEC")
+    g.add_argument("--particle-threshold", type=float, default=None)
+    g.add_argument("--suppress-body", action="append", default=[],
+                   metavar="BODY")
+
+    g = p.add_argument_group("execution / orchestration")
+    g.add_argument("--keep-going", action="store_true",
+                   help="on a stage failure, print FAILED and continue "
+                        "with the next model instead of aborting (exit "
+                        "code still nonzero)")
+    g.add_argument("--print-only", action="store_true",
+                   help="compose and print every stage command without "
+                        "running anything")
+    return p.parse_args(argv)
+
+
+def validate_var_counts(args):
+    counts = {"--var": len(args.var), "--min": len(args.min),
+              "--max": len(args.max), "--n": len(args.n)}
+    if len(set(counts.values())) != 1:
+        raise SystemExit(
+            "run_pipeline.py: --var/--min/--max/--n must appear the same "
+            "number of times (got %s)" % counts)
+    return list(zip(args.var, args.min, args.max, args.n))
+
+
+# ---------------------------------------------------------------------------
+# Model / step resolution
+# ---------------------------------------------------------------------------
+def resolve_steps(spec):
+    requested = [s.strip() for s in spec.split(",") if s.strip()]
+    unknown = [s for s in requested if s not in STEPS_ORDER]
+    if unknown:
+        raise SystemExit(
+            "run_pipeline.py: unknown step(s) %s — valid steps are: %s"
+            % (", ".join(unknown), ", ".join(STEPS_ORDER)))
+    if not requested:
+        raise SystemExit("run_pipeline.py: --steps is empty")
+    return [s for s in STEPS_ORDER if s in requested]
+
+
+def expand_models(patterns):
+    """Expand globs, resolve to absolute paths, dedup preserving order.
+    Returns a list of Path objects."""
+    resolved = []
+    for pat in patterns:
+        matches = sorted(glob(pat))
+        if matches:
+            candidates = matches
+        elif any(c in pat for c in GLOB_CHARS):
+            raise SystemExit("run_pipeline.py: pattern %r matched no files"
+                             % pat)
+        else:
+            candidates = [pat]  # literal; existence checked below
+        for m in candidates:
+            path = Path(m)
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            path = path.resolve()
+            if not path.exists():
+                # bare model names may still resolve under BASEMODELS_DIR
+                alt = common.BASEMODELS_DIR / Path(m).name
+                if alt.exists():
+                    path = alt
+                else:
+                    raise SystemExit(
+                        "run_pipeline.py: file not found: %s" % path)
+            resolved.append(path)
+
+    out, seen = [], set()
+    for path in resolved:
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+    if not out:
+        raise SystemExit("run_pipeline.py: no models to process")
+    return out
+
+
+def variant_output_names(stem, varspecs):
+    """Replicate permute_model.py's naming loop EXACTLY (same
+    common.sweep_values / common.variant_name calls, same --var order,
+    same itertools.product order) so run_pipeline can predict the variant
+    .FCStd filenames permute_model.py will write without parsing its
+    stdout."""
+    value_lists = [common.sweep_values(vmin, vmax, n)
+                   for (_, vmin, vmax, n) in varspecs]
+    names = [v[0] for v in varspecs]
+    out = []
+    for combo in itertools.product(*value_lists):
+        out_name = stem
+        for var, value in zip(names, combo):
+            out_name = common.variant_name(out_name, var, value)
+        out.append(out_name)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Per-stage command builders (single source of truth for flag forwarding)
+# ---------------------------------------------------------------------------
+def permute_cmd(model_path, varspecs):
+    cmd = [common.FREECAD_APPIMAGE, "-c",
+           str(common.SCRIPTS_DIR / "permute_model.py"), "--",
+           "--model", str(model_path)]
+    for var, vmin, vmax, n in varspecs:
+        cmd += ["--var", var, "--min", repr(vmin), "--max", repr(vmax),
+               "--n", str(n)]
+    cmd += ["--outdir", str(common.BASEMODELS_DIR)]
+    return cmd
+
+
+def extract_cmd(model_paths):
+    cmd = [common.FREECAD_APPIMAGE, "-c",
+           str(common.SCRIPTS_DIR / "extract_geometry.py"), "--",
+           "--models"] + [str(p) for p in model_paths]
+    return cmd
+
+
+def _preset_val(args, key, attr):
+    v = getattr(args, attr)
+    return v if v is not None else common.PRESETS[args.preset][key]
+
+
+def trace_cmd(stem, case_dir, args):
+    model_json = common.GEOMETRY_DIR / stem / "model.json"
+    cmd = [common.OPTICS_PYTHON, str(common.SCRIPTS_DIR / "run_trace.py"),
+           "--model-json", str(model_json), "--case-dir", str(case_dir),
+           "--rays", repr(_preset_val(args, "rays", "rays")),
+           "--resolution", str(int(_preset_val(args, "resolution",
+                                                "resolution"))),
+           "--nlambda", str(int(_preset_val(args, "nlambda", "nlambda"))),
+           "--spectral-bins", str(int(_preset_val(
+               args, "spectral_bins", "spectral_bins")))]
+    # viz budget: explicit --viz-rays wins; otherwise density-driven with
+    # the preset's viz_rays as the per-source cap
+    if args.viz_rays is not None:
+        cmd += ["--viz-rays", str(int(args.viz_rays))]
+    else:
+        cmd += ["--viz-density",
+                repr(args.viz_density if args.viz_density is not None
+                     else 1.0),
+                "--viz-rays-max",
+                str(int(common.PRESETS[args.preset]["viz_rays"]))]
+    cmd += ["--seeds", str(args.seeds if args.seeds is not None
+                           else common.DEFAULTS["seeds"])]
+    cmd += ["--backend", args.backend if args.backend is not None
+           else common.DEFAULTS["backend"]]
+    for f in args.source_face:
+        cmd += ["--source-face", f]
+    for f in args.detector_face:
+        cmd += ["--detector-face", f]
+    for g in args.grating:
+        cmd += ["--grating", g]
+    for r in args.rough:
+        cmd += ["--rough", r]
+    if args.particles:
+        cmd += ["--particles", args.particles]
+    if args.particle_threshold is not None:
+        cmd += ["--particle-threshold", repr(args.particle_threshold)]
+    for b in args.suppress_body:
+        cmd += ["--suppress-body", b]
+    if args.rough_fresnel is not None:
+        cmd += ["--rough-fresnel", args.rough_fresnel]
+    if args.ray_differentials:
+        cmd += ["--ray-differentials"]
+    if args.gather_occlusion:
+        cmd += ["--gather-occlusion"]
+    if args.no_pol_scatter:
+        cmd += ["--no-pol-scatter"]
+    if args.mesh_flat_normals:
+        cmd += ["--mesh-flat-normals"]
+    if args.save_fields:
+        cmd += ["--save-fields"]
+    if args.strict_analytic:
+        cmd += ["--strict-analytic"]
+    if args.optical_properties:
+        cmd += ["--optical-properties", args.optical_properties]
+    if args.dry_run:
+        cmd += ["--dry-run"]
+    return cmd
+
+
+def post_cmd(stem, case_dir, args):
+    model_json = common.GEOMETRY_DIR / stem / "model.json"
+    return [common.OPTICS_PYTHON, str(common.SCRIPTS_DIR / "post_process.py"),
+           "--case-dir", str(case_dir), "--model-json", str(model_json)]
+
+
+def viz_cmd(stem, case_dir, args):
+    model_json = common.GEOMETRY_DIR / stem / "model.json"
+    return [common.PVPYTHON, "--force-offscreen-rendering",
+           str(common.SCRIPTS_DIR / "make_viz.py"),
+           "--case-dir", str(case_dir), "--model-json", str(model_json)]
+
+
+STAGE_BUILDERS = {"trace": trace_cmd, "post": post_cmd, "viz": viz_cmd}
+
+
+# ---------------------------------------------------------------------------
+# Execution
+# ---------------------------------------------------------------------------
+def run_logged(cmd, log_path, stdin_devnull=False):
+    """Run `cmd`, tee-ing combined stdout/stderr to both this process's
+    stdout and `log_path`. Raises subprocess.CalledProcessError on a
+    nonzero exit."""
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "w") as logf:
+        proc = subprocess.Popen(
+            cmd, stdin=(subprocess.DEVNULL if stdin_devnull else None),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1)
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            logf.write(line)
+        proc.wait()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
+    return proc.returncode
+
+
+def _run_stage(cmd, log_path, tag, failures, stdin_devnull=False):
+    try:
+        run_logged(cmd, log_path, stdin_devnull=stdin_devnull)
+        return True
+    except subprocess.CalledProcessError as exc:
+        print("FAILED: %s (exit %s)" % (tag, exc.returncode), flush=True)
+        failures.append(tag)
+        return False
+
+
+def resolve_models(args):
+    """Expand --models, then (if --var given) run permute_model.py per
+    input model and replace it with its cross-product of variant .FCStd
+    paths under basemodels/. Returns (list of Path, failures, aborted)."""
+    models = expand_models(args.models)
+    varspecs = validate_var_counts(args)
+    failures = []
+    if not varspecs:
+        return models, failures, False
+
+    final = []
+    for model_path in models:
+        stem = model_path.stem
+        cmd = permute_cmd(model_path, varspecs)
+        log = common.RESULTS_DIR / ("log.permute-%s" % stem)
+        if not _run_stage(cmd, log, "permute (%s)" % stem, failures,
+                          stdin_devnull=True):
+            if args.keep_going:
+                continue
+            return final, failures, True
+        for name in variant_output_names(stem, varspecs):
+            final.append(common.BASEMODELS_DIR / (name + ".FCStd"))
+    return final, failures, False
+
+
+def run_pipeline(args, steps, model_paths, case):
+    """Execute the requested stages for the resolved model list. Returns
+    (failures, aborted)."""
+    failures = []
+    stems = [p.stem for p in model_paths]
+
+    if "extract" in steps:
+        cmd = extract_cmd(model_paths)
+        log = common.RESULTS_DIR / "log.extract"
+        if not _run_stage(cmd, log, "extract (batch)", failures,
+                          stdin_devnull=True) and not args.keep_going:
+            return failures, True
+
+    per_model = [s for s in steps if s != "extract"]
+    for stem in stems:
+        case_dir = common.case_dir(stem, case)
+        model_failed = False
+        for step in per_model:
+            if step in ("post", "viz"):
+                status = common.read_case_status(case_dir / "case.json")
+                if status != "completed":
+                    print("NOTICE: skipping %s for %s — case status is "
+                          "%r (need 'completed'; trace was --dry-run, "
+                          "failed, or has not run yet)"
+                          % (step, stem, status), flush=True)
+                    continue
+            cmd = STAGE_BUILDERS[step](stem, case_dir, args)
+            log = case_dir / ("log.%s" % step)
+            if not _run_stage(cmd, log, "%s/%s" % (stem, step), failures):
+                model_failed = True
+                if args.keep_going:
+                    break            # skip the rest of this model
+                return failures, True
+        if model_failed and not args.keep_going:
+            return failures, True
+    return failures, False
+
+
+# ---------------------------------------------------------------------------
+# Summary table
+# ---------------------------------------------------------------------------
+def _load_json(path):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def detector_power_cell(report):
+    if not isinstance(report, dict) or not report.get("detectors"):
+        return "-"
+    parts = []
+    for label, d in sorted(report["detectors"].items()):
+        p_mw = d.get("total_power_W")
+        if p_mw is None:
+            continue
+        parts.append("%s=%.3gmW" % (label, p_mw * 1e3))
+    return ", ".join(parts) if parts else "-"
+
+
+def summary_row(stem, case):
+    case_dir = common.case_dir(stem, case)
+    status = common.read_case_status(case_dir / "case.json")
+    report = _load_json(case_dir / "report.json")
+    return [stem, case, status, detector_power_cell(report)]
+
+
+def print_summary(stems, case):
+    header = ["model", "case", "status", "detected power"]
+    rows = [summary_row(stem, case) for stem in stems]
+    widths = [max(len(header[i]), *(len(r[i]) for r in rows)) if rows
+              else len(header[i]) for i in range(len(header))]
+
+    def fmt(cols):
+        return "  ".join(c.ljust(widths[i]) for i, c in enumerate(cols))
+
+    line = "-" * (sum(widths) + 2 * (len(widths) - 1))
+    print("\n" + line)
+    print(fmt(header))
+    print(line)
+    for r in rows:
+        print(fmt(r))
+    print(line)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    args = parse_args()
+    steps = resolve_steps(args.steps)
+    varspecs = validate_var_counts(args)
+    case = common.case_name(args.preset, args.tag)
+
+    if args.print_only:
+        models = expand_models(args.models)
+        print("run_pipeline.py: %d input model(s) [%s], steps=%s, case=%s"
+              % (len(models), ", ".join(p.stem for p in models),
+                 ",".join(steps), case), flush=True)
+        print("# print-only: commands that WOULD run (no execution)")
+        stems = [p.stem for p in models]
+        if varspecs:
+            for model_path in models:
+                print("+ " + " ".join(permute_cmd(model_path, varspecs)))
+            stems = [n for p in models
+                    for n in variant_output_names(p.stem, varspecs)]
+            model_paths = [common.BASEMODELS_DIR / (s + ".FCStd")
+                          for s in stems]
+            print("#   (permute produces variant model(s): %s)"
+                  % ", ".join(stems))
+        else:
+            model_paths = models
+        if "extract" in steps:
+            print("+ " + " ".join(extract_cmd(model_paths)))
+        for stem in stems:
+            case_dir = common.case_dir(stem, case)
+            for step in (s for s in steps if s != "extract"):
+                print("+ " + " ".join(STAGE_BUILDERS[step](
+                    stem, case_dir, args)))
+        return 0
+
+    model_paths, failures, aborted = resolve_models(args)
+    if aborted:
+        print_summary([p.stem for p in model_paths], case)
+        print("\n%d stage(s) FAILED: %s (aborted)"
+              % (len(failures), ", ".join(failures)), flush=True)
+        return 1
+    stems = [p.stem for p in model_paths]
+
+    print("run_pipeline.py: %d model(s) [%s], steps=%s, case=%s"
+          % (len(model_paths), ", ".join(stems), ",".join(steps), case),
+          flush=True)
+
+    more_failures, aborted = run_pipeline(args, steps, model_paths, case)
+    failures += more_failures
+    print_summary(stems, case)
+
+    if failures:
+        print("\n%d stage(s) FAILED: %s%s"
+              % (len(failures), ", ".join(failures),
+                 "" if not aborted else " (aborted)"), flush=True)
+        return 1
+    print("\nAll requested stages completed.", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

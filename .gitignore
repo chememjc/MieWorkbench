@@ -1,0 +1,15 @@
+# generated outputs (regenerable by the pipeline)
+results/
+geometry/
+
+# FreeCAD backup files
+*.FCBak
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# MieWorkbench local state (venv, workspaces, caches, logs)
+env/
+var/

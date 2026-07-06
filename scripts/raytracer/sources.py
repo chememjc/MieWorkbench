@@ -1,0 +1,339 @@
+# =============================================================================
+# sources.py — light-source sampling.
+#
+# Emitting face: the face named in the contract's source.emit_face (default:
+# closest-to-origin, chosen at extract time; CLI-overridable upstream).
+# Sampling is stratified-jittered in the face's canonical UV, rejected
+# against the trim, so per-sample area weights dA are uniform-in-area over
+# the face (needed as the coherent-gather quadrature weight).
+#
+# Emission direction ("light emitted toward the origin only"):
+#   * planar face  -> collimated along the face normal, sign chosen so the
+#     beam heads toward the origin hemisphere (per-face).
+#   * curved face  -> local surface normal per sample, sign chosen per
+#     sample toward the origin; a mixed-sign face triggers a loud warning
+#     and the against-origin samples are dropped with their power credited
+#     to the 'emission_clipped' audit bucket.
+#
+# Wavelengths (nm params from the contract):
+#   * neither lambdamin nor lambdamax  -> monochromatic at lambdac
+#   * both        -> asymmetric Gaussian: sigma- = lambdac - lambdamin,
+#                    sigma+ = lambdamax - lambdac (each side a half-normal,
+#                    side chosen with probability sigma/(sigma-+sigma+))
+#   * exactly one -> uniform on [lambdac - w, lambdac + w] where w is the
+#                    given half-width (spec: "uniformly distributed around
+#                    the center wavelength")
+# Sampling is STRATIFIED: n_lambda equal-probability quantiles, one
+# deterministic lambda per stratum, equal power weights. Rays are assigned
+# a stratum id so the gather keeps per-stratum coherent accumulators
+# (different optical frequencies never interfere stationarily).
+#
+# Phase reference: opl = 0 on the emitting surface — the surface IS the
+# source wavefront (plane wave for a flat laser, sphere wave for the
+# divergent laser). 'coherent' sources get zero initial phase; incoherent
+# sources get a uniform random phase per ray (fringe visibility ~ 0).
+#
+# Polarization (contract source.polarization, parsed dict from
+# common.parse_polarization_spec; absent -> unpolarized):
+#   * unpolarized -> TWO mutually-incoherent orthogonal populations
+#     (pol_stratum 0/1), rays alternating between them; the gather keeps
+#     per-(source, lam, pol) accumulators so the populations never
+#     interfere. This is exact for polarizer/retarder chains (Malus etc.),
+#     unlike the old equal-split single Jones vector (which was really
+#     45-degree linear light).
+#   * linear:<deg> / circular:left|right / elliptical:<psi>:<chi> -> one
+#     population with the exact Jones vector.
+# Angle reference frame per ray: e_ref = global +z projected transverse
+# to the emission direction (fallback +y when emitting along z);
+# e_perp = dir x e_ref. s_hat is set to e_ref so (Es, Ep) IS the Jones
+# vector in that frame. linear:<deg> rotates from e_ref toward e_perp.
+# Circular handedness: 'right' means the E-vector rotates clockwise as
+# seen by an observer facing the ONCOMING beam (optics/Hecht convention);
+# with the field convention Re[E exp(-i w t)] and p_hat = dir x s_hat
+# that is Jones (1, +i)/sqrt(2) in the (e_ref, e_perp) basis.
+# Elliptical (psi, chi): standard orientation/ellipticity angles,
+# E = (cos psi cos chi - i sin psi sin chi,
+#      sin psi cos chi + i cos psi sin chi).
+# =============================================================================
+import numpy as np
+
+from .rays import RayBatch
+
+
+def n_pol_strata(src):
+    """Number of mutually-incoherent polarization populations a source
+    emits: 2 for unpolarized (the default), 1 for any explicit state."""
+    pol = src.get("polarization") or {"kind": "unpolarized"}
+    return 2 if pol.get("kind", "unpolarized") == "unpolarized" else 1
+
+
+def _pol_reference_frame(dirs):
+    """Per-ray transverse reference frame: e_ref = z projected transverse
+    (fallback y when |z x dir| ~ 0), e_perp = dir x e_ref."""
+    z = np.array([0.0, 0.0, 1.0])
+    y = np.array([0.0, 1.0, 0.0])
+    ref = z - np.sum(dirs * z, axis=-1, keepdims=True) * dirs
+    nrm = np.linalg.norm(ref, axis=-1)
+    fallback = nrm < 1e-9
+    if np.any(fallback):
+        alt = y - np.sum(dirs[fallback] * y, axis=-1, keepdims=True) \
+            * dirs[fallback]
+        ref[fallback] = alt
+        nrm = np.linalg.norm(ref, axis=-1)
+    e_ref = ref / nrm[:, None]
+    e_perp = np.cross(dirs, e_ref)
+    return e_ref, e_perp
+
+
+def jones_for(pol, pol_stratum):
+    """Unit Jones vector (Es, Ep) complex pair in the (e_ref, e_perp)
+    basis for a polarization dict + stratum index. |Es|^2+|Ep|^2 = 1."""
+    kind = (pol or {"kind": "unpolarized"}).get("kind", "unpolarized")
+    if kind == "unpolarized":
+        # two orthogonal fully-polarized populations of equal power
+        return (1.0 + 0j, 0j) if pol_stratum == 0 else (0j, 1.0 + 0j)
+    if kind == "linear":
+        th = np.deg2rad(pol["angle_deg"])
+        return (np.cos(th) + 0j, np.sin(th) + 0j)
+    if kind == "circular":
+        # 'right' = clockwise facing the oncoming beam (module header)
+        s = 1.0 if pol["handedness"] == "right" else -1.0
+        return (1.0 / np.sqrt(2) + 0j, s * 1j / np.sqrt(2))
+    if kind == "elliptical":
+        psi = np.deg2rad(pol["psi_deg"])
+        chi = np.deg2rad(pol["chi_deg"])
+        return (np.cos(psi) * np.cos(chi) - 1j * np.sin(psi) * np.sin(chi),
+                np.sin(psi) * np.cos(chi) + 1j * np.cos(psi) * np.sin(chi))
+    raise ValueError("unknown polarization kind %r" % kind)
+
+
+def wavelength_strata(src, n_lambda):
+    """Deterministic per-stratum wavelengths [m] (equal probability each)."""
+    lam_c = src["lambdac_nm"]
+    lam_lo = src.get("lambdamin_nm")
+    lam_hi = src.get("lambdamax_nm")
+    q = (np.arange(n_lambda) + 0.5) / n_lambda      # stratum centers in CDF
+    if lam_lo is None and lam_hi is None:
+        return np.full(1, lam_c * 1e-9)             # monochromatic: 1 stratum
+    if lam_lo is not None and lam_hi is not None:
+        sig_m = lam_c - lam_lo
+        sig_p = lam_hi - lam_c
+        if sig_m < 0 or sig_p < 0:
+            raise ValueError("source %r: lambdamin/lambdamax must bracket "
+                             "lambdac" % src)
+        # two half-normals glued at lambda_c with weights sig-/sig+
+        from scipy.stats import norm
+        w_m = sig_m / (sig_m + sig_p)
+        lam = np.empty(n_lambda)
+        left = q < w_m
+        # left side: q in [0,w_m) -> half-normal below lambda_c
+        qq = q[left] / max(w_m, 1e-300)
+        lam[left] = lam_c - np.abs(norm.ppf(0.5 + 0.5 * (1 - qq))) * sig_m
+        qq = (q[~left] - w_m) / max(1 - w_m, 1e-300)
+        lam[~left] = lam_c + np.abs(norm.ppf(0.5 + 0.5 * qq)) * sig_p
+        return lam * 1e-9
+    # exactly one bound: symmetric uniform around lambda_c
+    w = (lam_c - lam_lo) if lam_lo is not None else (lam_hi - lam_c)
+    return (lam_c - w + 2.0 * w * q) * 1e-9
+
+
+def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
+                  ledger=None, differentials=False):
+    """Sample a RayBatch for one source. Power split equally across rays;
+    each ray belongs to one wavelength stratum. differentials=True
+    allocates Igehy ray differentials (wavefront patch h = sqrt(A/N)
+    along the transverse frame; curvature from the emit surface's shape
+    operator) for --ray-differentials dA tracking."""
+    face = scene.emit_faces.get(body.index)
+    if face is None:
+        raise ValueError("source %s has no emit face built — extractor/"
+                         "scene mismatch" % body.label)
+    surf = face.surface
+    lam_strata = wavelength_strata(src, n_lambda)
+    n_strata = len(lam_strata)
+    power_W = src["power_mW"] * 1e-3
+    coherent = bool(src.get("coherent", False))
+
+    pts, normals = _sample_face_points(face, n_rays, rng)
+    n = len(pts)
+
+    # direction: toward-origin sign policy
+    to_origin = -pts                                  # origin - point
+    flat = surf.__class__.__name__ == "Plane"
+    if flat:
+        n0 = normals[0]
+        sign = 1.0 if np.dot(n0, np.mean(to_origin, axis=0)) >= 0 else -1.0
+        dirs = np.tile(sign * n0, (n, 1))
+        clipped = np.zeros(n, dtype=bool)
+    else:
+        dots = np.sum(normals * to_origin, axis=-1)
+        sign = np.where(dots >= 0.0, 1.0, -1.0)
+        # per-sample flip would fold the wavefront: emit only the samples
+        # whose natural normal faces the origin; drop (and account) others
+        frac_neg = np.mean(sign < 0)
+        if 0.0 < frac_neg < 1.0:
+            import warnings
+            warnings.warn(
+                "source %s: emitting face normals straddle the origin "
+                "direction (%.1f%% clipped) — emission clipped to the "
+                "origin-facing side" % (body.label, 100 * frac_neg))
+        if frac_neg == 1.0:
+            dirs = -normals
+            clipped = np.zeros(n, dtype=bool)
+        else:
+            dirs = normals
+            clipped = sign < 0
+    dirs = dirs / np.linalg.norm(dirs, axis=-1, keepdims=True)
+
+    keep = ~clipped
+    pts, dirs = pts[keep], dirs[keep]
+    n_kept = len(pts)
+    if n_kept == 0:
+        raise ValueError("source %s: all emission samples clipped — "
+                         "check geometry orientation" % body.label)
+
+    p_ray = power_W / n                               # per-sample power
+    if ledger is not None:
+        # emitted = the FULL source power; clipped samples immediately
+        # balance into their bucket so closure holds
+        ledger.emit(np.full(n, source_id), np.full(n, p_ray))
+        if np.any(clipped):
+            ledger.credit("emission_clipped",
+                          np.full(int(np.sum(clipped)), source_id),
+                          np.full(int(np.sum(clipped)), p_ray))
+
+    pol = src.get("polarization") or {"kind": "unpolarized"}
+    n_pol = n_pol_strata(src)
+
+    batch = RayBatch(n_kept)
+    batch.pos[:] = pts
+    batch.dir[:] = dirs
+    idx = np.arange(n_kept)
+    batch.lam[:] = lam_strata[idx % n_strata]
+    batch.lam_stratum[:] = idx % n_strata
+    # interleave so every (lam, pol) combination is uniformly filled
+    batch.pol_stratum[:] = (idx // n_strata) % n_pol
+    batch.source_id[:] = source_id
+    batch.coherent[:] = coherent
+    batch.birth_power[:] = p_ray
+    # polarization basis: s_hat = the global-z-referenced transverse frame
+    # (module header) so (Es, Ep) IS the Jones vector in that frame
+    e_ref, _ = _pol_reference_frame(dirs)
+    batch.s_hat[:] = e_ref
+    amp = np.sqrt(p_ray)
+    if coherent:
+        phase = np.ones(n_kept, dtype=np.complex128)
+    else:
+        phase = np.exp(1j * rng.uniform(0, 2 * np.pi, size=n_kept))
+    for ps in range(n_pol):
+        js, jp = jones_for(pol, ps)
+        sel = batch.pol_stratum == ps
+        batch.Es[sel] = amp * js * phase[sel]
+        batch.Ep[sel] = amp * jp * phase[sel]
+
+    if differentials:
+        from .differentials import init_flat, init_curved
+        e_perp = np.cross(dirs, e_ref)
+        h = np.sqrt((face.area_m2 or 1e-6) / n)
+        if flat:
+            dPdx, dDdx, dPdy, dDdy = init_flat(dirs, e_ref, e_perp, h)
+        else:
+            S = surf.normal_derivative(pts)
+            n_can = surf.normal(pts)
+            sign = np.sign(np.sum(dirs * n_can, axis=-1))
+            dPdx, dDdx, dPdy, dDdy = init_curved(dirs, e_ref, e_perp, h,
+                                                 S, sign)
+        batch.alloc_differentials()
+        batch.dPdx[:] = dPdx
+        batch.dDdx[:] = dDdx
+        batch.dPdy[:] = dPdy
+        batch.dDdy[:] = dDdy
+    return batch
+
+
+def _emit_face_from_record(scene, body, src):
+    raise ValueError(
+        "source %s: emit_face %r is not in the scene's face table — "
+        "extractor/scene mismatch" % (body.label, src["emit_face"]))
+
+
+def _sample_face_points(face, n_rays, rng):
+    """Stratified-jittered area sampling of an analytic face.
+
+    Strategy: rejection-sample in a UV bounding box using the trim test,
+    with area weights corrected by the local surface metric (first
+    fundamental form). For the surfaces used here the metric is:
+      plane: 1;  sphere: R^2 cos(v);  cylinder: R;  cone: |v| tan-ish;
+    handled by importance-correcting the v coordinate analytically for
+    sphere (sample sin(v) uniformly) and uniformly otherwise.
+    Returns (points (M,3), normals (M,3) canonical).
+    """
+    surf = face.surface
+    cls = surf.__class__.__name__
+    # UV bounds from the trim polygon loops
+    if face.trim.mode == "untrimmed":
+        if cls == "Sphere":
+            u_lo, u_hi = -np.pi, np.pi
+            v_lo, v_hi = -np.pi / 2, np.pi / 2
+        else:
+            raise NotImplementedError(
+                "untrimmed emitting face of type %s" % cls)
+    elif face.trim.mode == "band":
+        u_lo, u_hi = -np.pi, np.pi
+        v_lo, v_hi = face.trim.v_band
+    else:
+        allu = np.concatenate([lp[:, 0] for lp in face.trim.loops])
+        allv = np.concatenate([lp[:, 1] for lp in face.trim.loops])
+        u_lo, u_hi = float(allu.min()), float(allu.max())
+        v_lo, v_hi = float(allv.min()), float(allv.max())
+
+    pts = np.empty((0, 3))
+    target = n_rays
+    tries = 0
+    while len(pts) < target and tries < 60:
+        m = int((target - len(pts)) * 1.8) + 16
+        u = rng.uniform(u_lo, u_hi, size=m)
+        if cls == "Sphere":
+            # uniform in area: sample sin(v) uniformly
+            sv = rng.uniform(np.sin(v_lo), np.sin(v_hi), size=m)
+            v = np.arcsin(sv)
+        else:
+            v = rng.uniform(v_lo, v_hi, size=m)
+        cand = _uv_to_xyz(surf, u, v)
+        # containment evaluated through the same to_uv convention the trim
+        # polygon itself was built with
+        ok = face.trim.contains(surf.to_uv(cand))
+        pts = np.concatenate([pts, cand[ok]], axis=0)
+        tries += 1
+    if len(pts) < target:
+        raise RuntimeError(
+            "source face %s: area sampling failed to converge "
+            "(%d/%d after %d rounds) — trim geometry suspect"
+            % (face.id, len(pts), target, tries))
+    pts = pts[:target]
+    normals = surf.normal(pts)
+    return pts, normals
+
+
+def _wrap(surf, u):
+    return (u + np.pi) % (2 * np.pi) - np.pi
+
+
+def _uv_to_xyz(surf, u, v):
+    cls = surf.__class__.__name__
+    if cls == "Plane":
+        return surf.origin + u[:, None] * surf.t1 + v[:, None] * surf.t2
+    if cls == "Sphere":
+        cu_, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+        return (surf.c
+                + surf.r * (cv * cu_)[:, None] * surf.t1
+                + surf.r * (cv * su)[:, None] * surf.t2
+                + surf.r * sv[:, None] * surf.axis)
+    if cls == "Cylinder":
+        cu_, su = np.cos(u), np.sin(u)
+        return (surf.o
+                + surf.r * cu_[:, None] * surf.t1
+                + surf.r * su[:, None] * surf.t2
+                + v[:, None] * surf.a)
+    raise NotImplementedError("emitting face of type %s" % cls)
