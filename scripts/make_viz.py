@@ -354,12 +354,16 @@ def main():
 
     if not selected:
         print("[warn] no views selected")
-    for view_cfg in selected:
+    for i, view_cfg in enumerate(selected):
         builder = BUILDERS[view_cfg["builder"]]
         print("[render] %s ..." % view_cfg["name"])
+        common.progress_emit("viz", i / max(1, len(selected)),
+                             view_cfg["name"], case_dir=case_dir)
         written = builder(view_cfg, ctx)
         print("[render] %s: wrote %d file(s)" % (view_cfg["name"], len(written)))
 
+    common.progress_emit("viz", 1.0, "%d view(s) rendered" % len(selected),
+                         case_dir=case_dir, status="completed")
     print("[done]")
 
 

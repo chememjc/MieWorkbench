@@ -1209,9 +1209,13 @@ def main():
     log("extract_geometry.py: processing %d model(s) -> %s%s"
         % (len(paths), outdir, "  [--strict]" if args.strict else ""))
 
-    for p in paths:
+    for i, p in enumerate(paths):
+        common.progress_emit("extract", i / len(paths), p.stem)
         extract_one(p, outdir, args.strict)
 
+    common.progress_emit("extract", 1.0,
+                         "%d model(s) extracted" % len(paths),
+                         status="completed")
     log("GEOMETRY EXTRACTION OK (%d model(s))" % len(paths))
 
 

@@ -21,14 +21,22 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Paths and pinned interpreters (SimulationsGuide.md §1/§2 conventions)
 # ---------------------------------------------------------------------------
+def _env_path(var, default):
+    """Env-overridable path. Defaults preserve historical behavior; the
+    MieWorkbench GUI (and remote/headless runs) override via MIEWB_* so a
+    project can run against a workspace directory or relocated tools."""
+    return Path(os.environ.get(var, "")) if os.environ.get(var) else default
+
+
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_DIR / "scripts"
 BASEMODELS_DIR = PROJECT_DIR / "basemodels"
-GEOMETRY_DIR = PROJECT_DIR / "geometry"
-RESULTS_DIR = PROJECT_DIR / "results"
+GEOMETRY_DIR = _env_path("MIEWB_GEOMETRY_DIR", PROJECT_DIR / "geometry")
+RESULTS_DIR = _env_path("MIEWB_RESULTS_DIR", PROJECT_DIR / "results")
 # Optical-properties library: materials.csv at the root, one subdirectory
 # per category, per-item tables under <category>/tables/ (README §7).
-OPTPROPS_DIR = PROJECT_DIR / "opticalproperties"
+OPTPROPS_DIR = _env_path("MIEWB_OPTPROPS_DIR",
+                         PROJECT_DIR / "opticalproperties")
 MATERIALS_CSV = OPTPROPS_DIR / "materials.csv"
 NK_DATA_DIR = OPTPROPS_DIR / "nk"
 COATINGS_CSV = OPTPROPS_DIR / "coating" / "coatings.csv"
@@ -38,10 +46,14 @@ FILTERS_CSV = OPTPROPS_DIR / "filter" / "filters.csv"
 GRATINGS_CSV = OPTPROPS_DIR / "grating" / "gratings.csv"
 CALIBRATION_JSON = RESULTS_DIR / ".calibration.json"
 
-FREECAD_APPIMAGE = "/home3/freecad/FreeCAD.AppImage"
-OPTICS_PYTHON = "/home3/optics/env/bin/python"
-PVPYTHON = ("/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64"
-            "/bin/pvpython")
+FREECAD_APPIMAGE = os.environ.get(
+    "MIEWB_FREECAD", "/home3/freecad/FreeCAD.AppImage")
+OPTICS_PYTHON = os.environ.get(
+    "MIEWB_OPTICS_PYTHON", "/home3/optics/env/bin/python")
+PVPYTHON = os.environ.get(
+    "MIEWB_PVPYTHON",
+    "/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64"
+    "/bin/pvpython")
 
 # ---------------------------------------------------------------------------
 # Physical constants / units
@@ -682,6 +694,192 @@ def read_case_status(case_json_path):
         return "missing"
 
 # ---------------------------------------------------------------------------
+# Progress events + heartbeat (MieWorkbench integration; CLI-neutral)
+#
+# Two channels, both optional and both harmless to plain CLI use:
+#   1. stdout event lines "@MIEWB {json}" - only when MIEWB_PROGRESS=1 in
+#      the environment (the GUI sets it on every pipeline QProcess).
+#   2. <case_dir>/progress.json - atomically rewritten on every emit when a
+#      case_dir is given; doubles as the liveness heartbeat for the case
+#      lock. Written unconditionally: it is a tiny sidecar next to files
+#      the stage is already writing.
+# ---------------------------------------------------------------------------
+PROGRESS_PREFIX = "@MIEWB "
+
+
+def progress_emit(stage, frac, msg="", case_dir=None, status="running",
+                  extra=None):
+    """Report stage progress. frac in [0,1] or None when indeterminate."""
+    event = {"ev": "progress", "stage": str(stage),
+             "frac": None if frac is None else max(0.0, min(1.0, float(frac))),
+             "msg": str(msg), "status": status,
+             "pid": os.getpid(), "t": _now_s()}
+    if extra:
+        event.update(extra)
+    if os.environ.get("MIEWB_PROGRESS") == "1":
+        print(PROGRESS_PREFIX + json.dumps(event, separators=(",", ":")),
+              flush=True)
+    if case_dir:
+        try:
+            write_json(Path(case_dir) / "progress.json", event)
+        except OSError:
+            pass  # progress must never take a stage down
+
+
+def parse_progress_line(line):
+    """GUI/console side: '@MIEWB {...}' -> dict, else None."""
+    if not line.startswith(PROGRESS_PREFIX):
+        return None
+    try:
+        return json.loads(line[len(PROGRESS_PREFIX):])
+    except ValueError:
+        return None
+
+
+def _now_s():
+    import time
+    return time.time()
+
+
+# ---------------------------------------------------------------------------
+# Case locks: one writer per case dir.
+#
+# Lock file <case_dir>/.lock.json is created O_EXCL. A lock is STALE (safe
+# to steal) when its heartbeat (progress.json mtime, falling back to the
+# lock file's own mtime) is older than LOCK_STALE_S *and* the recorded pid
+# is dead (when the pid is checkable, i.e. same host).
+# ---------------------------------------------------------------------------
+LOCK_STALE_S = 120.0
+
+
+class CaseLocked(RuntimeError):
+    def __init__(self, info):
+        super().__init__("case is locked by pid %s on %s since %s"
+                         % (info.get("pid"), info.get("host"),
+                            info.get("started")))
+        self.info = info
+
+
+def _lock_path(case_dir):
+    return Path(case_dir) / ".lock.json"
+
+
+def lock_info(case_dir):
+    """Return the lock dict, or None if the case is unlocked."""
+    try:
+        with open(_lock_path(case_dir)) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def lock_is_stale(case_dir, info=None):
+    info = info if info is not None else lock_info(case_dir)
+    if info is None:
+        return False
+    heartbeat = None
+    for name in ("progress.json", ".lock.json"):
+        try:
+            mtime = os.path.getmtime(Path(case_dir) / name)
+            heartbeat = mtime if heartbeat is None else max(heartbeat, mtime)
+        except OSError:
+            pass
+    if heartbeat is not None and (_now_s() - heartbeat) < LOCK_STALE_S:
+        return False
+    import socket
+    if info.get("host") == socket.gethostname() and info.get("pid"):
+        try:
+            os.kill(int(info["pid"]), 0)
+            return False        # heartbeat old but process is alive
+        except (OSError, ValueError):
+            return True         # pid is gone -> stale
+    # other host / unknown pid: trust the heartbeat age alone
+    return True
+
+
+def acquire_case_lock(case_dir, force=False):
+    """Create <case_dir>/.lock.json; raises CaseLocked if held and fresh.
+
+    force=True steals the lock regardless (caller confirmed with the user).
+    Returns the lock dict that was written.
+    """
+    import socket
+    case_dir = Path(case_dir)
+    case_dir.mkdir(parents=True, exist_ok=True)
+    path = _lock_path(case_dir)
+    existing = lock_info(case_dir)
+    if existing is not None:
+        if not force and not lock_is_stale(case_dir, existing):
+            raise CaseLocked(existing)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    info = {"pid": os.getpid(), "host": socket.gethostname(),
+            "started": _now_s(),
+            "cmdline": " ".join(sys.argv[:6])}
+    fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    try:
+        os.write(fd, json.dumps(info, indent=1).encode())
+    finally:
+        os.close(fd)
+    return info
+
+
+def release_case_lock(case_dir):
+    """Remove the lock if THIS process owns it."""
+    info = lock_info(case_dir)
+    if info is not None and info.get("pid") == os.getpid():
+        try:
+            os.unlink(_lock_path(case_dir))
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Viz-ray pattern specs (visual ray overlay only - never affects physics)
+#
+#   rings:dr=<mm>:nper=<N>[:nrings=<K>]
+#     one central ray plus concentric rings every dr mm with N rays per
+#     ring step, out to the emit face's rim (or K rings if given).
+# ---------------------------------------------------------------------------
+def parse_viz_pattern_spec(spec):
+    """Parse a --viz-pattern value; returns a dict or raises ValueError."""
+    parts = str(spec).strip().split(":")
+    kind = parts[0].strip().lower()
+    if kind != "rings":
+        raise ValueError("unknown viz pattern %r (expected 'rings:...')"
+                         % kind)
+    out = {"kind": "rings", "dr_mm": None, "nper": None, "nrings": None}
+    for part in parts[1:]:
+        if "=" not in part:
+            raise ValueError("bad viz-pattern field %r (expected k=v)" % part)
+        key, _, val = part.partition("=")
+        key = key.strip().lower()
+        try:
+            if key == "dr":
+                out["dr_mm"] = float(val)
+            elif key == "nper":
+                out["nper"] = int(val)
+            elif key == "nrings":
+                out["nrings"] = int(val)
+            else:
+                raise ValueError("unknown viz-pattern key %r" % key)
+        except (TypeError, ValueError) as exc:
+            if "viz-pattern" in str(exc):
+                raise
+            raise ValueError("bad viz-pattern value %r for key %r"
+                             % (val, key))
+    if out["dr_mm"] is None or out["dr_mm"] <= 0:
+        raise ValueError("viz pattern needs dr=<mm> > 0")
+    if out["nper"] is None or out["nper"] < 1:
+        raise ValueError("viz pattern needs nper=<int> >= 1")
+    if out["nrings"] is not None and out["nrings"] < 0:
+        raise ValueError("viz pattern nrings must be >= 0")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Self-check:  python3 scripts/common.py
 # ---------------------------------------------------------------------------
 def _selfcheck():
@@ -759,6 +957,40 @@ def _selfcheck():
     est = estimate(1e5, 512, 5, 1, "auto")
     check("estimator sane", est["total_s"] > 0 and est["accumulator_GB"] > 0,
           "total=%s" % fmt_duration(est["total_s"]))
+
+    # progress / lock / viz-pattern helpers (MieWorkbench integration)
+    ev = parse_progress_line(
+        PROGRESS_PREFIX + '{"ev":"progress","stage":"trace","frac":0.5}')
+    check("progress line parse", ev is not None and ev["frac"] == 0.5)
+    check("progress noise ignored",
+          parse_progress_line("[trace] seed 1/3") is None)
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        progress_emit("trace", 0.25, "seed 1/4", case_dir=td)
+        with open(Path(td) / "progress.json") as fh:
+            check("progress.json heartbeat",
+                  json.load(fh)["frac"] == 0.25)
+        acquire_case_lock(td)
+        try:
+            acquire_case_lock(td)
+            check("second lock rejected", False)
+        except CaseLocked:
+            check("second lock rejected", True)
+        check("own lock not stale", not lock_is_stale(td))
+        release_case_lock(td)
+        check("lock released", lock_info(td) is None)
+    vp = parse_viz_pattern_spec("rings:dr=0.5:nper=8:nrings=4")
+    check("viz pattern", vp["dr_mm"] == 0.5 and vp["nper"] == 8
+          and vp["nrings"] == 4)
+    vp2 = parse_viz_pattern_spec("rings:dr=1:nper=12")
+    check("viz pattern open rings", vp2["nrings"] is None)
+    for bad_vp in ("spiral:dr=1", "rings:dr=0:nper=4", "rings:nper=4",
+                   "rings:dr=1:nper=0", "rings:dr=x:nper=4"):
+        try:
+            parse_viz_pattern_spec(bad_vp)
+            check("reject viz %r" % bad_vp, False)
+        except ValueError:
+            check("reject viz %r" % bad_vp, True)
     print("SELF-CHECK", "OK" if ok else "FAILED")
     return 0 if ok else 1
 

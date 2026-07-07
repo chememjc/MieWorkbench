@@ -273,6 +273,26 @@ def main(argv=None):
     case_dir = Path(args.case_dir)
     case_dir.mkdir(parents=True, exist_ok=True)
 
+    # one writer per case: refuse (exit 4) rather than corrupt a live run
+    try:
+        common.acquire_case_lock(case_dir)
+    except common.CaseLocked as exc:
+        print("[trace] REFUSED: %s (rerun when it finishes, or remove "
+              "%s if you are sure it is dead)"
+              % (exc, case_dir / ".lock.json"), flush=True)
+        return 4
+    try:
+        return _main_locked(args, case_dir)
+    except BaseException:
+        common.progress_emit("trace", None, "failed", case_dir=case_dir,
+                             status="failed")
+        raise
+    finally:
+        common.release_case_lock(case_dir)
+
+
+def _main_locked(args, case_dir):
+    common.progress_emit("trace", 0.0, "loading scene", case_dir=case_dir)
     model = common.load_model(args.model_json)
     apply_source_overrides(model, args.source_face)
     from raytracer.optprops import load_optical_properties
@@ -311,6 +331,8 @@ def main(argv=None):
              est["accumulator_GB"]), flush=True)
     if args.dry_run:
         print("[trace] --dry-run: stopping after estimates", flush=True)
+        common.progress_emit("trace", 1.0, "dry-run estimates written",
+                             case_dir=case_dir, status="estimated")
         return 0
 
     # wavelengths the particle tables must cover: all strata of all sources
@@ -327,6 +349,10 @@ def main(argv=None):
         seed = args.seed0 + s
         print("[trace] seed %d/%d (seed=%d)"
               % (s + 1, args.seeds, seed), flush=True)
+        # reserve the last 5% for detector/audit writes after the loop
+        common.progress_emit("trace", 0.95 * s / args.seeds,
+                             "seed %d/%d" % (s + 1, args.seeds),
+                             case_dir=case_dir)
         result, grids, gdiags, times = run_one_seed(
             scene, args, seed, lam_range, particle_lams, case_diag)
         grids_list.append(grids)
@@ -340,6 +366,8 @@ def main(argv=None):
                   % {k: v["closure_error"]
                      for k, v in rep["sources"].items()}, flush=True)
 
+    common.progress_emit("trace", 0.95, "writing detectors",
+                         case_dir=case_dir)
     np.save(case_dir / "rays.npy", all_viz)
     save_detectors(case_dir, grids_list, args.seeds)
     common.write_json(case_dir / "audit.json",
@@ -353,6 +381,10 @@ def main(argv=None):
     print("[trace] done: %d seed(s), closure %s, outputs in %s"
           % (args.seeds, "OK" if closure_ok else "FAILED",
              case_dir), flush=True)
+    common.progress_emit("trace", 1.0,
+                         "completed" if closure_ok else "closure FAILED",
+                         case_dir=case_dir,
+                         status="completed" if closure_ok else "failed")
     return 0 if closure_ok else 3
 
 

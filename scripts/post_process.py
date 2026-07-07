@@ -737,9 +737,15 @@ def main(argv=None):
 
     report = {"detectors": {}, "closure_ok": all(
         a["closure_ok"] for a in audit["per_seed"])}
-    for h5path in sorted((case_dir / "detectors").glob("*.h5")):
+    h5paths = sorted((case_dir / "detectors").glob("*.h5"))
+    for i, h5path in enumerate(h5paths):
+        common.progress_emit("post", 0.8 * i / max(1, len(h5paths)),
+                             "detector %s" % h5path.stem,
+                             case_dir=case_dir)
         render_detector(h5path, img, spec, report)
         render_stokes_maps(h5path, img)
+    common.progress_emit("post", 0.8, "diagnostic plots",
+                         case_dir=case_dir)
     rays = np.load(case_dir / "rays.npy")
     plot_rays_2d(rays, model, plots / "rays_xy.png",
                 max_generation=args.viz_generations)
@@ -749,6 +755,8 @@ def main(argv=None):
     common.write_json(case_dir / "report.json", report)
     print("[post] wrote images/spectra/plots + report.json in %s"
           % case_dir, flush=True)
+    common.progress_emit("post", 1.0, "report.json written",
+                         case_dir=case_dir, status="completed")
     return 0
 
 

@@ -403,14 +403,25 @@ def run_pipeline(args, steps, model_paths, case):
     failures = []
     stems = [p.stem for p in model_paths]
 
+    # pipeline-level progress: one unit per (model, step), extract counts 1
+    per_model = [s for s in steps if s != "extract"]
+    total_units = (1 if "extract" in steps else 0) \
+        + len(stems) * len(per_model)
+    done_units = 0
+
+    def tick(msg):
+        common.progress_emit("pipeline", done_units / max(1, total_units),
+                             msg)
+
     if "extract" in steps:
+        tick("extract (batch of %d)" % len(stems))
         cmd = extract_cmd(model_paths)
         log = common.RESULTS_DIR / "log.extract"
         if not _run_stage(cmd, log, "extract (batch)", failures,
                           stdin_devnull=True) and not args.keep_going:
             return failures, True
+        done_units += 1
 
-    per_model = [s for s in steps if s != "extract"]
     for stem in stems:
         case_dir = common.case_dir(stem, case)
         model_failed = False
@@ -422,7 +433,9 @@ def run_pipeline(args, steps, model_paths, case):
                           "%r (need 'completed'; trace was --dry-run, "
                           "failed, or has not run yet)"
                           % (step, stem, status), flush=True)
+                    done_units += 1
                     continue
+            tick("%s/%s" % (stem, step))
             cmd = STAGE_BUILDERS[step](stem, case_dir, args)
             log = case_dir / ("log.%s" % step)
             if not _run_stage(cmd, log, "%s/%s" % (stem, step), failures):
@@ -430,8 +443,12 @@ def run_pipeline(args, steps, model_paths, case):
                 if args.keep_going:
                     break            # skip the rest of this model
                 return failures, True
+            done_units += 1
         if model_failed and not args.keep_going:
             return failures, True
+    common.progress_emit("pipeline", 1.0,
+                         "all requested stages finished",
+                         status="completed" if not failures else "failed")
     return failures, False
 
 
