@@ -9,15 +9,16 @@ Three tabs:
                      computed by the free function default_label() so it
                      is testable without going through the (modal) label
                      dialog.
-  Project library  - per-category row counts + names from the project
-                     PropLibrary (raw registry reads -- a project library
-                     may be legitimately incomplete/invalid mid-edit, so
-                     this never calls PropLibrary.categories(), which
-                     requires a full, validated load).
+  Project library  - per-category row counts from the project PropLibrary
+                     (raw registry reads -- a project library may be
+                     legitimately incomplete/invalid mid-edit, so this
+                     never calls PropLibrary.categories(), which requires
+                     a full, validated load).
   System library   - same, for the system PropLibrary.
 
-Both summary tabs' "Open in editor" emits openEditorRequested(category,
-which_library) for the host window to route to PropEditorPane.
+Both summary tabs' "Open in editor" button and double-clicking a row emit
+openEditorRequested(category, which_library) for the host window to route
+to PropEditorPane.show_category(category, which_library).
 """
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -66,9 +67,12 @@ class LabelDialog(QDialog):
 
 
 class _LibrarySummary(QWidget):
-    """Per-category row counts + names for one PropLibrary (system or
-    project), read straight off the registry csvs (no validation, since a
-    project library may be an intentionally partial work in progress)."""
+    """Per-category row counts for one PropLibrary (system or project),
+    read straight off the registry csvs (no validation, since a project
+    library may be an intentionally partial work in progress). Rows show
+    just "<category> (<count>)" -- the full entry-name listing was too
+    noisy; drill into names via "Open in editor" / double-click, which
+    both route to the same PropEditorPane tab."""
 
     openEditorRequested = Signal(str, str)   # category, which_library
 
@@ -78,6 +82,8 @@ class _LibrarySummary(QWidget):
         self.manager = manager
 
         self.list_widget = QListWidget()
+        self.list_widget.itemDoubleClicked.connect(
+            self._on_item_double_clicked)
         self.open_button = QPushButton("Open in editor")
         self.open_button.clicked.connect(self._on_open_clicked)
 
@@ -104,19 +110,21 @@ class _LibrarySummary(QWidget):
         self.open_button.setEnabled(True)
         for category in CATEGORIES:
             rows = lib.registry_rows(category)
-            names = ", ".join(r.get("name", "") for r in rows) \
-                if rows else "(empty)"
-            item = QListWidgetItem("%s (%d): %s"
-                                   % (category, len(rows), names))
+            item = QListWidgetItem("%s (%d)" % (category, len(rows)))
             item.setData(Qt.ItemDataRole.UserRole, category)
             self.list_widget.addItem(item)
 
-    def _on_open_clicked(self):
-        item = self.list_widget.currentItem()
+    def _open_for_item(self, item):
         category = item.data(Qt.ItemDataRole.UserRole) if item else None
         if not category:
             category = CATEGORIES[0]
         self.openEditorRequested.emit(category, self.which_library)
+
+    def _on_open_clicked(self):
+        self._open_for_item(self.list_widget.currentItem())
+
+    def _on_item_double_clicked(self, item):
+        self._open_for_item(item)
 
 
 class LibraryPane(QWidget):

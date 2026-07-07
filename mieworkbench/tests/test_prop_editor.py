@@ -97,6 +97,46 @@ def test_project_library_enabled_with_project_root(qtbot, tmp_path):
     assert pane.library_combo.model().item(1).isEnabled()
 
 
+def test_show_category_selects_tab_and_system_library(qtbot):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+
+    pane.show_category("coatings", "system")
+
+    assert pane.tabs.currentWidget() is pane.editor("coatings")
+    assert pane.library_combo.currentData() == "system"
+    for editor in pane._editors.values():
+        assert editor.which_library == "system"
+
+
+def test_show_category_selects_tab_and_project_library(qtbot, tmp_path):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT,
+                         project_root=tmp_path / "project")
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+
+    pane.show_category("polarizers", "project")
+
+    assert pane.tabs.currentWidget() is pane.editor("polarizers")
+    assert pane.library_combo.currentData() == "project"
+    for editor in pane._editors.values():
+        assert editor.which_library == "project"
+
+
+def test_show_category_then_different_category_keeps_library(qtbot, tmp_path):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT,
+                         project_root=tmp_path / "project")
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+
+    pane.show_category("materials", "project")
+    pane.show_category("filters", "project")
+
+    assert pane.tabs.currentWidget() is pane.editor("filters")
+    assert pane.library_combo.currentData() == "project"
+
+
 # ---------------------------------------------------------------------------
 # edit-commit path (tmp copy only)
 # ---------------------------------------------------------------------------

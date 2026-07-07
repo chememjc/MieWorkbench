@@ -542,6 +542,16 @@ class PropEditorPane(QWidget):
         enabled = self.manager.project_lib is not None
         self.library_combo.model().item(1).setEnabled(enabled)
 
+    def show_category(self, category, which_library):
+        """Public entry point for the host window (e.g. routing
+        LibraryPane.openEditorRequested(category, which_library)): switch
+        the library combo to system/project and select the matching
+        category tab."""
+        index = self.library_combo.findData(which_library)
+        if index != -1:
+            self.library_combo.setCurrentIndex(index)
+        self.tabs.setCurrentWidget(self._editors[category])
+
     def _on_library_changed(self, index):
         which = self.library_combo.itemData(index)
         for editor in self._editors.values():

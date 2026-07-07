@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from mieworkbench.core.librarymgr import LibraryManager    # noqa: E402
+from mieworkbench.core.proplib import CATEGORIES           # noqa: E402
 from mieworkbench.panes.library import LibraryPane, default_label  # noqa: E402
 
 REPO_ROOT = os.path.normpath(
@@ -106,8 +107,19 @@ def test_system_summary_counts(qtbot):
     qtbot.addWidget(pane)
     texts = [pane.system_summary.list_widget.item(i).text()
             for i in range(pane.system_summary.list_widget.count())]
-    assert any(t.startswith("materials (24)") for t in texts)
-    assert any(t.startswith("coatings (10)") for t in texts)
+    # rows are just "<category> (<count>)" -- no entry names (too noisy)
+    assert "materials (24)" in texts
+    assert "coatings (10)" in texts
+
+
+def test_summary_rows_have_no_entry_names(qtbot):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = LibraryPane(mgr)
+    qtbot.addWidget(pane)
+    for i in range(pane.system_summary.list_widget.count()):
+        text = pane.system_summary.list_widget.item(i).text()
+        assert ":" not in text
+        assert text.split(" (")[0] in CATEGORIES
 
 
 def test_open_editor_requested_from_summary(qtbot):
@@ -118,6 +130,29 @@ def test_open_editor_requested_from_summary(qtbot):
     with qtbot.waitSignal(pane.openEditorRequested, timeout=1000) as blocker:
         pane.system_summary._on_open_clicked()
     assert blocker.args == ["materials", "system"]
+
+
+def test_double_click_summary_row_emits_open_editor_requested(qtbot):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = LibraryPane(mgr)
+    qtbot.addWidget(pane)
+    item = pane.system_summary.list_widget.item(1)   # "coatings (10)"
+    assert item.text().startswith("coatings")
+    with qtbot.waitSignal(pane.openEditorRequested, timeout=1000) as blocker:
+        pane.system_summary._on_item_double_clicked(item)
+    assert blocker.args == ["coatings", "system"]
+
+
+def test_double_click_project_summary_row_emits_via_library_pane(qtbot):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = LibraryPane(mgr)
+    qtbot.addWidget(pane)
+    # project library disabled without a project root: emit still routes
+    # through the same LibraryPane-level signal, using CATEGORIES[0]
+    item = pane.project_summary.list_widget.item(0)
+    with qtbot.waitSignal(pane.openEditorRequested, timeout=1000) as blocker:
+        pane.project_summary._on_item_double_clicked(item)
+    assert blocker.args == [CATEGORIES[0], "project"]
 
 
 def test_refresh_picks_up_user_dropped_fcstd(qtbot, tmp_path):
