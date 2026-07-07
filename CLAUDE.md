@@ -232,6 +232,13 @@ promote entries to the repo (system) library.
 - **A BS cube is not an interferometer beamsplitter here**: its cemented
   5 µm gap sits at 45° to the internal beams and bleeds ~1/3 of the power
   into seam loss; use `bs_plate` (wedge_deg=0) for Michelson-style paths.
+- **A sheet param must never live in the body Placement** —
+  rebuild_element preserves the PRE-rebuild placement, silently reverting
+  it (the prism's `rotation` is baked into sketch vertices for this
+  reason). Related: **rebuilds renumber FaceN**, so preserved face-mapped
+  props (a grating_plate's `Face1=...`) can land on an edge face after a
+  size edit — face indices are only trustworthy for the geometry they
+  were authored against.
 - **Gather keys are (source, λ-stratum, POL-stratum)**: budget rays
   accordingly or the `GatherError: undersampled` gate trips.
 - **Optically-contacted solids don't exist**: model cemented interfaces

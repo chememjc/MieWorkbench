@@ -1015,17 +1015,22 @@ def _build_axicon(doc, group, p):
 
 
 def _build_prism(doc, group, p):
+    # `rotation` is baked into the SKETCH vertices, NOT the body
+    # Placement: rebuild_element preserves the pre-rebuild Placement, so a
+    # placement-borne sheet param would be silently reverted on every
+    # rebuild-on-edit (found by the prism_spectrometer demo, whose
+    # min-deviation rotation vanished and left the beam 12 deg off).
     L, H = p["side"], p["height"]
     R = L / math.sqrt(3.0)
-    verts = [(R * math.cos(math.radians(a)), R * math.sin(math.radians(a)))
+    rot = p.get("rotation", 0.0)
+    verts = [(R * math.cos(math.radians(a + rot)),
+              R * math.sin(math.radians(a + rot)))
              for a in (90.0, 210.0, 330.0)]
     edges = [mts._line(verts[i][0], verts[i][1],
                        verts[(i + 1) % 3][0], verts[(i + 1) % 3][1])
              for i in range(3)]
-    pl = App.Placement(App.Vector(0, 0, 0),
-                       App.Rotation(App.Vector(0, 0, 1), p["rotation"]))
     return [mts.pad_body(doc, group, edges, plane="XY",
-                         offset=-H / 2.0, length=H, placement=pl)]
+                         offset=-H / 2.0, length=H)]
 
 
 def _build_cube_beamsplitter(doc, group, p, coating):

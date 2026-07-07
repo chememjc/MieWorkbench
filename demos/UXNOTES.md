@@ -77,6 +77,29 @@ should change — the raw material for the round-2 UX proposal.
   died on the <1 µm asphere verification. `surface_override` is now in
   `derived_props` for the asphere-backed primitives (same mechanism as
   the iris `blackness` → `absorbance` fix).
+- **The prism's `rotation` param silently vanished on rebuild.** The
+  builder baked it into the body *Placement*, which rebuild_element
+  rightly preserves from before the rebuild — so setting rotation via the
+  sheet did nothing (the spectrometer beam came out 12° instead of 54°).
+  The builder now bakes rotation into the sketch vertices. Rule of thumb:
+  a sheet param must never live in the Placement.
+- **Rebuilding renumbers faces, orphaning face-mapped properties.** A
+  `grating_plate` resized through the sheet gets fresh FaceN indices, and
+  the preserved `Face1=600:v` grating property can silently land on an
+  edge face (0 diffracted power). The Czerny-Turner demo imports the
+  shipped geometry un-rebuilt; the real fix (round 2) is re-resolving
+  face-map indices geometrically after every rebuild.
+
+## Detector-face gotcha (engine contract, worth a round-2 look)
+
+The emit/detector face auto-pick is "face centroid closest to the world
+origin". On a rotated, off-axis detector (a folded telescope's eyepiece)
+that is a thin EDGE face — the run completes and detects 0 mW with no
+warning. The folded demos pin `detector_face` in simparams, resolved at
+build time from tessellation normals (`Demo.detector_face()`) because
+FaceN numbering is not even stable across rebuilds. A `detector_face`
+BODY PROPERTY (part of the authoring contract, set once in the GUI)
+would remove the whole failure class.
 
 ## Fixed during this round (feedback already applied)
 

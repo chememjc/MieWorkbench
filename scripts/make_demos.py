@@ -35,8 +35,10 @@ import argparse
 import csv
 import math
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -133,6 +135,7 @@ class Demo:
         st = fc.request("new_document", {"path": self.path})
         self.doc = st["doc"]
         self.notes = []
+        self.detector_pins = []   # [(body_label, beam_dir)] see pin_detector
 
     def note(self, text):
         self.notes.append(text)
@@ -178,6 +181,16 @@ class Demo:
         return [b["label"] for b in st["bodies"]
                 if (b.get("properties", {}).get("miewb_group", {})
                     .get("value")) == group]
+
+    def pin_detector(self, label, beam_dir):
+        """Record that `label`'s recording face must be pinned in
+        simparams: the extractor's closest-to-origin auto-pick selects a
+        thin EDGE face on rotated off-axis detectors. FaceN numbering is
+        NOT stable across rebuilds or even save/reload, so the id is
+        resolved AFTER save by batch-extracting the shipped file (see
+        resolve_detector_pins) and picking the plane face whose OUTWARD
+        normal opposes the beam arrival direction `beam_dir`."""
+        self.detector_pins.append((label, tuple(beam_dir)))
 
     def save(self):
         self.fc.request("save", {"doc": self.doc})
@@ -229,11 +242,8 @@ def demo_newtonian(d):
           params={"width": 20.0})
     d.note("newtonian: diagonal quaternion (-135 deg about z) had to be "
            "computed by hand; an 'aim at element' helper would remove it")
-    # the detector-face auto-pick (closest face centroid to the world
-    # origin) selects a thin EDGE face on off-axis/rotated detectors --
-    # every folded demo pins the true front face explicitly
-    return {"preset": "quick",
-            "detector_face": ["Eyepiece.Eyepiece_pad.Face5"]}
+    d.pin_detector("Eyepiece", (0.0, 1.0, 0.0))
+    return {"preset": "quick"}
 
 
 def demo_dobsonian(d):
@@ -251,8 +261,8 @@ def demo_dobsonian(d):
           params={"width": 72.0, "thickness": 5.0, "round_flag": 1})
     d.add("detector_plane", "Eyepiece", pos=(xd, L, 0), rot_deg=90.0,
           params={"width": 25.0})
-    return {"preset": "quick",
-            "detector_face": ["Eyepiece.Eyepiece_pad.Face5"]}
+    d.pin_detector("Eyepiece", (0.0, 1.0, 0.0))
+    return {"preset": "quick"}
 
 
 def demo_michelson(d):
@@ -279,8 +289,8 @@ def demo_michelson(d):
           params={"width": 12.0, "round_flag": 0})
     d.note("michelson: the 0.158 mrad fringe tilt is invisible in the 3D "
            "view; a numeric rotation readout in the transform panel helps")
-    return {"preset": "quick",
-            "detector_face": ["Screen.Screen_pad.Face5"]}
+    d.pin_detector("Screen", (0.0, 1.0, 0.0))
+    return {"preset": "quick"}
 
 
 def demo_prism_spectrometer(d):
@@ -363,8 +373,8 @@ def demo_prism_spectrometer(d):
     d.note("prism_spectrometer: min-deviation incidence angle needed "
            "offline trig; wizard support for 'rotate prism for min "
            "deviation at lambda' would be a one-click win")
-    return {"preset": "quick",
-            "detector_face": ["Screen.Screen_pad.Face5"]}
+    d.pin_detector("Screen", (dev_dir[0], dev_dir[1], 0.0))
+    return {"preset": "quick"}
 
 
 def demo_czerny_turner(d):
@@ -399,8 +409,15 @@ def demo_czerny_turner(d):
     d.add("mirror_concave", "Collimator", pos=(C[0], C[1], 0),
           rot_deg=ang(n_coll) - 180.0,
           params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
+    # DEFAULT size on purpose: rebuilding a grating_plate renumbers its
+    # faces and the preserved 'Face1=600:v' grating property can land on
+    # an edge face -- importing the shipped geometry keeps Face1 = front.
+    # Groove spec: 'v' means the face-frame t2 tangent, which for this
+    # plate is world z -- dispersing OUT of the instrument plane. Pin the
+    # periodicity vector to world y explicitly so the orders stay in the
+    # x-y layout plane.
     d.add("grating_plate", "Grating",
-          params={"width": 30.0, "thickness": 4.0})
+          props={"grating": "Face1=600:0,1,0:orders=-1..1"})
     d.add("mirror_concave", "CameraMirror", pos=(M2[0], M2[1], 0),
           rot_deg=ang(n_cam) - 180.0,
           params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
@@ -409,8 +426,8 @@ def demo_czerny_turner(d):
     d.note("czerny_turner: four bodies needed hand trig for aim angles; "
            "the single most wanted tool while building the gallery was "
            "'point this element at that one'")
-    return {"preset": "quick",
-            "detector_face": ["Screen.Screen_pad.Face5"]}
+    d.pin_detector("Screen", (m[0], m[1], 0.0))
+    return {"preset": "quick"}
 
 
 def demo_camera_triplet(d):
@@ -570,6 +587,49 @@ DEMOS = {
 }
 
 
+def resolve_detector_pins(fcstd_path, pins):
+    """Batch-extract the SAVED scene and resolve each pinned detector's
+    recording face: the plane face whose outward normal opposes the
+    demo's known beam arrival direction (unique -- the opposite cap
+    points along the beam and the edges are perpendicular). Extraction
+    of the same saved file is exactly what run_pipeline does, so the
+    FaceN ids match the trace's numbering."""
+    import json
+    outdir = Path(tempfile.mkdtemp(prefix="miewb-demo-extract-"))
+    try:
+        subprocess.run(
+            [str(FREECAD), "-c",
+             str(REPO / "scripts" / "extract_geometry.py"), "--",
+             "--model", str(fcstd_path), "--outdir", str(outdir)],
+            stdin=subprocess.DEVNULL, check=True, capture_output=True,
+            text=True)
+        model_path = outdir / Path(fcstd_path).stem / "model.json"
+        model = json.loads(model_path.read_text())
+        resolved = []
+        for label, beam_dir in pins:
+            body = next(b for b in model["bodies"]
+                        if b.get("label", b["name"]) == label
+                        or b["name"] == label)
+            best, best_dot = None, -2.0
+            for f in body["faces"]:
+                surf = f.get("surface", {})
+                if surf.get("type") != "plane":
+                    continue
+                n = surf.get("normal") or [0.0, 0.0, 0.0]
+                if not f.get("orientation_outward", True):
+                    n = [-c for c in n]
+                dot = -sum(a * b for a, b in zip(n, beam_dir))
+                if dot > best_dot:
+                    best, best_dot = f["id"], dot
+            if best is None or best_dot < 0.7:
+                raise RuntimeError("could not resolve detector face for "
+                                   "%s (best dot %.2f)" % (label, best_dot))
+            resolved.append(best)
+        return resolved
+    finally:
+        shutil.rmtree(str(outdir), ignore_errors=True)
+
+
 def add_corrector(fcstd_path):
     """Run the FreeCAD helper that adds the hand-authored Schmidt
     corrector body to the saved scene."""
@@ -598,6 +658,9 @@ def build_demo(name, outdir, pack=True):
     wants_corrector = simparams.pop("corrector", False)
     if wants_corrector:
         add_corrector(fcstd)
+    if demo.detector_pins:
+        simparams["detector_face"] = resolve_detector_pins(
+            fcstd, demo.detector_pins)
     if pack:
         miewb_tool.pack_miewb(fcstd, outdir / ("%s.MieWB" % name),
                               simparams=simparams)
