@@ -3,14 +3,19 @@
  "kind": "polarizer_plate",
  "label": "Polarizer",
  "params": {
-  "half": {
-   "default": 10.0,
-   "help": "half-width",
-   "unit": "mm"
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
   },
   "thickness": {
    "default": 1.0,
    "help": "plate thickness",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 20.0,
+   "help": "edge length (rectangular) or diameter (circular)",
    "unit": "mm"
   }
  },

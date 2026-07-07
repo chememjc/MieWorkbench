@@ -65,29 +65,42 @@ PRIMITIVES = {
     # -- sources ------------------------------------------------------------
     "laser_collimated": {
         "category": "Sources", "label": "Collimated laser",
-        "tooltip": "Cylindrical housing emitting a collimated beam from "
-                   "its flat +x end cap.",
-        "params": {"radius": P(5.0, "mm", "beam (emit face) radius"),
-                   "length": P(10.0, "mm", "housing length")},
+        "tooltip": "Cylindrical (or, if round_flag=0, boxy) housing "
+                   "emitting a collimated beam from its flat +x end cap.",
+        "params": {"diameter": P(10.0, "mm", "beam (emit face) diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
         "props": {"power": 5.0, "lambdac": 633.0, "coherent": True},
     },
     "laser_divergent": {
         "category": "Sources", "label": "Divergent laser",
         "tooltip": "Laser with a convex spherical emit cap: emitted rays "
                    "diverge from a virtual point (radius of curvature = "
-                   "roc).",
-        "params": {"radius": P(5.0, "mm", "emit aperture radius"),
+                   "roc). With round_flag=0, a flat rectangular emit face "
+                   "is built instead (roc does not apply).",
+        "params": {"diameter": P(10.0, "mm", "emit aperture diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
                    "roc": P(200.0, "mm", "emit cap radius of curvature "
-                                         "(divergence = radius/roc)"),
-                   "length": P(10.0, "mm", "housing length")},
+                                         "(divergence = diameter/2/roc); "
+                                         "only applies when round_flag=1"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular (spherical emit "
+                                          "cap), 0 = flat rectangular "
+                                          "emitter")},
         "props": {"power": 5.0, "lambdac": 633.0, "coherent": True},
     },
     "source_broadband": {
         "category": "Sources", "label": "Broadband source",
-        "tooltip": "Incoherent broadband disc emitter (set lambdamin / "
-                   "lambdamax in the properties).",
-        "params": {"radius": P(5.0, "mm", "emit face radius"),
-                   "length": P(10.0, "mm", "housing length")},
+        "tooltip": "Incoherent broadband disc (or box) emitter (set "
+                   "lambdamin / lambdamax in the properties).",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
         "props": {"power": 5.0, "lambdac": 550.0,
                   "lambdamin": 450.0, "lambdamax": 650.0,
                   "coherent": False},
@@ -95,10 +108,12 @@ PRIMITIVES = {
     # -- detectors ----------------------------------------------------------
     "detector_plane": {
         "category": "Detectors", "label": "Detector plane",
-        "tooltip": "Square thin-screen detector; its -x face records "
-                   "irradiance. Transparent to the beam.",
-        "params": {"half": P(15.0, "mm", "half-width of the square screen"),
-                   "thickness": P(1.0, "mm", "screen thickness")},
+        "tooltip": "Square (or round) thin-screen detector; its -x face "
+                   "records irradiance. Transparent to the beam.",
+        "params": {"width": P(30.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(1.0, "mm", "screen thickness"),
+                   "round_flag": P(0, "", "1 = circular, 0 = rectangular")},
         "props": {"material": "detector"},
     },
     # -- spherical lenses (revolved meridians) -------------------------------
@@ -233,23 +248,29 @@ PRIMITIVES = {
         "category": "Prisms & Mirrors", "label": "Flat mirror",
         "tooltip": "Aluminum plate; combine with a 'mirror' or coating "
                    "property for partial reflectors.",
-        "params": {"half": P(12.5, "mm", "half-width of the square face"),
-                   "thickness": P(3.0, "mm", "plate thickness")},
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(0, "", "1 = circular, 0 = rectangular")},
         "props": {"material": "aluminum"},
     },
     "window": {
         "category": "Plates & Filters", "label": "Optical window",
         "tooltip": "Plane-parallel plate.",
-        "params": {"half": P(12.5, "mm", "half-width"),
-                   "thickness": P(3.0, "mm", "plate thickness")},
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
         "props": {"material": "bk7"},
     },
     "polarizer_plate": {
         "category": "Polarization", "label": "Polarizer",
         "tooltip": "Linear polarizer plate (registry item + body-local "
                    "transmission axis).",
-        "params": {"half": P(10.0, "mm", "half-width"),
-                   "thickness": P(1.0, "mm", "plate thickness")},
+        "params": {"width": P(20.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(1.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
         "props": {"material": "bk7", "polarizer": "ideal_linear",
                   "polarizer_axis": "0,0,1"},
     },
@@ -257,17 +278,21 @@ PRIMITIVES = {
         "category": "Polarization", "label": "Waveplate (quartz)",
         "tooltip": "Uniaxial quartz retarder; retardance set by thickness "
                    "and crystal_axis.",
-        "params": {"half": P(8.0, "mm", "half-width"),
+        "params": {"width": P(16.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
                    "thickness": P(0.0298, "mm", "plate thickness (sets "
-                                                "retardance)")},
+                                                "retardance)"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
         "props": {"material": "quartz", "crystal_axis": "0,0,1"},
     },
     "filter_plate": {
         "category": "Plates & Filters", "label": "Spectral filter",
         "tooltip": "Bulk (Beer-Lambert) spectral filter plate; pick the "
                    "filter registry item in the properties.",
-        "params": {"half": P(12.5, "mm", "half-width"),
-                   "thickness": P(3.0, "mm", "plate thickness")},
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
         "props": {"material": "bk7", "filter": "bp_550_40"},
     },
     "grating_plate": {
@@ -275,8 +300,10 @@ PRIMITIVES = {
         "tooltip": "Plate whose front (-x) face carries a grating spec "
                    "(default 600 l/mm vertical grooves; edit the "
                    "'grating' property or use the wizard).",
-        "params": {"half": P(12.5, "mm", "half-width"),
-                   "thickness": P(3.0, "mm", "plate thickness")},
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(0, "", "1 = circular, 0 = rectangular")},
         "props": {"material": "bk7", "grating": "Face1=600:v"},
     },
     "pbs_cube": {
@@ -288,6 +315,20 @@ PRIMITIVES = {
                    "gap": P(0.005, "mm", "hypotenuse air gap")},
         "props": {},   # per-body props set by the builder
     },
+}
+
+
+# ---------------------------------------------------------------------------
+# Legacy alias migration (v2-feature-round rename): old saved elements'
+# spreadsheets carry the pre-rename aliases below. read_params() falls back
+# to <legacy alias> * <scale> when the CURRENT spec alias is missing from
+# the sheet, so rebuild-on-edit keeps working on existing scenes/.MieWB
+# libraries without a one-shot migration pass.
+#   new alias -> (legacy alias, scale from legacy value to new alias value)
+# ---------------------------------------------------------------------------
+LEGACY_ALIASES = {
+    "diameter": ("radius", 2.0),   # radius -> diameter: value doubles
+    "width": ("half", 2.0),        # half (half-width) -> width: value doubles
 }
 
 
@@ -324,31 +365,53 @@ def _simple_lens(doc, group, p, meridian):
 
 
 def _build_laser_collimated(doc, group, p):
+    if p.get("round_flag", 1):
+        return [mts.new_body_pad(doc, group, group,
+                                 circle=(0.0, 0.0, p["diameter"] / 2.0),
+                                 x_start=-p["length"], length=p["length"])]
+    w = p["diameter"]
+    h = w / 2.0
     return [mts.new_body_pad(doc, group, group,
-                             circle=(0.0, 0.0, p["radius"]),
+                             rects=[(-h, -h, w, w)],
                              x_start=-p["length"], length=p["length"])]
 
 
 def _build_laser_divergent(doc, group, p):
-    # rod with a convex (+x-bulging) spherical emit cap at x=0:
-    # lens_meridian back surface with R=-roc bulges toward +x
-    edges, _ = mts.lens_meridian(None, -p["roc"], p["length"],
-                                 p["radius"], -p["length"])
-    return [mts.revolve_body(doc, group, edges)]
-
-
-def _build_detector_plane(doc, group, p):
-    h = p["half"]
+    if p.get("round_flag", 1):
+        # rod with a convex (+x-bulging) spherical emit cap at x=0:
+        # lens_meridian back surface with R=-roc bulges toward +x
+        edges, _ = mts.lens_meridian(None, -p["roc"], p["length"],
+                                     p["diameter"] / 2.0, -p["length"])
+        return [mts.revolve_body(doc, group, edges)]
+    # rectangular: a spherical cap on a box is not cheaply constructible;
+    # build the flat rectangular emitter instead (roc does not apply).
+    w = p["diameter"]
+    h = w / 2.0
     return [mts.new_body_pad(doc, group, group,
-                             rects=[(-h, -h, 2 * h, 2 * h)],
-                             x_start=0.0, length=p["thickness"])]
+                             rects=[(-h, -h, w, w)],
+                             x_start=-p["length"], length=p["length"])]
 
 
-def _build_plate(doc, group, p):
-    h = p["half"]
-    return [mts.new_body_pad(doc, group, group,
-                             rects=[(-h, -h, 2 * h, 2 * h)],
-                             x_start=0.0, length=p["thickness"])]
+def _build_plate(doc, group, width_mm, thickness_mm, round_flag, name=None):
+    """Shared plate builder: a round (cylinder) or rectangular (box) pad of
+    diameter/edge-length `width_mm` and `thickness_mm`, front (-x) face at
+    x=0. Used by every plate-like primitive (detector/mirror/window/
+    polarizer/waveplate/filter/grating) so future plate primitives
+    (beamsplitter/ND/filter batch) can reuse it directly."""
+    name = name or group
+    if round_flag:
+        return [mts.new_body_pad(doc, name, name,
+                                 circle=(0.0, 0.0, width_mm / 2.0),
+                                 x_start=0.0, length=thickness_mm)]
+    h = width_mm / 2.0
+    return [mts.new_body_pad(doc, name, name,
+                             rects=[(-h, -h, width_mm, width_mm)],
+                             x_start=0.0, length=thickness_mm)]
+
+
+def _plate_from_params(doc, group, p):
+    return _build_plate(doc, group, p["width"], p["thickness"],
+                        p.get("round_flag", 0), name=group)
 
 
 def _build_lens_ball(doc, group, p):
@@ -502,7 +565,7 @@ def builders():
             "laser_collimated": _build_laser_collimated,
             "laser_divergent": _build_laser_divergent,
             "source_broadband": _build_laser_collimated,
-            "detector_plane": _build_detector_plane,
+            "detector_plane": _plate_from_params,
             "lens_ball": _build_lens_ball,
             "lens_rod": _build_lens_rod,
             "lens_cyl": _build_lens_cyl,
@@ -511,12 +574,12 @@ def builders():
             "lens_achromat": _build_lens_achromat,
             "axicon": _build_axicon,
             "prism": _build_prism,
-            "mirror_flat": _build_plate,
-            "window": _build_plate,
-            "polarizer_plate": _build_plate,
-            "waveplate": _build_plate,
-            "filter_plate": _build_plate,
-            "grating_plate": _build_plate,
+            "mirror_flat": _plate_from_params,
+            "window": _plate_from_params,
+            "polarizer_plate": _plate_from_params,
+            "waveplate": _plate_from_params,
+            "filter_plate": _plate_from_params,
+            "grating_plate": _plate_from_params,
             "pbs_cube": _build_pbs_cube,
         }
         for kind, spec in PRIMITIVES.items():
@@ -550,16 +613,31 @@ def make_sheet(doc, kind, label="dim"):
 
 
 def read_params(sheet, kind):
-    """Alias values (floats, FreeCAD internal units: mm / deg) for `kind`."""
+    """Alias values (floats, FreeCAD internal units: mm / deg) for `kind`.
+
+    Legacy-scene fallback: if a spec alias isn't in the sheet (e.g. an
+    element built before the diameter/width rename), try LEGACY_ALIASES's
+    old alias name scaled to the new one; if that's not present either
+    (e.g. a brand-new param like round_flag on an old element), use the
+    spec default. This keeps rebuild-on-edit working on pre-existing
+    scenes/.MieWB libraries without a migration pass."""
     import FreeCAD
     out = {}
     for alias, spec in PRIMITIVES[kind]["params"].items():
         cell = sheet.getCellFromAlias(alias)
-        if not cell:
-            raise ValueError("sheet %s: missing alias %r for primitive %r"
-                             % (sheet.Label, alias, kind))
-        qty = sheet.get(alias)
-        out[alias] = float(FreeCAD.Units.Quantity(qty).Value)
+        if cell:
+            qty = sheet.get(alias)
+            out[alias] = float(FreeCAD.Units.Quantity(qty).Value)
+            continue
+        legacy = LEGACY_ALIASES.get(alias)
+        if legacy:
+            legacy_alias, scale = legacy
+            legacy_cell = sheet.getCellFromAlias(legacy_alias)
+            if legacy_cell:
+                qty = sheet.get(legacy_alias)
+                out[alias] = float(FreeCAD.Units.Quantity(qty).Value) * scale
+                continue
+        out[alias] = spec["default"]
     return out
 
 

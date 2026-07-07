@@ -3,15 +3,20 @@
  "kind": "laser_collimated",
  "label": "Collimated laser",
  "params": {
+  "diameter": {
+   "default": 10.0,
+   "help": "beam (emit face) diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
   "length": {
    "default": 10.0,
    "help": "housing length",
    "unit": "mm"
   },
-  "radius": {
-   "default": 5.0,
-   "help": "beam (emit face) radius",
-   "unit": "mm"
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
   }
  },
  "props": {
@@ -19,5 +24,5 @@
   "lambdac": 633.0,
   "power": 5.0
  },
- "tooltip": "Cylindrical housing emitting a collimated beam from its flat +x end cap."
+ "tooltip": "Cylindrical (or, if round_flag=0, boxy) housing emitting a collimated beam from its flat +x end cap."
 }
