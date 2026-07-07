@@ -935,7 +935,7 @@ def parse_viz_pattern_spec(spec):
 # ---------------------------------------------------------------------------
 # Self-check:  python3 scripts/common.py
 # ---------------------------------------------------------------------------
-def element_power_table(audit):
+def element_power_table(audit, name_to_label=None):
     """Per-element power table from an audit.json dict, averaged across
     seeds: {label: {power_in_W, power_out_W, absorbed_W, detected_W}}.
 
@@ -944,9 +944,12 @@ def element_power_table(audit):
     bulk/particle/polarizer/seam) plus surface absorption (by_surface_W
     minus the detected share it historically also holds); detected keys
     are detector FACE ids ('Body.Feature.FaceN'), grouped here under the
-    body name. Older audits without element_flux_W yield only the
-    absorbed/detected columns. Stdlib-only: shared by post_process (the
-    report.json writer) and the GUI results pane (old-case fallback)."""
+    body name -- pass name_to_label (model.json name -> label) so those
+    rows merge with the flux rows, which use body LABELS. Older audits
+    without element_flux_W yield only the absorbed/detected columns.
+    Stdlib-only: shared by post_process (the report.json writer) and the
+    GUI results pane (old-case fallback)."""
+    name_to_label = name_to_label or {}
     seeds = audit.get("per_seed", [])
     if not seeds:
         return {}
@@ -973,7 +976,7 @@ def element_power_table(audit):
                 row(label)["absorbed_W"] += absorbed / n
         for face_id, w in detected.items():
             body = face_id.split(".", 1)[0]
-            row(body)["detected_W"] += w / n
+            row(name_to_label.get(body, body))["detected_W"] += w / n
     return {k: table[k] for k in sorted(table)}
 
 

@@ -371,7 +371,20 @@ class ResultsPane(QWidget):
         try:
             with open(path) as fh:
                 audit = json.load(fh)
-            return common.element_power_table(audit)
+            # detected rows are keyed by body NAME (face ids); map them to
+            # labels via the model.json recorded in case.json, when present
+            name_to_label = {}
+            try:
+                with open(os.path.join(self.case_dir, "case.json")) as fh:
+                    mj = json.load(fh).get("options", {}).get("model_json")
+                if mj and os.path.exists(mj):
+                    with open(mj) as fh:
+                        model = json.load(fh)
+                    name_to_label = {b["name"]: b.get("label", b["name"])
+                                     for b in model.get("bodies", [])}
+            except Exception:
+                pass
+            return common.element_power_table(audit, name_to_label)
         except Exception:
             return {}
 

@@ -106,16 +106,35 @@ place), a `.MieWB` workbench (exploded into a scratch workspace under
 read-only, or opened via its embedded workbench for editing/rerun — a
 successful rerun replaces the `.MieSim` in place).
 
+### 3.0 File menu and toolbar
+
+**File → New** (Ctrl+N) creates a simulation from scratch: choose to start with
+a **new `.MieWB`** (the default; creates a fresh workspace, seeds the project
+property library from the system library, and packs the archive immediately) or a
+bare **`.FCStd`**. `.MieSim` archives can never be created directly — they are
+produced only by runs.
+
+The **toolbar** is organized in logical groups: **New/Open/Save** | **Undo/Redo** |
+**Add/Copy/Paste/Delete element** | **Run/Stop/Estimate** | **Validate** | **Fit view**
+(plus a **Rays** menu for ray overlay controls). **Undo** (Ctrl+Z) / **Redo**
+(Ctrl+Shift+Z) support up to ~20 levels of history covering property edits, parameter
+edits, element moves, and add/paste/delete operations — undo stashes live in the
+workspace directory.
+
 ### 3.1 Central 3D optical-train viewport (`panes/scene3d.py`)
 
 The `QMainWindow`'s central widget. Shows every body in the scene in one
 shared 3D view. Toolbar: **Fit** (reframe the whole scene), four
-axis-view buttons (**+X/−X/+Y/+Z**), and a checkable **Rays** toggle
-(shows/hides the loaded ray overlay). Clicking a face resolves to
+axis-view buttons (**+X/−X/+Y/+Z**), and a **Rays** menu (show/hide the loaded ray
+overlay, reload, or launch **Live ray preview…**). Clicking a face resolves to
 `(body, face_id)`; clicking a different body always replaces the
 selection, plain vs. Ctrl-click within the same body follows the usual
 select/toggle convention. Standard VTK trackball-camera mouse controls
 (drag to rotate, scroll to zoom).
+
+An adaptive **scale bar** (2D overlay) appears in the lower-left corner: 1-2-5-snapped
+to 20–30% of viewport width, labeled in mm and switching to µm below 2.5 mm,
+updated every render as the zoom changes.
 
 Bodies are colored by **role**, resolved from their tags: a body with
 both `power` and `lambdac` set is a **source** (red-ish, opaque); a body
@@ -125,7 +144,24 @@ selected face is highlighted orange with edges shown. (This color mapping
 exists as a style table in the code; there is no separate on-screen
 legend widget.)
 
-### 3.2 Element Inspector (`panes/inspector3d.py`)
+**Ray displays**: a finished run auto-loads `viz/rays.vtp` as a 3D overlay.
+The **Rays** menu offers **show/hide**, **reload**, or **Live ray preview…**, which traces
+a small deterministic fan (center + top/bottom/left/right of each source's emit face,
+count adjustable) through the current scene without running a full simulation. Geometry
+edits grey the overlay as "stale" until a new run reloads it.
+
+### 3.2 Scene Elements outliner (`panes/outliner.py`)
+
+Dock **"Scene Elements"** — a tree listing every element in the scene by name,
+role (source/detector/optic/ignored), and primitive kind. Multi-body elements
+(groups tagged `miewb_group`) collapse into one top-level row with member bodies
+as children. **Click** to select an element in the 3D view (synced bidirectionally);
+**double-click** to open the Element Properties editor; **Del** key deletes;
+**context menu** offers **Copy**, **Paste** (duplicates the element under a unique label,
+offset in +X to avoid overlap), and **Delete**. Copy/paste/delete each count as
+a single undo step.
+
+### 3.3 Element Inspector (`panes/inspector3d.py`)
 
 Dock **"Element Inspector"** — a single-element 3D view showing only the
 currently selected body, centered and camera-fit. This is the primary
@@ -133,10 +169,12 @@ surface for building up a face selection to hand to the Element
 Properties pane (the central viewport can also pick faces, but this pane
 is where multi-face selections are expected to be built). Buttons:
 **Select all faces**, **Clear**. Plain click replaces the face selection;
-Ctrl+click toggles membership. Rotating is the standard VTK trackball
+Ctrl+click toggles membership. A **Rays** toggle (like the main viewport)
+traces a preview fan through just the inspected element, useful for checking a
+single component's behavior in isolation. Rotating is the standard VTK trackball
 interactor, not a dedicated control.
 
-### 3.3 Element Properties (`panes/element_editor.py`)
+### 3.4 Element Properties (`panes/element_editor.py`)
 
 Dock **"Element Properties"** — edits the selected body's tagging
 contract, per-face assignments, and parameter-sheet aliases, entirely
@@ -150,6 +188,10 @@ sections:
   `coating`, `roughness`, `filter`, `polarizer`, `polarizer_axis`,
   `crystal_axis`, `grating`, `surface_override`, `mirror`, `absorbance` —
   see §5 below and docs/RAYTRACER.md §5.1 for full semantics of each.
+  New properties default to sensible values (never empty: e.g., `power`
+  defaults to 5.0 mW, `lambdac` to 633 nm, registry properties to a
+  well-known library entry) and show inline unit labels (e.g.,
+  "power [mW]", "lambdac [nm]") for clarity.
 - **Per-face assignments** — assigns one of `coating` / `roughness` /
   `grating` / `surface_override` onto the current face selection (these
   four support per-face maps like `'Face3=MgF2;Face5=x'`); a table lists
@@ -162,7 +204,7 @@ sections:
   (see CUSTOMIZE.md — geometry parameters can change topology, so they
   aren't driven by ordinary FreeCAD expressions).
 
-### 3.4 Position / Orientation (`panes/transform_panel.py`)
+### 3.5 Position / Orientation (`panes/transform_panel.py`)
 
 Dock **"Position / Orientation"** — translate and rotate the selected
 element with repeatable operations. Reference points resolve *live* at
@@ -183,7 +225,7 @@ you type in, or one of three element-relative points (**optical center**,
   spreadsheet-driven, the panel says so and routes the move through the
   driving expression instead of silently fighting it.
 
-### 3.5 Library (`panes/library.py`)
+### 3.6 Library (`panes/library.py`)
 
 Dock **"Library"**, three tabs:
 
@@ -191,9 +233,9 @@ Dock **"Library"**, three tabs:
   (Sources, Lenses, Mirrors, …). **Refresh** rescans the directory (drop a
   hand-authored `.FCStd` in and it appears); **Add to scene** (or
   double-click) prompts for a label and adds it.
-- **Project library** / **System library** — per-category row counts and
-  names read from the optical-property registries, with **Open in
-  editor** launching the Property Library Editor (CUSTOMIZE.md).
+- **Project library** / **System library** — summary tabs showing category titles
+  with entry counts (e.g., "Coatings (14)", "Gratings (3)"); **double-click**
+  a row opens the Property Library Editor at that category (CUSTOMIZE.md).
 
 Two libraries live on disk: the **system library** is `<repo>/opticalproperties/`
 and `<repo>/primitives/` (read by default; only written to by an explicit,
@@ -204,7 +246,7 @@ given model actually uses, so a project directory (or a `.MieWB`) is
 self-contained and can be traced elsewhere with
 `--optical-properties <project>/opticalproperties`.
 
-### 3.6 Console, stage chips, progress (bottom dock, `panes/console.py`)
+### 3.7 Console, stage chips, progress (bottom dock, `panes/console.py`)
 
 One colored pill per pipeline stage (`extract`/`trace`/`post`/`viz`: blue
 = running, green = done/estimated, red = failed, gray = not yet run), an
@@ -215,32 +257,36 @@ running pipeline); lines are colorized by stage and severity (errors red,
 notices orange). Internal `@MIEWB {json}` progress lines are consumed to
 drive the chips/progress bar rather than being printed raw.
 
-### 3.7 Results (`panes/results.py`)
+### 3.8 Results (`panes/results.py`)
 
 Dock **"Results"** — browse a completed (or in-progress) case: `report.json`
 headline numbers, the energy-closure audit ("OK ✓" / "FAILED ✗" / "n/a"),
-and thumbnail galleries for `images/`, `spectra/`, `plots/`, `viz/`. A
-**Summary** tab tables per-detector power/peak irradiance/pixel
-size/fringe visibility. **Open in ParaView** launches interactive ParaView
-on the case's `.vtp` ray/detector data (enabled once viz output exists).
-**Monitor mode**: opening a case that is currently locked by a live run
-polls `progress.json` and new images once a second and shows live stage
-progress in the title bar — this pane never writes anything while
-monitoring; editing/rerun affordances are the main window's job to
-disable.
+and thumbnail galleries for `images/`, `spectra/`, `plots/`, `viz/`. Tabs:
 
-### 3.8 Problems (`panes/problems.py`)
+- **Summary** — per-detector power, peak irradiance, pixel size, fringe visibility.
+- **Power** — per-element energy accounting table (Power In / Out / Absorbed /
+  Detected, all in mW; seed-averaged from the trace ledger). Useful for auditing
+  where energy flows through a scene or identifying absorbing elements.
+
+Thumbnails are clickable and open in a lightbox (arrow keys cycle, Esc closes).
+**Open in ParaView** launches interactive ParaView on the case's `.vtp` ray/detector
+data (enabled once viz output exists). **Monitor mode**: opening a case that is
+currently locked by a live run polls `progress.json` and new images once a second
+and shows live stage progress in the title bar — this pane never writes anything
+while monitoring; editing/rerun affordances are the main window's job to disable.
+
+### 3.9 Problems (`panes/problems.py`)
 
 Dock **"Problems"** — pre-run validation, click-to-locate. **Validate
 scene** runs pure Python checks (missing tags, bad registry references,
 inconsistent per-face maps, …) against the live scene, the active
 property library, and the current run configuration. **Deep check**
 additionally runs FreeCAD-side geometry checks (recompute errors, open
-solids, overlaps). Findings are listed with a severity icon; double-click
-selects the offending body in the scene. Errors block **Run** (with a
-blocking dialog); warnings prompt "Run anyway?".
+solids, overlaps) and reports success explicitly. Findings are listed with
+a severity icon; double-click selects the offending body in the scene. Errors
+block **Run** (with a blocking dialog); warnings prompt "Run anyway?".
 
-### 3.9 Run Pipeline dialog — the configuration matrix (`panes/config_matrix.py`)
+### 3.10 Run Pipeline dialog — the configuration matrix (`panes/config_matrix.py`)
 
 **Simulation → Run Pipeline…** opens a dialog embedding `ConfigMatrix`, a
 form **auto-generated from the real CLI**: it introspects
@@ -260,7 +306,7 @@ form can never accidentally override a default the pipeline would have
 picked anyway. A **Preset** combo and an **Estimate runtime** button sit
 above the form.
 
-### 3.10 Estimate Runtime
+### 3.11 Estimate Runtime
 
 Available from the Simulation menu, the toolbar, and the configuration
 matrix itself. Resolves the current widget values (falling back to the
@@ -269,7 +315,7 @@ nlambda, backend, etc.) and shows a message box with estimated trace time,
 gather time, total time, and accumulator memory (GB) — a pure computed
 estimate; nothing is run.
 
-### 3.11 Dry Run
+### 3.12 Dry Run
 
 **Simulation → Dry Run** saves and validates the scene as usual, then
 launches the pipeline with `--dry-run` appended: the trace stage builds
@@ -277,7 +323,7 @@ its estimates but does not actually trace, and post/viz are then skipped
 for that model. Useful as a fast end-to-end sanity check of a
 configuration before committing to a real run.
 
-### 3.12 Export Run Script
+### 3.13 Export Run Script
 
 **File → Export Run Script…** packs the current model into a `.MieWB`
 (alongside a `.MieSim` sibling name it will produce) and writes a small,
@@ -434,13 +480,18 @@ run_trace.py --model-json MODEL_JSON --case-dir CASE_DIR
              [--viz-pattern SPEC] [--ray-differentials] [--gather-occlusion] [...]
 ```
 
-`--viz-pattern 'rings:dr=<mm>:nper=<N>[:nrings=<K>]'` replaces the random
-viz-ray sample with a deterministic layout (one central ray plus
-concentric rings every `dr` mm, `nper` rays per ring, out to the emit
-face's rim or `nrings` rings if given) — **visualization only; it never
-affects the physics** (traced in a separate viz-only pass; a dedicated
-test pins that detector cubes are bit-identical with and without it). One
-writer per case — see §6.
+`--viz-pattern` replaces the random viz-ray sample with a deterministic
+layout — **visualization only; it never affects the physics** (traced in a
+separate viz-only pass; a dedicated test pins that detector cubes are
+bit-identical with and without it). Patterns:
+- `rings:dr=<mm>:nper=<N>[:nrings=<K>]` — one central ray plus concentric rings
+  every `dr` mm, `nper` rays per ring, out to the emit face's rim or `nrings`
+  rings if given.
+- `fan[:n=K]` — one ray from the center of each source's emit face, plus
+  top/bottom/left/right rays (5 total per face if unspecified, or `K` rays
+  per face if given). Used by the GUI's "Live ray preview…" feature.
+
+One writer per case — see §6.
 
 ### 5.3 `extract_geometry.py` — FreeCAD headless
 

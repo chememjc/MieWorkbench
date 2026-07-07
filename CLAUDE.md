@@ -51,6 +51,7 @@ python3 scripts/run_pipeline.py --models example.FCStd --preset quick
 # sweeps: --var lenspos --min -5 --max 5 --n 2   (sheet-qualified vars work:
 #         --var dim_Lens1.ct — primitive groups are rebuilt per variant)
 # visual-only overlay rays: --viz-pattern 'rings:dr=1:nper=12[:nrings=K]'
+#                        or 'fan[:n=K]' (center + edge midpoints; GUI preview)
 
 # GUI
 env/bin/python -m mieworkbench [model.FCStd|X.MieWB|X.MieSim]   # or bin/mieworkbench
@@ -62,7 +63,7 @@ python3 scripts/miewb_tool.py run X.MieWB -o X.MieSim    # unpack→pipeline→p
 
 Tests:
 ```bash
-/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q   # engine (~235; -m "not slow" for loops)
+/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q   # engine (~250; -m "not slow" for loops)
 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbench/tests -q          # GUI, fast
 MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbench/tests -q  # + FreeCAD integration
 ```
@@ -72,21 +73,41 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
 - **`scripts/fcserver/`** — the GUI cannot import FreeCAD; a persistent
   worker (`fc_server.py`, run under `AppImage -c`) speaks newline JSON over
   stdin/stdout, every protocol line prefixed `@FCJSON` (FreeCAD noise is
-  discarded). Ops in `fcops.py`: open/new/get_structure/tessellate
-  (per-face STL, **body-local metres**)/set_property/set_spreadsheet/
-  set_placement/import_primitive/rebuild_primitive/save/check.
-  `fc_batch.py` is the one-shot fallback (`FC_REQUEST_FILE`/`FC_RESPONSE_FILE`).
+  discarded; the server emits a LEADING newline per protocol line and the
+  client finds the prefix mid-line — FreeCAD progress noise lacks trailing
+  newlines and used to glue onto responses = silent 300s timeouts). Ops in
+  `fcops.py`: open/new/get_structure/tessellate (per-face STL, **body-local
+  metres**)/set_property/remove_property/set_spreadsheet/set_placement/
+  import_primitive/rebuild_primitive/delete_element (optional pre-image
+  stash)/import_bodies (verbatim restore)/duplicate_element/save/save_as/
+  save_copy/check. `fc_batch.py` is the one-shot fallback
+  (`FC_REQUEST_FILE`/`FC_RESPONSE_FILE`).
 - **`mieworkbench/core/`** — `fcclient.py` (Qt-free client, edit journal +
-  relaunch-and-replay crash recovery), `geomcache.py` (STL cache keyed by
-  quantized placement-independent shape fingerprints), `project.py` (THE
-  session object: routes worker mutations into `bodiesReshaped` =
-  re-tessellate vs `bodiesMoved` = transform-only signals),
-  `transforms.py` (placements, rotate-about-point, reference-point
-  resolver), `wizards.py` (thick-lens solvers, oracle-tested),
-  `validation.py` (pre-run check registry; reuses `common.parse_*` and the
-  optprops loaders as oracles), `runner.py` (QProcess around
-  `run_pipeline.py`, parses `@MIEWB`), `librarymgr.py`/`proplib.py`
-  (system vs project property libraries), `paraview_launcher.py`.
+  relaunch-and-replay crash recovery; new_document is tracked like an
+  open), `geomcache.py` (STL cache keyed by quantized
+  placement-independent shape fingerprints), `project.py` (THE session
+  object: routes worker mutations into `bodiesReshaped` = re-tessellate vs
+  `bodiesMoved` = transform-only signals; every public mutation is an
+  undoable Command with pre-image capture — undo/redo call private `_do_*`
+  bodies), `undostack.py` (~20-level command stack + macros; delete
+  stashes `.FCStd` pre-images under `<workspace>/undo/`; mid-stack failure
+  clears the stack and reports), `selection.py` (shared SelectionModel
+  syncing 3D picks/outliner/problems), `transforms.py` (placements,
+  rotate-about-point, reference resolver, `element_bounds`), `wizards.py`
+  (thick-lens solvers, oracle-tested), `validation.py` (pre-run check
+  registry; deep check emits an explicit success INFO), `runner.py`
+  (QProcess around `run_pipeline.py`, parses `@MIEWB`), `raypreview.py`
+  (live-fan preview chain: save_copy → AppImage extract → optics-env
+  `scripts/preview_rays.py` → rays.vtp, all via QProcess — never
+  cross-imports), `units.py` (display units, completeness pinned vs the
+  contract), `librarymgr.py`/`proplib.py` (system vs project property
+  libraries), `paraview_launcher.py`.
+- **Shell features**: File→New (.MieWB workspace packed immediately, or
+  bare .FCStd; never creates .MieSim); outliner pane (select/copy/paste/
+  delete elements by name; paste offsets +x past occupied AABBs); Results
+  pane with lightbox galleries + per-element Power tab (in/out/absorbed/
+  detected via `common.element_power_table`); adaptive mm/µm scale bar;
+  ray overlays auto-load after runs and grey "stale" on geometry edits.
 - **Formats** (`scripts/miewb_tool.py`, stdlib): `.MieWB` = ZIP {manifest,
   model.FCStd (stored), opticalproperties/, simparams.json}; `.MieSim` =
   ZIP {manifest, input.MieWB (the exact workbench used), geometry/,
@@ -191,9 +212,12 @@ end-to-end from FCStd; Malus 1%; calcite walk-off 6.226°@45°/590nm; Kogelnik
 η=1 at ν=π/2; Dammann Parseval; Igehy differentials vs finite differences;
 BVH == brute force; Mie Qext vs Wiscombe; energy closure <1e-3 in EVERY
 scene; torch/numpy gather <5e-3. New: `--viz-pattern` detector cubes are
-BIT-identical with vs without the overlay; wizard lens designs reproduce
-the SCENES oracle focal lengths; fc-worker no-op save round-trips the
-extraction contract exactly.
+BIT-identical with vs without the overlay (rings AND fan); wizard lens
+designs reproduce the SCENES oracle focal lengths; fc-worker no-op save
+round-trips the extraction contract exactly; element boundary-flux
+tallies satisfy in − out = absorbed (diagnostic side-table, zero RNG use,
+never a closure bucket); undo torture walk (add/move/edit/duplicate/
+delete → undo to empty → redo to tip) compares worker structures equal.
 
 ## Everything else
 

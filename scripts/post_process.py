@@ -731,7 +731,9 @@ def main(argv=None):
 
     report = {"detectors": {}, "closure_ok": all(
         a["closure_ok"] for a in audit["per_seed"]),
-        "elements": common.element_power_table(audit)}
+        "elements": common.element_power_table(
+            audit, {b["name"]: b.get("label", b["name"])
+                    for b in model["bodies"]})}
     h5paths = sorted((case_dir / "detectors").glob("*.h5"))
     for i, h5path in enumerate(h5paths):
         common.progress_emit("post", 0.8 * i / max(1, len(h5paths)),
