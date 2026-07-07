@@ -1,0 +1,29 @@
+{
+ "category": "Fiber Optics",
+ "kind": "fiber_optic",
+ "label": "Step-index fiber (straight)",
+ "params": {
+  "clad_diameter": {
+   "default": 0.24,
+   "help": "cladding outer diameter (240 um typical for a 200 um core)",
+   "unit": "mm"
+  },
+  "core_diameter": {
+   "default": 0.2,
+   "help": "core diameter (200 um typical large-core multimode)",
+   "unit": "mm"
+  },
+  "gap": {
+   "default": 0.005,
+   "help": "core/cladding modeling air gap (the 5 um optical-contact convention; do not set to 0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 75.0,
+   "help": "fiber segment length along +x",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Straight step-index multimode fiber segment along +x: analytic-cylinder core plus a concentric cladding annulus, flat polished end faces at x=0 and x=length. Defaults model a 200 um-core 0.22-NA silica fiber (core material fiber_core_na22 vs fused_silica cladding; swap either body's 'material' property to change the NA). The core/cladding boundary uses the standard 5 um modeling air gap (optically-contacted solids don't exist, docs/RAYTRACER.md) -- guided rays launched inside the fiber NA still TIR at the core wall exactly as they should; only rays OUTSIDE the NA behave differently (they TIR at the core|gap interface instead of refracting away into the cladding), so leaky/cladding-mode power is not quantitative. Two bodies."
+}

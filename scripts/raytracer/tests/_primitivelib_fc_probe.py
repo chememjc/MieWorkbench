@@ -109,6 +109,10 @@ BATCH3_KINDS = [
     "bs_cube", "anamorphic_pair", "polarizer_glan_taylor", "mirror_parabolic",
 ]
 
+BATCHC_KINDS = [
+    "fiber_optic", "mirror_annular",
+]
+
 NEW_KINDS = [
     "bs_plate", "pbs_plate", "dichroic_plate", "pellicle", "nd_filter",
     "nd_reflective", "filter_bandpass", "filter_longpass", "filter_shortpass",
@@ -116,7 +120,7 @@ NEW_KINDS = [
     "prism_right_angle", "prism_wedge", "prism_dove", "prism_penta",
     "prism_rhomboid", "mirror_concave", "mirror_convex", "mirror_d_shaped",
     "iris", "pinhole", "slit", "retro_corner_cube",
-] + BATCH3_KINDS
+] + BATCH3_KINDS + BATCHC_KINDS
 
 
 def probe_new_kinds_build_rebuild():

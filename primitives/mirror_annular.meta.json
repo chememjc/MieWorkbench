@@ -1,0 +1,31 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "mirror_annular",
+ "label": "Annular concave mirror",
+ "params": {
+  "R": {
+   "default": 400.0,
+   "help": "concave curvature radius (>0); focal length = R/2",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 100.0,
+   "help": "outer clear-aperture diameter",
+   "unit": "mm"
+  },
+  "ct": {
+   "default": 10.0,
+   "help": "substrate thickness: flat back at x=ct (must exceed the front sag, which bulges toward -x)",
+   "unit": "mm"
+  },
+  "hole_diameter": {
+   "default": 25.0,
+   "help": "central hole diameter",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "aluminum"
+ },
+ "tooltip": "Center-holed spherical concave mirror (a Cassegrain/Schmidt-Cassegrain-style perforated primary): concave toward -x like mirror_concave, with a clear circular hole through the center so the converging beam folded back by a secondary can pass behind the mirror. The hole is genuinely open (revolved annular profile, no plug body needed -- it is not an aperture stop, just a pass-through)."
+}

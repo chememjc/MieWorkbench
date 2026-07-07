@@ -203,11 +203,15 @@ NEW_PRISM_MIRROR_APERTURE_KINDS = [
 BATCH3_KINDS = [
     "bs_cube", "anamorphic_pair", "polarizer_glan_taylor", "mirror_parabolic",
 ]
-NEW_KINDS = NEW_PLATE_KINDS + NEW_PRISM_MIRROR_APERTURE_KINDS + BATCH3_KINDS
+BATCHC_KINDS = [
+    "fiber_optic", "mirror_annular",
+]
+NEW_KINDS = (NEW_PLATE_KINDS + NEW_PRISM_MIRROR_APERTURE_KINDS
+             + BATCH3_KINDS + BATCHC_KINDS)
 APERTURE_KINDS = ("iris", "pinhole", "slit")
 # every non-aperture kind that builds two bodies (vs. the single-body norm)
 TWO_BODY_KINDS = APERTURE_KINDS + (
-    "bs_cube", "anamorphic_pair", "polarizer_glan_taylor")
+    "bs_cube", "anamorphic_pair", "polarizer_glan_taylor", "fiber_optic")
 
 
 @pytest.mark.parametrize("kind", NEW_KINDS)
@@ -320,6 +324,47 @@ def test_glan_taylor_two_calcite_bodies_with_crystal_axis_and_gap(
     assert info["gap_mm"] == pytest.approx(0.005, abs=1e-6)
     assert info["materials"] == ["calcite", "calcite"]
     assert info["crystal_axes"] == ["0,0,1", "0,0,1"]
+
+
+# ---------------------------------------------------------------------------
+# Batch C (demo-gallery round): step-index fiber, annular concave mirror,
+# rectangular detector_plane. Physics validated end-to-end by the demos/
+# gallery smoke runs (fiber TIR closure, annular-mirror focus fraction);
+# here: registry structure + the material row's NA against the cladding.
+# ---------------------------------------------------------------------------
+def test_fiber_optic_registry():
+    spec = pl.PRIMITIVES["fiber_optic"]
+    assert spec["category"] == "Fiber Optics"
+    assert set(spec["params"]) == {"core_diameter", "clad_diameter",
+                                   "length", "gap"}
+    # the 5 um optical-contact modeling gap convention
+    assert spec["params"]["gap"]["default"] == pytest.approx(0.005)
+    assert spec["params"]["clad_diameter"]["default"] > \
+        spec["params"]["core_diameter"]["default"]
+
+
+def test_mirror_annular_registry():
+    spec = pl.PRIMITIVES["mirror_annular"]
+    assert set(spec["params"]) == {"R", "aperture", "hole_diameter", "ct"}
+    assert spec["params"]["hole_diameter"]["default"] < \
+        spec["params"]["aperture"]["default"]
+    assert spec["props"]["material"] == "aluminum"
+
+
+def test_detector_plane_height_param_defaults_to_square():
+    params = pl.PRIMITIVES["detector_plane"]["params"]
+    assert params["height"]["default"] == 0.0   # 0 = legacy square shape
+
+
+def test_fiber_core_material_gives_na_022_vs_fused_silica():
+    import numpy as np
+    from raytracer.optprops import load_optical_properties
+    props = load_optical_properties()
+    lam = np.array([650e-9])
+    n_core = props.matdb.get("fiber_core_na22").n_complex(lam).real[0]
+    n_clad = props.matdb.get("fused_silica").n_complex(lam).real[0]
+    assert (n_core ** 2 - n_clad ** 2) ** 0.5 == pytest.approx(0.22,
+                                                               abs=2e-3)
 
 
 def test_mirror_parabolic_k_minus_one_not_user_tunable():

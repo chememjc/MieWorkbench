@@ -112,6 +112,11 @@ PRIMITIVES = {
                    "records irradiance. Transparent to the beam.",
         "params": {"width": P(30.0, "mm", "edge length (rectangular) or "
                                           "diameter (circular)"),
+                   "height": P(0.0, "mm", "rectangular height; 0 = square "
+                                          "(width used for both edges); "
+                                          "ignored when round_flag=1 -- "
+                                          "e.g. 36 x 24 for a full-frame "
+                                          "CMOS sensor"),
                    "thickness": P(1.0, "mm", "screen thickness"),
                    "round_flag": P(0, "", "1 = circular, 0 = rectangular")},
         "props": {"material": "detector"},
@@ -702,6 +707,58 @@ PRIMITIVES = {
                                              "the vertex")},
         "props": {"material": "aluminum"},
     },
+    # =========================================================================
+    # Batch C -- fiber optics + telescope primitives (demo-gallery round)
+    # =========================================================================
+    "fiber_optic": {
+        "category": "Fiber Optics", "label": "Step-index fiber (straight)",
+        "tooltip": "Straight step-index multimode fiber segment along +x: "
+                   "analytic-cylinder core plus a concentric cladding "
+                   "annulus, flat polished end faces at x=0 and x=length. "
+                   "Defaults model a 200 um-core 0.22-NA silica fiber "
+                   "(core material fiber_core_na22 vs fused_silica "
+                   "cladding; swap either body's 'material' property to "
+                   "change the NA). The core/cladding boundary uses the "
+                   "standard 5 um modeling air gap (optically-contacted "
+                   "solids don't exist, docs/RAYTRACER.md) -- guided rays "
+                   "launched inside the fiber NA still TIR at the core "
+                   "wall exactly as they should; only rays OUTSIDE the NA "
+                   "behave differently (they TIR at the core|gap interface "
+                   "instead of refracting away into the cladding), so "
+                   "leaky/cladding-mode power is not quantitative. Two "
+                   "bodies.",
+        "params": {"core_diameter": P(0.2, "mm", "core diameter (200 um "
+                                                 "typical large-core "
+                                                 "multimode)"),
+                   "clad_diameter": P(0.24, "mm", "cladding outer diameter "
+                                                  "(240 um typical for a "
+                                                  "200 um core)"),
+                   "length": P(75.0, "mm", "fiber segment length along +x"),
+                   "gap": P(0.005, "mm", "core/cladding modeling air gap "
+                                         "(the 5 um optical-contact "
+                                         "convention; do not set to 0)")},
+        "props": {},   # per-body materials set by the builder
+    },
+    "mirror_annular": {
+        "category": "Prisms & Mirrors", "label": "Annular concave mirror",
+        "tooltip": "Center-holed spherical concave mirror (a Cassegrain/"
+                   "Schmidt-Cassegrain-style perforated primary): concave "
+                   "toward -x like mirror_concave, with a clear circular "
+                   "hole through the center so the converging beam folded "
+                   "back by a secondary can pass behind the mirror. The "
+                   "hole is genuinely open (revolved annular profile, no "
+                   "plug body needed -- it is not an aperture stop, just "
+                   "a pass-through).",
+        "params": {"R": P(400.0, "mm", "concave curvature radius (>0); "
+                                       "focal length = R/2"),
+                   "aperture": P(100.0, "mm", "outer clear-aperture "
+                                              "diameter"),
+                   "hole_diameter": P(25.0, "mm", "central hole diameter"),
+                   "ct": P(10.0, "mm", "substrate thickness: flat back at "
+                                       "x=ct (must exceed the front sag, "
+                                       "which bulges toward -x)")},
+        "props": {"material": "aluminum"},
+    },
 }
 
 
@@ -799,6 +856,64 @@ def _build_plate(doc, group, width_mm, thickness_mm, round_flag, name=None):
 def _plate_from_params(doc, group, p):
     return _build_plate(doc, group, p["width"], p["thickness"],
                         p.get("round_flag", 0), name=group)
+
+
+def _build_detector_plane(doc, group, p):
+    """Detector screen: square/round via the shared plate builder, or a
+    true rectangle when height > 0 (round_flag=0) -- e.g. a 36 x 24 mm
+    CMOS sensor; DetectorGrid derives the non-square pixel grid from the
+    face bbox automatically."""
+    height = p.get("height", 0.0)
+    if p.get("round_flag", 0) or height <= 0.0:
+        return _plate_from_params(doc, group, p)
+    w = p["width"]
+    return [mts.new_body_pad(doc, group, group,
+                             rects=[(-w / 2.0, -height / 2.0, w, height)],
+                             x_start=0.0, length=p["thickness"])]
+
+
+def _build_fiber_optic(doc, group, p):
+    """Core cylinder + cladding annulus along +x, separated by the 5 um
+    optical-contact modeling gap (see the PRIMITIVES tooltip for the
+    physics caveat). Both cylinders are native OCC analytic surfaces."""
+    r_core = p["core_diameter"] / 2.0
+    r_clad = p["clad_diameter"] / 2.0
+    gap = p["gap"]
+    length = p["length"]
+    core = mts.new_body_pad(doc, group, group,
+                            circle=(0.0, 0.0, r_core),
+                            x_start=0.0, length=length,
+                            props={"material": "fiber_core_na22"})
+    outer = Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), r_clad)
+    inner = Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1),
+                        r_core + gap)
+    clad = mts.pad_body(doc, group + "_clad", [outer, inner], plane="YZ",
+                        offset=0.0, length=length,
+                        props={"material": "fused_silica"})
+    return [core, clad]
+
+
+def _build_mirror_annular(doc, group, p):
+    """Revolved annular meridian: spherical concave front (arc centered on
+    the revolution axis -> a true OCC sphere), cylindrical hole wall,
+    flat back at x=ct. The profile never touches the axis, so the
+    revolution leaves the center genuinely open."""
+    R = p["R"]
+    r_out = p["aperture"] / 2.0
+    r_in = p["hole_diameter"] / 2.0
+    ct = p["ct"]
+
+    def sag(v):
+        return mts.surf_u(-R, 0.0, v)   # concave toward -x (mirror_concave)
+
+    r_mid = (r_in + r_out) / 2.0
+    edges = [
+        mts._arc3(sag(r_in), r_in, sag(r_mid), r_mid, sag(r_out), r_out),
+        mts._line(sag(r_out), r_out, ct, r_out),
+        mts._line(ct, r_out, ct, r_in),
+        mts._line(ct, r_in, sag(r_in), r_in),
+    ]
+    return [mts.revolve_body(doc, group, edges)]
 
 
 def _build_lens_ball(doc, group, p):
@@ -1484,7 +1599,7 @@ def builders():
             "laser_collimated": _build_laser_collimated,
             "laser_divergent": _build_laser_divergent,
             "source_broadband": _build_laser_collimated,
-            "detector_plane": _plate_from_params,
+            "detector_plane": _build_detector_plane,
             "lens_ball": _build_lens_ball,
             "lens_rod": _build_lens_rod,
             "lens_cyl": _build_lens_cyl,
@@ -1528,6 +1643,8 @@ def builders():
             "anamorphic_pair": _build_anamorphic_pair,
             "polarizer_glan_taylor": _build_polarizer_glan_taylor,
             "mirror_parabolic": _build_mirror_parabolic,
+            "fiber_optic": _build_fiber_optic,
+            "mirror_annular": _build_mirror_annular,
         }
         for kind, spec in PRIMITIVES.items():
             if "meridian" in spec:

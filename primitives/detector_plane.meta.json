@@ -3,6 +3,11 @@
  "kind": "detector_plane",
  "label": "Detector plane",
  "params": {
+  "height": {
+   "default": 0.0,
+   "help": "rectangular height; 0 = square (width used for both edges); ignored when round_flag=1 -- e.g. 36 x 24 for a full-frame CMOS sensor",
+   "unit": "mm"
+  },
   "round_flag": {
    "default": 0,
    "help": "1 = circular, 0 = rectangular",
