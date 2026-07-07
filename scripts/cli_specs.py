@@ -88,6 +88,11 @@ def _build_pipeline_parser():
     g.add_argument("--viz-density", type=float, default=None,
                    help="viz rays per mm^2 of source emit area "
                         "(default 1.0; visualization only)")
+    g.add_argument("--viz-pattern", default=None, metavar="SPEC",
+                   help="deterministic viz-ray layout instead of random: "
+                        "'rings:dr=<mm>:nper=<N>[:nrings=<K>]' = central "
+                        "ray + concentric rings every dr mm, N rays per "
+                        "ring (visualization only — physics unaffected)")
     g.add_argument("--backend", default=None,
                    choices=["auto", "torch", "numpy"])
     g.add_argument("--rough-fresnel", default=None,
@@ -156,6 +161,12 @@ def _build_trace_parser():
                         "(visualization only — physics unaffected)")
     p.add_argument("--viz-rays-max", type=int, default=20000,
                    help="hard cap on density-derived viz rays per source")
+    p.add_argument("--viz-pattern", default=None, metavar="SPEC",
+                   help="deterministic viz-ray layout instead of random: "
+                        "'rings:dr=<mm>:nper=<N>[:nrings=<K>]' = central "
+                        "ray + concentric rings every dr mm, N rays per "
+                        "ring, traced in a separate viz-only pass "
+                        "(visualization only — physics unaffected)")
     p.add_argument("--ray-differentials", action="store_true",
                    help="track per-ray wavefront patch areas (Igehy) so "
                         "the gather uses exact per-sample dA instead of "

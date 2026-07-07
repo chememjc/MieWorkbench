@@ -337,3 +337,86 @@ def _uv_to_xyz(surf, u, v):
                 + surf.r * su[:, None] * surf.t2
                 + v[:, None] * surf.a)
     raise NotImplementedError("emitting face of type %s" % cls)
+
+
+def sample_viz_pattern(scene, body, src, source_id, pattern, n_lambda):
+    """Deterministic viz-overlay ray positions: one central ray plus
+    concentric rings (pattern from common.parse_viz_pattern_spec:
+    {"kind": "rings", "dr_mm", "nper", "nrings"}).
+
+    VISUAL HELPER ONLY: callers trace the returned batch in a separate
+    viz-only pass (throwaway ledger, no detector grids), so these rays
+    can never affect flux, detector images, or the energy audit.
+
+    Only planar emit faces are supported (lasers/sources in this project
+    emit from flat end caps); returns None with a warning otherwise so
+    the caller can fall back to the default random viz rays.
+    """
+    face = scene.emit_faces.get(body.index)
+    if face is None:
+        raise ValueError("source %s has no emit face built" % body.label)
+    surf = face.surface
+    if surf.__class__.__name__ != "Plane":
+        import warnings
+        warnings.warn("source %s: --viz-pattern needs a planar emit face "
+                      "(got %s); falling back to default viz rays"
+                      % (body.label, surf.__class__.__name__))
+        return None
+
+    # face centroid + rim radius from the trim polygon (uv == metres for
+    # a Plane: t1/t2 are orthonormal)
+    if face.trim.mode == "untrimmed" or not getattr(face.trim, "loops", None):
+        raise ValueError("source %s: emitting plane has no trim loops"
+                         % body.label)
+    loop_uv = np.concatenate([np.asarray(lp) for lp in face.trim.loops])
+    c_uv = loop_uv.mean(axis=0)
+    r_rim = float(np.max(np.linalg.norm(loop_uv - c_uv, axis=-1)))
+
+    dr = pattern["dr_mm"] * 1e-3
+    n_rings = pattern["nrings"]
+    if n_rings is None:
+        n_rings = int(np.floor(r_rim / dr + 1e-9))
+    uv = [c_uv]
+    for k in range(1, n_rings + 1):
+        theta = 2.0 * np.pi * np.arange(pattern["nper"]) / pattern["nper"]
+        ring = c_uv + (k * dr) * np.stack(
+            [np.cos(theta), np.sin(theta)], axis=-1)
+        uv.append(ring)
+    uv = np.concatenate([np.atleast_2d(p) for p in uv], axis=0)
+    inside = face.trim.contains(uv)
+    uv = uv[inside]
+    if len(uv) == 0:
+        raise ValueError("source %s: viz pattern produced no rays inside "
+                         "the emit face (dr too large?)" % body.label)
+    pts = _uv_to_xyz(surf, uv[:, 0], uv[:, 1])
+    n = len(pts)
+
+    # same toward-origin direction policy as sample_source's flat branch
+    n0 = surf.normal(pts)[0]
+    sign = 1.0 if np.dot(n0, -np.mean(pts, axis=0)) >= 0 else -1.0
+    dirs = np.tile(sign * n0, (n, 1))
+    dirs = dirs / np.linalg.norm(dirs, axis=-1, keepdims=True)
+
+    lam_strata = wavelength_strata(src, n_lambda)
+    n_strata = len(lam_strata)
+    pol = src.get("polarization") or {"kind": "unpolarized"}
+    power_W = src["power_mW"] * 1e-3
+    p_ray = power_W / n
+
+    batch = RayBatch(n)
+    batch.pos[:] = pts
+    batch.dir[:] = dirs
+    idx = np.arange(n)
+    batch.lam[:] = lam_strata[idx % n_strata]
+    batch.lam_stratum[:] = idx % n_strata
+    batch.pol_stratum[:] = 0
+    batch.source_id[:] = source_id
+    batch.coherent[:] = bool(src.get("coherent", False))
+    batch.birth_power[:] = p_ray
+    e_ref, _ = _pol_reference_frame(dirs)
+    batch.s_hat[:] = e_ref
+    js, jp = jones_for(pol, 0)
+    amp = np.sqrt(p_ray)
+    batch.Es[:] = amp * js
+    batch.Ep[:] = amp * jp
+    return batch

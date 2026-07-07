@@ -197,6 +197,9 @@ def trace_cmd(stem, case_dir, args):
                      else 1.0),
                 "--viz-rays-max",
                 str(int(common.PRESETS[args.preset]["viz_rays"]))]
+    if args.viz_pattern is not None:
+        common.parse_viz_pattern_spec(args.viz_pattern)  # fail fast here
+        cmd += ["--viz-pattern", args.viz_pattern]
     cmd += ["--seeds", str(args.seeds if args.seeds is not None
                            else common.DEFAULTS["seeds"])]
     cmd += ["--backend", args.backend if args.backend is not None

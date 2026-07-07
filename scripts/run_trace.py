@@ -33,7 +33,7 @@ import cli_specs                                          # noqa: E402
 from raytracer.materials import MaterialDB, load_coatings  # noqa: E402
 from raytracer.scene import Scene                        # noqa: E402
 from raytracer.sources import (sample_source, wavelength_strata,  # noqa: E402
-                               n_pol_strata)
+                               n_pol_strata, sample_viz_pattern)
 from raytracer.tracer import Tracer, TraceConfig         # noqa: E402
 from raytracer.detector import DetectorGrid              # noqa: E402
 from raytracer import gather                             # noqa: E402
@@ -93,8 +93,15 @@ def build_detectors(scene, args, lam_range):
 
 
 def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag):
+    # --viz-pattern: deterministic overlay rays come from a SEPARATE
+    # viz-only pass after the physical trace (throwaway ledger, no
+    # detector grids), so the physical pass records no viz rays at all
+    pattern = (common.parse_viz_pattern_spec(args.viz_pattern)
+               if args.viz_pattern else None)
     # viz-ray budget: explicit --viz-rays wins; otherwise density * area
-    if args.viz_rays is not None:
+    if pattern is not None:
+        viz_caps = 0
+    elif args.viz_rays is not None:
         viz_caps = args.viz_rays
     else:
         viz_caps = {}
@@ -141,6 +148,29 @@ def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag):
     common.record_calibration("trace",
                               args.rays * len(scene.sources)
                               / max(trace_s, 1e-9))
+
+    if pattern is not None:
+        # viz-only pass: fresh Tracer (own throwaway ledger), no detector
+        # grids, no particle medium (its RNG state must stay untouched by
+        # visualization), every pattern ray recorded. Detector cubes and
+        # the energy audit come exclusively from the physical pass above.
+        viz_cfg = TraceConfig(max_reflections=args.max_reflections,
+                              power_floor=args.power_floor,
+                              n_lambda=args.nlambda, rays=1,
+                              seed=seed, viz_rays=1 << 30,
+                              rough_fresnel=args.rough_fresnel)
+        viz_tracer = Tracer(scene, viz_cfg, {})
+        viz_batches = []
+        for sid, (bidx, src) in enumerate(scene.sources):
+            vb = sample_viz_pattern(scene, scene.bodies[bidx], src, sid,
+                                    pattern, cfg.n_lambda)
+            if vb is not None:
+                viz_batches.append(vb)
+        if viz_batches:
+            n_viz = sum(len(b.pos) for b in viz_batches)
+            print("[trace] viz pattern: %d overlay ray(s) in a separate "
+                  "viz-only pass" % n_viz, flush=True)
+            result.viz = viz_tracer.run(viz_batches).viz
 
     occlusion = None
     if args.gather_occlusion:
