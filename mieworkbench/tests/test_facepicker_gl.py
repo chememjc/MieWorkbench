@@ -46,7 +46,7 @@ def test_center_click_picks_the_framed_face(qtbot, tmp_path):
     view.interactor.GetRenderWindow().Render()
 
     picked = []
-    view.facePicked.connect(lambda b, f, a: picked.append((b, f, a)))
+    view.facePicked.connect(lambda b, f, m: picked.append((b, f, m)))
 
     interactor = view.interactor
     w, h = interactor.GetRenderWindow().GetSize()
@@ -54,7 +54,7 @@ def test_center_click_picks_the_framed_face(qtbot, tmp_path):
     interactor.InvokeEvent("LeftButtonPressEvent")
 
     assert picked, "expected a face pick at the center of the framed view"
-    body_name, face_id, additive = picked[0]
+    body_name, face_id, mode = picked[0]
     assert body_name == "Lens"
     assert face_id == "Lens.Revolution.Face1"
-    assert additive is False
+    assert mode == "replace"   # no modifier keys held

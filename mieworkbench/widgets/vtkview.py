@@ -218,7 +218,14 @@ class VtkSceneView(QWidget):
     under per-body transforms, an orientation-axes overlay, and click-to-
     pick face selection (see widgets/facepicker.py)."""
 
-    facePicked = Signal(str, str, bool)   # body_name, face_id, additive
+    # body_name, face_id, mode -- mode is a facepicker.PICK_MODES string
+    # from real clicks; typed `object` so legacy tests/callers emitting the
+    # old boolean `additive` flag still work (receivers normalize via
+    # facepicker.normalize_pick_mode / pick_to_selection).
+    facePicked = Signal(str, str, object)
+    contextRequested = Signal(int, int)   # VTK event coords (origin
+                                          # bottom-left); see
+                                          # enable_context_menu()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -277,6 +284,8 @@ class VtkSceneView(QWidget):
         self._face_actor_map = {}      # face_id -> actor
         self._selection = set()
         self._rays_actor = None
+        self._rays_polydata = None
+        self._overlay_stale = False
 
         self.picker = FacePicker(
             self.interactor, self.renderer, self._actor_face_map,
@@ -286,10 +295,20 @@ class VtkSceneView(QWidget):
             self.interactor.Initialize()
 
     # -- picking --------------------------------------------------------
-    def _on_picked(self, body_name, face_id, additive):
+    def _on_picked(self, body_name, face_id, mode):
         if body_name is None or face_id is None:
             return
-        self.facePicked.emit(body_name, face_id, bool(additive))
+        self.facePicked.emit(body_name, face_id, mode)
+
+    def enable_context_menu(self):
+        """Opt in to right-click context-menu requests: right-button
+        presses emit contextRequested(x, y) in VTK event coordinates
+        instead of starting the trackball style's right-drag dolly (which
+        a popup menu would leave stuck mid-drag -- see facepicker.py).
+        Scroll-wheel zoom is unaffected. Views that never call this keep
+        the stock right-drag zoom."""
+        self.picker.enable_context(
+            lambda x, y: self.contextRequested.emit(int(x), int(y)))
 
     # -- scene construction ----------------------------------------------
     def load_bodies(self, faces_dict, structure):
@@ -527,11 +546,29 @@ class VtkSceneView(QWidget):
         self._render()
 
     # -- ray/result overlays --------------------------------------------------
+    @staticmethod
+    def _apply_overlay_coloring(actor, polydata):
+        """Wavelength coloring: color by the per-cell 'rgb' array
+        (written by raytracer.vtkexport.write_vtp_polylines from each ray
+        segment's wavelength) when present, else a uniform yellow."""
+        mapper = actor.GetMapper()
+        cell_data = polydata.GetCellData() if polydata is not None else None
+        rgb_array = (cell_data.GetArray("rgb")
+                     if cell_data is not None else None)
+        if rgb_array is not None:
+            mapper.SetScalarModeToUseCellData()
+            mapper.SelectColorArray("rgb")
+            mapper.SetColorModeToDirectScalars()
+            mapper.ScalarVisibilityOn()
+        else:
+            mapper.ScalarVisibilityOff()
+            actor.GetProperty().SetColor(1.0, 0.9, 0.2)
+
     def load_vtp_overlay(self, path):
         """Read a .vtp polydata file (e.g. results/viz/rays.vtp); colors by
         cell scalar array 'rgb' if present, else a uniform yellow. Returns
         the new vtkActor (also tracked internally so remove_overlay() can
-        take it back out)."""
+        take it back out). A freshly loaded overlay is never stale."""
         reader = vtkXMLPolyDataReader()
         reader.SetFileName(str(path))
         reader.Update()
@@ -541,21 +578,13 @@ class VtkSceneView(QWidget):
         mapper.SetInputConnection(reader.GetOutputPort())
         actor = vtkActor()
         actor.SetMapper(mapper)
-
-        cell_data = polydata.GetCellData() if polydata is not None else None
-        rgb_array = cell_data.GetArray("rgb") if cell_data is not None else None
-        if rgb_array is not None:
-            mapper.SetScalarModeToUseCellData()
-            mapper.SelectColorArray("rgb")
-            mapper.SetColorModeToDirectScalars()
-            mapper.ScalarVisibilityOn()
-        else:
-            mapper.ScalarVisibilityOff()
-            actor.GetProperty().SetColor(1.0, 0.9, 0.2)
+        self._apply_overlay_coloring(actor, polydata)
         actor.GetProperty().SetLineWidth(1.5)
 
         self.remove_overlay()
         self._rays_actor = actor
+        self._rays_polydata = polydata
+        self._overlay_stale = False
         self.renderer.AddActor(actor)
         self._render()
         return actor
@@ -564,7 +593,33 @@ class VtkSceneView(QWidget):
         if self._rays_actor is not None:
             self.renderer.RemoveActor(self._rays_actor)
             self._rays_actor = None
+            self._rays_polydata = None
+            self._overlay_stale = False
             self._render()
+
+    def set_overlay_stale(self, stale):
+        """Grey the ray overlay itself (not just a button label) while the
+        scene has changed since the rays were generated: uniform grey at
+        low opacity. Un-staling restores the wavelength coloring."""
+        stale = bool(stale)
+        if stale == self._overlay_stale and self._rays_actor is None:
+            return
+        self._overlay_stale = stale
+        if self._rays_actor is None:
+            return
+        prop = self._rays_actor.GetProperty()
+        if stale:
+            self._rays_actor.GetMapper().ScalarVisibilityOff()
+            prop.SetColor(0.45, 0.45, 0.45)
+            prop.SetOpacity(0.35)
+        else:
+            prop.SetOpacity(1.0)
+            self._apply_overlay_coloring(self._rays_actor,
+                                         self._rays_polydata)
+        self._render()
+
+    def overlay_is_stale(self):
+        return self._overlay_stale
 
     def set_overlay_visible(self, visible):
         if self._rays_actor is not None:

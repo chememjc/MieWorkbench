@@ -108,7 +108,7 @@ class Scene3DPane(QWidget):
                 self.view.update_placement(name, placement)
 
     # -- selection ------------------------------------------------------------
-    def _on_face_picked(self, body_name, face_id, additive):
+    def _on_face_picked(self, body_name, face_id, _mode):
         # the optical-train view picks whole ELEMENTS only: clicking any
         # face selects that body (highlighted in full) and routes it to
         # the inspector/editors. Building up a FACE selection is the

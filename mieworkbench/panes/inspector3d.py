@@ -9,7 +9,7 @@ edit of the body currently shown refreshes automatically, without the
 caller having to call set_body() again by hand.
 """
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QPoint, Signal
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from ..widgets.facepicker import pick_to_selection, select_all
@@ -20,6 +20,8 @@ class InspectorPane(QWidget):
     faceSelectionChanged = Signal(str, set)   # body_name, {face_id, ...}
     raysPreviewRequested = Signal()           # user asked for a ray preview
                                               # here and none is loaded yet
+    contextMenuRequested = Signal(object)     # global QPoint of a right-
+                                              # click in the 3D view
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -31,6 +33,11 @@ class InspectorPane(QWidget):
 
         self.view = VtkSceneView(self)
         self.view.facePicked.connect(self._on_face_picked)
+        # right-click pops the Active Properties menu (mainwindow wires
+        # contextMenuRequested to the element editor's menu builder); this
+        # trades the stock right-drag dolly away IN THIS PANE only
+        self.view.enable_context_menu()
+        self.view.contextRequested.connect(self._on_context_requested)
 
         self.select_all_button = QPushButton("Select all faces")
         self.select_all_button.setToolTip(
@@ -124,12 +131,18 @@ class InspectorPane(QWidget):
         pass
 
     # -- selection ------------------------------------------------------------
-    def _on_face_picked(self, body_name, face_id, additive):
+    def _on_face_picked(self, body_name, face_id, mode):
         if body_name != self._body_name:
             return
         self._selection = pick_to_selection(
-            self._selection, face_id, additive, all_faces=self._face_ids)
+            self._selection, face_id, mode, all_faces=self._face_ids)
         self._apply_selection()
+
+    def _on_context_requested(self, x, y):
+        # VTK event coords are origin-bottom-left; Qt's are top-left
+        widget = self.view.interactor
+        qt_point = QPoint(int(x), int(widget.height() - y - 1))
+        self.contextMenuRequested.emit(widget.mapToGlobal(qt_point))
 
     def _select_all(self):
         self._selection = select_all(self._face_ids)

@@ -75,6 +75,36 @@ def test_face_picked_for_the_shown_body_updates_selection(qtbot, tmp_path):
         "Lens", {"Lens.Revolution.Face1", "Lens.Revolution.Face2"})
 
 
+def test_shift_pick_extends_without_removing(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = InspectorPane()
+    qtbot.addWidget(pane)
+    pane.set_body(project, "Lens")
+
+    pane.view.facePicked.emit("Lens", "Lens.Revolution.Face1", "replace")
+    pane.view.facePicked.emit("Lens", "Lens.Revolution.Face2", "extend")
+    both = {"Lens.Revolution.Face1", "Lens.Revolution.Face2"}
+    assert pane.selection() == ("Lens", both)
+    # shift-clicking an already-selected face must NOT deselect it
+    pane.view.facePicked.emit("Lens", "Lens.Revolution.Face2", "extend")
+    assert pane.selection() == ("Lens", both)
+
+
+def test_context_request_maps_to_global_qpoint(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = InspectorPane()
+    qtbot.addWidget(pane)
+    pane.set_body(project, "Lens")
+
+    received = []
+    pane.contextMenuRequested.connect(received.append)
+    pane.view.contextRequested.emit(10, 20)
+    assert len(received) == 1   # a QPoint arrives; exact value depends on
+    # the widget's (offscreen) geometry, so only delivery is asserted
+
+
 def test_face_picked_for_a_different_body_is_ignored(qtbot, tmp_path):
     structure, faces = make_two_body_scene(tmp_path)
     project = FakeProject(structure, faces)

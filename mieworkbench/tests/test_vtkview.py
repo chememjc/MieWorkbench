@@ -214,3 +214,35 @@ def test_vtp_overlay_uses_rgb_when_present_else_uniform_color(qtbot, tmp_path):
     assert actor2.GetVisibility() == 0
     view.set_overlay_visible(True)
     assert actor2.GetVisibility() == 1
+
+
+def test_overlay_stale_greys_then_restores_rgb_coloring(qtbot, tmp_path):
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    rgb_path = tmp_path / "rays_rgb.vtp"
+    write_simple_vtp(rgb_path, with_rgb=True)
+    actor = view.load_vtp_overlay(rgb_path)
+    assert not view.overlay_is_stale()
+    assert actor.GetMapper().GetScalarVisibility() == 1
+
+    view.set_overlay_stale(True)
+    assert view.overlay_is_stale()
+    assert actor.GetMapper().GetScalarVisibility() == 0
+    assert actor.GetProperty().GetColor() == pytest.approx((0.45,) * 3)
+    assert actor.GetProperty().GetOpacity() == pytest.approx(0.35)
+
+    view.set_overlay_stale(False)
+    assert actor.GetMapper().GetScalarVisibility() == 1
+    assert actor.GetProperty().GetOpacity() == pytest.approx(1.0)
+
+
+def test_overlay_stale_survives_reload_and_empty_view(qtbot, tmp_path):
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    view.set_overlay_stale(True)     # no overlay yet: must not crash
+    rgb_path = tmp_path / "rays_rgb.vtp"
+    write_simple_vtp(rgb_path, with_rgb=True)
+    actor = view.load_vtp_overlay(rgb_path)
+    # a freshly loaded overlay is never stale
+    assert not view.overlay_is_stale()
+    assert actor.GetMapper().GetScalarVisibility() == 1
