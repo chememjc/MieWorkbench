@@ -176,9 +176,27 @@ def _body_dict(obj):
         "center_of_mass_mm": com,
         "bbox_mm": [bb.XMin, bb.YMin, bb.ZMin, bb.XMax, bb.YMax, bb.ZMax],
         "placement": _placement_dict(obj),
+        "placement_bound": _placement_expression(obj) is not None,
         "shape_key": _shape_key(shape, obj.Placement),
         "properties": _custom_props(obj),
     }
+
+
+def _placement_expression(obj):
+    """The expression bound to (any part of) Placement, or None.
+
+    An expression-bound Placement re-asserts itself on every recompute, so
+    direct set_placement writes would be silently undone; the GUI must
+    route such moves through the driving spreadsheet alias instead."""
+    try:
+        for path, expr in (obj.ExpressionEngine or []):
+            # paths look like ".Placement.Base.y" (leading dot) or
+            # "Placement.Base.y" depending on origin - normalize
+            if str(path).lstrip(".").startswith("Placement"):
+                return {"path": str(path), "expression": str(expr)}
+    except Exception:
+        pass
+    return None
 
 
 def _sheet_dict(sheet):
@@ -426,6 +444,12 @@ def op_set_placement(params):
     """params: doc, body, pos_mm [x,y,z], quat [x,y,z,w]."""
     doc = _doc(params["doc"])
     body = _body(doc, params["body"])
+    bound = _placement_expression(body)
+    if bound is not None:
+        raise OpError(
+            "body %s Placement is expression-bound (%s = %s); edit the "
+            "driving spreadsheet alias instead of setting the placement"
+            % (body.Name, bound["path"], bound["expression"]))
     pos = params["pos_mm"]
     q = params["quat"]
     body.Placement = FreeCAD.Placement(
