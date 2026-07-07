@@ -177,6 +177,14 @@ class InspectorPane(QWidget):
         self.view.remove_overlay()
         self.rays_button.setChecked(False)
 
+    def set_rays_stale(self, stale):
+        """Grey the loaded overlay after an optics-affecting edit (the
+        mainwindow drives this from Project.opticsChanged). Unlike a
+        reshape of the shown body -- which clears the overlay outright in
+        _rebuild() -- a property edit leaves the geometry intact, so the
+        last rays stay visible, just visibly out-of-date."""
+        self.view.set_overlay_stale(stale)
+
     def _on_rays_toggled(self, checked):
         if checked and self._rays_path is None:
             # nothing loaded yet: ask the orchestrator to run a preview for

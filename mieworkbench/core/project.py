@@ -42,6 +42,14 @@ class Project(QObject):
     bodiesMoved = Signal(dict)             # {body_name: placement_dict}
     propertiesChanged = Signal(str)        # body_name (or "" for sheet edits)
     dirtyChanged = Signal(bool)
+    # "something that affects the traced optics changed": geometry
+    # reshapes/moves, element add/delete/duplicate, and every property
+    # edit EXCEPT GUI-internal miewb_* bookkeeping (this signal is the
+    # only place that distinction can be made -- propertiesChanged's
+    # payload is just a body name). Drives the auto ray-preview refresh;
+    # undo/redo replay through the same _do_* paths, so they re-emit it
+    # correctly for free.
+    opticsChanged = Signal()
 
     def __init__(self, settings=None, parent=None):
         super().__init__(parent)
@@ -187,6 +195,8 @@ class Project(QObject):
                         placements[name])
             self.bodiesMoved.emit({n: placements.get(n) for n in moved})
         self.propertiesChanged.emit(body_hint)
+        if reshaped or moved:
+            self.opticsChanged.emit()
         self._set_dirty(True)
         return result
 
@@ -200,14 +210,20 @@ class Project(QObject):
                   "value": value}
         if ptype:
             params["ptype"] = ptype
-        return self._route_mutation(
+        result = self._route_mutation(
             self.fc.request("set_property", params), body)
+        if not str(name).startswith("miewb_"):
+            self.opticsChanged.emit()
+        return result
 
     def _do_remove_property(self, body, name):
-        return self._route_mutation(
+        result = self._route_mutation(
             self.fc.request("remove_property",
                             {"doc": self.doc, "body": body, "name": name}),
             body)
+        if not str(name).startswith("miewb_"):
+            self.opticsChanged.emit()
+        return result
 
     def _prop_preimage(self, body, name):
         """(value, ptype) of an existing property, or None if absent."""
@@ -268,6 +284,7 @@ class Project(QObject):
         self._refresh_geometry(bodies=names or None)
         self.bodiesReshaped.emit(names)
         self.propertiesChanged.emit(names[0] if names else "")
+        self.opticsChanged.emit()
         self._set_dirty(True)
         return result
 
@@ -305,6 +322,7 @@ class Project(QObject):
         self._refetch_structure()
         self._refresh_geometry(bodies=names or None)
         self.sceneLoaded.emit()      # new bodies + sheets: full view rebuild
+        self.opticsChanged.emit()
         self._set_dirty(True)
         return result
 
@@ -349,6 +367,7 @@ class Project(QObject):
             self.body_states.pop(name, None)
         self._refetch_structure()
         self.sceneLoaded.emit()      # bodies + sheets gone: full rebuild
+        self.opticsChanged.emit()
         self._set_dirty(True)
         return result
 
@@ -359,6 +378,7 @@ class Project(QObject):
         self._refetch_structure()
         self._refresh_geometry(bodies=names or None)
         self.sceneLoaded.emit()
+        self.opticsChanged.emit()
         self._set_dirty(True)
         return result
 
@@ -396,6 +416,7 @@ class Project(QObject):
         self._refetch_structure()
         self._refresh_geometry(bodies=names or None)
         self.sceneLoaded.emit()
+        self.opticsChanged.emit()
         self._set_dirty(True)
         return result
 
@@ -439,6 +460,7 @@ class Project(QObject):
                          "pos_mm": placement["pos_mm"],
                          "quat": placement["quat"]})
         self.bodiesMoved.emit({body_name: placement})
+        self.opticsChanged.emit()
         self._set_dirty(True)
 
     def _do_apply_placement(self, body_name, placement):

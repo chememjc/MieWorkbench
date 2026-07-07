@@ -139,3 +139,31 @@ def test_sheet_edit_reshapes_and_reloads_actor(qtbot, project):
 
     # restore so a repeated run starts from the same baseline
     project.set_spreadsheet("dim", "lensth", "=2 mm")
+
+
+def test_optics_changed_fires_for_contract_props_not_miewb(qtbot, project):
+    """opticsChanged (the auto-preview trigger) must fire for contract
+    property edits and geometry moves, but NOT for GUI-internal miewb_*
+    bookkeeping writes."""
+    hits = []
+    project.opticsChanged.connect(lambda: hits.append(1))
+
+    project.set_property(LENS_BODY, "absorbance", 0.25)
+    assert len(hits) == 1
+    project.remove_property(LENS_BODY, "absorbance")
+    assert len(hits) == 2
+
+    project.set_property(LENS_BODY, "miewb_scratch", "internal")
+    assert len(hits) == 2          # filtered out
+    project.remove_property(LENS_BODY, "miewb_scratch")
+    assert len(hits) == 2
+
+    # undo/redo replay the same _do_* paths and re-fire correctly
+    project.undo()                 # re-adds miewb_scratch -> still quiet
+    assert len(hits) == 2
+    project.undo()                 # removes it again -> still quiet
+    assert len(hits) == 2
+    project.undo()                 # restores absorbance -> fires
+    assert len(hits) == 3
+    project.undo()                 # removes absorbance -> fires
+    assert len(hits) == 4

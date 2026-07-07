@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from .core import paraview_launcher
 from .core.librarymgr import LibraryManager
+from .core.previewscheduler import PreviewScheduler
 from .core.project import Project, ProjectError
 from .core.raypreview import RayPreviewController
 from .core.runner import RunController
@@ -97,6 +98,7 @@ class MainWindow(QMainWindow):
         self.selection = SelectionModel(self)
         self.raypreview = RayPreviewController(self)
         self._preview_target = "scene"   # or "inspector"
+        self.preview_scheduler = PreviewScheduler(parent=self)
         self.runner = RunController(self.settings, self)
         self.config_matrix = ConfigMatrix()
         self.config_matrix.estimateRequested.connect(self._show_estimate)
@@ -373,6 +375,18 @@ class MainWindow(QMainWindow):
         self.face_indicators_action.toggled.connect(
             self._on_face_indicators_toggled)
 
+        self.auto_preview_action = view_menu.addAction(
+            "Auto-update Ray &Preview")
+        self.auto_preview_action.setCheckable(True)
+        self.auto_preview_action.setToolTip(
+            "Re-trace the live preview fan automatically ~1 s after any "
+            "optics-affecting edit (stale rays grey out immediately)")
+        auto_preview = self.settings.get_bool("auto_preview_rays", True)
+        self.auto_preview_action.setChecked(auto_preview)
+        self.preview_scheduler.set_enabled(auto_preview)
+        self.auto_preview_action.toggled.connect(
+            self._on_auto_preview_toggled)
+
         help_menu = menubar.addMenu("&Help")
         act = help_menu.addAction("&About")
         act.setToolTip("About MieWorkbench")
@@ -545,6 +559,11 @@ class MainWindow(QMainWindow):
         else:
             self.scene3d.load_rays_vtp(vtp_path)
             self.scene3d.set_rays_stale(False)
+            # a whole-scene fan passes through the inspected element too:
+            # refresh a checked inspector overlay rather than leaving it
+            # greyed-out stale
+            if self.inspector.rays_button.isChecked():
+                self.inspector.load_rays_vtp(vtp_path)
         self.statusBar().showMessage("Ray preview ready", 5000)
 
     def _on_preview_failed(self, message):
@@ -555,6 +574,39 @@ class MainWindow(QMainWindow):
 
     def _on_geometry_changed(self, *_args):
         self.scene3d.set_rays_stale(True)
+
+    # -- auto preview ------------------------------------------------------------
+    def _on_optics_changed(self):
+        """Anything trace-relevant changed: grey the loaded ray overlays
+        immediately and (if enabled) schedule a debounced auto preview."""
+        self.scene3d.set_rays_stale(True)
+        self.inspector.set_rays_stale(True)
+        self.preview_scheduler.notify_change()
+
+    def _on_auto_preview_wanted(self):
+        if not self.project.is_open():
+            return
+        if self.runner.is_running():
+            return   # never compete with a real pipeline run; its own
+                     # rays load when it completes
+        if self.raypreview.is_running():
+            # a manual preview is in flight; queue one more behind it
+            self.preview_scheduler.notify_busy(True)
+            self.preview_scheduler.notify_change()
+            return
+        self._preview_target = "scene"
+        started = self.raypreview.start(
+            self.project, self._preview_workspace(),
+            pattern="fan:n=5",
+            optical_properties=self._workspace_optprops())
+        if started:
+            self.preview_scheduler.notify_busy(True)
+            self.statusBar().showMessage("Auto-updating ray preview…",
+                                         3000)
+
+    def _on_auto_preview_toggled(self, checked):
+        self.preview_scheduler.set_enabled(checked)
+        self.settings.set_bool("auto_preview_rays", checked)
 
     # -- face indicators -------------------------------------------------------
     def _apply_face_indicators(self, visible):
@@ -657,6 +709,16 @@ class MainWindow(QMainWindow):
             self._on_scene_rays_requested)
         self.project.bodiesReshaped.connect(self._on_geometry_changed)
         self.project.bodiesMoved.connect(self._on_geometry_changed)
+
+        # auto ray-preview: any optics-affecting edit greys the overlays
+        # and (debounced) re-traces the preview fan
+        self.project.opticsChanged.connect(self._on_optics_changed)
+        self.preview_scheduler.previewWanted.connect(
+            self._on_auto_preview_wanted)
+        self.raypreview.finished.connect(
+            lambda _path: self.preview_scheduler.notify_run_finished())
+        self.raypreview.failed.connect(
+            lambda _msg: self.preview_scheduler.notify_run_failed())
 
     def _on_scene_loaded(self):
         self.save_action.setEnabled(True)

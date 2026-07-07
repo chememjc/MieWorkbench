@@ -162,6 +162,9 @@ class Scene3DPane(QWidget):
         place (still the last-known rays), just visually flagged as
         possibly out of date until a fresh preview/trace reloads it."""
         self._rays_stale = bool(stale)
+        # grey the ray ACTORS too, not just the button (set_overlay_stale
+        # restores the wavelength coloring when freshness returns)
+        self.view.set_overlay_stale(self._rays_stale)
         if self._rays_stale:
             self.rays_button.setText("Rays (stale)")
             self.rays_button.setStyleSheet("color: gray;")
