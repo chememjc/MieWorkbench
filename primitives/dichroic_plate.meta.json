@@ -1,0 +1,26 @@
+{
+ "category": "Beamsplitters",
+ "kind": "dichroic_plate",
+ "label": "Dichroic beamsplitter plate",
+ "params": {
+  "round_flag": {
+   "default": 0,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  },
+  "thickness": {
+   "default": 1.0,
+   "help": "plate thickness",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 25.0,
+   "help": "edge length (rectangular) or diameter (circular)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Longpass dichroic (default dichroic_567lp_45, cut-on 567nm); place at 45 deg AOI. Swap the 'coating' property to hot_mirror_45 or cold_mirror_45 for a vendor-style hot/cold mirror instead."
+}

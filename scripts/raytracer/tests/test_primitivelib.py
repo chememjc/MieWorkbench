@@ -183,3 +183,261 @@ def test_rebuild_element_preserves_label_placement_props(fc_probe_result):
     assert rt["label"] == "MyWindowLabel"
     assert rt["placement_base"] == pytest.approx([1.0, 2.0, 3.0])
     assert rt["filter_prop"] == "probe_marker"
+
+
+# ---------------------------------------------------------------------------
+# New catalog primitives (v2-feature-round batch 1+2): plate-likes, prisms,
+# mirrors, apertures. Pure-python structural checks first, then FreeCAD-gated
+# build/rebuild + geometry invariants.
+# ---------------------------------------------------------------------------
+NEW_PLATE_KINDS = [
+    "bs_plate", "pbs_plate", "dichroic_plate", "pellicle", "nd_filter",
+    "nd_reflective", "filter_bandpass", "filter_longpass", "filter_shortpass",
+    "filter_notch", "window_wedged", "diffuser_plate",
+]
+NEW_PRISM_MIRROR_APERTURE_KINDS = [
+    "prism_right_angle", "prism_wedge", "prism_dove", "prism_penta",
+    "prism_rhomboid", "mirror_concave", "mirror_convex", "mirror_d_shaped",
+    "iris", "pinhole", "slit", "retro_corner_cube",
+]
+BATCH3_KINDS = [
+    "bs_cube", "anamorphic_pair", "polarizer_glan_taylor", "mirror_parabolic",
+]
+NEW_KINDS = NEW_PLATE_KINDS + NEW_PRISM_MIRROR_APERTURE_KINDS + BATCH3_KINDS
+APERTURE_KINDS = ("iris", "pinhole", "slit")
+# every non-aperture kind that builds two bodies (vs. the single-body norm)
+TWO_BODY_KINDS = APERTURE_KINDS + (
+    "bs_cube", "anamorphic_pair", "polarizer_glan_taylor")
+
+
+@pytest.mark.parametrize("kind", NEW_KINDS)
+def test_new_kind_registered_with_category_and_props(kind):
+    spec = pl.PRIMITIVES[kind]
+    assert spec["category"]
+    assert spec["label"]
+    assert spec["tooltip"]
+    assert spec["params"]
+    assert "props" in spec
+
+
+@pytest.mark.parametrize("kind", APERTURE_KINDS)
+def test_aperture_kinds_have_blackness_and_derived_absorbance(kind):
+    params = pl.PRIMITIVES[kind]["params"]
+    assert "blackness" in params
+    assert 0.95 <= params["blackness"]["default"] <= 1.0
+    assert "absorbance" in pl.PRIMITIVES[kind].get("derived_props", ())
+
+
+def test_no_new_kind_defines_a_round_flag_where_the_spec_says_always_round():
+    # pellicle, prism_wedge, retro_corner_cube are always-round/no-shape-
+    # toggle primitives per the authoring spec -- they use 'diameter' or
+    # 'aperture', not 'width'+'round_flag'.
+    for kind in ("pellicle", "prism_wedge", "retro_corner_cube"):
+        assert "round_flag" not in pl.PRIMITIVES[kind]["params"], kind
+
+
+def test_derived_props_excluded_from_rebuild_baseline_for_apertures():
+    for kind in APERTURE_KINDS:
+        assert pl.PRIMITIVES[kind]["derived_props"] == ("absorbance",)
+    for kind in set(pl.PRIMITIVES) - set(APERTURE_KINDS):
+        assert not pl.PRIMITIVES[kind].get("derived_props"), kind
+
+
+@freecad_only
+def test_new_kinds_build_and_rebuild_preserve_label_and_placement(
+        fc_probe_result):
+    per_kind = fc_probe_result["new_kinds_build_rebuild"]
+    for kind in NEW_KINDS:
+        info = per_kind[kind]
+        expected_n = 2 if kind in TWO_BODY_KINDS else 1
+        assert info["n_before"] == expected_n, kind
+        assert info["n_after"] == expected_n, kind
+        assert info["label_ok"], kind
+        assert info["placement_ok"], kind
+
+
+@freecad_only
+@pytest.mark.parametrize("kind", APERTURE_KINDS)
+def test_aperture_disc_absorbance_tracks_blackness(fc_probe_result, kind):
+    info = fc_probe_result["apertures"][kind]
+    assert info["initial"]["n_bodies"] == 2
+    assert info["initial"]["plug_material"] == "air"
+    assert info["initial"]["disc_absorbance"] == \
+        pytest.approx(info["initial"]["blackness_param"])
+    # after rebuild with blackness changed to 0.5, the disc's absorbance
+    # prop must track the NEW value (derived_props keeps rebuild_element's
+    # generic extra-prop preservation from clobbering it with the stale
+    # pre-rebuild absorbance).
+    after = info["after_blackness_rebuild"]
+    assert after["n_bodies"] == 2
+    assert after["plug_material"] == "air"
+    assert after["disc_absorbance"] == pytest.approx(0.5)
+
+
+@freecad_only
+def test_retro_corner_cube_has_three_mutually_perpendicular_back_faces(
+        fc_probe_result):
+    cc = fc_probe_result["corner_cube"]
+    assert cc["n_faces"] == 4
+    # of the C(4,2)=6 pairs, exactly 3 involve the mutually-perpendicular
+    # trihedral (each of the 3 back faces is perpendicular to the other 2);
+    # the remaining 3 pairs are back-face-vs-entrance-face (not perpendicular).
+    assert cc["n_perp_pairs"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Batch 3 (final): beamsplitter cube, anamorphic prism pair, Glan-Taylor
+# polarizer, on-axis parabolic mirror (descoped from an off-axis OAP -- see
+# the module docstring in primitivelib._build_mirror_parabolic).
+# ---------------------------------------------------------------------------
+@freecad_only
+def test_bs_cube_has_gap_and_hypotenuse_coating_on_one_body(fc_probe_result):
+    info = fc_probe_result["batch3_geometry"]["bs_cube"]
+    assert info["n_bodies"] == 2
+    assert info["gap_mm"] == pytest.approx(0.005, abs=1e-6)
+    assert info["coating_in"] is not None
+    assert "bs_5050_vis_45" in info["coating_in"]
+    assert info["coating_out"] is None
+
+
+@freecad_only
+def test_anamorphic_pair_two_nonoverlapping_bodies_identity_placement(
+        fc_probe_result):
+    info = fc_probe_result["batch3_geometry"]["anamorphic_pair"]
+    assert info["n_bodies"] == 2
+    assert info["gap_mm"] > 0.0     # no overlap between the two prisms
+    assert info["materials"] == ["bk7", "bk7"]
+    # offsets are baked into each prism's local geometry, not a Placement
+    # transform (the achromat convention, unlike pbs_cube's shifted body)
+    assert all(info["placements_identity"])
+
+
+@freecad_only
+def test_glan_taylor_two_calcite_bodies_with_crystal_axis_and_gap(
+        fc_probe_result):
+    info = fc_probe_result["batch3_geometry"]["polarizer_glan_taylor"]
+    assert info["n_bodies"] == 2
+    assert info["gap_mm"] == pytest.approx(0.005, abs=1e-6)
+    assert info["materials"] == ["calcite", "calcite"]
+    assert info["crystal_axes"] == ["0,0,1", "0,0,1"]
+
+
+def test_mirror_parabolic_k_minus_one_not_user_tunable():
+    # a true parabola: k is baked in, not exposed as a spec param (unlike
+    # lens_asphere, where k is a free conic-constant knob)
+    params = pl.PRIMITIVES["mirror_parabolic"]["params"]
+    assert set(params) == {"rfl", "aperture", "thickness"}
+
+
+# ---------------------------------------------------------------------------
+# mirror_parabolic: extraction sanity (surface_override=asphere verified,
+# reflecting face present in model.json) + an engine-level geometric focus
+# check. The FCStd scene is built by the FreeCAD probe
+# (probe_build_mirror_parabolic_scene); extraction itself needs a SECOND
+# FreeCAD subprocess (extract_geometry.py, same AppImage) since the probe
+# script can't import extract_geometry.py directly (no __main__ guard --
+# it calls main()/os._exit() at import time, same trap as make_test_scenes).
+# The engine-level physics (ray injection + tracer stepping) then runs in
+# THIS (optics-env) interpreter -- no FreeCAD needed for that half.
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def mirror_parabolic_model_json(fc_probe_result, tmp_path_factory):
+    if not RUN_FREECAD:
+        pytest.skip("set MIEWB_RUN_FREECAD=1 to run FreeCAD-backed "
+                    "primitivelib tests")
+    fcstd = fc_probe_result["mirror_parabolic_scene"]["path"]
+    outdir = tmp_path_factory.mktemp("mirror_parabolic_geom")
+    extract_script = SCRIPTS_DIR / "extract_geometry.py"
+    subprocess.run(
+        [FREECAD_APPIMAGE, "-c", str(extract_script), "--",
+         "--models", fcstd, "--outdir", str(outdir), "--strict"],
+        stdin=subprocess.DEVNULL, check=True, capture_output=True, text=True)
+    stem = Path(fcstd).stem
+    model_path = outdir / stem / "model.json"
+    assert model_path.exists()
+    with open(model_path) as fh:
+        return json.load(fh)
+
+
+@freecad_only
+def test_mirror_parabolic_extraction_verifies_asphere_override(
+        mirror_parabolic_model_json):
+    mirror = [b for b in mirror_parabolic_model_json["bodies"]
+             if b["name"] == "Mirror"][0]
+    asphere_faces = [f for f in mirror["faces"]
+                     if f["surface"]["type"] == "asphere"]
+    assert len(asphere_faces) == 1
+    surf = asphere_faces[0]["surface"]
+    assert surf["k"] == pytest.approx(-1.0)
+    assert surf["R"] == pytest.approx(0.1, rel=1e-6)   # 2*rfl = 2*0.050 m
+
+
+@freecad_only
+def test_mirror_parabolic_geometric_focus(mirror_parabolic_model_json):
+    """A coherent=false collimated bundle parallel to the mirror axis must
+    converge (geometrically -- no diffraction) at the paraxial focus
+    x=-rfl from the vertex: an exact parabola has zero on-axis spherical
+    aberration at ANY aperture, so essentially all reflected rays should
+    cross the focal plane within a tiny fraction of the aperture radius.
+    Manual ray injection + tracer.step() harvesting (the
+    test_integration.py::test_traced_focus_matches_lensmaker pattern) is
+    used instead of a physical detector plane: a co-axial on-axis screen
+    between the source and the mirror would intercept the OUTGOING
+    collimated beam before it ever reaches the mirror (self-shadowing)."""
+    import numpy as np
+
+    import common
+    from raytracer.scene import Scene
+    from raytracer.tracer import Tracer, TraceConfig
+    from raytracer.rays import RayBatch
+    from raytracer.optprops import load_optical_properties
+
+    model = mirror_parabolic_model_json
+    optprops = load_optical_properties()
+    scene = Scene(model, optprops.matdb, optprops.coatings,
+                 optprops=optprops)
+
+    rfl_m = 0.050
+    aperture_m = 0.025
+    x_focus = -rfl_m
+
+    rng = np.random.default_rng(0)
+    m = 400
+    r = (aperture_m / 2.0 * 0.9) * np.sqrt(rng.uniform(0.0, 1.0, m))
+    th = rng.uniform(0.0, 2 * np.pi, m)
+    y, z = r * np.cos(th), r * np.sin(th)
+
+    batch = RayBatch(m)
+    batch.pos[:] = np.stack([np.full(m, -0.20), y, z], axis=-1)
+    batch.dir[:] = np.tile([1.0, 0.0, 0.0], (m, 1))
+    batch.s_hat[:] = np.tile([0.0, 0.0, 1.0], (m, 1))
+    batch.Es[:] = 1.0
+    batch.Ep[:] = 1.0
+    batch.lam[:] = 633e-9
+    batch.birth_power[:] = batch.power
+
+    cfg = TraceConfig(rays=m, n_lambda=1, seed=1, power_floor=1e-6)
+    tracer = Tracer(scene, cfg, {})     # no screens: pure geometry
+
+    queue = [batch]
+    hit_y, hit_z = [], []
+    for _ in range(6):
+        if not queue:
+            break
+        children = tracer.step(queue.pop())
+        if children is None or len(children) == 0:
+            continue
+        c = children
+        sel = c.dir[:, 0] < -0.9    # reflected bundle now heads back -x
+        if np.any(sel):
+            p, d = c.pos[sel], c.dir[sel]
+            tstar = (x_focus - p[:, 0]) / d[:, 0]
+            hit_y.extend((p[:, 1] + tstar * d[:, 1]).tolist())
+            hit_z.extend((p[:, 2] + tstar * d[:, 2]).tolist())
+        queue.append(children)
+
+    hit_y, hit_z = np.array(hit_y), np.array(hit_z)
+    assert len(hit_y) >= m * 0.9, "lost too many rays off the mirror"
+    radius = np.hypot(hit_y, hit_z)
+    frac_concentrated = float(np.mean(radius < 2e-3))    # 2 mm
+    assert frac_concentrated > 0.80, frac_concentrated

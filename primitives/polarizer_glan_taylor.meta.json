@@ -1,0 +1,29 @@
+{
+ "category": "Polarization",
+ "kind": "polarizer_glan_taylor",
+ "label": "Glan-Taylor polarizer",
+ "params": {
+  "aperture": {
+   "default": 15.0,
+   "help": "clear aperture (y-height and z-extrusion)",
+   "unit": "mm"
+  },
+  "cut_angle": {
+   "default": 40.0,
+   "help": "cut angle from the optic-axis face (typical GT range 38-42 deg)",
+   "unit": "deg"
+  },
+  "gap": {
+   "default": 0.005,
+   "help": "internal air gap at the cut",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 20.0,
+   "help": "overall length (x)",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Two calcite prisms split by an air gap along a diagonal cut (default 40 deg from the optic-axis face; typical Glan-Taylor range 38-42 deg): the ordinary ray TIRs at the gap and is rejected sideways while the extraordinary ray transmits straight through -- extinction via TIR of the o-ray, not absorption. crystal_axis=0,0,1 on both prisms puts the optic axis along the extrusion (z) direction, perpendicular to the x-y transmission plane (standard GT orientation). Two bodies."
+}

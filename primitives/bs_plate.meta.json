@@ -1,0 +1,31 @@
+{
+ "category": "Beamsplitters",
+ "kind": "bs_plate",
+ "label": "Beamsplitter plate (50:50)",
+ "params": {
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  },
+  "thickness": {
+   "default": 3.0,
+   "help": "plate thickness (center, if wedged)",
+   "unit": "mm"
+  },
+  "wedge_deg": {
+   "default": 0.5,
+   "help": "back-face wedge angle (anti-etalon); 0 = plane-parallel",
+   "unit": "deg"
+  },
+  "width": {
+   "default": 25.0,
+   "help": "edge length (rectangular) or diameter (circular)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Non-polarizing beamsplitter plate; place at 45 deg AOI. The front (-x) face carries the beamsplitter coating (default bs_5050_vis_45 -- swap the 'coating' property for any bs_XXYY_vis_45 registry row to change the split ratio). wedge_deg tilts the back face slightly to kill parallel-plate etalon fringes (0 = plane-parallel)."
+}

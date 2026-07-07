@@ -16,6 +16,8 @@ equation in the original project's test suite).
 """
 
 import math
+import sys
+from pathlib import Path
 
 D_LINE_NM = 587.6
 
@@ -256,3 +258,84 @@ def design_lens(form, f_mm, matdb=None, material="bk7", lam_nm=D_LINE_NM,
     params = spec["map"](design)
     return {"primitive": spec["primitive"], "params": params,
             "design": design}
+
+
+# ---------------------------------------------------------------------------
+# Waveplate thickness solver (primitivelib 'waveplate' kind, quartz by
+# default). Pure math like the rest of this module -- the only non-pure bit
+# is lazily loading the real opticalproperties/ birefringence registry
+# (raytracer.optprops.load_optical_properties) so the o/e indices used are
+# the SAME ones the ray tracer itself uses, not a re-typed constant. Follows
+# proplib.py's sys.path-insert-then-import pattern (same scripts/ layout).
+# ---------------------------------------------------------------------------
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent.parent / "scripts")
+
+
+def _default_matdb():
+    """Lazily load the shipped opticalproperties/ library's MaterialDB (with
+    uniaxial birefringence attached) the first time a caller needs one and
+    doesn't supply their own -- cached for the process lifetime."""
+    global _DEFAULT_MATDB
+    try:
+        return _DEFAULT_MATDB
+    except NameError:
+        pass
+    if _SCRIPTS_DIR not in sys.path:
+        sys.path.insert(0, _SCRIPTS_DIR)
+    from raytracer.optprops import load_optical_properties
+    _DEFAULT_MATDB = load_optical_properties().matdb
+    return _DEFAULT_MATDB
+
+
+def birefringence_at(matdb, crystal, lam_nm):
+    """(n_o, n_e): real refractive indices of a registered uniaxial crystal
+    at lam_nm, from the birefringence registry (matdb.get_uniaxial, set up
+    by raytracer.optprops.load_uniaxial/attach_uniaxial)."""
+    mo, me = matdb.get_uniaxial(crystal)
+    lam_m = lam_nm * 1e-9
+    return (float(mo.n_complex(lam_m).real), float(me.n_complex(lam_m).real))
+
+
+WAVEPLATE_RETARDANCE_WAVES = {"half": 0.5, "quarter": 0.25}
+
+
+def waveplate_thickness(kind, lambda_nm, order=0, matdb=None,
+                        crystal="quartz"):
+    """Retarder thickness (primitivelib 'waveplate' kind's 'thickness' dim,
+    which sets its retardance) for a zero- or multi-order uniaxial
+    waveplate.
+
+    kind: 'half' (0.5 wave retardance) or 'quarter' (0.25 wave).
+    order: non-negative integer; total retardance = order + the fractional
+    waves above, e.g. a first-order half-wave plate (order=1) retards
+    1.5 waves.
+    matdb: a MaterialDB with uniaxial birefringence attached (as returned by
+    raytracer.optprops.load_optical_properties(...).matdb); defaults to a
+    lazily-loaded copy of the shipped opticalproperties/ library so this is
+    usable standalone (waveplate_thickness("half", 633.0)).
+    crystal: birefringence-registry crystal name (default 'quartz', matching
+    the primitivelib 'waveplate' kind's default material).
+
+    thickness_mm = (order + retardance_waves) * lambda_nm * 1e-6 / |n_e-n_o|
+    using |n_e - n_o| evaluated AT lambda_nm (not a fixed d-line constant),
+    so multi-wavelength designs stay exact despite quartz's (weak)
+    birefringence dispersion.
+    """
+    retardance = WAVEPLATE_RETARDANCE_WAVES.get(kind)
+    if retardance is None:
+        raise ValueError("waveplate kind must be one of %s, got %r"
+                         % (sorted(WAVEPLATE_RETARDANCE_WAVES), kind))
+    if order < 0 or int(order) != order:
+        raise ValueError("order must be a non-negative integer, got %r"
+                         % (order,))
+    db = matdb if matdb is not None else _default_matdb()
+    n_o, n_e = birefringence_at(db, crystal, lambda_nm)
+    delta_n = abs(n_e - n_o)
+    if delta_n <= 0.0:
+        raise ValueError("%s has zero birefringence at %.1f nm"
+                         % (crystal, lambda_nm))
+    waves = order + retardance
+    thickness_mm = waves * lambda_nm * 1e-6 / delta_n
+    return {"thickness": thickness_mm, "waves": waves, "n_o": n_o,
+            "n_e": n_e, "delta_n": delta_n, "kind": kind,
+            "order": order, "lambda_nm": lambda_nm, "crystal": crystal}

@@ -1,0 +1,27 @@
+{
+ "category": "Filters",
+ "kind": "nd_filter",
+ "label": "ND filter (absorptive)",
+ "params": {
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  },
+  "thickness": {
+   "default": 2.0,
+   "help": "plate thickness",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 25.0,
+   "help": "edge length (rectangular) or diameter (circular)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "filter": "nd_od10",
+  "material": "bk7"
+ },
+ "tooltip": "Bulk (Beer-Lambert) absorptive neutral-density plate. Swap the 'filter' property to any nd_odXX registry row for other densities (OD scales with thickness from a 2mm reference)."
+}

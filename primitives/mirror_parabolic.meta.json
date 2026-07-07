@@ -1,0 +1,26 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "mirror_parabolic",
+ "label": "Parabolic mirror (on-axis)",
+ "params": {
+  "aperture": {
+   "default": 25.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "rfl": {
+   "default": 50.0,
+   "help": "reflected focal length (vertex to focus)",
+   "unit": "mm"
+  },
+  "thickness": {
+   "default": 10.0,
+   "help": "substrate thickness behind the vertex",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "aluminum"
+ },
+ "tooltip": "On-axis front-surface parabolic mirror (concave toward -x, conic k=-1, R=2*rfl -- exact paraxial AND geometric focus at x=-rfl from the vertex, no on-axis spherical aberration): revolved exact-sag BSpline + surface_override, extractor-verified <1 um, same technique as lens_asphere. (Descoped from an off-axis OAP: the extractor's asphere vertex-locator requires the retained face to include the r~=0 vertex, which a 90-deg off-axis segment structurally never does.)"
+}

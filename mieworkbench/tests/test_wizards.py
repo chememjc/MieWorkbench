@@ -131,3 +131,61 @@ def test_design_lens_with_real_matdb():
     assert out["design"]["n"] == pytest.approx(N_633, abs=2e-4)
     out2 = wizards.design_lens("ball", 5.870, matdb=db, material="bk7")
     assert out2["params"]["diameter"] == pytest.approx(8.0, abs=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Waveplate thickness solver (primitivelib 'waveplate' kind's default quartz
+# retarder) -- oracle: at 633nm zero-order half-wave quartz thickness is
+# computed FROM the real birefringence registry (not a hardcoded constant),
+# and must reproduce exactly 0.5 waves of retardance by construction.
+# ---------------------------------------------------------------------------
+def _real_optprops_matdb():
+    from raytracer.optprops import load_optical_properties
+    return load_optical_properties().matdb
+
+
+def test_waveplate_half_wave_quartz_633nm_oracle():
+    db = _real_optprops_matdb()
+    out = wizards.waveplate_thickness("half", 633.0, matdb=db)
+    n_o, n_e = wizards.birefringence_at(db, "quartz", 633.0)
+    assert out["waves"] == pytest.approx(0.5, rel=1e-12)
+    # zero-order half-wave quartz at 633nm is ~35 um (Ghosh 1999 Sellmeier
+    # coefficients for quartz_o/quartz_e, per opticalproperties/materials.miemat)
+    assert out["thickness"] * 1000.0 == pytest.approx(35.0, abs=1.0)
+    assert out["n_o"] == pytest.approx(n_o)
+    assert out["n_e"] == pytest.approx(n_e)
+    assert out["n_e"] > out["n_o"]     # quartz is positive uniaxial
+
+
+def test_waveplate_quarter_wave_is_half_of_half_wave_thickness():
+    db = _real_optprops_matdb()
+    half = wizards.waveplate_thickness("half", 633.0, matdb=db)
+    quarter = wizards.waveplate_thickness("quarter", 633.0, matdb=db)
+    assert quarter["waves"] == pytest.approx(0.25, rel=1e-12)
+    assert quarter["thickness"] == pytest.approx(half["thickness"] / 2.0,
+                                                 rel=1e-9)
+
+
+def test_waveplate_order_adds_whole_waves():
+    db = _real_optprops_matdb()
+    zero_order = wizards.waveplate_thickness("half", 633.0, order=0, matdb=db)
+    first_order = wizards.waveplate_thickness("half", 633.0, order=1, matdb=db)
+    assert first_order["waves"] == pytest.approx(1.5, rel=1e-12)
+    assert first_order["thickness"] == pytest.approx(
+        3.0 * zero_order["thickness"], rel=1e-9)
+
+
+def test_waveplate_default_matdb_lazy_load_matches_explicit():
+    db = _real_optprops_matdb()
+    explicit = wizards.waveplate_thickness("half", 633.0, matdb=db)
+    default = wizards.waveplate_thickness("half", 633.0)   # no matdb given
+    assert default["thickness"] == pytest.approx(explicit["thickness"])
+
+
+def test_waveplate_bad_kind_and_order_raise():
+    with pytest.raises(ValueError):
+        wizards.waveplate_thickness("eighth", 633.0)
+    with pytest.raises(ValueError):
+        wizards.waveplate_thickness("half", 633.0, order=-1)
+    with pytest.raises(ValueError):
+        wizards.waveplate_thickness("half", 633.0, order=0.5)

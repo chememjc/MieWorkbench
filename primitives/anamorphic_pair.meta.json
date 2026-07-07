@@ -1,0 +1,24 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "anamorphic_pair",
+ "label": "Anamorphic prism pair",
+ "params": {
+  "aperture": {
+   "default": 20.0,
+   "help": "clear aperture (y-extent and z-extrusion)",
+   "unit": "mm"
+  },
+  "separation": {
+   "default": 15.0,
+   "help": "gap between the two prisms' front faces along the beam (x)",
+   "unit": "mm"
+  },
+  "wedge_deg": {
+   "default": 10.0,
+   "help": "wedge angle (both prisms)",
+   "unit": "deg"
+  }
+ },
+ "props": {},
+ "tooltip": "Two wedge prisms in the standard anamorphic arrangement (second prism's wedge flipped so the net beam deviation cancels): magnifies the beam in one axis (y) only -- e.g. circularizing a diode laser's elliptical output. Two bk7 bodies; separation is baked into each prism's local geometry (identity body Placement on both, the achromat convention)."
+}

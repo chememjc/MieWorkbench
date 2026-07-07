@@ -1,0 +1,27 @@
+{
+ "category": "Filters",
+ "kind": "filter_longpass",
+ "label": "Longpass filter",
+ "params": {
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  },
+  "thickness": {
+   "default": 3.0,
+   "help": "plate thickness",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 25.0,
+   "help": "edge length (rectangular) or diameter (circular)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "filter": "longpass_600",
+  "material": "bk7"
+ },
+ "tooltip": "Longpass spectral filter plate (default longpass_600: cut-on 600nm)."
+}

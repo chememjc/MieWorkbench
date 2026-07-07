@@ -1,0 +1,29 @@
+{
+ "category": "Apertures",
+ "kind": "iris",
+ "label": "Iris (circular stop)",
+ "params": {
+  "blackness": {
+   "default": 0.98,
+   "help": "fraction of incident power absorbed by the disc (0.95-1.0 typical)",
+   "unit": ""
+  },
+  "hole_diameter": {
+   "default": 5.0,
+   "help": "clear aperture (hole) diameter",
+   "unit": "mm"
+  },
+  "outer_diameter": {
+   "default": 25.0,
+   "help": "disc outer diameter",
+   "unit": "mm"
+  },
+  "thickness": {
+   "default": 1.0,
+   "help": "disc thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Blackened circular aperture stop: an opaque annular disc plus a thin material=air 'plug' filling the opening (the aperture contract, docs/RAYTRACER.md S5.10) so the coherent gather re-anchors correctly at the aperture plane. 'blackness' (0.95-1.0) sets the disc's absorbance property directly -- edit blackness and rebuild to change it (a manual 'absorbance' edit would be overwritten by the next rebuild, since it is re-derived from blackness every time)."
+}

@@ -1,0 +1,21 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "prism_right_angle",
+ "label": "Right-angle prism",
+ "params": {
+  "height": {
+   "default": 25.0,
+   "help": "extent along z",
+   "unit": "mm"
+  },
+  "leg": {
+   "default": 25.0,
+   "help": "leg length",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "45-45-90 right-angle prism; the hypotenuse TIRs the beam through 90 deg (no coating needed at 45 deg AOI in bk7)."
+}

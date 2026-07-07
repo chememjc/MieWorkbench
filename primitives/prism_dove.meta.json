@@ -1,0 +1,21 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "prism_dove",
+ "label": "Dove prism",
+ "params": {
+  "aperture": {
+   "default": 20.0,
+   "help": "clear aperture (height and width)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 80.0,
+   "help": "overall length",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Trapezoidal Dove prism: beam enters/exits through the 45-deg end faces and TIRs once off the long bottom face; rotating the prism about the beam axis rotates the image at twice the rate (image-rotation prism)."
+}

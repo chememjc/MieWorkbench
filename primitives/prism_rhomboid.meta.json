@@ -1,0 +1,21 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "prism_rhomboid",
+ "label": "Rhomboid prism",
+ "params": {
+  "aperture": {
+   "default": 20.0,
+   "help": "clear aperture (entrance/exit face height)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 60.0,
+   "help": "horizontal extent (sets the lateral displacement)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Displaces the beam laterally while preserving its direction and orientation (unlike a periscope pair, one solid part): two parallel 45-deg TIR faces (no coating needed in bk7)."
+}

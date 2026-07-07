@@ -1,0 +1,31 @@
+{
+ "category": "Plates & Filters",
+ "kind": "window_wedged",
+ "label": "Wedged window",
+ "params": {
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  },
+  "thickness": {
+   "default": 5.0,
+   "help": "center thickness",
+   "unit": "mm"
+  },
+  "wedge_deg": {
+   "default": 0.5,
+   "help": "back-face wedge angle",
+   "unit": "deg"
+  },
+  "width": {
+   "default": 25.0,
+   "help": "edge length (rectangular) or diameter (circular)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Plane-wedge window: back face tilted by wedge_deg (thickness increases toward +y) to walk stray reflections off-axis and kill etalon fringes."
+}

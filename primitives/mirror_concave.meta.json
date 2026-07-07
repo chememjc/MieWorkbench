@@ -1,0 +1,26 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "mirror_concave",
+ "label": "Concave mirror",
+ "params": {
+  "R": {
+   "default": 100.0,
+   "help": "concave curvature radius (>0)",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 25.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "ct": {
+   "default": 4.0,
+   "help": "edge/substrate thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "aluminum"
+ },
+ "tooltip": "Front-surface spherical concave mirror (converging); aluminum, same front-surface-metal convention as mirror_flat."
+}

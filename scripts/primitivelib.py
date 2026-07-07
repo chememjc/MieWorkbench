@@ -315,6 +315,393 @@ PRIMITIVES = {
                    "gap": P(0.005, "mm", "hypotenuse air gap")},
         "props": {},   # per-body props set by the builder
     },
+    # =========================================================================
+    # Batch 1 -- plate-likes (all on _build_plate/_build_wedge_plate)
+    # =========================================================================
+    "bs_plate": {
+        "category": "Beamsplitters", "label": "Beamsplitter plate (50:50)",
+        "tooltip": "Non-polarizing beamsplitter plate; place at 45 deg AOI. "
+                   "The front (-x) face carries the beamsplitter coating "
+                   "(default bs_5050_vis_45 -- swap the 'coating' property "
+                   "for any bs_XXYY_vis_45 registry row to change the "
+                   "split ratio). wedge_deg tilts the back face slightly "
+                   "to kill parallel-plate etalon fringes (0 = "
+                   "plane-parallel).",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness (center, if "
+                                             "wedged)"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular"),
+                   "wedge_deg": P(0.5, "deg", "back-face wedge angle "
+                                              "(anti-etalon); 0 = "
+                                              "plane-parallel")},
+        "props": {"material": "bk7"},   # coating (front face) set by builder
+    },
+    "pbs_plate": {
+        "category": "Beamsplitters", "label": "Polarizing beamsplitter plate",
+        "tooltip": "Plate-form PBS; place at 45 deg AOI. Front (-x) face "
+                   "carries the pbs_visible_45 coating.",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7"},   # coating (front face) set by builder
+    },
+    "dichroic_plate": {
+        "category": "Beamsplitters", "label": "Dichroic beamsplitter plate",
+        "tooltip": "Longpass dichroic (default dichroic_567lp_45, cut-on "
+                   "567nm); place at 45 deg AOI. Swap the 'coating' "
+                   "property to hot_mirror_45 or cold_mirror_45 for a "
+                   "vendor-style hot/cold mirror instead.",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(1.0, "mm", "plate thickness"),
+                   "round_flag": P(0, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7"},   # coating (front face) set by builder
+    },
+    "pellicle": {
+        "category": "Beamsplitters", "label": "Pellicle beamsplitter",
+        "tooltip": "Ultra-thin (few-micron) nitrocellulose membrane "
+                   "beamsplitter -- negligible ghosting, no wedge/etalon "
+                   "concerns. Front (-x) face carries the pellicle_4555_45 "
+                   "coating (swap to pellicle_uncoated_45 for a bare "
+                   "membrane).",
+        "params": {"diameter": P(25.0, "mm", "membrane clear aperture "
+                                             "diameter"),
+                   "membrane_thickness": P(0.002, "mm",
+                                           "membrane thickness (2 um, "
+                                           "typical pellicle film)")},
+        "props": {"material": "bk7"},   # coating (front face) set by builder
+    },
+    "nd_filter": {
+        "category": "Filters", "label": "ND filter (absorptive)",
+        "tooltip": "Bulk (Beer-Lambert) absorptive neutral-density plate. "
+                   "Swap the 'filter' property to any nd_odXX registry row "
+                   "for other densities (OD scales with thickness from a "
+                   "2mm reference).",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(2.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7", "filter": "nd_od10"},
+    },
+    "nd_reflective": {
+        "category": "Filters", "label": "ND filter (reflective)",
+        "tooltip": "Metallic (Inconel-style) reflective neutral-density "
+                   "plate; front (-x) face carries the nd_refl_od10 "
+                   "coating (swap for other nd_refl_odXX rows).",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7"},   # coating (front face) set by builder
+    },
+    "filter_bandpass": {
+        "category": "Filters", "label": "Bandpass filter",
+        "tooltip": "Bandpass spectral filter plate (default bp_550_40: "
+                   "CWL=550nm, FWHM=40nm).",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7", "filter": "bp_550_40"},
+    },
+    "filter_longpass": {
+        "category": "Filters", "label": "Longpass filter",
+        "tooltip": "Longpass spectral filter plate (default longpass_600: "
+                   "cut-on 600nm).",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7", "filter": "longpass_600"},
+    },
+    "filter_shortpass": {
+        "category": "Filters", "label": "Shortpass filter",
+        "tooltip": "Shortpass spectral filter plate (default "
+                   "shortpass_600: cut-off 600nm).",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7", "filter": "shortpass_600"},
+    },
+    "filter_notch": {
+        "category": "Filters", "label": "Notch filter",
+        "tooltip": "Narrow rejection-band spectral filter plate (default "
+                   "notch_633_25: OD4 notch at 633nm, 25nm FWHM).",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(3.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7", "filter": "notch_633_25"},
+    },
+    "window_wedged": {
+        "category": "Plates & Filters", "label": "Wedged window",
+        "tooltip": "Plane-wedge window: back face tilted by wedge_deg "
+                   "(thickness increases toward +y) to walk stray "
+                   "reflections off-axis and kill etalon fringes.",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(5.0, "mm", "center thickness"),
+                   "wedge_deg": P(0.5, "deg", "back-face wedge angle"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7"},
+    },
+    "diffuser_plate": {
+        "category": "Diffusers", "label": "Ground-glass diffuser",
+        "tooltip": "Ground-glass diffuser plate; the exit (+x) face "
+                   "carries the ground-surface scatter (default @dg_600, "
+                   "600-grit). Swap the 'diffuser' property's registry "
+                   "reference for @dg_120/220/1500 (coarser -> finer grit, "
+                   "narrower -> wider scatter angle). Never combine with "
+                   "a 'roughness' spec on the same face.",
+        "params": {"width": P(25.0, "mm", "edge length (rectangular) or "
+                                          "diameter (circular)"),
+                   "thickness": P(2.0, "mm", "plate thickness"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"material": "bk7"},   # diffuser (exit face) set by builder
+    },
+    # =========================================================================
+    # Batch 2 -- prisms / mirrors / apertures
+    # =========================================================================
+    "prism_right_angle": {
+        "category": "Prisms & Mirrors", "label": "Right-angle prism",
+        "tooltip": "45-45-90 right-angle prism; the hypotenuse TIRs the "
+                   "beam through 90 deg (no coating needed at 45 deg AOI "
+                   "in bk7).",
+        "params": {"leg": P(25.0, "mm", "leg length"),
+                   "height": P(25.0, "mm", "extent along z")},
+        "props": {"material": "bk7"},
+    },
+    "prism_wedge": {
+        "category": "Prisms & Mirrors", "label": "Wedge prism",
+        "tooltip": "Round wedge prism (angular beam deviation without a "
+                   "reflection); shares its wedged-back-face construction "
+                   "with window_wedged.",
+        "params": {"diameter": P(25.0, "mm", "clear aperture diameter"),
+                   "thickness": P(5.0, "mm", "center thickness"),
+                   "wedge_deg": P(2.0, "deg", "wedge angle")},
+        "props": {"material": "bk7"},
+    },
+    "prism_dove": {
+        "category": "Prisms & Mirrors", "label": "Dove prism",
+        "tooltip": "Trapezoidal Dove prism: beam enters/exits through the "
+                   "45-deg end faces and TIRs once off the long bottom "
+                   "face; rotating the prism about the beam axis rotates "
+                   "the image at twice the rate (image-rotation prism).",
+        "params": {"aperture": P(20.0, "mm", "clear aperture (height and "
+                                             "width)"),
+                   "length": P(80.0, "mm", "overall length")},
+        "props": {"material": "bk7"},
+    },
+    "prism_penta": {
+        "category": "Prisms & Mirrors", "label": "Penta prism",
+        "tooltip": "Pentaprism: deviates the beam by exactly 90 deg "
+                   "regardless of prism orientation, without image "
+                   "reversal. The two reflecting faces do NOT satisfy TIR "
+                   "in bk7 at their working angle of incidence, so they "
+                   "carry a real metallic mirror coating (Al_mirror_bare) "
+                   "-- set by the builder from the actual face normals.",
+        "params": {"aperture": P(20.0, "mm", "clear aperture (entrance/exit "
+                                             "face height)")},
+        "props": {"material": "bk7"},   # reflecting-face coating set by builder
+    },
+    "prism_rhomboid": {
+        "category": "Prisms & Mirrors", "label": "Rhomboid prism",
+        "tooltip": "Displaces the beam laterally while preserving its "
+                   "direction and orientation (unlike a periscope pair, "
+                   "one solid part): two parallel 45-deg TIR faces (no "
+                   "coating needed in bk7).",
+        "params": {"aperture": P(20.0, "mm", "clear aperture (entrance/exit "
+                                             "face height)"),
+                   "length": P(60.0, "mm", "horizontal extent (sets the "
+                                           "lateral displacement)")},
+        "props": {"material": "bk7"},
+    },
+    "mirror_concave": {
+        "category": "Prisms & Mirrors", "label": "Concave mirror",
+        "tooltip": "Front-surface spherical concave mirror (converging); "
+                   "aluminum, same front-surface-metal convention as "
+                   "mirror_flat.",
+        "params": {"R": P(100.0, "mm", "concave curvature radius (>0)"),
+                   "aperture": P(25.0, "mm", "clear aperture diameter"),
+                   "ct": P(4.0, "mm", "edge/substrate thickness")},
+        "props": {"material": "aluminum"},
+    },
+    "mirror_convex": {
+        "category": "Prisms & Mirrors", "label": "Convex mirror",
+        "tooltip": "Front-surface spherical convex mirror (diverging); "
+                   "aluminum, same front-surface-metal convention as "
+                   "mirror_flat.",
+        "params": {"R": P(100.0, "mm", "convex curvature radius (>0)"),
+                   "aperture": P(25.0, "mm", "clear aperture diameter"),
+                   "ct": P(4.0, "mm", "edge/substrate thickness")},
+        "props": {"material": "aluminum"},
+    },
+    "mirror_d_shaped": {
+        "category": "Prisms & Mirrors", "label": "D-shaped mirror",
+        "tooltip": "Circular mirror with one flat edge (a chord) for "
+                   "close beam-packing; cut_offset=0 gives a true half-"
+                   "circle, positive values shift the flat edge toward "
+                   "+y (leaving more than half the disc).",
+        "params": {"diameter": P(25.0, "mm", "full-circle diameter before "
+                                             "the flat cut"),
+                   "thickness": P(3.0, "mm", "mirror thickness"),
+                   "cut_offset": P(0.0, "mm", "distance of the flat edge "
+                                              "from the disc center along "
+                                              "+y (0 = through center)")},
+        "props": {"material": "aluminum"},
+    },
+    "iris": {
+        "category": "Apertures", "label": "Iris (circular stop)",
+        "tooltip": "Blackened circular aperture stop: an opaque annular "
+                   "disc plus a thin material=air 'plug' filling the "
+                   "opening (the aperture contract, docs/RAYTRACER.md "
+                   "S5.10) so the coherent gather re-anchors correctly at "
+                   "the aperture plane. 'blackness' (0.95-1.0) sets the "
+                   "disc's absorbance property directly -- edit blackness "
+                   "and rebuild to change it (a manual 'absorbance' edit "
+                   "would be overwritten by the next rebuild, since it is "
+                   "re-derived from blackness every time).",
+        "params": {"outer_diameter": P(25.0, "mm", "disc outer diameter"),
+                   "thickness": P(1.0, "mm", "disc thickness"),
+                   "hole_diameter": P(5.0, "mm", "clear aperture (hole) "
+                                                 "diameter"),
+                   "blackness": P(0.98, "", "fraction of incident power "
+                                           "absorbed by the disc "
+                                           "(0.95-1.0 typical)")},
+        "props": {},   # disc: material/absorbance; plug: material=air --
+                       # both set by the builder
+        "derived_props": ("absorbance",),
+    },
+    "pinhole": {
+        "category": "Apertures", "label": "Pinhole (rectangular mount)",
+        "tooltip": "Small circular pinhole in a rectangular blackened "
+                   "plate, plus a thin material=air plug filling the "
+                   "hole (the aperture contract, docs/RAYTRACER.md "
+                   "S5.10). 'blackness' drives the plate's absorbance "
+                   "property directly (re-derived every rebuild).",
+        "params": {"width": P(25.0, "mm", "plate width"),
+                   "height": P(25.0, "mm", "plate height"),
+                   "thickness": P(0.5, "mm", "plate thickness"),
+                   "hole_diameter": P(0.5, "mm", "pinhole diameter"),
+                   "blackness": P(0.98, "", "fraction of incident power "
+                                           "absorbed by the plate "
+                                           "(0.95-1.0 typical)")},
+        "props": {},   # plate: material/absorbance; plug: material=air --
+                       # both set by the builder
+        "derived_props": ("absorbance",),
+    },
+    "slit": {
+        "category": "Apertures", "label": "Slit aperture",
+        "tooltip": "Rectangular slit opening in a blackened plate, plus a "
+                   "thin material=air plug filling the opening (the "
+                   "aperture contract, docs/RAYTRACER.md S5.10). "
+                   "'blackness' drives the plate's absorbance property "
+                   "directly (re-derived every rebuild).",
+        "params": {"width": P(25.0, "mm", "plate width"),
+                   "height": P(25.0, "mm", "plate height"),
+                   "thickness": P(0.5, "mm", "plate thickness"),
+                   "slit_width": P(0.1, "mm", "slit opening width"),
+                   "slit_height": P(10.0, "mm", "slit opening height"),
+                   "blackness": P(0.98, "", "fraction of incident power "
+                                           "absorbed by the plate "
+                                           "(0.95-1.0 typical)")},
+        "props": {},   # plate: material/absorbance; plug: material=air --
+                       # both set by the builder
+        "derived_props": ("absorbance",),
+    },
+    "retro_corner_cube": {
+        "category": "Prisms & Mirrors", "label": "Corner-cube retroreflector",
+        "tooltip": "Solid glass trihedral corner-cube: three mutually "
+                   "perpendicular back (TIR) faces return any incoming "
+                   "ray antiparallel to itself, over a wide range of "
+                   "incidence angles. Entrance face normal is rotated to "
+                   "-x (beam travels +x) to match the rest of the "
+                   "library's convention. 'aperture' is approximate (the "
+                   "entrance face's inscribed-circle diameter).",
+        "params": {"aperture": P(25.0, "mm", "approximate clear aperture "
+                                             "(entrance-face inscribed-"
+                                             "circle diameter)")},
+        "props": {"material": "bk7"},
+    },
+    # =========================================================================
+    # Batch 3 -- complex catalog primitives (beamsplitter cube, anamorphic
+    # pair, Glan-Taylor polarizer, on-axis parabolic mirror)
+    # =========================================================================
+    "bs_cube": {
+        "category": "Beamsplitters", "label": "Beamsplitter cube (50:50)",
+        "tooltip": "Non-polarizing beamsplitter cube: two 45-deg prisms "
+                   "with a 5 um cemented-interface air gap (optically-"
+                   "contacted solids don't exist -- model the cement line "
+                   "as a gap), hypotenuse coated (default bs_5050_vis_45). "
+                   "Swap the 'coating' property for any bs_XXYY_vis_45 "
+                   "registry row to change the split ratio -- e.g. "
+                   "bs_6040_vis_45 for a 60:40 cube. Two bodies.",
+        "params": {"cube": P(25.0, "mm", "cube edge length"),
+                   "height": P(25.0, "mm", "extent along z"),
+                   "gap": P(0.005, "mm", "hypotenuse air gap")},
+        "props": {},   # per-body props (material + hypotenuse coating) set
+                       # by the builder
+    },
+    "anamorphic_pair": {
+        "category": "Prisms & Mirrors", "label": "Anamorphic prism pair",
+        "tooltip": "Two wedge prisms in the standard anamorphic "
+                   "arrangement (second prism's wedge flipped so the net "
+                   "beam deviation cancels): magnifies the beam in one "
+                   "axis (y) only -- e.g. circularizing a diode laser's "
+                   "elliptical output. Two bk7 bodies; separation is baked "
+                   "into each prism's local geometry (identity body "
+                   "Placement on both, the achromat convention).",
+        "params": {"wedge_deg": P(10.0, "deg", "wedge angle (both prisms)"),
+                   "aperture": P(20.0, "mm", "clear aperture (y-extent and "
+                                             "z-extrusion)"),
+                   "separation": P(15.0, "mm", "gap between the two "
+                                               "prisms' front faces along "
+                                               "the beam (x)")},
+        "props": {},   # material=bk7 on both, set by the builder
+    },
+    "polarizer_glan_taylor": {
+        "category": "Polarization", "label": "Glan-Taylor polarizer",
+        "tooltip": "Two calcite prisms split by an air gap along a "
+                   "diagonal cut (default 40 deg from the optic-axis face; "
+                   "typical Glan-Taylor range 38-42 deg): the ordinary ray "
+                   "TIRs at the gap and is rejected sideways while the "
+                   "extraordinary ray transmits straight through -- "
+                   "extinction via TIR of the o-ray, not absorption. "
+                   "crystal_axis=0,0,1 on both prisms puts the optic axis "
+                   "along the extrusion (z) direction, perpendicular to "
+                   "the x-y transmission plane (standard GT orientation). "
+                   "Two bodies.",
+        "params": {"aperture": P(15.0, "mm", "clear aperture (y-height and "
+                                             "z-extrusion)"),
+                   "length": P(20.0, "mm", "overall length (x)"),
+                   "gap": P(0.005, "mm", "internal air gap at the cut"),
+                   "cut_angle": P(40.0, "deg", "cut angle from the optic-"
+                                               "axis face (typical GT "
+                                               "range 38-42 deg)")},
+        "props": {},   # material=calcite + crystal_axis=0,0,1 on both,
+                       # set by the builder
+    },
+    "mirror_parabolic": {
+        "category": "Prisms & Mirrors", "label": "Parabolic mirror (on-axis)",
+        "tooltip": "On-axis front-surface parabolic mirror (concave toward "
+                   "-x, conic k=-1, R=2*rfl -- exact paraxial AND "
+                   "geometric focus at x=-rfl from the vertex, no on-axis "
+                   "spherical aberration): revolved exact-sag BSpline + "
+                   "surface_override, extractor-verified <1 um, same "
+                   "technique as lens_asphere. (Descoped from an off-axis "
+                   "OAP: the extractor's asphere vertex-locator requires "
+                   "the retained face to include the r~=0 vertex, which a "
+                   "90-deg off-axis segment structurally never does.)",
+        "params": {"rfl": P(50.0, "mm", "reflected focal length (vertex "
+                                        "to focus)"),
+                   "aperture": P(25.0, "mm", "clear aperture diameter"),
+                   "thickness": P(10.0, "mm", "substrate thickness behind "
+                                             "the vertex")},
+        "props": {"material": "aluminum"},
+    },
 }
 
 
@@ -520,10 +907,13 @@ def _build_prism(doc, group, p):
                          offset=-H / 2.0, length=H, placement=pl)]
 
 
-def _build_pbs_cube(doc, group, p):
+def _build_cube_beamsplitter(doc, group, p, coating):
     """Two 45-deg prisms split along the D-B diagonal, hypotenuse of the
     entrance prism coated, exit prism shifted +gap along the hypotenuse
-    normal (1,1)/sqrt2 — geometry ported from make_test_scenes.make_pbs_cube."""
+    normal (1,1)/sqrt2 — geometry ported from make_test_scenes.make_pbs_cube.
+    Shared by pbs_cube (polarizing) and bs_cube (non-polarizing): the only
+    difference between the two catalog entries is which registry row goes
+    on the hypotenuse, so `coating` is the one parameter that varies."""
     c, H, gap = p["cube"], p["height"], p["gap"]
     half = c / 2.0
     A, B, C, D = (0.0, -half), (c, -half), (c, half), (0.0, half)
@@ -542,10 +932,539 @@ def _build_pbs_cube(doc, group, p):
     doc.recompute()
     hyp = mts._find_face_by_normal(b1, (1.0, 1.0, 0.0))
     if hyp is None:
-        raise ValueError("pbs_cube: hypotenuse face not found on %s"
-                         % b1.Name)
-    safe_set_props(b1, {"coating": "Face%d=pbs_visible_45" % hyp})
+        raise ValueError("%s: hypotenuse face not found on %s"
+                         % (group, b1.Name))
+    safe_set_props(b1, {"coating": "Face%d=%s" % (hyp, coating)})
     return [b1, b2]
+
+
+def _build_pbs_cube(doc, group, p):
+    return _build_cube_beamsplitter(doc, group, p, "pbs_visible_45")
+
+
+def _build_bs_cube(doc, group, p):
+    return _build_cube_beamsplitter(doc, group, p, "bs_5050_vis_45")
+
+
+def _build_wedge_plate(doc, group, width_mm, thickness_mm, wedge_deg,
+                       round_flag, name=None):
+    """Plate with a flat front (-x) face at x=0 and a back face tilted by
+    wedge_deg (thickness increases toward +y); wedge_deg == 0 degenerates to
+    the plain _build_plate. Rect: the tilt is folded directly into a 2-D
+    (x,y) profile padded along z (uniform in z, same technique as
+    axicon/lens_cyl). Round: a flat plate can't express a non-perpendicular
+    back face as a single Sketch+Pad, so a rotated PartDesign::Plane
+    (attached FlatFace to the front origin plane, offset+rotated via
+    AttachmentOffset) plus a through-all Pocket cuts the tilted back face
+    off an oversized blank -- verified against the expected tilted-face
+    area/x-range in a scratch FreeCAD probe (front cap stays a full circle
+    at x=0; back cap area = pi*(width/2)^2/cos(wedge_deg))."""
+    name = name or group
+    sa = width_mm / 2.0
+    if not wedge_deg:
+        return _build_plate(doc, group, width_mm, thickness_mm, round_flag,
+                            name=name)
+    tan_w = math.tan(math.radians(wedge_deg))
+    if not round_flag:
+        xb_hi = thickness_mm + sa * tan_w
+        xb_lo = thickness_mm - sa * tan_w
+        edges = [mts._line(0.0, -sa, 0.0, sa),
+                 mts._line(0.0, sa, xb_hi, sa),
+                 mts._line(xb_hi, sa, xb_lo, -sa),
+                 mts._line(xb_lo, -sa, 0.0, -sa)]
+        return [mts.pad_body(doc, name, edges, plane="XY",
+                             offset=-sa, length=width_mm)]
+    thick_max = thickness_mm + sa * tan_w * 1.05 + 0.5
+    body = mts.new_body_pad(doc, name, name, circle=(0.0, 0.0, sa),
+                            x_start=0.0, length=thick_max)
+    doc.recompute()
+    yz = mts._origin_plane(body, "YZ")
+    plane = body.newObject("PartDesign::Plane", name + "_wedgeplane")
+    plane.AttachmentSupport = [(yz, "")]
+    plane.MapMode = "FlatFace"
+    plane.AttachmentOffset = App.Placement(
+        App.Vector(0.0, 0.0, thickness_mm),
+        App.Rotation(App.Vector(0.0, 1.0, 0.0), wedge_deg))
+    doc.recompute()
+    big = max(width_mm, thick_max) * 10.0
+    sk2 = body.newObject("Sketcher::SketchObject", name + "_wedgecut")
+    sk2.AttachmentSupport = [(plane, "")]
+    sk2.MapMode = "FlatFace"
+    sk2.addGeometry(Part.LineSegment(App.Vector(-big, -big, 0),
+                                     App.Vector(big, -big, 0)), False)
+    sk2.addGeometry(Part.LineSegment(App.Vector(big, -big, 0),
+                                     App.Vector(big, big, 0)), False)
+    sk2.addGeometry(Part.LineSegment(App.Vector(big, big, 0),
+                                     App.Vector(-big, big, 0)), False)
+    sk2.addGeometry(Part.LineSegment(App.Vector(-big, big, 0),
+                                     App.Vector(-big, -big, 0)), False)
+    pocket = body.newObject("PartDesign::Pocket", name + "_wedgepocket")
+    pocket.Profile = sk2
+    pocket.Type = "ThroughAll"
+    pocket.Reversed = True
+    sk2.Visibility = False
+    doc.recompute()
+    return [body]
+
+
+def _find_face_by_signed_normal(body, target, tol=1e-3):
+    """Like mts._find_face_by_normal, but sign-sensitive. That helper scores
+    candidates by abs(normal.dot(target)), which cannot tell a plate's front
+    (-x) cap from its back (+x) cap -- both are exactly antiparallel to the
+    x-axis, so an abs()-based search for the BACK face can silently return
+    the FRONT face instead (caught by a probe: a diffuser_plate 'back face'
+    lookup for (1,0,0) returned the same face a 'front face' lookup for
+    (-1,0,0) would have). Used for every front-vs-back (-x/+x) face lookup
+    in this module; _build_prism_penta's mirror-face lookup doesn't need
+    this since those two targets aren't antiparallel to any other face."""
+    t = App.Vector(*target)
+    t.normalize()
+    best, best_dot = None, tol
+    for i, f in enumerate(body.Shape.Faces, start=1):
+        try:
+            u0, u1, v0, v1 = f.ParameterRange
+            nrm = f.normalAt((u0 + u1) / 2.0, (v0 + v1) / 2.0)
+            nrm.normalize()
+        except Exception:
+            continue
+        d = nrm.dot(t)
+        if d > best_dot:
+            best_dot, best = d, i
+    return best
+
+
+def _plate_with_face_prop(doc, group, width_mm, thickness_mm, round_flag,
+                          prop_name, front_value=None, back_value=None,
+                          name=None):
+    """Build a plain plate (_build_plate) then set `prop_name` (coating or
+    diffuser) on the dynamically-located front (-x) and/or back (+x) face --
+    robust to round_flag and to the exact face numbering new_body_pad
+    happens to produce (same technique _build_pbs_cube uses for its
+    hypotenuse), rather than hardcoding 'FaceN='."""
+    name = name or group
+    body = _build_plate(doc, name, width_mm, thickness_mm, round_flag,
+                        name=name)[0]
+    doc.recompute()
+    parts = []
+    if front_value is not None:
+        f = _find_face_by_signed_normal(body, (-1.0, 0.0, 0.0))
+        if f is None:
+            raise ValueError("%s: front face not found" % name)
+        parts.append("Face%d=%s" % (f, front_value))
+    if back_value is not None:
+        b = _find_face_by_signed_normal(body, (1.0, 0.0, 0.0))
+        if b is None:
+            raise ValueError("%s: back face not found" % name)
+        parts.append("Face%d=%s" % (b, back_value))
+    safe_set_props(body, {prop_name: ";".join(parts)})
+    return [body]
+
+
+def _build_bs_plate(doc, group, p):
+    body = _build_wedge_plate(doc, group, p["width"], p["thickness"],
+                              p.get("wedge_deg", 0.0),
+                              p.get("round_flag", 1), name=group)[0]
+    doc.recompute()
+    f = _find_face_by_signed_normal(body, (-1.0, 0.0, 0.0))
+    if f is None:
+        raise ValueError("bs_plate: front face not found")
+    safe_set_props(body, {"coating": "Face%d=bs_5050_vis_45" % f})
+    return [body]
+
+
+def _build_pbs_plate(doc, group, p):
+    return _plate_with_face_prop(doc, group, p["width"], p["thickness"],
+                                 p.get("round_flag", 1), "coating",
+                                 front_value="pbs_visible_45")
+
+
+def _build_dichroic_plate(doc, group, p):
+    return _plate_with_face_prop(doc, group, p["width"], p["thickness"],
+                                 p.get("round_flag", 0), "coating",
+                                 front_value="dichroic_567lp_45")
+
+
+def _build_nd_reflective(doc, group, p):
+    return _plate_with_face_prop(doc, group, p["width"], p["thickness"],
+                                 p.get("round_flag", 1), "coating",
+                                 front_value="nd_refl_od10")
+
+
+def _build_diffuser_plate(doc, group, p):
+    return _plate_with_face_prop(doc, group, p["width"], p["thickness"],
+                                 p.get("round_flag", 1), "diffuser",
+                                 back_value="@dg_600")
+
+
+def _build_pellicle(doc, group, p):
+    body = mts.new_body_pad(doc, group, group,
+                            circle=(0.0, 0.0, p["diameter"] / 2.0),
+                            x_start=0.0, length=p["membrane_thickness"])
+    doc.recompute()
+    f = _find_face_by_signed_normal(body, (-1.0, 0.0, 0.0))
+    if f is None:
+        raise ValueError("pellicle: front face not found")
+    safe_set_props(body, {"coating": "Face%d=pellicle_4555_45" % f})
+    return [body]
+
+
+def _build_window_wedged(doc, group, p):
+    return _build_wedge_plate(doc, group, p["width"], p["thickness"],
+                              p["wedge_deg"], p.get("round_flag", 1),
+                              name=group)
+
+
+def _build_prism_wedge(doc, group, p):
+    return _build_wedge_plate(doc, group, p["diameter"], p["thickness"],
+                              p["wedge_deg"], 1, name=group)
+
+
+def _build_prism_right_angle(doc, group, p):
+    L, H = p["leg"], p["height"]
+    edges = [mts._line(0.0, 0.0, L, 0.0),
+             mts._line(L, 0.0, 0.0, L),
+             mts._line(0.0, L, 0.0, 0.0)]
+    return [mts.pad_body(doc, group, edges, plane="XY",
+                         offset=-H / 2.0, length=H)]
+
+
+def _build_prism_dove(doc, group, p):
+    H, L = p["aperture"], p["length"]
+    y0, y1 = -H / 2.0, H / 2.0
+    edges = [mts._line(0.0, y0, L, y0),
+             mts._line(L, y0, L - H, y1),
+             mts._line(L - H, y1, H, y1),
+             mts._line(H, y1, 0.0, y0)]
+    return [mts.pad_body(doc, group, edges, plane="XY",
+                         offset=-H / 2.0, length=H)]
+
+
+def _build_prism_rhomboid(doc, group, p):
+    h, L = p["aperture"], p["length"]
+    A, B, C, D = (0.0, 0.0), (0.0, h), (L, h + L), (L, L)
+    edges = [mts._line(A[0], A[1], B[0], B[1]),
+             mts._line(B[0], B[1], C[0], C[1]),
+             mts._line(C[0], C[1], D[0], D[1]),
+             mts._line(D[0], D[1], A[0], A[1])]
+    return [mts.pad_body(doc, group, edges, plane="XY",
+                         offset=-h / 2.0, length=h)]
+
+
+def _build_prism_penta(doc, group, p):
+    """Canonical pentaprism cross-section (interior angles 90 deg between
+    the entrance/exit faces, 112.5 deg at each of the other four vertices --
+    the standard vendor-catalog penta-prism proportions), derived from the
+    2-mirror-at-45-deg invariant (a beam reflected by two mirrors is
+    deviated by 90 deg regardless of prism rotation): starting from the
+    entrance-face direction and turning by the exterior angle (180-112.5 =
+    67.5 deg) at each vertex in turn traces closed, convex EN-M1-BACK-M2-EX
+    edges; picking the M1/M2 (mirror) edge lengths equal by symmetry leaves
+    the BACK (non-optical) edge length k as the only free design choice
+    (verified: the pentagon closure equations for the x- and y-components
+    are then IDENTICAL, i.e. k truly is a free parameter). Reflecting faces
+    (M1, M2) carry a real metallic coating (Al_mirror_bare, a pre-existing
+    coatings.miecoat row) located dynamically from the polygon's own
+    outward-edge normals -- penta-prism angles are known not to satisfy TIR
+    in bk7, so a real mirror coating is the physically correct choice
+    regardless of the exact working angle of incidence."""
+    h = p["aperture"]
+    k = 0.5 * h
+
+    def _rot(v, deg):
+        a = math.radians(deg)
+        c, s = math.cos(a), math.sin(a)
+        return (v[0] * c - v[1] * s, v[0] * s + v[1] * c)
+
+    d_en = (0.0, 1.0)
+    d_m1 = _rot(d_en, -67.5)
+    d_back = _rot(d_m1, -67.5)
+    d_m2 = _rot(d_back, -67.5)
+    d_ex = _rot(d_m2, -67.5)
+    cm = d_m1[0] + d_m2[0]
+    const = h * d_en[0] + k * d_back[0] + h * d_ex[0]
+    m = -const / cm
+
+    A = (0.0, 0.0)
+    B = (A[0] + h * d_en[0], A[1] + h * d_en[1])
+    C = (B[0] + m * d_m1[0], B[1] + m * d_m1[1])
+    D = (C[0] + k * d_back[0], C[1] + k * d_back[1])
+    E = (D[0] + m * d_m2[0], D[1] + m * d_m2[1])
+    verts = [A, B, C, D, E]
+    edges = [mts._line(verts[i][0], verts[i][1],
+                       verts[(i + 1) % 5][0], verts[(i + 1) % 5][1])
+             for i in range(5)]
+    body = mts.pad_body(doc, group, edges, plane="XY",
+                        offset=-h / 2.0, length=h)
+    doc.recompute()
+
+    def _outward_normal(a, b):
+        ex, ey = b[0] - a[0], b[1] - a[1]
+        cx = sum(v[0] for v in verts) / len(verts)
+        cy = sum(v[1] for v in verts) / len(verts)
+        mx, my = (a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0
+        for cand in ((ey, -ex), (-ey, ex)):
+            L = math.hypot(*cand)
+            n = (cand[0] / L, cand[1] / L)
+            if (mx - cx) * n[0] + (my - cy) * n[1] > 0:
+                return n
+        return None
+
+    n_m1 = _outward_normal(B, C)
+    n_m2 = _outward_normal(D, E)
+    f1 = mts._find_face_by_normal(body, (n_m1[0], n_m1[1], 0.0))
+    f2 = mts._find_face_by_normal(body, (n_m2[0], n_m2[1], 0.0))
+    if f1 is None or f2 is None:
+        raise ValueError("prism_penta: reflecting faces not found")
+    safe_set_props(body, {"coating":
+                         "Face%d=Al_mirror_bare;Face%d=Al_mirror_bare"
+                         % (f1, f2)})
+    return [body]
+
+
+def _build_mirror_concave(doc, group, p):
+    edges, _ = mts.lens_meridian(-p["R"], None, p["ct"],
+                                 p["aperture"] / 2.0, 0.0)
+    return [mts.revolve_body(doc, group, edges)]
+
+
+def _build_mirror_convex(doc, group, p):
+    edges, _ = mts.lens_meridian(p["R"], None, p["ct"],
+                                 p["aperture"] / 2.0, 0.0)
+    return [mts.revolve_body(doc, group, edges)]
+
+
+def _build_mirror_d_shaped(doc, group, p):
+    r = p["diameter"] / 2.0
+    u0 = p["cut_offset"]
+    vlim = math.sqrt(max(r * r - u0 * u0, 1e-6))
+    chord = mts._line(u0, -vlim, u0, vlim)
+    arc = mts._arc3(u0, vlim, r, 0.0, u0, -vlim)
+    return [mts.pad_body(doc, group, [chord, arc], plane="YZ",
+                         offset=0.0, length=p["thickness"])]
+
+
+def _build_iris(doc, group, p):
+    r_out, r_in = p["outer_diameter"] / 2.0, p["hole_diameter"] / 2.0
+    outer = Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), r_out)
+    inner = Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), r_in)
+    disk = mts.pad_body(doc, group, [outer, inner], plane="YZ",
+                        offset=0.0, length=p["thickness"],
+                        props={"material": "aluminum",
+                               "absorbance": p["blackness"]})
+    plug = mts.new_body_pad(doc, group + "_plug", group + "_plug",
+                            circle=(0.0, 0.0, r_in), x_start=0.0,
+                            length=p["thickness"],
+                            props={"material": "air"})
+    return [disk, plug]
+
+
+def _build_pinhole(doc, group, p):
+    hw, hh = p["width"] / 2.0, p["height"] / 2.0
+    r_hole = p["hole_diameter"] / 2.0
+    disk = mts.new_body_pad(doc, group, group,
+                            rects=[(-hw, -hh, p["width"], p["height"])],
+                            circle=(0.0, 0.0, r_hole), x_start=0.0,
+                            length=p["thickness"],
+                            props={"material": "aluminum",
+                                   "absorbance": p["blackness"]})
+    plug = mts.new_body_pad(doc, group + "_plug", group + "_plug",
+                            circle=(0.0, 0.0, r_hole), x_start=0.0,
+                            length=p["thickness"],
+                            props={"material": "air"})
+    return [disk, plug]
+
+
+def _build_slit(doc, group, p):
+    hw, hh = p["width"] / 2.0, p["height"] / 2.0
+    sw, sh = p["slit_width"] / 2.0, p["slit_height"] / 2.0
+    disk = mts.new_body_pad(doc, group, group,
+                            rects=[(-hw, -hh, p["width"], p["height"]),
+                                   (-sw, -sh, p["slit_width"],
+                                    p["slit_height"])],
+                            x_start=0.0, length=p["thickness"],
+                            props={"material": "aluminum",
+                                   "absorbance": p["blackness"]})
+    plug = mts.new_body_pad(doc, group + "_plug", group + "_plug",
+                            rects=[(-sw, -sh, p["slit_width"],
+                                    p["slit_height"])],
+                            x_start=0.0, length=p["thickness"],
+                            props={"material": "air"})
+    return [disk, plug]
+
+
+def _build_retro_corner_cube(doc, group, p):
+    """Solid trihedral corner-cube: pad a cube corner at the origin, then
+    slice it with a plane perpendicular to the (1,1,1) diagonal close
+    enough to the origin (coordinate-sum cut < the cube edge) that the
+    result is a clean 4-face tetrahedron (3 mutually-perpendicular faces +
+    1 entrance face) rather than a 7-face corner-with-remnant-faces shape
+    (verified in a scratch FreeCAD probe: coordinate-sum-cut = 0.9x the
+    cube edge gives exactly 4 faces, with the 3 back faces' pairwise
+    normal dot products = 0.0 to machine precision). The whole body is
+    then rotated so the entrance face normal is -x, matching the rest of
+    the library's 'beam travels along +x' convention."""
+    aperture = p["aperture"]
+    # d = tetrahedron leg length such that the entrance face's inscribed-
+    # circle diameter ~= aperture (equilateral triangle side s = d*sqrt(2),
+    # inradius = s/(2*sqrt(3)) = d*sqrt(6)/6).
+    d = aperture / (math.sqrt(6.0) / 3.0)
+    L = d * 1.2   # cube blank large enough that the cut stays a clean triangle
+    body = doc.addObject("PartDesign::Body", group)
+    sk = body.newObject("Sketcher::SketchObject", group + "_sk")
+    xy = mts._origin_plane(body, "XY")
+    sk.AttachmentSupport = [(xy, "")]
+    sk.MapMode = "FlatFace"
+    sk.addGeometry(Part.LineSegment(App.Vector(0, 0, 0), App.Vector(L, 0, 0)),
+                   False)
+    sk.addGeometry(Part.LineSegment(App.Vector(L, 0, 0), App.Vector(L, L, 0)),
+                   False)
+    sk.addGeometry(Part.LineSegment(App.Vector(L, L, 0), App.Vector(0, L, 0)),
+                   False)
+    sk.addGeometry(Part.LineSegment(App.Vector(0, L, 0), App.Vector(0, 0, 0)),
+                   False)
+    pad = body.newObject("PartDesign::Pad", group + "_pad")
+    pad.Profile = sk
+    pad.Length = L
+    sk.Visibility = False
+    doc.recompute()
+
+    n = App.Vector(1.0, 1.0, 1.0)
+    n.normalize()
+    plane = body.newObject("PartDesign::Plane", group + "_cutplane")
+    plane.MapMode = "Deactivated"
+    plane.Placement = App.Placement(App.Vector(d / 3.0, d / 3.0, d / 3.0),
+                                    App.Rotation(App.Vector(0, 0, 1), n))
+    doc.recompute()
+    big = L * 10.0
+    sk2 = body.newObject("Sketcher::SketchObject", group + "_cutsk")
+    sk2.AttachmentSupport = [(plane, "")]
+    sk2.MapMode = "FlatFace"
+    sk2.addGeometry(Part.LineSegment(App.Vector(-big, -big, 0),
+                                     App.Vector(big, -big, 0)), False)
+    sk2.addGeometry(Part.LineSegment(App.Vector(big, -big, 0),
+                                     App.Vector(big, big, 0)), False)
+    sk2.addGeometry(Part.LineSegment(App.Vector(big, big, 0),
+                                     App.Vector(-big, big, 0)), False)
+    sk2.addGeometry(Part.LineSegment(App.Vector(-big, big, 0),
+                                     App.Vector(-big, -big, 0)), False)
+    pocket = body.newObject("PartDesign::Pocket", group + "_cutpocket")
+    pocket.Profile = sk2
+    pocket.Type = "ThroughAll"
+    pocket.Reversed = True
+    sk2.Visibility = False
+    doc.recompute()
+    # reorient: entrance-face normal (1,1,1)/sqrt(3) -> -x
+    body.Placement = App.Placement(App.Vector(0, 0, 0),
+                                   App.Rotation(n, App.Vector(-1, 0, 0)))
+    doc.recompute()
+    return [body]
+
+
+def _build_anamorphic_pair(doc, group, p):
+    """Two wedge prisms in the standard beam-circularizing (anamorphic)
+    arrangement: the second prism's wedge is flipped (tilt reversed
+    relative to the first) so the net angular beam deviation cancels while
+    the beam is magnified in y only -- e.g. circularizing a diode laser's
+    elliptical output. Each prism's cross-section is the same flat-front/
+    tilted-back profile _build_wedge_plate's rectangular branch uses, but
+    the `separation` offset is baked directly into each prism's local
+    (x, y) profile — both bodies get an IDENTITY Placement (the achromat
+    convention: offsets live in geometry), unlike pbs_cube's second body,
+    which is shifted via an actual Placement transform."""
+    wd, ap, sep = p["wedge_deg"], p["aperture"], p["separation"]
+    ct0 = 8.0   # nominal center thickness (not separately parameterized --
+                # wedge_deg/aperture/separation are the only exposed knobs)
+    sa = ap / 2.0
+    tan_w = math.tan(math.radians(wd))
+
+    def _wedge_edges(x0, sign):
+        xb_hi = x0 + ct0 + sign * sa * tan_w
+        xb_lo = x0 + ct0 - sign * sa * tan_w
+        return [mts._line(x0, -sa, x0, sa),
+                mts._line(x0, sa, xb_hi, sa),
+                mts._line(xb_hi, sa, xb_lo, -sa),
+                mts._line(xb_lo, -sa, x0, -sa)]
+
+    b1 = mts.pad_body(doc, group + "_1", _wedge_edges(0.0, 1.0),
+                      plane="XY", offset=-ap / 2.0, length=ap,
+                      props={"material": "bk7"})
+    b2 = mts.pad_body(doc, group + "_2", _wedge_edges(sep, -1.0),
+                      plane="XY", offset=-ap / 2.0, length=ap,
+                      props={"material": "bk7"})
+    return [b1, b2]
+
+
+def _build_polarizer_glan_taylor(doc, group, p):
+    """Glan-Taylor polarizer: a rectangular calcite block cut along a
+    diagonal at `cut_angle` from the y-axis (the optic-axis face), the two
+    halves separated by an air gap along the cut normal (same shifted-
+    second-body technique as _build_cube_beamsplitter's hypotenuse gap).
+    crystal_axis '0,0,1' puts the optic axis along the z extrusion,
+    perpendicular to the x-y transmission plane -- the standard GT cut
+    orientation that TIRs the o-ray at the gap while the e-ray transmits."""
+    h, L, gap, ca = p["aperture"], p["length"], p["gap"], p["cut_angle"]
+    tan_c = math.tan(math.radians(ca))
+    x_top = L / 2.0 + (h / 2.0) * tan_c
+    x_bot = L / 2.0 - (h / 2.0) * tan_c
+    crystal_props = {"material": "calcite", "crystal_axis": "0,0,1"}
+
+    p1 = [(0.0, -h / 2.0), (0.0, h / 2.0), (x_top, h / 2.0), (x_bot, -h / 2.0)]
+    edges1 = [mts._line(*p1[i], *p1[(i + 1) % 4]) for i in range(4)]
+    b1 = mts.pad_body(doc, group + "_in", edges1, plane="XY",
+                      offset=-h / 2.0, length=h, props=crystal_props)
+
+    p2 = [(x_top, h / 2.0), (L, h / 2.0), (L, -h / 2.0), (x_bot, -h / 2.0)]
+    edges2 = [mts._line(*p2[i], *p2[(i + 1) % 4]) for i in range(4)]
+    ca_r = math.radians(ca)
+    n = (math.cos(ca_r), -math.sin(ca_r))   # cut-plane normal, points +x-ish
+    pl2 = App.Placement(App.Vector(gap * n[0], gap * n[1], 0.0),
+                        App.Rotation())
+    b2 = mts.pad_body(doc, group + "_out", edges2, plane="XY",
+                      offset=-h / 2.0, length=h, props=crystal_props,
+                      placement=pl2)
+    return [b1, b2]
+
+
+def _build_mirror_parabolic(doc, group, p):
+    """On-axis front-surface parabolic mirror: same exact-sag BSpline +
+    surface_override technique as _build_lens_asphere (k=-1 always -- a
+    true parabola, not a user-tunable conic), reflecting face concave
+    toward -x so a -x-traveling collimated beam converges at the paraxial
+    AND geometric focus x=-rfl from the vertex (R=2*rfl kills spherical
+    aberration on axis exactly, same as any conic mirror at its own focus).
+    Descoped from an off-axis OAP -- see the PRIMITIVES tooltip / the
+    project report for why."""
+    sa = p["aperture"] / 2.0
+    R_decl = 2.0 * p["rfl"]
+    k, thickness = -1.0, p["thickness"]
+    # NEGATIVE R for the actual geometry (unlike _build_lens_asphere's
+    # convex-toward-source R>0): the reflecting face must be CONCAVE toward
+    # -x -- the same sign flip _build_mirror_concave applies to its
+    # (spherical) lens_meridian call -- so a -x-approaching collimated beam
+    # actually converges instead of diverging. The surface_override string
+    # still declares the POSITIVE R_decl: the extractor's vertex/axis
+    # locator (build_asphere_surface) auto-flips ITS OWN local axis so
+    # near-vertex sag reads non-negative, whichever way the real geometry
+    # bulges -- so it always expects the same-sign R lens_asphere uses,
+    # regardless of which global direction this body's surface opens
+    # (verified empirically: declaring the geometry's own signed R here
+    # fails the <1um gate with an exact sign-flipped residual).
+    n_samp = 41
+    pts = [App.Vector(mts._asphere_sag(sa * i / (n_samp - 1), -R_decl, k),
+                      sa * i / (n_samp - 1), 0)
+           for i in range(n_samp)]
+    bs = Part.BSplineCurve()
+    bs.interpolate(pts)
+    xfr = pts[-1].x
+    edges = [bs,
+             mts._line(xfr, sa, thickness, sa),
+             mts._line(thickness, sa, thickness, 0.0),
+             mts._line(thickness, 0.0, 0.0, 0.0)]
+    body = mts.revolve_body(doc, group, edges)
+    mts.set_props(body, {"surface_override":
+                         "Face1=asphere:R=%.6f;k=%.6f;r_max=%.4f"
+                         % (R_decl, k, sa)})
+    return [body]
 
 
 def _lens_builder(kind):
@@ -581,6 +1500,34 @@ def builders():
             "filter_plate": _plate_from_params,
             "grating_plate": _plate_from_params,
             "pbs_cube": _build_pbs_cube,
+            "bs_plate": _build_bs_plate,
+            "pbs_plate": _build_pbs_plate,
+            "dichroic_plate": _build_dichroic_plate,
+            "pellicle": _build_pellicle,
+            "nd_filter": _plate_from_params,
+            "nd_reflective": _build_nd_reflective,
+            "filter_bandpass": _plate_from_params,
+            "filter_longpass": _plate_from_params,
+            "filter_shortpass": _plate_from_params,
+            "filter_notch": _plate_from_params,
+            "window_wedged": _build_window_wedged,
+            "diffuser_plate": _build_diffuser_plate,
+            "prism_right_angle": _build_prism_right_angle,
+            "prism_wedge": _build_prism_wedge,
+            "prism_dove": _build_prism_dove,
+            "prism_penta": _build_prism_penta,
+            "prism_rhomboid": _build_prism_rhomboid,
+            "mirror_concave": _build_mirror_concave,
+            "mirror_convex": _build_mirror_convex,
+            "mirror_d_shaped": _build_mirror_d_shaped,
+            "iris": _build_iris,
+            "pinhole": _build_pinhole,
+            "slit": _build_slit,
+            "retro_corner_cube": _build_retro_corner_cube,
+            "bs_cube": _build_bs_cube,
+            "anamorphic_pair": _build_anamorphic_pair,
+            "polarizer_glan_taylor": _build_polarizer_glan_taylor,
+            "mirror_parabolic": _build_mirror_parabolic,
         }
         for kind, spec in PRIMITIVES.items():
             if "meridian" in spec:
@@ -666,7 +1613,13 @@ def rebuild_element(doc, sheet, kind, group):
     if not old:
         raise ValueError("no bodies with miewb_group %r" % group)
     keep = []
-    baseline = {"miewb_primitive", "miewb_group"}
+    # derived_props (e.g. iris/pinhole/slit's 'absorbance', re-derived from
+    # the 'blackness' sheet param every rebuild): excluded from the extra-
+    # props snapshot below so the builder's freshly-computed value always
+    # wins, instead of the generic user-customization-preservation path
+    # restoring a now-stale value from the body being replaced.
+    baseline = {"miewb_primitive", "miewb_group"} \
+        | set(PRIMITIVES.get(kind, {}).get("derived_props", ()))
     for b in old:
         extra = {}
         for pname in b.PropertiesList:

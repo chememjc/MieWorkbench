@@ -1,0 +1,26 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "mirror_d_shaped",
+ "label": "D-shaped mirror",
+ "params": {
+  "cut_offset": {
+   "default": 0.0,
+   "help": "distance of the flat edge from the disc center along +y (0 = through center)",
+   "unit": "mm"
+  },
+  "diameter": {
+   "default": 25.0,
+   "help": "full-circle diameter before the flat cut",
+   "unit": "mm"
+  },
+  "thickness": {
+   "default": 3.0,
+   "help": "mirror thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "aluminum"
+ },
+ "tooltip": "Circular mirror with one flat edge (a chord) for close beam-packing; cut_offset=0 gives a true half-circle, positive values shift the flat edge toward +y (leaving more than half the disc)."
+}

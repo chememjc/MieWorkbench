@@ -1,0 +1,26 @@
+{
+ "category": "Beamsplitters",
+ "kind": "pbs_plate",
+ "label": "Polarizing beamsplitter plate",
+ "params": {
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  },
+  "thickness": {
+   "default": 3.0,
+   "help": "plate thickness",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 25.0,
+   "help": "edge length (rectangular) or diameter (circular)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Plate-form PBS; place at 45 deg AOI. Front (-x) face carries the pbs_visible_45 coating."
+}

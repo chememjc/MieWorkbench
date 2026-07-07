@@ -1,0 +1,24 @@
+{
+ "category": "Beamsplitters",
+ "kind": "bs_cube",
+ "label": "Beamsplitter cube (50:50)",
+ "params": {
+  "cube": {
+   "default": 25.0,
+   "help": "cube edge length",
+   "unit": "mm"
+  },
+  "gap": {
+   "default": 0.005,
+   "help": "hypotenuse air gap",
+   "unit": "mm"
+  },
+  "height": {
+   "default": 25.0,
+   "help": "extent along z",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Non-polarizing beamsplitter cube: two 45-deg prisms with a 5 um cemented-interface air gap (optically-contacted solids don't exist -- model the cement line as a gap), hypotenuse coated (default bs_5050_vis_45). Swap the 'coating' property for any bs_XXYY_vis_45 registry row to change the split ratio -- e.g. bs_6040_vis_45 for a 60:40 cube. Two bodies."
+}

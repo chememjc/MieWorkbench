@@ -1,0 +1,26 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "mirror_convex",
+ "label": "Convex mirror",
+ "params": {
+  "R": {
+   "default": 100.0,
+   "help": "convex curvature radius (>0)",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 25.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "ct": {
+   "default": 4.0,
+   "help": "edge/substrate thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "aluminum"
+ },
+ "tooltip": "Front-surface spherical convex mirror (diverging); aluminum, same front-surface-metal convention as mirror_flat."
+}

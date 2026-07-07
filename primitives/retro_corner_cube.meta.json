@@ -1,0 +1,16 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "retro_corner_cube",
+ "label": "Corner-cube retroreflector",
+ "params": {
+  "aperture": {
+   "default": 25.0,
+   "help": "approximate clear aperture (entrance-face inscribed-circle diameter)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Solid glass trihedral corner-cube: three mutually perpendicular back (TIR) faces return any incoming ray antiparallel to itself, over a wide range of incidence angles. Entrance face normal is rotated to -x (beam travels +x) to match the rest of the library's convention. 'aperture' is approximate (the entrance face's inscribed-circle diameter)."
+}

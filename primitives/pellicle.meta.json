@@ -1,0 +1,21 @@
+{
+ "category": "Beamsplitters",
+ "kind": "pellicle",
+ "label": "Pellicle beamsplitter",
+ "params": {
+  "diameter": {
+   "default": 25.0,
+   "help": "membrane clear aperture diameter",
+   "unit": "mm"
+  },
+  "membrane_thickness": {
+   "default": 0.002,
+   "help": "membrane thickness (2 um, typical pellicle film)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Ultra-thin (few-micron) nitrocellulose membrane beamsplitter -- negligible ghosting, no wedge/etalon concerns. Front (-x) face carries the pellicle_4555_45 coating (swap to pellicle_uncoated_45 for a bare membrane)."
+}

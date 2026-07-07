@@ -1,0 +1,26 @@
+{
+ "category": "Diffusers",
+ "kind": "diffuser_plate",
+ "label": "Ground-glass diffuser",
+ "params": {
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  },
+  "thickness": {
+   "default": 2.0,
+   "help": "plate thickness",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 25.0,
+   "help": "edge length (rectangular) or diameter (circular)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Ground-glass diffuser plate; the exit (+x) face carries the ground-surface scatter (default @dg_600, 600-grit). Swap the 'diffuser' property's registry reference for @dg_120/220/1500 (coarser -> finer grit, narrower -> wider scatter angle). Never combine with a 'roughness' spec on the same face."
+}

@@ -1,0 +1,39 @@
+{
+ "category": "Apertures",
+ "kind": "slit",
+ "label": "Slit aperture",
+ "params": {
+  "blackness": {
+   "default": 0.98,
+   "help": "fraction of incident power absorbed by the plate (0.95-1.0 typical)",
+   "unit": ""
+  },
+  "height": {
+   "default": 25.0,
+   "help": "plate height",
+   "unit": "mm"
+  },
+  "slit_height": {
+   "default": 10.0,
+   "help": "slit opening height",
+   "unit": "mm"
+  },
+  "slit_width": {
+   "default": 0.1,
+   "help": "slit opening width",
+   "unit": "mm"
+  },
+  "thickness": {
+   "default": 0.5,
+   "help": "plate thickness",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 25.0,
+   "help": "plate width",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Rectangular slit opening in a blackened plate, plus a thin material=air plug filling the opening (the aperture contract, docs/RAYTRACER.md S5.10). 'blackness' drives the plate's absorbance property directly (re-derived every rebuild)."
+}
