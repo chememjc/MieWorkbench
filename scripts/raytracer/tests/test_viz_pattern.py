@@ -224,3 +224,68 @@ def test_physics_bit_identical_with_and_without_fan_pattern():
     assert len(viz_fan) == 2 * n_rays
     starts = viz_fan[:, 3:6]
     assert np.sum(np.isclose(starts[:, 0], -0.02)) == n_rays
+
+
+# =============================================================================
+# Spherical emit face (divergent laser) — the fan must land on the cap
+# with per-point (diverging) normal directions instead of being skipped.
+# =============================================================================
+def _spherical_source_body(name="DivSrc", x_apex=-0.02, roc=0.2,
+                           aperture_r=0.001, power_mW=5.0):
+    """Source whose emit face is a spherical cap of curvature radius
+    `roc`, apex at (x_apex, 0, 0), bulging toward +x (the scene)."""
+    centre = np.array([x_apex - roc, 0.0, 0.0])
+    x_rim = centre[0] + np.sqrt(roc ** 2 - aperture_r ** 2)
+    theta = np.linspace(0.0, 2 * np.pi, 65)[:-1]
+    rim = np.stack([np.full_like(theta, x_rim),
+                    aperture_r * np.cos(theta),
+                    aperture_r * np.sin(theta)], axis=-1)
+    face = {
+        "id": "%s.Pad.Face1" % name,
+        "surface": {"type": "sphere", "center": centre.tolist(),
+                    "radius": roc},
+        "orientation_outward": True,
+        "area_m2": float(np.pi * aperture_r ** 2),
+        "fingerprint": {},
+        "mesh_stl": "",
+        "trim_polylines_xyz": [[list(p) for p in rim]],
+    }
+    src = {"power_mW": power_mW, "lambdac_nm": 633.0,
+           "emit_face": face["id"], "coherent": False}
+    return {"name": name, "label": name, "role": "source",
+            "source": src, "faces": [face]}
+
+
+def test_fan_on_spherical_cap_diverges():
+    model = make_model([
+        _spherical_source_body(),
+        detector_body("Det", x=0.02, half=0.01),
+    ])
+    db = MaterialDB.load()
+    scene = Scene(model, db, load_coatings(db=db))
+    (bidx, src), = scene.sources
+    body = scene.bodies[bidx]
+
+    batch = sample_viz_pattern(scene, body, src, 0,
+                               {"kind": "fan", "n": 5}, 1)
+    assert batch is not None and len(batch) == 5
+
+    centre = np.array([-0.02 - 0.2, 0.0, 0.0])
+    # every point lies ON the sphere
+    r = np.linalg.norm(batch.pos - centre, axis=-1)
+    assert np.allclose(r, 0.2, atol=1e-9)
+    # ...within the aperture (rim radius 1mm around the x axis)
+    assert np.all(np.linalg.norm(batch.pos[:, 1:], axis=-1) <= 1.001e-3)
+    # central ray starts at the apex and heads +x
+    assert np.linalg.norm(batch.pos[0][1:]) <= 1e-5
+    assert batch.dir[0][0] > 0.999
+    # the fan DIVERGES: outer directions differ from the axis
+    outer = batch.dir[1:]
+    assert np.all(outer[:, 0] > 0.9)          # still broadly +x
+    axis_dots = outer @ np.array([1.0, 0.0, 0.0])
+    assert np.all(axis_dots < 1.0 - 1e-8)     # but none exactly on-axis
+    # deterministic
+    batch2 = sample_viz_pattern(scene, body, src, 0,
+                                {"kind": "fan", "n": 5}, 1)
+    assert np.array_equal(batch.pos, batch2.pos)
+    assert np.array_equal(batch.dir, batch2.dir)

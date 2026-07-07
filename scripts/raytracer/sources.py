@@ -394,6 +394,47 @@ def _fan_uv(loop_uv, c_uv, pattern):
     return np.concatenate([np.atleast_2d(p) for p in uv], axis=0)
 
 
+def _pattern_uv_points(kind, loop_uv, c_uv, pattern):
+    if kind == "rings":
+        return _rings_uv(loop_uv, c_uv, pattern)
+    if kind == "fan":
+        return _fan_uv(loop_uv, c_uv, pattern)
+    raise ValueError("sample_viz_pattern: unknown pattern kind %r"
+                     % (kind,))
+
+
+def _sphere_pattern_points(surf, loop_xyz, kind, pattern):
+    """Pattern points on a spherical cap (divergent-laser emit face):
+    generate the 2D pattern in the rim's best-fit plane, then lift each
+    point onto the sphere along the plane normal, choosing the
+    intersection on the cap side (nearer the cap apex o + R*Ŵ, W = rim
+    centroid - sphere center)."""
+    c3 = loop_xyz.mean(axis=0)
+    M = loop_xyz - c3
+    _, _, vt = np.linalg.svd(M, full_matrices=False)
+    e1, e2, n_pl = vt[0], vt[1], vt[2]
+    loop2 = np.stack([M @ e1, M @ e2], axis=-1)
+    uv = _pattern_uv_points(kind, loop2, loop2.mean(axis=0), pattern)
+    pts_plane = c3 + uv[:, :1] * e1 + uv[:, 1:] * e2
+
+    centre, radius = surf.c, surf.r
+    w = c3 - centre
+    wn = np.linalg.norm(w)
+    apex = centre + radius * (w / wn if wn > 1e-12 else n_pl)
+    d = pts_plane - centre
+    b = d @ n_pl
+    c = np.sum(d * d, axis=-1) - radius * radius
+    disc = b * b - c
+    ok = disc >= 0.0
+    pts_plane, b, disc = pts_plane[ok], b[ok], disc[ok]
+    root = np.sqrt(disc)
+    cand1 = pts_plane + (-b + root)[:, None] * n_pl
+    cand2 = pts_plane + (-b - root)[:, None] * n_pl
+    d1 = np.linalg.norm(cand1 - apex, axis=-1)
+    d2 = np.linalg.norm(cand2 - apex, axis=-1)
+    return np.where((d1 <= d2)[:, None], cand1, cand2)
+
+
 def sample_viz_pattern(scene, body, src, source_id, pattern, n_lambda):
     """Deterministic viz-overlay ray positions: one central ray plus either
     concentric rings or a small cardinal fan (pattern from
@@ -404,50 +445,63 @@ def sample_viz_pattern(scene, body, src, source_id, pattern, n_lambda):
     viz-only pass (throwaway ledger, no detector grids), so these rays
     can never affect flux, detector images, or the energy audit.
 
-    Only planar emit faces are supported (lasers/sources in this project
-    emit from flat end caps); returns None with a warning otherwise so
-    the caller can fall back to the default random viz rays.
+    Planar emit faces get the pattern directly in their metric uv space;
+    SPHERICAL caps (divergent lasers) get it in the rim's best-fit plane
+    lifted onto the cap, with per-point normal directions (a diverging
+    fan, matching sample_source's curved-face emission). Other surface
+    types return None with a warning so the caller falls back to the
+    default random viz rays.
     """
     face = scene.emit_faces.get(body.index)
     if face is None:
         raise ValueError("source %s has no emit face built" % body.label)
     surf = face.surface
-    if surf.__class__.__name__ != "Plane":
+    cls = surf.__class__.__name__
+    if cls not in ("Plane", "Sphere"):
         import warnings
-        warnings.warn("source %s: --viz-pattern needs a planar emit face "
-                      "(got %s); falling back to default viz rays"
-                      % (body.label, surf.__class__.__name__))
+        warnings.warn("source %s: --viz-pattern needs a planar or "
+                      "spherical emit face (got %s); falling back to "
+                      "default viz rays" % (body.label, cls))
         return None
 
-    # face centroid + trim geometry (uv == metres for a Plane: t1/t2 are
-    # orthonormal)
     if face.trim.mode == "untrimmed" or not getattr(face.trim, "loops", None):
-        raise ValueError("source %s: emitting plane has no trim loops"
+        raise ValueError("source %s: emitting face has no trim loops"
                          % body.label)
-    loop_uv = np.concatenate([np.asarray(lp) for lp in face.trim.loops])
-    c_uv = loop_uv.mean(axis=0)
-
     kind = pattern["kind"]
-    if kind == "rings":
-        uv = _rings_uv(loop_uv, c_uv, pattern)
-    elif kind == "fan":
-        uv = _fan_uv(loop_uv, c_uv, pattern)
-    else:
-        raise ValueError("sample_viz_pattern: unknown pattern kind %r"
-                         % (kind,))
-    inside = face.trim.contains(uv)
-    uv = uv[inside]
-    if len(uv) == 0:
-        raise ValueError("source %s: viz pattern produced no rays inside "
-                         "the emit face (pattern too large for the "
-                         "aperture?)" % body.label)
-    pts = _uv_to_xyz(surf, uv[:, 0], uv[:, 1])
-    n = len(pts)
 
-    # same toward-origin direction policy as sample_source's flat branch
-    n0 = surf.normal(pts)[0]
-    sign = 1.0 if np.dot(n0, -np.mean(pts, axis=0)) >= 0 else -1.0
-    dirs = np.tile(sign * n0, (n, 1))
+    if cls == "Plane":
+        # uv == metres for a Plane: t1/t2 are orthonormal
+        loop_uv = np.concatenate([np.asarray(lp) for lp in face.trim.loops])
+        c_uv = loop_uv.mean(axis=0)
+        uv = _pattern_uv_points(kind, loop_uv, c_uv, pattern)
+        inside = face.trim.contains(uv)
+        uv = uv[inside]
+        if len(uv) == 0:
+            raise ValueError("source %s: viz pattern produced no rays "
+                             "inside the emit face (pattern too large for "
+                             "the aperture?)" % body.label)
+        pts = _uv_to_xyz(surf, uv[:, 0], uv[:, 1])
+        n = len(pts)
+        # same toward-origin direction policy as sample_source's flat branch
+        n0 = surf.normal(pts)[0]
+        sign = 1.0 if np.dot(n0, -np.mean(pts, axis=0)) >= 0 else -1.0
+        dirs = np.tile(sign * n0, (n, 1))
+    else:
+        loop_uv = [np.asarray(lp) for lp in face.trim.loops]
+        loop_xyz = np.concatenate(
+            [_uv_to_xyz(surf, lp[:, 0], lp[:, 1]) for lp in loop_uv])
+        pts = _sphere_pattern_points(surf, loop_xyz, kind, pattern)
+        if len(pts) == 0:
+            raise ValueError("source %s: viz pattern produced no rays on "
+                             "the emitting cap" % body.label)
+        n = len(pts)
+        # per-point normals, origin-facing side (sample_source's curved
+        # policy: flip wholesale when the natural normal faces away)
+        normals = surf.normal(pts)
+        dots = np.sum(normals * (-pts), axis=-1)
+        if np.all(dots < 0):
+            normals = -normals
+        dirs = normals
     dirs = dirs / np.linalg.norm(dirs, axis=-1, keepdims=True)
 
     lam_strata = wavelength_strata(src, n_lambda)

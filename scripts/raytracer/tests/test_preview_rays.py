@@ -136,3 +136,24 @@ def test_only_bodies_end_to_end_drops_unlisted_optic(tmp_path):
     ])
     assert rc == 0
     assert out.exists()
+
+
+def test_main_previews_detectorless_scene(tmp_path):
+    """A half-built scene (source + lens, no detector yet) is exactly when
+    a preview matters — a synthetic transparent far-field detector is
+    injected so Scene()'s invariant holds without touching ray paths."""
+    model = make_model([
+        source_body("Src", x=-0.02, half=0.005, power_mW=5.0,
+                    lambdac_nm=633.0),
+        slab_body("Window", "bk7", 0.0, 0.005),
+    ])
+    geometry_dir = write_geometry(tmp_path, model)
+    out = tmp_path / "rays.vtp"
+    rc = preview_rays.main([
+        "--geometry", str(geometry_dir),
+        "--out", str(out),
+        "--pattern", "fan:n=5",
+    ])
+    assert rc == 0
+    assert out.exists()
+    assert 'NumberOfLines' in out.read_text()

@@ -26,6 +26,7 @@ _VIEW_BUTTONS = [("+X", "+x"), ("-X", "-x"), ("+Y", "+y"), ("+Z", "+z")]
 
 class Scene3DPane(QWidget):
     selectionChanged = Signal(str, set)   # body_name, {face_id, ...}
+    raysPreviewRequested = Signal()       # Rays checked with nothing loaded
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -179,3 +180,7 @@ class Scene3DPane(QWidget):
     def _on_rays_toggled(self, checked):
         self._rays_visible = bool(checked)
         self.view.set_overlay_visible(self._rays_visible)
+        if checked and self._rays_path is None:
+            # nothing to show yet: ask the host to produce rays (last run's
+            # overlay or a live preview) instead of silently doing nothing
+            self.raysPreviewRequested.emit()

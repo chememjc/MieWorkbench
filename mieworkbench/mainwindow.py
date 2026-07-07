@@ -500,6 +500,18 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Tracing %d preview ray(s) per source…" % n)
 
+    def _on_scene_rays_requested(self):
+        """Rays toggle checked with no overlay: load the last run's rays
+        if a case is loaded, else offer the live preview."""
+        path = self._case_rays_vtp()
+        if path is not None:
+            self.scene3d.load_rays_vtp(path)
+            self.scene3d.set_rays_stale(False)
+            self.statusBar().showMessage("Loaded ray overlay from the "
+                                         "last run", 5000)
+            return
+        self._on_ray_preview()
+
     def _on_inspector_rays_requested(self):
         body = self.inspector._body_name
         if body is None:
@@ -603,6 +615,8 @@ class MainWindow(QMainWindow):
         self.raypreview.failed.connect(self._on_preview_failed)
         self.inspector.raysPreviewRequested.connect(
             self._on_inspector_rays_requested)
+        self.scene3d.raysPreviewRequested.connect(
+            self._on_scene_rays_requested)
         self.project.bodiesReshaped.connect(self._on_geometry_changed)
         self.project.bodiesMoved.connect(self._on_geometry_changed)
 

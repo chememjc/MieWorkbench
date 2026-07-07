@@ -27,6 +27,7 @@
 # lines on MIEWB_PROGRESS=1 itself (see common.py) — no extra gating here.
 # =============================================================================
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -77,6 +78,39 @@ def _filter_only_bodies(model, only_bodies):
     model["bodies"] = kept
 
 
+def _ensure_detector(model):
+    """Scene() hard-requires >=1 detector, but a half-built scene (laser +
+    lens, no detector yet) is exactly when a ray preview is most useful —
+    inject a huge transparent detector plane far outside the scene so the
+    Scene invariant holds without affecting any ray's path (detector
+    screens are transparent, and the preview tracer registers no grids)."""
+    if any(b["role"] == "detector" for b in model["bodies"]):
+        return
+    extent = 1.0
+    for b in model["bodies"]:
+        for f in b.get("faces", []):
+            for loop in f.get("trim_polylines_xyz") or []:
+                for p in loop:
+                    extent = max(extent, abs(p[0]), abs(p[1]), abs(p[2]))
+    x = 10.0 * extent
+    h = 10.0 * extent
+    fid = "_preview_det.Pad.Face1"
+    face = {
+        "id": fid,
+        "surface": {"type": "plane", "origin": [x, 0.0, 0.0],
+                    "normal": [-1.0, 0.0, 0.0]},
+        "orientation_outward": True,
+        "area_m2": float((2 * h) ** 2),
+        "fingerprint": {},
+        "mesh_stl": "",
+        "trim_polylines_xyz": [[[x, -h, -h], [x, h, -h],
+                                [x, h, h], [x, -h, h]]],
+    }
+    model["bodies"].append({
+        "name": "_preview_det", "label": "_preview_det",
+        "role": "detector", "detector": {"face": fid}, "faces": [face]})
+
+
 def main(argv=None):
     args = parse_args(argv)
     common.progress_emit("preview", 0.0, "loading scene")
@@ -88,8 +122,12 @@ def main(argv=None):
               "first)" % geometry_dir, file=sys.stderr)
         return 1
 
+    # raw json first: common.load_model validates immediately, and a
+    # half-built scene without a detector must survive long enough for
+    # _ensure_detector to patch it
     try:
-        model = common.load_model(model_json)
+        with open(model_json) as fh:
+            model = json.load(fh)
     except Exception as exc:
         print("preview_rays: failed to load %s: %s" % (model_json, exc),
               file=sys.stderr)
@@ -97,10 +135,11 @@ def main(argv=None):
 
     only_bodies = (args.only_bodies.split(",") if args.only_bodies else None)
     _filter_only_bodies(model, only_bodies)
+    _ensure_detector(model)
     try:
         common.validate_model(model)
     except Exception as exc:
-        print("preview_rays: --only-bodies left an invalid scene: %s" % exc,
+        print("preview_rays: scene invalid for preview: %s" % exc,
               file=sys.stderr)
         return 1
 
@@ -146,8 +185,9 @@ def main(argv=None):
             viz_batches.append(vb)
     if not viz_batches:
         print("preview_rays: --pattern produced no rays for any source "
-              "(non-planar emit faces fall back to random viz rays, which "
-              "this preview does not draw)", file=sys.stderr)
+              "(only planar and spherical emit faces support the "
+              "deterministic patterns; other surface types were skipped)",
+              file=sys.stderr)
         return 1
 
     result = tracer.run(viz_batches)
