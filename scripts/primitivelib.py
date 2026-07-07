@@ -204,6 +204,8 @@ PRIMITIVES = {
                    "ct": P(6.0, "mm", "center thickness"),
                    "aperture": P(20.0, "mm", "clear aperture diameter")},
         "props": {"material": "bk7"},
+        # builder-owned, re-derived from R/k/aperture every rebuild
+        "derived_props": ("surface_override",),
     },
     "lens_fresnel": {
         "category": "Lenses", "label": "Fresnel lens",
@@ -706,6 +708,10 @@ PRIMITIVES = {
                    "thickness": P(10.0, "mm", "substrate thickness behind "
                                              "the vertex")},
         "props": {"material": "aluminum"},
+        # surface_override is derived from rfl/aperture by the builder --
+        # rebuild-on-edit must NOT restore the stale pre-rebuild string
+        # (the extractor's <1 um verifier dies on the mismatch)
+        "derived_props": ("surface_override",),
     },
     # =========================================================================
     # Batch C -- fiber optics + telescope primitives (demo-gallery round)

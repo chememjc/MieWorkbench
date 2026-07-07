@@ -81,6 +81,10 @@ def _build_pipeline_parser():
                    help="wavelength strata (default: from --preset)")
     g.add_argument("--spectral-bins", type=int, default=None,
                    help="detector spectral bins (default: from --preset)")
+    g.add_argument("--max-reflections", type=int, default=None,
+                   help="reflection/TIR generation cap per ray (default 6; "
+                        "raise for many-bounce systems, e.g. ~300 for a "
+                        "75 mm fiber segment)")
     g.add_argument("--viz-rays", type=int, default=None,
                    help="absolute viz-ray cap per source (set this to "
                         "override --viz-density; preset value acts as the "

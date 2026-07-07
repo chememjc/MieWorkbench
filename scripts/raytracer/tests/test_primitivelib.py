@@ -243,7 +243,15 @@ def test_no_new_kind_defines_a_round_flag_where_the_spec_says_always_round():
 def test_derived_props_excluded_from_rebuild_baseline_for_apertures():
     for kind in APERTURE_KINDS:
         assert pl.PRIMITIVES[kind]["derived_props"] == ("absorbance",)
-    for kind in set(pl.PRIMITIVES) - set(APERTURE_KINDS):
+    # asphere-backed primitives: the surface_override string is derived
+    # from the sheet params by the builder; preserving the pre-rebuild
+    # value would trip the extractor's <1 um verification (found by the
+    # newtonian demo: a rebuilt rfl=900 primary kept its rfl=50 override)
+    for kind in ("lens_asphere", "mirror_parabolic"):
+        assert pl.PRIMITIVES[kind]["derived_props"] == \
+            ("surface_override",), kind
+    exempt = set(APERTURE_KINDS) | {"lens_asphere", "mirror_parabolic"}
+    for kind in set(pl.PRIMITIVES) - exempt:
         assert not pl.PRIMITIVES[kind].get("derived_props"), kind
 
 

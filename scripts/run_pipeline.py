@@ -200,6 +200,8 @@ def trace_cmd(stem, case_dir, args):
     if args.viz_pattern is not None:
         common.parse_viz_pattern_spec(args.viz_pattern)  # fail fast here
         cmd += ["--viz-pattern", args.viz_pattern]
+    if args.max_reflections is not None:
+        cmd += ["--max-reflections", str(int(args.max_reflections))]
     cmd += ["--seeds", str(args.seeds if args.seeds is not None
                            else common.DEFAULTS["seeds"])]
     cmd += ["--backend", args.backend if args.backend is not None

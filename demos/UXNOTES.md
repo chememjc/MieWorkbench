@@ -1,0 +1,88 @@
+# UX friction log — building the demo gallery through the interface
+
+Every demo in this folder was assembled with the exact op sequence the GUI
+issues (`scripts/make_demos.py` drives `mieworkbench.core.fcclient`:
+import_primitive → set_spreadsheet → rebuild_primitive → set_placement →
+set_property → save). This file records what was easy, what hurt, and what
+should change — the raw material for the round-2 UX proposal.
+
+## What worked well
+
+- **Type-first add + parameter sheets.** Every element except the Schmidt
+  corrector came straight from the catalog; setting prescription radii/
+  thicknesses through the `dim` sheet aliases was exactly the "element
+  parameters box" experience — no typing beyond numbers.
+- **`solve_achromat` / lens wizards.** The microscope objective's two
+  doublets were one function call each (f=20/f=40, scaled BK7/SF5 design).
+- **Multi-body elements move rigidly by group.** Placing the iris, fiber,
+  achromats and BS cube (all 2-body elements) needed one set_placement.
+- **`max_reflections` as a per-demo simparam.** The fiber's ~60-bounce TIR
+  guiding needed one line in simparams.json once the pipeline exposed it.
+- **The aperture contract.** iris/slit plugs (material=air) came built-in;
+  no manual plug bodies anywhere.
+
+## Friction points (ranked by how much time they cost)
+
+1. **No "aim this element at that one".** Every folded system needed hand
+   trig for rotation quaternions: the Newtonian/Dobsonian diagonal
+   (-135° about z), the Czerny-Turner's four aimed bodies (mirror-law
+   bisector normals computed offline), the Michelson's M2/detector, the
+   prism-spectrometer camera arm. This was BY FAR the largest cost of
+   building the gallery. A transform-panel "point local -x at element E /
+   at world point P" action (plus "reflect A onto B" for mirrors) would
+   have removed ~80 lines of layout math.
+2. **No system-level focus readout.** The camera triplet and microscope
+   needed an offline paraxial solver to place the sensor (the engine knows
+   the answer, but only after a full run). An on-demand "paraxial trace
+   through the current train" readout (EFL/BFL/image plane) would remove
+   the round-trip. The thick-lens wizard solves single elements only.
+3. **No "flip element" affordance.** Orienting a PCX lens convex-out, the
+   SCT secondary convex-toward-primary, etc. means knowing the primitive's
+   local axis convention and applying a 180° rotation. A one-click "flip
+   about local y/z" (or an orientation indicator — now added in this
+   round: the blue +x dot helps diagnose, but not fix) would be quicker.
+4. **Min-deviation prism setup is trig homework.** `prism.rotation` is the
+   right knob, but the value (30° − (A+Dmin)/2) had to be derived offline
+   from the glass index. A tiny wizard ("orient for minimum deviation at
+   λ") fits the existing wizard registry pattern.
+5. **Tiny angles are invisible.** The Michelson's 0.158 mrad tilt (5
+   fringes across the detector) can't be verified visually in the 3D view;
+   trust-the-number only. The transform panel showing the rotation as
+   axis+angle (not just a quaternion) with 4+ decimals would help.
+6. **D-shaped mirror default clips an on-axis cone.** `mirror_d_shaped`
+   with cut_offset=0 is a half-disc — correct for beam packing, wrong as a
+   Newtonian diagonal for an on-axis bundle (half the cone misses). The
+   demos use a round flat instead; a `cut_offset` preset note (or an
+   elliptical-diagonal primitive) would prevent the trap.
+7. **Achromat aperture vs scaled radii.** `solve_achromat(20)` yields
+   |R_iface| = 8.8 mm; leaving the default aperture (18 mm) makes the
+   builder fail with a bare "math domain error". The wizard knows both
+   numbers — it should clamp/warn instead of letting the build die.
+8. **Diverging broadband source is a property recipe, not a type.** A
+   "slit lamp" (divergent + lambdamin/lambdamax) is laser_divergent plus
+   two hand-added properties. Worth a catalog preset.
+
+## Real bugs the shakedown caught (fixed immediately)
+
+- **Multi-body elements tore apart on placement.** `set_placement` looked
+  a body up by label BEFORE trying the element-group match, and an
+  imported multi-body element's primary body carries the element label
+  itself — so moving "Slit"/"Stop"/"Fiber"/"BS" moved only the first body
+  and left the plug/cladding/second prism at the origin (extraction then
+  failed on overlapping solids, or the Michelson silently traced garbage).
+  Group match now wins; the GUI inherits the fix.
+- **Rebuild-on-edit kept stale `surface_override` strings.** Editing a
+  `mirror_parabolic`'s focal length rebuilt the geometry but re-applied
+  the OLD override via the extra-prop preservation path, so extraction
+  died on the <1 µm asphere verification. `surface_override` is now in
+  `derived_props` for the asphere-backed primitives (same mechanism as
+  the iris `blackness` → `absorbance` fix).
+
+## Fixed during this round (feedback already applied)
+
+- `detector_plane` grew a `height` param (36×24 CMOS sensor demo).
+- `--max-reflections` is now a first-class pipeline/simparams option.
+- `fiber_optic` and `mirror_annular` became catalog primitives.
+- Face-orientation indicators now show emit/detector/+x faces in both 3D
+  views (the "which way is this facing" questions that motivated several
+  of the flips above are at least *visible* now).

@@ -1,0 +1,578 @@
+#!/usr/bin/env python3
+# =============================================================================
+# make_demos.py — build the demos/ gallery THROUGH THE GUI'S OWN OP PATH.
+#
+# Interpreter: system python3 (stdlib only). Every scene is assembled with
+# the exact op sequence the GUI issues (mieworkbench.core.fcclient against
+# the persistent fc_server worker): new_document -> import_primitive ->
+# set_spreadsheet -> rebuild_primitive -> set_placement -> set_property ->
+# save. That is deliberate: building the gallery this way exercises the
+# same code path as interactive editing (and doubles as the UX shakedown
+# documented in demos/UXNOTES.md).
+#
+#   python3 scripts/make_demos.py [--demo NAME|all] [--outdir demos]
+#                                 [--no-pack] [--list]
+#
+# Each demo produces demos/<name>.FCStd plus (default) a packed
+# demos/<name>.MieWB embedding the property library and a quick-preset
+# simparams.json (with per-demo overrides such as max_reflections).
+# Smoke-run any of them with:
+#   python3 scripts/miewb_tool.py run demos/<name>.MieWB -o /tmp/<name>.MieSim
+#
+# The schmidt_cassegrain corrector plate is the one hand-authored body
+# (quartic Schmidt profile — the catalog asphere is conic-only): after the
+# fcclient assembly, scripts/tools/add_schmidt_corrector.py is run under
+# the FreeCAD AppImage to add it to the saved .FCStd.
+#
+# Prescription sources (full citations in demos/README.md): Cooke triplet
+# (MathWorks Cooke design, uniformly rescaled to 50 mm EFL), C8-style SCT
+# (Suiter's ZEMAX table + the classic 0.866-zone corrector), N-BK7/F2/SF
+# Sellmeier data (Schott catalog / refractiveindex.info), ball-lens BFL
+# (standard formula, Edmund Optics app notes), fiber core (Fleming 1984 /
+# Malitson 1965 interpolation, see opticalproperties/materials.miemat).
+# =============================================================================
+import argparse
+import csv
+import math
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "scripts"))
+
+import common  # noqa: E402
+import miewb_tool  # noqa: E402
+from mieworkbench.core.fcclient import FcClient  # noqa: E402
+from mieworkbench.core.wizards import solve_achromat  # noqa: E402
+import primitivelib  # noqa: E402  (metadata only, no FreeCAD)
+
+PRIMDIR = REPO / "primitives"
+FREECAD = common.FREECAD_APPIMAGE
+
+
+# ---------------------------------------------------------------------------
+# small pure helpers
+# ---------------------------------------------------------------------------
+def rot_z(deg):
+    """Quaternion [x,y,z,w] for a rotation about the world z axis."""
+    half = math.radians(deg) / 2.0
+    return [0.0, 0.0, math.sin(half), math.cos(half)]
+
+
+def unit(deg):
+    """Unit vector in the x-y plane at `deg` from +x."""
+    return (math.cos(math.radians(deg)), math.sin(math.radians(deg)))
+
+
+def ang(vec):
+    return math.degrees(math.atan2(vec[1], vec[0]))
+
+
+def _sellmeier_cache():
+    rows = {}
+    with open(REPO / "opticalproperties" / "materials.miemat",
+              newline="") as fh:
+        for row in csv.DictReader(fh):
+            if row["model"] == "sellmeier":
+                rows[row["name"]] = [float(row["p%d" % i])
+                                     for i in range(1, 7)]
+    return rows
+
+
+_SELLMEIER = None
+
+
+def n_glass(name, lam_nm):
+    """Refractive index from the shipped materials registry (Sellmeier)."""
+    global _SELLMEIER
+    if _SELLMEIER is None:
+        _SELLMEIER = _sellmeier_cache()
+    b1, b2, b3, c1, c2, c3 = _SELLMEIER[name]
+    l2 = (lam_nm * 1e-3) ** 2
+    return math.sqrt(1.0 + b1 * l2 / (l2 - c1) + b2 * l2 / (l2 - c2)
+                     + b3 * l2 / (l2 - c3))
+
+
+def paraxial_image_x(surfaces, x_obj, lam_nm):
+    """Paraxial image plane x for an on-axis object point at x_obj.
+
+    surfaces: [(x_vertex_mm, R_mm_or_None_for_flat, glass_before_or_None,
+    glass_after_or_None), ...] in beam order (+x); None glass = air.
+    Sign convention: R > 0 means center of curvature at +x of the vertex.
+    """
+    def idx(glass):
+        return 1.0 if glass is None else n_glass(glass, lam_nm)
+
+    if x_obj is None or not math.isfinite(x_obj):
+        y, u, x = 1.0, 0.0, surfaces[0][0]     # collimated bundle
+    else:
+        y, u, x = 0.0, 0.05, x_obj             # axial object point
+    for xv, R, g1, g2 in surfaces:
+        y += u * (xv - x)
+        x = xv
+        n1, n2 = idx(g1), idx(g2)
+        if R is not None:
+            u = (n1 * u - y * (n2 - n1) / R) / n2
+        else:
+            u = n1 * u / n2
+    if abs(u) < 1e-12:
+        raise ValueError("paraxial bundle did not converge")
+    return x - y / u
+
+
+# ---------------------------------------------------------------------------
+# Demo assembly wrapper around the GUI op set
+# ---------------------------------------------------------------------------
+class Demo:
+    def __init__(self, fc, fcstd_path):
+        self.fc = fc
+        self.path = str(fcstd_path)
+        st = fc.request("new_document", {"path": self.path})
+        self.doc = st["doc"]
+        self.notes = []
+
+    def note(self, text):
+        self.notes.append(text)
+
+    def add(self, kind, label, pos=(0.0, 0.0, 0.0), rot_deg=None, quat=None,
+            params=None, props=None):
+        """Import a primitive and configure it exactly as the GUI would.
+        rot_deg: rotation about world z (the demos are planar); quat wins
+        if given. params: {alias: value} in the kind's spec units.
+        props: {prop: value} applied to the element's PRIMARY body, or
+        {(body_label, prop): value} for multi-body elements."""
+        self.fc.request("import_primitive",
+                        {"doc": self.doc,
+                         "path": str(PRIMDIR / (kind + ".FCStd")),
+                         "label": label})
+        if params:
+            spec = primitivelib.PRIMITIVES[kind]["params"]
+            for alias, value in params.items():
+                raw = primitivelib.sheet_raw(float(value),
+                                             spec[alias]["unit"])
+                self.fc.request("set_spreadsheet",
+                                {"doc": self.doc,
+                                 "sheet": "dim_%s" % label,
+                                 "alias": alias, "raw": raw})
+            self.fc.request("rebuild_primitive",
+                            {"doc": self.doc, "group": label})
+        q = quat if quat is not None else rot_z(rot_deg or 0.0)
+        if list(pos) != [0.0, 0.0, 0.0] or q != [0.0, 0.0, 0.0, 1.0]:
+            # body=label matches single-body elements; miewb_group matches
+            # every member of multi-body ones (rigid move)
+            self.fc.request("set_placement",
+                            {"doc": self.doc, "body": label,
+                             "pos_mm": list(pos), "quat": q})
+        for key, value in (props or {}).items():
+            body, prop = key if isinstance(key, tuple) else (label, key)
+            self.fc.request("set_property",
+                            {"doc": self.doc, "body": body,
+                             "name": prop, "value": value})
+        return label
+
+    def body_labels(self, group):
+        st = self.fc.request("get_structure", {"doc": self.doc})
+        return [b["label"] for b in st["bodies"]
+                if (b.get("properties", {}).get("miewb_group", {})
+                    .get("value")) == group]
+
+    def save(self):
+        self.fc.request("save", {"doc": self.doc})
+
+
+# ---------------------------------------------------------------------------
+# the demos
+# ---------------------------------------------------------------------------
+def demo_beam_expander(d):
+    """3x Keplerian beam expander: two BK7 plano-convex lenses (f=50 +
+    f=150 at 650 nm), spacing f1+f2, convex sides outward."""
+    lam = 650.0
+    n = n_glass("bk7", lam)
+    f1, f2 = 50.0, 150.0
+    r1, r2 = (n - 1.0) * f1, (n - 1.0) * f2
+    d.add("laser_collimated", "Laser", pos=(-30, 0, 0),
+          params={"diameter": 3.0},
+          props={"lambdac": lam, "coherent": False})
+    d.add("lens_pcx", "L1", pos=(0, 0, 0),
+          params={"R_front": r1, "aperture": 12.0, "ct": 3.0})
+    # convex side toward the expanded output: flip 180 deg
+    d.add("lens_pcx", "L2", pos=(f1 + f2, 0, 0), rot_deg=180.0,
+          params={"R_front": r2, "aperture": 30.0, "ct": 5.0})
+    d.add("detector_plane", "Screen", pos=(f1 + f2 + 40.0, 0, 0),
+          params={"width": 40.0})
+    d.note("beam_expander: all dropdown/params; flipping L2 needed a "
+           "180-deg rotation with no 'flip element' affordance")
+    return {"preset": "quick"}
+
+
+def demo_newtonian(d):
+    """150 mm f/6 Newtonian: parabolic primary (rfl=900), D-shaped 45-deg
+    diagonal 210 mm before focus, detector at the folded focal plane."""
+    rfl, ap = 900.0, 150.0
+    L = 210.0                       # diagonal center -> focal plane
+    xd = -(rfl - L)                 # diagonal position on axis
+    d.add("laser_collimated", "Star", pos=(-rfl - 60.0, 0, 0),
+          params={"diameter": ap * 0.98},
+          props={"lambdac": 550.0, "coherent": False})
+    d.add("mirror_parabolic", "Primary",
+          params={"rfl": rfl, "aperture": ap, "thickness": 15.0})
+    # fold the converging cone (traveling -x) into +y: normal (1,1)/sqrt2.
+    # Round flat (not mirror_d_shaped): at 45 deg a circle presents a
+    # foreshortened cone_diam/cos45 aperture, so 52 mm covers the 35 mm
+    # cone; the D-shape's chord would clip half the on-axis cone.
+    d.add("mirror_flat", "Diagonal", pos=(xd, 0, 0), rot_deg=-135.0,
+          params={"width": 52.0, "thickness": 5.0, "round_flag": 1})
+    d.add("detector_plane", "Eyepiece", pos=(xd, L, 0), rot_deg=90.0,
+          params={"width": 20.0})
+    d.note("newtonian: diagonal quaternion (-135 deg about z) had to be "
+           "computed by hand; an 'aim at element' helper would remove it")
+    return {"preset": "quick"}
+
+
+def demo_dobsonian(d):
+    """200 mm f/5 Dobsonian: optically a Newtonian (the mount is not an
+    optical element); bigger, faster prescription than the newtonian demo."""
+    rfl, ap = 1000.0, 200.0
+    L = 250.0
+    xd = -(rfl - L)
+    d.add("laser_collimated", "Star", pos=(-rfl - 60.0, 0, 0),
+          params={"diameter": ap * 0.98},
+          props={"lambdac": 550.0, "coherent": False})
+    d.add("mirror_parabolic", "Primary",
+          params={"rfl": rfl, "aperture": ap, "thickness": 18.0})
+    d.add("mirror_flat", "Diagonal", pos=(xd, 0, 0), rot_deg=-135.0,
+          params={"width": 72.0, "thickness": 5.0, "round_flag": 1})
+    d.add("detector_plane", "Eyepiece", pos=(xd, L, 0), rot_deg=90.0,
+          params={"width": 25.0})
+    return {"preset": "quick"}
+
+
+def demo_michelson(d):
+    """Michelson interferometer: 25 mm 50:50 cube, two 50-60 mm arms, one
+    mirror tilted 0.158 mrad -> ~5 straight fringes across the 10 mm
+    detector at 633 nm (pitch = lambda / (2*theta))."""
+    tilt_deg = math.degrees(633e-9 / (2.0 * 0.002) )   # 5 fringes / 10 mm
+    d.add("laser_collimated", "Laser", pos=(-60, 0, 0),
+          params={"diameter": 8.0},
+          props={"lambdac": 633.0})          # coherent=True (default)
+    d.add("bs_cube", "BS", pos=(-12.5, 0, 0))      # entrance face at x=-12.5
+    d.add("mirror_flat", "M1", pos=(60, 0, 0),
+          params={"width": 15.0, "round_flag": 1})
+    d.add("mirror_flat", "M2", pos=(0, -60, 0), rot_deg=-90.0 + tilt_deg,
+          params={"width": 15.0, "round_flag": 1})
+    d.add("detector_plane", "Screen", pos=(0, 60, 0), rot_deg=90.0,
+          params={"width": 12.0, "round_flag": 0})
+    d.note("michelson: the 0.158 mrad fringe tilt is invisible in the 3D "
+           "view; a numeric rotation readout in the transform panel helps")
+    return {"preset": "quick"}
+
+
+def demo_prism_spectrometer(d):
+    """25 mm equilateral BK7-ish (F2-class) prism at minimum deviation for
+    550 nm; broadband beam disperses ~2.3 deg over 450-650 nm onto a
+    detector via a f=100 focusing lens (honest ~4 mm spectrum)."""
+    # sf5 is the shipped dense flint (F2 itself is not in the registry)
+    glass = "sf5"
+    A = 60.0
+    n550 = n_glass(glass, 550.0)
+    dmin = 2.0 * math.degrees(math.asin(n550 * math.sin(math.radians(
+        A / 2.0)))) - A
+    # prism 'rotation' param turns the geometry itself; entrance-face
+    # outward normal sits at 150 deg + rotation, so incidence
+    # (A + Dmin)/2 against the +x beam needs:
+    inc = (A + dmin) / 2.0
+    rotation = 30.0 - inc
+    dev_dir = unit(-dmin)          # deviated (toward the base, -y)
+    prism_pos = (0.0, 0.0)
+    lens_c = tuple(prism_pos[i] + 40.0 * dev_dir[i] for i in range(2))
+    det_c = tuple(prism_pos[i] + 141.0 * dev_dir[i] for i in range(2))
+    d.add("source_broadband", "Source", pos=(-60, 0, 0),
+          params={"diameter": 8.0},
+          props={"lambdac": 550.0, "lambdamin": 450.0, "lambdamax": 650.0})
+    d.add("prism", "Prism", params={"side": 25.0, "height": 25.0,
+                                    "rotation": rotation},
+          props={"material": glass})
+    n_lens = n_glass("bk7", 550.0)
+    d.add("lens_pcx", "Camera", pos=(lens_c[0], lens_c[1], 0),
+          rot_deg=-dmin,
+          params={"R_front": (n_lens - 1.0) * 100.0, "aperture": 22.0,
+                  "ct": 4.0})
+    d.add("detector_plane", "Screen", pos=(det_c[0], det_c[1], 0),
+          rot_deg=-dmin, params={"width": 25.0})
+    d.note("prism_spectrometer: min-deviation incidence angle needed "
+           "offline trig; wizard support for 'rotate prism for min "
+           "deviation at lambda' would be a one-click win")
+    return {"preset": "quick"}
+
+
+def demo_czerny_turner(d):
+    """Crossed Czerny-Turner: divergent broadband slit source, R=200
+    collimator, 600 g/mm grating (first order), R=200 camera mirror,
+    400-700 nm across ~25 mm of detector."""
+    theta_i, theta_d = 6.127, 25.896      # incidence / 550 nm diffraction
+    off = 34.0                            # off-axis mirror working angle
+    G = (0.0, 0.0)
+    u = unit(180.0 - theta_i)             # grating -> collimator (-x side)
+    v = unit(180.0 + theta_d)             # grating -> camera mirror
+    C = (100.0 * u[0], 100.0 * u[1])
+    M2 = (100.0 * v[0], 100.0 * v[1])
+    w = unit(ang(u) + off)                # collimator -> slit direction
+    S = (C[0] + 100.0 * w[0], C[1] + 100.0 * w[1])
+    # mirror normals bisect in/out directions (mirror law n ~ d_out - d_in)
+    n_coll = (-u[0] - (-w[0]), -u[1] - (-w[1]))     # w - u
+    m = unit(ang((-v[0], -v[1])) - off)   # camera mirror -> detector
+    n_cam = (m[0] - v[0], m[1] - v[1])
+    D = (M2[0] + 100.0 * m[0], M2[1] + 100.0 * m[1])
+
+    d.add("laser_divergent", "SlitSource",
+          pos=(S[0] + 8.0 * w[0], S[1] + 8.0 * w[1], 0),
+          rot_deg=ang((-w[0], -w[1])),
+          params={"diameter": 2.0, "roc": 8.0, "length": 8.0},
+          props={"lambdac": 550.0, "lambdamin": 400.0, "lambdamax": 700.0,
+                 "coherent": False})
+    d.add("slit", "Slit", pos=(S[0], S[1], 0),
+          rot_deg=ang(w) - 180.0,
+          params={"width": 20.0, "height": 20.0, "slit_width": 0.3,
+                  "slit_height": 8.0})
+    d.add("mirror_concave", "Collimator", pos=(C[0], C[1], 0),
+          rot_deg=ang(n_coll) - 180.0,
+          params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
+    d.add("grating_plate", "Grating",
+          params={"width": 30.0, "thickness": 4.0})
+    d.add("mirror_concave", "CameraMirror", pos=(M2[0], M2[1], 0),
+          rot_deg=ang(n_cam) - 180.0,
+          params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
+    d.add("detector_plane", "Screen", pos=(D[0], D[1], 0),
+          rot_deg=ang(m), params={"width": 30.0})
+    d.note("czerny_turner: four bodies needed hand trig for aim angles; "
+           "the single most wanted tool while building the gallery was "
+           "'point this element at that one'")
+    return {"preset": "quick"}
+
+
+def demo_camera_triplet(d):
+    """Cooke triplet, ~50 mm EFL (MathWorks design uniformly rescaled),
+    iris stopped to ~f/5.6, full-frame 36x24 mm sensor at the paraxially
+    computed focus (using the shipped bk7/sf5 glasses)."""
+    lam = 550.0
+    # scaled prescription: (R1, R2, ct, aperture-diam) per element +
+    # air gaps; flint element uses sf5 (the shipped dense flint)
+    L1 = {"R_front": 20.115, "R_back": 269.375, "ct": 3.010, "ap": 15.0}
+    L2 = {"R_front": 23.577, "R_back": 20.065, "ct": 0.502, "ap": 10.0}
+    L3 = {"R_front": 117.632, "R_back": 19.012, "ct": 2.960, "ap": 12.5}
+    air12, air23 = 5.016, 5.418
+    x1 = 0.0
+    x2 = x1 + L1["ct"] + air12
+    x3 = x2 + L2["ct"] + air23
+    surfaces = [
+        (x1, 20.115, None, "bk7"), (x1 + L1["ct"], -269.375, "bk7", None),
+        (x2, -23.577, None, "sf5"), (x2 + L2["ct"], 20.065, "sf5", None),
+        (x3, 117.632, None, "bk7"), (x3 + L3["ct"], -19.012, "bk7", None),
+    ]
+    x_img = paraxial_image_x(surfaces, float("-inf"), lam)
+
+    d.add("laser_collimated", "Scene", pos=(-40, 0, 0),
+          params={"diameter": 14.0},
+          props={"lambdac": lam, "coherent": False})
+    d.add("lens_dcx", "L1", pos=(x1, 0, 0),
+          params={"R_front": L1["R_front"], "R_back": L1["R_back"],
+                  "ct": L1["ct"], "aperture": L1["ap"]})
+    d.add("lens_dcv", "L2", pos=(x2, 0, 0),
+          params={"R_front": L2["R_front"], "R_back": L2["R_back"],
+                  "ct": L2["ct"], "aperture": L2["ap"]},
+          props={"material": "sf5"})
+    # the stop sits just behind the flint element; its concave back
+    # surface bulges 0.64 mm past the vertex at this aperture, so leave
+    # ~1 mm of axial clearance or the solids overlap
+    d.add("iris", "Stop", pos=(x2 + L2["ct"] + 0.95, 0, 0),
+          params={"outer_diameter": 18.0, "thickness": 0.4,
+                  "hole_diameter": 6.94})
+    d.add("lens_dcx", "L3", pos=(x3, 0, 0),
+          params={"R_front": L3["R_front"], "R_back": L3["R_back"],
+                  "ct": L3["ct"], "aperture": L3["ap"]})
+    d.add("detector_plane", "Sensor", pos=(x_img, 0, 0),
+          params={"width": 36.0, "height": 24.0, "round_flag": 0})
+    d.note("camera_triplet: paraxial focus had to be computed outside the "
+           "GUI (%.2f mm); an on-canvas 'where does this system focus' "
+           "readout would remove the round-trip" % x_img)
+    return {"preset": "quick"}
+
+
+def demo_microscope_objective(d):
+    """Simplified Lister-type 10x objective: two air-spaced achromats
+    (f=20 front, f=40 rear, 10 mm apart), point source at the object
+    plane, image on a detector at the paraxial conjugate (~10x)."""
+    lam = 550.0
+    # f=25/f=50 pair (Lister's 2:1 ratio): the f=20 design's scaled
+    # interface radius (8.8 mm) leaves no aperture margin for the NA-0.25
+    # cone, and its crown/flint local geometry self-overlaps at 10 mm
+    a1 = solve_achromat(25.0)
+    a2 = solve_achromat(50.0)
+    x1, x2 = 0.0, 10.0
+    x_obj = -22.0
+
+    def ach_surfaces(x0, a):
+        return [
+            (x0, a["R_front"], None, "bk7"),
+            (x0 + a["ct_crown"], a["R_iface"], "bk7", "sf5"),
+            (x0 + a["ct_crown"] + a["ct_flint"], a["R_back"], "sf5", None),
+        ]
+    surfaces = ach_surfaces(x1, a1) + ach_surfaces(x2, a2)
+    x_img = paraxial_image_x(surfaces, x_obj, lam)
+
+    d.add("laser_divergent", "Object", pos=(x_obj, 0, 0),
+          params={"diameter": 2.0, "roc": 5.0, "length": 6.0},
+          props={"lambdac": lam, "coherent": False})
+    # aperture must stay under the scaled R_iface (|R|=8.8 mm at f=20)
+    # or the meridian arcs cannot close -- 10 mm covers the NA 0.25 cone
+    def ach_params(a, aperture):
+        out = {k: a[k] for k in ("R_front", "R_iface", "R_back",
+                                 "ct_crown", "ct_flint")}
+        out["aperture"] = aperture
+        return out
+    d.add("lens_achromat", "Front", pos=(x1, 0, 0),
+          params=ach_params(a1, 10.0))
+    d.add("lens_achromat", "Rear", pos=(x2, 0, 0),
+          params=ach_params(a2, 12.0))
+    d.add("detector_plane", "Image", pos=(x_img, 0, 0),
+          params={"width": 30.0})
+    d.note("microscope_objective: solve_achromat covered the lens design; "
+           "still needed the offline paraxial solve for the image plane "
+           "(%.1f mm)" % x_img)
+    return {"preset": "quick"}
+
+
+def demo_fiber_coupler(d):
+    """Ball-lens fiber coupler: 650 nm laser -> 2 mm BK7 ball (BFL 0.47 mm)
+    -> 75 mm of 200 um / 0.22 NA step-index fiber (TIR guiding) ->
+    detector at the exit face."""
+    lam = 650.0
+    n = n_glass("bk7", lam)
+    R = 1.0
+    bfl = R * (2.0 - n) / (2.0 * (n - 1.0))
+    x_fiber = 2.0 * R + bfl
+    d.add("laser_collimated", "Laser", pos=(-6, 0, 0),
+          params={"diameter": 0.6, "length": 5.0},
+          props={"lambdac": lam, "coherent": False})
+    d.add("lens_ball", "Ball", params={"diameter": 2.0 * R})
+    d.add("fiber_optic", "Fiber", pos=(x_fiber, 0, 0),
+          params={"length": 75.0})
+    d.add("detector_plane", "Exit", pos=(x_fiber + 75.0 + 0.6, 0, 0),
+          params={"width": 2.0, "round_flag": 0})
+    d.note("fiber_coupler: BFL math done offline; the fiber primitive + "
+           "max_reflections simparam made the rest trivial")
+    return {"preset": "quick", "max_reflections": 200}
+
+
+def demo_schmidt_cassegrain(d):
+    """C8-style 203 mm f/10 Schmidt-Cassegrain (Suiter's table): quartic
+    corrector (hand-authored, added post-assembly), perforated spherical
+    primary (R=812.8), spherical secondary (R=231.07), focus 150 mm behind
+    the primary vertex."""
+    # corrector (added post-assembly) occupies x = 0..5; Suiter's spacings
+    # measure 320 mm of air from its BACK face to the primary vertex
+    x_primary = 5.0 + 320.0
+    x_secondary = x_primary - 312.62
+    x_focus = x_primary + 150.0
+    d.add("laser_collimated", "Star", pos=(-60, 0, 0),
+          params={"diameter": 198.0},
+          props={"lambdac": 550.0, "coherent": False})
+    d.add("mirror_annular", "Primary", pos=(x_primary, 0, 0),
+          params={"R": 812.8, "aperture": 203.2, "hole_diameter": 60.0,
+                  "ct": 18.0})
+    # the cone reflected off the primary travels -x and must hit the
+    # secondary's convex face: flip it (ct=6 keeps its back clear of the
+    # corrector plate it physically mounts on)
+    d.add("mirror_convex", "Secondary", pos=(x_secondary, 0, 0),
+          rot_deg=180.0,
+          params={"R": 231.07, "aperture": 66.0, "ct": 6.0})
+    d.add("detector_plane", "Focus", pos=(x_focus, 0, 0),
+          params={"width": 15.0})
+    d.note("schmidt_cassegrain: the corrector needed a hand-authored "
+           "FreeCAD pass (quartic asphere; catalog asphere is conic-only)")
+    return {"preset": "quick", "corrector": True}
+
+
+DEMOS = {
+    "beam_expander": demo_beam_expander,
+    "newtonian": demo_newtonian,
+    "dobsonian": demo_dobsonian,
+    "michelson": demo_michelson,
+    "prism_spectrometer": demo_prism_spectrometer,
+    "czerny_turner": demo_czerny_turner,
+    "camera_triplet": demo_camera_triplet,
+    "microscope_objective": demo_microscope_objective,
+    "fiber_coupler": demo_fiber_coupler,
+    "schmidt_cassegrain": demo_schmidt_cassegrain,
+}
+
+
+def add_corrector(fcstd_path):
+    """Run the FreeCAD helper that adds the hand-authored Schmidt
+    corrector body to the saved scene."""
+    script = REPO / "scripts" / "tools" / "add_schmidt_corrector.py"
+    result = subprocess.run(
+        [str(FREECAD), "-c", str(script), "--", "--model", str(fcstd_path)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    ok = "CORRECTOR OK" in (result.stdout + result.stderr)
+    if not ok:
+        raise RuntimeError("add_schmidt_corrector failed:\n%s\n%s"
+                           % (result.stdout[-2000:], result.stderr[-500:]))
+
+
+def build_demo(name, outdir, pack=True):
+    outdir.mkdir(parents=True, exist_ok=True)
+    fcstd = outdir / ("%s.FCStd" % name)
+    if fcstd.exists():
+        fcstd.unlink()
+    fc = FcClient()
+    try:
+        demo = Demo(fc, fcstd)
+        simparams = DEMOS[name](demo)
+        demo.save()
+    finally:
+        fc.shutdown()
+    wants_corrector = simparams.pop("corrector", False)
+    if wants_corrector:
+        add_corrector(fcstd)
+    if pack:
+        miewb_tool.pack_miewb(fcstd, outdir / ("%s.MieWB" % name),
+                              simparams=simparams)
+    print("[demo] %-22s -> %s%s" % (name, fcstd.name,
+                                    " (+MieWB)" if pack else ""),
+          flush=True)
+    return demo.notes
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--demo", default="all",
+                   help="demo name or 'all' (see --list)")
+    p.add_argument("--outdir", default=str(REPO / "demos"))
+    p.add_argument("--no-pack", action="store_true",
+                   help="skip the .MieWB packing step")
+    p.add_argument("--list", action="store_true")
+    args = p.parse_args()
+    if args.list:
+        for name in sorted(DEMOS):
+            print(name)
+        return 0
+    names = sorted(DEMOS) if args.demo == "all" else [args.demo]
+    all_notes = []
+    for name in names:
+        if name not in DEMOS:
+            p.error("unknown demo %r" % name)
+        all_notes += build_demo(name, Path(args.outdir),
+                                pack=not args.no_pack)
+    if all_notes:
+        print("\nUX notes gathered while building:")
+        for n in all_notes:
+            print("  - " + n)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

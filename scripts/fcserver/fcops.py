@@ -450,15 +450,20 @@ def op_set_placement(params):
 
     A miewb_group match applies the SAME placement to every member —
     rigid, because primitive builders bake inter-body offsets into local
-    geometry and create members with identity placements."""
+    geometry and create members with identity placements. The GROUP match
+    is tried FIRST: an imported multi-body element's primary body carries
+    the element label itself (import_primitive rewrites 'slit_plug' ->
+    '<label>_plug' but the disk becomes plain '<label>'), so a
+    label-lookup-first order silently moved only that primary body and
+    tore multi-body elements apart (found by the demo gallery: BS cube
+    halves, iris/slit plugs and fiber cladding left at the origin). A
+    single body is still addressable by its unique internal Name (or by
+    a label that isn't also a group value)."""
     doc = _doc(params["doc"])
-    try:
+    targets = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"
+               and getattr(o, "miewb_group", None) == str(params["body"])]
+    if not targets:
         targets = [_body(doc, params["body"])]
-    except OpError:
-        targets = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"
-                   and getattr(o, "miewb_group", None) == str(params["body"])]
-        if not targets:
-            raise
     for body in targets:
         bound = _placement_expression(body)
         if bound is not None:
