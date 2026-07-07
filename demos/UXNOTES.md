@@ -61,6 +61,14 @@ should change — the raw material for the round-2 UX proposal.
 8. **Diverging broadband source is a property recipe, not a type.** A
    "slit lamp" (divergent + lambdamin/lambdamax) is laser_divergent plus
    two hand-added properties. Worth a catalog preset.
+9. **A reflection grating is three separate switches.** The catalog
+   `grating_plate` is a bk7 TRANSMISSION grating; making it reflective
+   for a Czerny-Turner needed `mirror=1.0` (the engine's reflect/transmit
+   switch — the aluminum material alone does nothing), an explicit
+   `0,1,0` periodicity vector (`v` = the face-frame t2 tangent = out of
+   the layout plane here), and a face pin (see the FaceN instability
+   above). A `grating_mirror` catalog primitive with in-plane defaults
+   would make this one click.
 
 ## Real bugs the shakedown caught (fixed immediately)
 
@@ -100,6 +108,31 @@ build time from tessellation normals (`Demo.detector_face()`) because
 FaceN numbering is not even stable across rebuilds. A `detector_face`
 BODY PROPERTY (part of the authoring contract, set once in the GUI)
 would remove the whole failure class.
+
+## Round-2 proposal (prioritized)
+
+1. **"Aim at" transform action** — point an element's local −x (or a
+   chosen axis) at another element / a world point; "reflect A onto B"
+   variant that sets a mirror's normal to the bisector. Removes the hand
+   trig that dominated gallery construction. (transform_panel + a pure
+   solver in core/transforms.py)
+2. **`detector_face`/`emit_face` as body properties** — extractor-level
+   support so the recording face is authored once in the GUI (with the
+   indicator glyph showing it) instead of pinned per-run; kills the
+   0-mW-edge-face failure class AND the FaceN instability, if stored as
+   a geometric rule (e.g. `facing:+y` or `local:-x`) rather than an index.
+3. **Paraxial system readout** — EFL/BFL/image-plane of the current train
+   along an axis, computed from the extracted surfaces (a pure-python
+   paraxial chain; make_demos.py already contains the 25-line prototype).
+4. **Face-map re-resolution after rebuild** — match old→new faces
+   geometrically (centroid/normal/area) and rewrite FaceN indices in
+   coating/grating/override strings; warn when unmatched.
+5. **"Flip element" button** (180° about local y/z) in the transform
+   panel, paired with the orientation indicators.
+6. **Prism min-deviation wizard** (given glass + λ, set `rotation`) and a
+   **slit-lamp source preset** (divergent + λ band) in the catalog.
+7. **Transform panel shows axis+angle** with enough digits for mrad-scale
+   alignment (Michelson fringe tilts are invisible otherwise).
 
 ## Fixed during this round (feedback already applied)
 

@@ -136,6 +136,7 @@ class Demo:
         self.doc = st["doc"]
         self.notes = []
         self.detector_pins = []   # [(body_label, beam_dir)] see pin_detector
+        self.grating_pins = []    # [(body_label, beam_dir, value)]
 
     def note(self, text):
         self.notes.append(text)
@@ -191,6 +192,14 @@ class Demo:
         resolve_detector_pins) and picking the plane face whose OUTWARD
         normal opposes the beam arrival direction `beam_dir`."""
         self.detector_pins.append((label, tuple(beam_dir)))
+
+    def pin_grating(self, label, beam_dir, value):
+        """Like pin_detector, for a grating face: the shipped plate's
+        'Face1=...' property points at whatever face happens to be #1
+        after this document's save/reload, so the demo passes an explicit
+        --grating CLI override (which takes precedence) on the face
+        resolved post-save from the beam direction."""
+        self.grating_pins.append((label, tuple(beam_dir), value))
 
     def save(self):
         self.fc.request("save", {"doc": self.doc})
@@ -409,15 +418,19 @@ def demo_czerny_turner(d):
     d.add("mirror_concave", "Collimator", pos=(C[0], C[1], 0),
           rot_deg=ang(n_coll) - 180.0,
           params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
-    # DEFAULT size on purpose: rebuilding a grating_plate renumbers its
-    # faces and the preserved 'Face1=600:v' grating property can land on
-    # an edge face -- importing the shipped geometry keeps Face1 = front.
-    # Groove spec: 'v' means the face-frame t2 tangent, which for this
-    # plate is world z -- dispersing OUT of the instrument plane. Pin the
-    # periodicity vector to world y explicitly so the orders stay in the
-    # x-y layout plane.
+    # mirror=1.0 makes the diffraction REFLECTIVE (grating.apply_to_batch
+    # switches on the body's mirror property >= 0.5, not the material) --
+    # the catalog plate is a bk7 TRANSMISSION grating by default. The
+    # grating face is pinned post-save via a --grating CLI override
+    # (FaceN numbering is unstable across save/reload, so the shipped
+    # 'Face1=600:v' property cannot be trusted to sit on the front face);
+    # the explicit 0,1,0 periodicity vector keeps the orders in the x-y
+    # layout plane ('v' = face-frame t2 = world z here, which disperses
+    # out of plane).
     d.add("grating_plate", "Grating",
-          props={"grating": "Face1=600:0,1,0:orders=-1..1"})
+          props={"material": "aluminum", "mirror": 1.0})
+    d.pin_grating("Grating", (-u[0], -u[1], 0.0),
+                  "600:0,1,0:orders=-1..1")
     d.add("mirror_concave", "CameraMirror", pos=(M2[0], M2[1], 0),
           rot_deg=ang(n_cam) - 180.0,
           params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
@@ -587,6 +600,29 @@ DEMOS = {
 }
 
 
+def _resolve_front_face(model, label, beam_dir):
+    """The plane face of `label` whose OUTWARD normal opposes the beam
+    arrival direction (unique: the far cap points along the beam, edges
+    are perpendicular)."""
+    body = next(b for b in model["bodies"]
+                if b.get("label", b["name"]) == label or b["name"] == label)
+    best, best_dot = None, -2.0
+    for f in body["faces"]:
+        surf = f.get("surface", {})
+        if surf.get("type") != "plane":
+            continue
+        n = surf.get("normal") or [0.0, 0.0, 0.0]
+        if not f.get("orientation_outward", True):
+            n = [-c for c in n]
+        dot = -sum(a * b for a, b in zip(n, beam_dir))
+        if dot > best_dot:
+            best, best_dot = f["id"], dot
+    if best is None or best_dot < 0.7:
+        raise RuntimeError("could not resolve front face for %s "
+                           "(best dot %.2f)" % (label, best_dot))
+    return best
+
+
 def resolve_detector_pins(fcstd_path, pins):
     """Batch-extract the SAVED scene and resolve each pinned detector's
     recording face: the plane face whose outward normal opposes the
@@ -605,27 +641,13 @@ def resolve_detector_pins(fcstd_path, pins):
             text=True)
         model_path = outdir / Path(fcstd_path).stem / "model.json"
         model = json.loads(model_path.read_text())
-        resolved = []
-        for label, beam_dir in pins:
-            body = next(b for b in model["bodies"]
-                        if b.get("label", b["name"]) == label
-                        or b["name"] == label)
-            best, best_dot = None, -2.0
-            for f in body["faces"]:
-                surf = f.get("surface", {})
-                if surf.get("type") != "plane":
-                    continue
-                n = surf.get("normal") or [0.0, 0.0, 0.0]
-                if not f.get("orientation_outward", True):
-                    n = [-c for c in n]
-                dot = -sum(a * b for a, b in zip(n, beam_dir))
-                if dot > best_dot:
-                    best, best_dot = f["id"], dot
-            if best is None or best_dot < 0.7:
-                raise RuntimeError("could not resolve detector face for "
-                                   "%s (best dot %.2f)" % (label, best_dot))
-            resolved.append(best)
-        return resolved
+        detector_pins, grating_pins = pins
+        det = [_resolve_front_face(model, label, beam_dir)
+               for label, beam_dir in detector_pins]
+        grat = ["%s:%s" % (_resolve_front_face(model, label, beam_dir),
+                           value)
+                for label, beam_dir, value in grating_pins]
+        return det, grat
     finally:
         shutil.rmtree(str(outdir), ignore_errors=True)
 
@@ -658,9 +680,13 @@ def build_demo(name, outdir, pack=True):
     wants_corrector = simparams.pop("corrector", False)
     if wants_corrector:
         add_corrector(fcstd)
-    if demo.detector_pins:
-        simparams["detector_face"] = resolve_detector_pins(
-            fcstd, demo.detector_pins)
+    if demo.detector_pins or demo.grating_pins:
+        det, grat = resolve_detector_pins(
+            fcstd, (demo.detector_pins, demo.grating_pins))
+        if det:
+            simparams["detector_face"] = det
+        if grat:
+            simparams["grating"] = grat
     if pack:
         miewb_tool.pack_miewb(fcstd, outdir / ("%s.MieWB" % name),
                               simparams=simparams)

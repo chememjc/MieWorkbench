@@ -16,18 +16,23 @@ energy ledger closing below 1e-3. `demos/UXNOTES.md` records the friction
 found while building these through the interface (and the two real bugs
 the exercise caught).
 
-| Demo | System | What it shows | Detected power (quick run) |
+| Demo | System | What it shows | Detected (of 5 mW, quick preset) |
 |---|---|---|---|
-| `beam_expander` | 3× Keplerian expander: BK7 PCX f=50 + f=150, spacing f1+f2, convex sides out | Collimation preserved, 3× beam diameter; detected power = the four uncoated Fresnel surfaces (0.96⁴ ≈ 0.85) | 4.23 mW of 5 mW |
-| `newtonian` | 150 mm f/6: parabolic primary (rfl 900), 45° round diagonal, folded focus | Exact parabolic focus, 90° fold, central obstruction shadow | see table note |
-| `dobsonian` | 200 mm f/5 Newtonian optics (a Dobsonian is the same telescope on an alt-az mount) | Faster, larger variant of the above | see table note |
-| `michelson` | 25 mm 50:50 cube, 60 mm arms, one mirror tilted 0.158 mrad | Coherent two-beam interference: ~5 straight fringes across the 10 mm detector at 633 nm (pitch λ/2θ) | ~half the input reaches the fringe port |
-| `prism_spectrometer` | 25 mm equilateral SF5 prism at minimum deviation (550 nm), f=100 camera lens | Chromatic dispersion: 450–650 nm spread ~2.3° → ~4 mm spectrum (the honest prism-vs-grating tradeoff) | broadband stripe on the detector |
-| `czerny_turner` | Crossed CT: divergent slit source, R=200 collimator, 600 g/mm grating, R=200 camera mirror | Grating dispersion + off-axis mirror folding; 400–700 nm across ~25 mm | first-order spectrum stripe |
-| `camera_triplet` | Cooke triplet ~50 mm EFL (published design rescaled), iris stop ~f/5.6, 36×24 mm sensor | A real multi-element photographic objective with an internal stop | axial image spot on the sensor |
-| `microscope_objective` | Lister-type: two air-spaced achromats (f=25 + f=50, 10 mm apart), ~9× conjugates | Aberration-corrected finite-conjugate imaging of a point source | image-plane spot |
-| `fiber_coupler` | 650 nm laser → 2 mm BK7 ball lens (BFL 0.47 mm) → 75 mm of 200 µm/0.22 NA fiber | TIR guiding down the fiber core (~60 bounces; `max_reflections` simparam) | ~85–90 % delivered to the exit face |
-| `schmidt_cassegrain` | C8-class 203 mm f/10: quartic Schmidt corrector (hand-authored asphere), perforated spherical primary R 812.8, spherical secondary R 231.07 | Catadioptric folding: corrector → primary → secondary → focus through the primary's hole | focused spot behind the primary |
+| `beam_expander` | 3× Keplerian expander: BK7 PCX f=50 + f=150, spacing f1+f2, convex sides out | Collimation preserved, 3× beam diameter; loss = the four uncoated Fresnel surfaces (0.96⁴ ≈ 0.85) | **4.23 mW** |
+| `newtonian` | 150 mm f/6: parabolic primary (rfl 900), 45° round diagonal, folded focus | Exact parabolic focus, 90° fold, central-obstruction shadow; loss = two Al bounces + obstruction | **3.58 mW** |
+| `dobsonian` | 200 mm f/5 Newtonian optics (a Dobsonian is the same telescope on an alt-az mount) | Faster, larger variant of the above | **3.68 mW** |
+| `michelson` | 25 mm 50:50 **plate** beamsplitter at 45°, 60 mm arms, one mirror tilted 0.158 mrad | Coherent two-beam interference: straight fringes (measured visibility 0.90) across the detector at 633 nm, pitch λ/2θ | **1.05 mW** at the fringe port |
+| `prism_spectrometer` | 25 mm equilateral SF5 prism at minimum deviation (550 nm), f=100 camera lens | Chromatic dispersion: 450–650 nm spread ~2.3° → a ~4 mm spectrum (the honest prism-vs-grating tradeoff) | **0.60 mW** |
+| `czerny_turner` | Crossed CT: divergent slit source, R=200 collimator, 600 g/mm reflective grating (`mirror=1.0`), R=200 camera mirror | Grating dispersion + off-axis mirror folding; 400–700 nm across ~25 mm, first order | **0.08 mW** (slit + overfill + order efficiency) |
+| `camera_triplet` | Cooke triplet ~50 mm EFL (published design rescaled), iris stop ~f/5.6, 36×24 mm sensor | A real multi-element photographic objective; detected ≈ the f/5.6 pupil fraction of the 14 mm input beam | **1.26 mW** |
+| `microscope_objective` | Lister-type: two air-spaced achromats (f=25 + f=50, 10 mm apart), finite conjugates | Aberration-corrected imaging of a point source | **2.79 mW** |
+| `fiber_coupler` | 650 nm laser → 2 mm BK7 ball lens (BFL 0.47 mm) → 75 mm of 200 µm/0.22 NA fiber | TIR guiding down the fiber core (~60 bounces; `max_reflections` simparam) | **3.95 mW** at the exit face |
+| `schmidt_cassegrain` | C8-class 203 mm f/10: quartic Schmidt corrector (hand-authored asphere), perforated spherical primary R 812.8, spherical secondary R 231.07 | Catadioptric folding: corrector → primary → secondary → focus through the primary's hole; loss ≈ two Al bounces + 11 % obstruction | **3.42 mW** |
+
+Every run closes the energy ledger (<1e-3). The folded systems'
+`simparams.json` pins `detector_face` (and the CT's `--grating` face)
+resolved at build time from the shipped file's extraction — FaceN indices
+are not stable across rebuilds or save/reload, see UXNOTES.md.
 
 ## Prescription sources
 
