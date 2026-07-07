@@ -1,0 +1,31 @@
+{
+ "category": "Lenses",
+ "kind": "lens_dcx",
+ "label": "Biconvex lens",
+ "params": {
+  "R_back": {
+   "default": 40.0,
+   "help": "back radius magnitude (>0)",
+   "unit": "mm"
+  },
+  "R_front": {
+   "default": 40.0,
+   "help": "front radius (>0)",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 20.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "ct": {
+   "default": 6.0,
+   "help": "center thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Convex both sides (R1 front, -R2 back)."
+}

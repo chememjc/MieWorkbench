@@ -402,9 +402,11 @@ def sweep_values(vmin, vmax, n):
 
 def variant_name(stem, var, value):
     """simpledipole, dipolelen, 37.5 -> 'simpledipole-dipolelen37p5'
-    (decimals '.'->'p', minus->'m' — matches the cfdsim convention)."""
+    (decimals '.'->'p', minus->'m' — matches the cfdsim convention).
+    Sheet-qualified vars ('dim_Lens1.ct') sanitize the '.' to '_' so the
+    variant stem stays a clean filename."""
     sval = ("%g" % value).replace(".", "p").replace("-", "m")
-    return "%s-%s%s" % (stem, var, sval)
+    return "%s-%s%s" % (stem, str(var).replace(".", "_"), sval)
 
 def case_name(preset, tag=None, seed=None):
     parts = [preset]

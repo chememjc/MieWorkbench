@@ -129,18 +129,33 @@ def resolve_model_path(model):
     return cand
 
 
-def find_sheet(doc):
-    """Find the spreadsheet with Label == SPREADSHEET_LABEL, falling back to
-    any Spreadsheet::Sheet object; hard error if none exists at all."""
+def find_sheet(doc, label=None):
+    """Find the spreadsheet with the given Label (default SPREADSHEET_LABEL),
+    falling back to any Spreadsheet::Sheet object when no label was asked
+    for explicitly; hard error otherwise."""
     sheets = [o for o in doc.Objects if o.TypeId == "Spreadsheet::Sheet"]
     if not sheets:
         die("%s: document has no Spreadsheet::Sheet object" % doc.Name)
+    want = label or SPREADSHEET_LABEL
     for s in sheets:
-        if s.Label == SPREADSHEET_LABEL:
+        if s.Label == want or s.Name == want:
             return s
+    if label is not None:
+        die("%s: no spreadsheet labeled '%s' (have: %s)"
+            % (doc.Name, label, ", ".join(s.Label for s in sheets)))
     warn("%s: no spreadsheet labeled '%s'; falling back to '%s'"
          % (doc.Name, SPREADSHEET_LABEL, sheets[0].Label))
     return sheets[0]
+
+
+def split_var(var):
+    """'alias' -> (None, 'alias'); 'sheetlabel.alias' -> ('sheetlabel',
+    'alias'). Sheet-qualified names address per-element parameter sheets
+    (dim_<element>) written by MieWorkbench primitives."""
+    if "." in var:
+        sheet_label, _, alias = var.partition(".")
+        return sheet_label, alias
+    return None, var
 
 
 def resolve_alias_cell(sheet, var):
@@ -168,6 +183,33 @@ def resolve_alias_cell(sheet, var):
         % (var, sheet.Label,
            (": %s" % err) if err is not None else "",
            ", ".join(aliases) if aliases else "<none found>"))
+
+
+def rebuild_primitive_groups(doc, touched_sheets):
+    """MieWorkbench primitive elements (bodies tagged miewb_primitive /
+    miewb_group) bake their geometry from their dim_<group> sheet instead
+    of driving it through cell expressions, so an alias edit alone leaves
+    the shape unchanged. Rebuild every primitive group whose sheet was
+    touched (no-op for ordinary expression-driven models)."""
+    groups = set()
+    for sheet in touched_sheets:
+        if sheet.Label.startswith("dim_"):
+            groups.add(sheet.Label[len("dim_"):])
+    if not groups:
+        return
+    import primitivelib
+    for group in sorted(groups):
+        bodies = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"
+                  and getattr(o, "miewb_group", None) == group]
+        if not bodies:
+            continue
+        kind = getattr(bodies[0], "miewb_primitive", None)
+        if kind not in primitivelib.PRIMITIVES:
+            continue
+        sheet = [s for s in touched_sheets
+                 if s.Label == "dim_%s" % group][0]
+        primitivelib.rebuild_element(doc, sheet, kind, group)
+        log("rebuilt primitive group '%s' (%s)" % (group, kind))
 
 
 def check_recompute(doc):
@@ -208,11 +250,22 @@ def permute(model_path, varspecs, outdir, unit):
 
         doc = FreeCAD.openDocument(str(model_path))
         try:
-            sheet = find_sheet(doc)
+            default_sheet = None
+            touched_sheets = []
             for var, value in zip(names, combo):
-                cell = resolve_alias_cell(sheet, var)
+                sheet_label, alias = split_var(var)
+                if sheet_label is None:
+                    if default_sheet is None:
+                        default_sheet = find_sheet(doc)
+                    sheet = default_sheet
+                else:
+                    sheet = find_sheet(doc, sheet_label)
+                cell = resolve_alias_cell(sheet, alias)
                 sheet.set(cell, "=%.10g %s" % (value, unit))
+                if sheet not in touched_sheets:
+                    touched_sheets.append(sheet)
             doc.recompute()
+            rebuild_primitive_groups(doc, touched_sheets)
             check_recompute(doc)
 
             doc.saveAs(str(out_path))

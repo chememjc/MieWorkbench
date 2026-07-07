@@ -1260,6 +1260,10 @@ def main():
     log("MAKE TEST SCENES OK (%d scene(s))" % len(names))
 
 
-if _HAVE_FREECAD:
+# Module-scope autorun (no __main__ guard: FreeCAD -c would skip it).
+# MIEWB_MTS_LIBRARY_ONLY=1 suppresses it so primitivelib.py can import the
+# geometry helpers under the AppImage without building a scene as a side
+# effect.
+if _HAVE_FREECAD and not os.environ.get("MIEWB_MTS_LIBRARY_ONLY"):
     main()
     os._exit(0)

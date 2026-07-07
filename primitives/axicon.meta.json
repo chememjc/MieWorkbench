@@ -1,0 +1,21 @@
+{
+ "category": "Lenses",
+ "kind": "axicon",
+ "label": "Axicon",
+ "params": {
+  "aperture": {
+   "default": 22.0,
+   "help": "base diameter",
+   "unit": "mm"
+  },
+  "base_angle": {
+   "default": 10.0,
+   "help": "cone base angle",
+   "unit": "deg"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Conical front (apex toward -x), flat base: turns a beam into a ring / Bessel zone."
+}

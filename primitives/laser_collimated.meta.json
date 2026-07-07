@@ -1,0 +1,23 @@
+{
+ "category": "Sources",
+ "kind": "laser_collimated",
+ "label": "Collimated laser",
+ "params": {
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "radius": {
+   "default": 5.0,
+   "help": "beam (emit face) radius",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "coherent": true,
+  "lambdac": 633.0,
+  "power": 5.0
+ },
+ "tooltip": "Cylindrical housing emitting a collimated beam from its flat +x end cap."
+}

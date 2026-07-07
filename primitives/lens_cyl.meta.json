@@ -1,0 +1,31 @@
+{
+ "category": "Lenses",
+ "kind": "lens_cyl",
+ "label": "Cylindrical lens",
+ "params": {
+  "R": {
+   "default": 25.0,
+   "help": "front radius (signed: <0 concave)",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 20.0,
+   "help": "aperture in y (diameter)",
+   "unit": "mm"
+  },
+  "ct": {
+   "default": 5.0,
+   "help": "center thickness",
+   "unit": "mm"
+  },
+  "height": {
+   "default": 20.0,
+   "help": "extent along z",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Plano-convex (R>0) or plano-concave (R<0) cylinder lens, cylinder axis along z: line focus."
+}

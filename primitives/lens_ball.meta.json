@@ -1,0 +1,16 @@
+{
+ "category": "Lenses",
+ "kind": "lens_ball",
+ "label": "Ball lens",
+ "params": {
+  "diameter": {
+   "default": 8.0,
+   "help": "sphere diameter",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Full sphere."
+}

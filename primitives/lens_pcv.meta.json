@@ -1,0 +1,26 @@
+{
+ "category": "Lenses",
+ "kind": "lens_pcv",
+ "label": "Plano-concave lens",
+ "params": {
+  "R_back": {
+   "default": 25.0,
+   "help": "back radius of curvature (>0)",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 20.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "ct": {
+   "default": 3.0,
+   "help": "center thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Flat front, concave back \u2014 diverging."
+}

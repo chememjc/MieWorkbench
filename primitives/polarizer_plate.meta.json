@@ -1,0 +1,23 @@
+{
+ "category": "Polarization",
+ "kind": "polarizer_plate",
+ "label": "Polarizer",
+ "params": {
+  "half": {
+   "default": 10.0,
+   "help": "half-width",
+   "unit": "mm"
+  },
+  "thickness": {
+   "default": 1.0,
+   "help": "plate thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7",
+  "polarizer": "ideal_linear",
+  "polarizer_axis": "0,0,1"
+ },
+ "tooltip": "Linear polarizer plate (registry item + body-local transmission axis)."
+}

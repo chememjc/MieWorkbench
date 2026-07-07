@@ -1,0 +1,25 @@
+{
+ "category": "Sources",
+ "kind": "source_broadband",
+ "label": "Broadband source",
+ "params": {
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "radius": {
+   "default": 5.0,
+   "help": "emit face radius",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 550.0,
+  "lambdamax": 650.0,
+  "lambdamin": 450.0,
+  "power": 5.0
+ },
+ "tooltip": "Incoherent broadband disc emitter (set lambdamin / lambdamax in the properties)."
+}

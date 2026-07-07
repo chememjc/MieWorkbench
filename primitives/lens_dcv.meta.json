@@ -1,0 +1,31 @@
+{
+ "category": "Lenses",
+ "kind": "lens_dcv",
+ "label": "Biconcave lens",
+ "params": {
+  "R_back": {
+   "default": 40.0,
+   "help": "back radius (>0)",
+   "unit": "mm"
+  },
+  "R_front": {
+   "default": 40.0,
+   "help": "front radius magnitude (>0)",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 20.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "ct": {
+   "default": 3.0,
+   "help": "center thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Concave both sides \u2014 diverging."
+}

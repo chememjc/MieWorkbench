@@ -1,0 +1,24 @@
+{
+ "category": "Polarization",
+ "kind": "pbs_cube",
+ "label": "PBS cube",
+ "params": {
+  "cube": {
+   "default": 20.0,
+   "help": "cube edge length",
+   "unit": "mm"
+  },
+  "gap": {
+   "default": 0.005,
+   "help": "hypotenuse air gap",
+   "unit": "mm"
+  },
+  "height": {
+   "default": 20.0,
+   "help": "extent along z",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Polarizing beamsplitter: two 45-deg prisms, coated hypotenuse, 5 um gap. Two bodies."
+}

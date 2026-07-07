@@ -1,0 +1,26 @@
+{
+ "category": "Lenses",
+ "kind": "lens_pcx",
+ "label": "Plano-convex lens",
+ "params": {
+  "R_front": {
+   "default": 25.0,
+   "help": "front radius of curvature (>0)",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 20.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "ct": {
+   "default": 5.0,
+   "help": "center thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Convex R1 toward -x, flat back."
+}

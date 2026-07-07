@@ -1,0 +1,36 @@
+{
+ "category": "Lenses",
+ "kind": "lens_fresnel",
+ "label": "Fresnel lens",
+ "params": {
+  "aperture": {
+   "default": 24.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "back": {
+   "default": 2.0,
+   "help": "substrate thickness behind the deepest facet",
+   "unit": "mm"
+  },
+  "f_design": {
+   "default": 50.0,
+   "help": "design focal length",
+   "unit": "mm"
+  },
+  "n_design": {
+   "default": 1.51508,
+   "help": "design refractive index",
+   "unit": ""
+  },
+  "n_facets": {
+   "default": 12.0,
+   "help": "number of annular facets",
+   "unit": ""
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Collapsed plano-convex lens: annular conical facets matching the ideal thin-lens local slope."
+}

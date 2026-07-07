@@ -948,8 +948,20 @@ def extract_one(fcstd_path, outdir, strict):
         doc.recompute()
 
         sheets = [o for o in doc.Objects if o.TypeId == "Spreadsheet::Sheet"]
-        spreadsheet = sheet_echo(sheets[0], warnings) if sheets else {}
-        if not sheets:
+        # Primary sheet ('dim' by convention, else the first) echoes FLAT
+        # (back-compat: permute_model / sweeps address bare aliases).
+        # Every sheet ALSO echoes namespaced as '<sheet label>.<alias>' so
+        # per-element parameter sheets (dim_<element>, from MieWorkbench
+        # primitives) are addressable without collisions.
+        spreadsheet = {}
+        if sheets:
+            primary = next((s for s in sheets if s.Label == "dim"),
+                           sheets[0])
+            spreadsheet.update(sheet_echo(primary, warnings))
+            for sheet in sheets:
+                for alias, rec in sheet_echo(sheet, warnings).items():
+                    spreadsheet["%s.%s" % (sheet.Label, alias)] = rec
+        else:
             warn("%s: no Spreadsheet::Sheet object found" % stem, warnings)
 
         bodies_solids = []   # (body, shape, role) for overlap checking

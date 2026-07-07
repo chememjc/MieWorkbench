@@ -1,0 +1,31 @@
+{
+ "category": "Lenses",
+ "kind": "lens_asphere",
+ "label": "Aspheric lens",
+ "params": {
+  "R": {
+   "default": 20.6033,
+   "help": "vertex radius of curvature",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 20.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "ct": {
+   "default": 6.0,
+   "help": "center thickness",
+   "unit": "mm"
+  },
+  "k": {
+   "default": -2.29547,
+   "help": "conic constant (k=-n^2 kills spherical aberration)",
+   "unit": ""
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Plano-convex conic asphere (revolved exact-sag BSpline + surface_override; extractor verifies <1 um)."
+}

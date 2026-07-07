@@ -24,7 +24,11 @@
 import math
 import os
 import struct
+import sys
 import traceback
+
+# parent scripts/ dir for primitivelib (rebuild op)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import FreeCAD  # noqa: F401  (embedded)
 
@@ -441,31 +445,49 @@ def op_set_spreadsheet(params):
 
 
 def op_set_placement(params):
-    """params: doc, body, pos_mm [x,y,z], quat [x,y,z,w]."""
+    """params: doc, body (name, label, or miewb_group of a multi-body
+    element), pos_mm [x,y,z], quat [x,y,z,w].
+
+    A miewb_group match applies the SAME placement to every member —
+    rigid, because primitive builders bake inter-body offsets into local
+    geometry and create members with identity placements."""
     doc = _doc(params["doc"])
-    body = _body(doc, params["body"])
-    bound = _placement_expression(body)
-    if bound is not None:
-        raise OpError(
-            "body %s Placement is expression-bound (%s = %s); edit the "
-            "driving spreadsheet alias instead of setting the placement"
-            % (body.Name, bound["path"], bound["expression"]))
+    try:
+        targets = [_body(doc, params["body"])]
+    except OpError:
+        targets = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"
+                   and getattr(o, "miewb_group", None) == str(params["body"])]
+        if not targets:
+            raise
+    for body in targets:
+        bound = _placement_expression(body)
+        if bound is not None:
+            raise OpError(
+                "body %s Placement is expression-bound (%s = %s); edit the "
+                "driving spreadsheet alias instead of setting the placement"
+                % (body.Name, bound["path"], bound["expression"]))
     pos = params["pos_mm"]
     q = params["quat"]
-    body.Placement = FreeCAD.Placement(
-        FreeCAD.Vector(float(pos[0]), float(pos[1]), float(pos[2])),
-        FreeCAD.Rotation(float(q[0]), float(q[1]), float(q[2]), float(q[3])))
+    for body in targets:
+        body.Placement = FreeCAD.Placement(
+            FreeCAD.Vector(float(pos[0]), float(pos[1]), float(pos[2])),
+            FreeCAD.Rotation(float(q[0]), float(q[1]), float(q[2]),
+                             float(q[3])))
     # placement changes never alter body-local geometry; skip the diff
     doc.recompute()
-    return {"placement": _placement_dict(body)}
+    return {"placements": {b.Name: _placement_dict(b) for b in targets}}
 
 
 def op_import_primitive(params):
-    """Copy the (single) body of a primitive .FCStd into an open document.
+    """Copy a primitive .FCStd's bodies + parameter spreadsheet into an
+    open document.
 
-    params: doc, path (primitive .FCStd), label (new body Label).
-    The primitive's spreadsheet comes along via dependency copy and is
-    relabeled 'dim_<label>' so its aliases stay addressable per element.
+    params: doc, path (primitive .FCStd), label (new element label).
+    Single-body primitives get Label=label; multi-body ones (achromat,
+    pbs_cube) get "<label>_<original label>". The primitive's 'dim' sheet
+    is copied explicitly (its values are baked into the geometry, so it is
+    NOT a dependency) and relabeled 'dim_<label>'; each body's
+    miewb_group prop is rewritten to `label` so rebuilds stay grouped.
     """
     doc = _doc(params["doc"])
     path = params["path"]
@@ -481,25 +503,59 @@ def op_import_primitive(params):
     try:
         src_bodies = [o for o in src.Objects
                       if o.TypeId == "PartDesign::Body"]
-        if len(src_bodies) != 1:
-            raise OpError("primitive %s has %d bodies (need exactly 1)"
-                          % (path, len(src_bodies)))
-        doc.copyObject(src_bodies[0], True)
+        src_sheets = [o for o in src.Objects
+                      if o.TypeId == "Spreadsheet::Sheet"]
+        if not src_bodies:
+            raise OpError("primitive %s has no PartDesign::Body" % path)
+        src_labels = {o.Name: o.Label for o in src.Objects}
+        doc.copyObject(src_bodies + src_sheets, True)
     finally:
         FreeCAD.closeDocument(src.Name)
 
     new_objs = [o for o in doc.Objects if o.Name not in pre_names]
     new_bodies = [o for o in new_objs if o.TypeId == "PartDesign::Body"]
     new_sheets = [o for o in new_objs if o.TypeId == "Spreadsheet::Sheet"]
-    if len(new_bodies) != 1:
-        raise OpError("copyObject produced %d bodies" % len(new_bodies))
-    body = new_bodies[0]
-    body.Label = label
+    if not new_bodies:
+        raise OpError("copyObject produced no bodies")
+    if len(new_bodies) == 1:
+        new_bodies[0].Label = label
+    else:
+        for b in new_bodies:
+            b.Label = "%s_%s" % (label, b.Label)
+    for b in new_bodies:
+        if "miewb_group" in b.PropertiesList:
+            b.miewb_group = label
     for sheet in new_sheets:
         sheet.Label = "dim_%s" % label
-    return _mutation_result(doc, {"body": _body_dict(body),
-                                  "sheets": [_sheet_dict(s)
-                                             for s in new_sheets]})
+    return _mutation_result(doc, {
+        "bodies": [_body_dict(b) for b in new_bodies],
+        "sheets": [_sheet_dict(s) for s in new_sheets]})
+
+
+def op_rebuild_primitive(params):
+    """Rebuild a primitive-built element from its parameter sheet.
+
+    params: doc, group (the element label / miewb_group value),
+            sheet (name or label; default 'dim_<group>').
+    Preserves Labels, Placements and user-added Base props. Only works on
+    bodies carrying miewb_primitive/miewb_group tags (i.e. built by
+    primitivelib); hand-authored elements use set_spreadsheet instead.
+    """
+    import primitivelib
+    doc = _doc(params["doc"])
+    group = str(params["group"])
+    bodies = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"
+              and getattr(o, "miewb_group", None) == group]
+    if not bodies:
+        raise OpError("no bodies with miewb_group %r" % group)
+    kind = getattr(bodies[0], "miewb_primitive", None)
+    if kind not in primitivelib.PRIMITIVES:
+        raise OpError("unknown primitive kind %r on group %r"
+                      % (kind, group))
+    sheet = _sheet(doc, params.get("sheet") or ("dim_%s" % group))
+    new_bodies = primitivelib.rebuild_element(doc, sheet, kind, group)
+    return _mutation_result(doc, {
+        "bodies": [_body_dict(b) for b in new_bodies]})
 
 
 def op_save(params):

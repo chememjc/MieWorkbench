@@ -1,0 +1,26 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "prism",
+ "label": "Equilateral prism",
+ "params": {
+  "height": {
+   "default": 25.0,
+   "help": "extent along z",
+   "unit": "mm"
+  },
+  "rotation": {
+   "default": 0.0,
+   "help": "rotation about z",
+   "unit": "deg"
+  },
+  "side": {
+   "default": 25.0,
+   "help": "triangle side length",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Equilateral dispersing prism, apex up (+y), length along z."
+}

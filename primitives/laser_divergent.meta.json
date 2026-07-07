@@ -1,0 +1,28 @@
+{
+ "category": "Sources",
+ "kind": "laser_divergent",
+ "label": "Divergent laser",
+ "params": {
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "radius": {
+   "default": 5.0,
+   "help": "emit aperture radius",
+   "unit": "mm"
+  },
+  "roc": {
+   "default": 200.0,
+   "help": "emit cap radius of curvature (divergence = radius/roc)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "coherent": true,
+  "lambdac": 633.0,
+  "power": 5.0
+ },
+ "tooltip": "Laser with a convex spherical emit cap: emitted rays diverge from a virtual point (radius of curvature = roc)."
+}

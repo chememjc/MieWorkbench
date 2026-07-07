@@ -1,0 +1,44 @@
+{
+ "category": "Lenses",
+ "kind": "lens_achromat",
+ "label": "Achromatic doublet",
+ "params": {
+  "R_back": {
+   "default": -64.497,
+   "help": "flint back radius (signed)",
+   "unit": "mm"
+  },
+  "R_front": {
+   "default": 31.0,
+   "help": "crown front radius",
+   "unit": "mm"
+  },
+  "R_iface": {
+   "default": -21.956,
+   "help": "cemented interface radius (signed)",
+   "unit": "mm"
+  },
+  "aperture": {
+   "default": 18.0,
+   "help": "clear aperture diameter",
+   "unit": "mm"
+  },
+  "ct_crown": {
+   "default": 6.0,
+   "help": "crown center thickness",
+   "unit": "mm"
+  },
+  "ct_flint": {
+   "default": 3.0,
+   "help": "flint center thickness",
+   "unit": "mm"
+  },
+  "gap": {
+   "default": 0.005,
+   "help": "interface air gap",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Cemented crown+flint doublet (modeled with a 5 um air gap at the interface). Two bodies."
+}

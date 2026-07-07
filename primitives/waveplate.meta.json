@@ -1,0 +1,22 @@
+{
+ "category": "Polarization",
+ "kind": "waveplate",
+ "label": "Waveplate (quartz)",
+ "params": {
+  "half": {
+   "default": 8.0,
+   "help": "half-width",
+   "unit": "mm"
+  },
+  "thickness": {
+   "default": 0.0298,
+   "help": "plate thickness (sets retardance)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "crystal_axis": "0,0,1",
+  "material": "quartz"
+ },
+ "tooltip": "Uniaxial quartz retarder; retardance set by thickness and crystal_axis."
+}

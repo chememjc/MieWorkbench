@@ -1,0 +1,22 @@
+{
+ "category": "Plates & Filters",
+ "kind": "grating_plate",
+ "label": "Diffraction grating",
+ "params": {
+  "half": {
+   "default": 12.5,
+   "help": "half-width",
+   "unit": "mm"
+  },
+  "thickness": {
+   "default": 3.0,
+   "help": "plate thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "grating": "Face1=600:v",
+  "material": "bk7"
+ },
+ "tooltip": "Plate whose front (-x) face carries a grating spec (default 600 l/mm vertical grooves; edit the 'grating' property or use the wizard)."
+}

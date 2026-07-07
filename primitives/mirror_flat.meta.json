@@ -1,0 +1,21 @@
+{
+ "category": "Prisms & Mirrors",
+ "kind": "mirror_flat",
+ "label": "Flat mirror",
+ "params": {
+  "half": {
+   "default": 12.5,
+   "help": "half-width of the square face",
+   "unit": "mm"
+  },
+  "thickness": {
+   "default": 3.0,
+   "help": "plate thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "aluminum"
+ },
+ "tooltip": "Aluminum plate; combine with a 'mirror' or coating property for partial reflectors."
+}

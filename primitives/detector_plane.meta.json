@@ -1,0 +1,21 @@
+{
+ "category": "Detectors",
+ "kind": "detector_plane",
+ "label": "Detector plane",
+ "params": {
+  "half": {
+   "default": 15.0,
+   "help": "half-width of the square screen",
+   "unit": "mm"
+  },
+  "thickness": {
+   "default": 1.0,
+   "help": "screen thickness",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "detector"
+ },
+ "tooltip": "Square thin-screen detector; its -x face records irradiance. Transparent to the beam."
+}

@@ -1,0 +1,21 @@
+{
+ "category": "Lenses",
+ "kind": "lens_rod",
+ "label": "Rod lens",
+ "params": {
+  "diameter": {
+   "default": 8.0,
+   "help": "rod diameter",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 20.0,
+   "help": "rod length along z",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "bk7"
+ },
+ "tooltip": "Cylinder rod (axis along z) \u2014 cylinder lens in x-y."
+}
