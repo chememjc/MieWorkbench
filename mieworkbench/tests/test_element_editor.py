@@ -147,12 +147,15 @@ def test_add_and_remove_property(qtbot, tmp_path):
 
     pane.add_prop_combo.setCurrentText("power")
     pane.add_prop_button.click()
-    assert project.body("Lens")["properties"]["power"]["value"] == ""
-    assert "power" in _prop_labels(pane)
+    # a real default, never the empty string
+    assert project.body("Lens")["properties"]["power"]["value"] == 5.0
+    # row rebuild is deferred to the next event-loop turn (crash fix)
+    qtbot.waitUntil(lambda: "power [mW]" in _prop_labels(pane), timeout=2000)
 
     pane._on_remove_property("power")
     assert "power" not in project.body("Lens")["properties"]
-    assert "power" not in _prop_labels(pane)
+    qtbot.waitUntil(lambda: "power [mW]" not in _prop_labels(pane),
+                    timeout=2000)
 
 
 def test_editing_a_numeric_property_commits_a_float(qtbot, tmp_path):
@@ -263,4 +266,116 @@ def test_properties_changed_for_other_body_does_not_refresh(qtbot, tmp_path):
 
     labels_before = _prop_labels(pane)
     project.set_property("Screen", "absorbance", 0.1)
+    qtbot.wait(20)   # let any (wrongly) scheduled refresh fire
     assert _prop_labels(pane) == labels_before
+
+
+# ---------------------------------------------------------------------------
+# crash regression: committing from a row widget used to delete that same
+# widget synchronously (removeRow inside its own editingFinished/activated
+# signal -> use-after-free). Both historical repro paths are exercised.
+# ---------------------------------------------------------------------------
+def test_commit_from_row_combo_does_not_destroy_sender(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane(optprops_root=str(tmp_path))  # no registries
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    # the canned Lens already has a material row: find its combo
+    row_item = None
+    for i in range(pane.props_form.rowCount()):
+        from PySide6.QtWidgets import QFormLayout as _QF
+        label = pane.props_form.itemAt(i, _QF.ItemRole.LabelRole)
+        if label is not None and label.widget().text() == "material":
+            row_item = pane.props_form.itemAt(i, _QF.ItemRole.FieldRole)
+    assert row_item is not None
+    combo = row_item.widget().layout().itemAt(0).widget()
+
+    # crash path 2: pick/enter a value -> commit -> refresh must be deferred
+    combo.lineEdit().setText("sf5")
+    combo.lineEdit().editingFinished.emit()
+    # the sender must still be alive right after the signal returns
+    assert combo.lineEdit().text() == "sf5"
+    assert project.body("Lens")["properties"]["material"]["value"] == "sf5"
+
+    # crash path 1: click away with the same (now-empty-ish) text -- a
+    # no-op commit must not mutate or schedule destruction of the sender
+    calls_before = list(project.calls)
+    combo.lineEdit().editingFinished.emit()
+    assert project.calls == calls_before
+    qtbot.wait(20)   # deferred refresh runs; pane must survive
+    assert pane.props_form.rowCount() > 0
+
+
+def test_add_property_does_not_clobber_existing_value(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane(optprops_root=str(tmp_path))
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    project.set_property("Lens", "power", 12.5)
+    pane.add_prop_combo.setCurrentText("power")
+    pane.add_prop_button.click()
+    assert project.body("Lens")["properties"]["power"]["value"] == 12.5
+
+
+def test_noop_commit_is_skipped(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane(optprops_root=str(tmp_path))
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    project.set_property("Lens", "power", 5.0)
+    calls_before = list(project.calls)
+    pane._commit_property("power", 5.0)
+    assert project.calls == calls_before
+
+
+def test_intermediate_numeric_text_does_not_raise(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane(optprops_root=str(tmp_path))
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    from PySide6.QtWidgets import QLineEdit
+    w = QLineEdit("-")          # QDoubleValidator 'Intermediate' text
+    calls_before = list(project.calls)
+    pane._commit_numeric_property("power", w)    # must not raise
+    w.setText("1e")
+    pane._commit_numeric_property("power", w)    # must not raise
+    assert project.calls == calls_before
+
+
+def test_sheet_edit_with_unchanged_number_does_not_rebuild(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane(optprops_root=str(tmp_path))
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    row = _find_sheet_row(pane, "lensth")
+    editor = pane.sheet_table.cellWidget(row, 1)
+    assert editor.text() == "2"
+    editor.editingFinished.emit()   # focus-out, value unchanged
+    assert not any(c[0] == "rebuild_primitive" for c in project.calls)
+    assert not any(c[0] == "set_spreadsheet" for c in project.calls)
+
+
+def test_default_registry_value_prefers_known_entries():
+    from mieworkbench.panes.element_editor import default_registry_value
+    assert default_registry_value(
+        "material", ["sf5", "bk7", "air"]) == "bk7"
+    assert default_registry_value("material", ["sf5", "air"]) == "air"
+    assert default_registry_value("polarizer", []) == ""
+    assert default_registry_value(
+        "grating", ["vbg_1800", "amp_600"]) == "Face1=@amp_600"
+    assert default_registry_value("grating", []).startswith("Face1=")

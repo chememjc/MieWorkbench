@@ -74,13 +74,15 @@ try:
 except Exception:                                    # pragma: no cover
     load_optical_properties = None
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
+
+from ..core.units import label_with_unit
 
 DEFAULT_OPTPROPS_ROOT = "/home3/raytracegui/opticalproperties"
 
@@ -95,6 +97,46 @@ REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating", "grating")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
                       "absorbance")
 BOOL_PROPERTIES = ("coherent",)
+
+# Sensible starting values written when a property is first added, so a
+# freshly added row is never the empty string (an empty `material` used to
+# silently demote the body to "ignored" -- and the empty combo's
+# focus-out crashed the pane, see _schedule_refresh()).
+PROPERTY_DEFAULTS = {
+    "power": 5.0,
+    "lambdac": 633.0,
+    "lambdamin": 450.0,
+    "lambdamax": 650.0,
+    "mirror": 1.0,
+    "absorbance": 1.0,
+    "roughness": "50",
+    "polarization": "unpolarized",
+    "polarizer_axis": "0,0,1",
+    "crystal_axis": "1,0,0",
+    "coherent": False,
+    "surface_override": "",   # exotic, no universal default
+}
+# Registry-valued properties default to a well-known entry when the
+# library has it, else the first name alphabetically.
+_REGISTRY_PREFERRED = {
+    "material": ("bk7",),
+    "coating": ("MgF2", "mgf2"),
+    "filter": ("bp_550_40",),
+    "polarizer": ("ideal_linear",),
+}
+
+
+def default_registry_value(name, registry_names):
+    """Pick the default for a registry-valued property from the loaded
+    library names (pure logic -- unit-tested directly)."""
+    names = sorted(registry_names or [])
+    for preferred in _REGISTRY_PREFERRED.get(name, ()):
+        if preferred in names:
+            return preferred
+    if name == "grating":
+        # gratings are per-face maps; a bare registry name is invalid
+        return "Face1=@%s" % names[0] if names else "Face1=600:v:orders=-1..1"
+    return names[0] if names else ""
 
 TOOLTIPS = {
     "material": "Row name in materials.csv; 'detector' marks a detector "
@@ -237,6 +279,16 @@ class ElementEditorPane(QWidget):
         self._optprops = None
         self._optprops_tried = False
 
+        # Refreshes triggered by our own commits are deferred to the next
+        # event-loop turn: rebuilding the rows synchronously would delete
+        # the very widget whose editingFinished/activated signal is still
+        # executing (use-after-free crash). A parented single-shot QTimer
+        # both coalesces bursts and dies with the pane (teardown-safe).
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(0)
+        self._refresh_timer.timeout.connect(self._deferred_refresh)
+
         self._build_properties_box()
         self._build_faces_box()
         self._build_sheet_box()
@@ -287,9 +339,20 @@ class ElementEditorPane(QWidget):
         name = self.add_prop_combo.currentText().strip()
         if not name or self._project is None or self._body_name is None:
             return
-        default = False if name in BOOL_PROPERTIES else ""
-        self._project.set_property(self._body_name, name, default)
+        body = self._project.body(self._body_name)
+        if name in (body.get("properties", {}) or {}):
+            self.add_prop_combo.setCurrentText("")
+            return   # already present; don't clobber its value
+        self._project.set_property(self._body_name, name,
+                                   self._default_property_value(name))
         self.add_prop_combo.setCurrentText("")
+
+    def _default_property_value(self, name):
+        if name == "material":
+            return default_registry_value(name, self._material_names())
+        if name in REGISTRY_PROPERTIES:
+            return default_registry_value(name, self._registry_names(name))
+        return PROPERTY_DEFAULTS.get(name, "")
 
     def _on_remove_property(self, name):
         if self._project is None or self._body_name is None:
@@ -299,7 +362,28 @@ class ElementEditorPane(QWidget):
     def _commit_property(self, name, value):
         if self._project is None or self._body_name is None:
             return
+        # No-op commits happen constantly (focus-out with an unchanged
+        # value; a combo firing both activated and editingFinished for one
+        # selection) -- skip them so the scene doesn't go dirty and the
+        # rows aren't pointlessly rebuilt.
+        body = self._project.body(self._body_name)
+        props = body.get("properties", {}) or {}
+        if name in props:
+            current = props[name].get("value")
+            if current == value or (current is not None
+                                    and str(current) == str(value)):
+                return
         self._project.set_property(self._body_name, name, value)
+
+    def _commit_numeric_property(self, name, widget):
+        text = widget.text().strip()
+        if not text:
+            return   # leave the stored value; refresh restores the display
+        try:
+            value = float(text)
+        except ValueError:
+            return   # validator-intermediate text like '-' or '1e'
+        self._commit_property(name, value)
 
     def _material_names(self):
         props = self._get_optprops()
@@ -353,8 +437,8 @@ class ElementEditorPane(QWidget):
             widget = QLineEdit(_fmt_property_value(value))
             widget.setValidator(QDoubleValidator())
             widget.editingFinished.connect(
-                lambda n=name, w=widget: self._commit_property(
-                    n, float(w.text()) if w.text().strip() else 0.0))
+                lambda n=name, w=widget:
+                    self._commit_numeric_property(n, w))
             return widget
         widget = QLineEdit(_fmt_property_value(value))
         widget.editingFinished.connect(
@@ -382,7 +466,7 @@ class ElementEditorPane(QWidget):
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.addWidget(editor, 1)
             row_layout.addWidget(remove_btn)
-            label = QLabel(name)
+            label = QLabel(label_with_unit(name))
             label.setToolTip(TOOLTIPS.get(name, name))
             self.props_form.addRow(label, row)
 
@@ -541,6 +625,8 @@ class ElementEditorPane(QWidget):
             new_number = float(new_number_text)
         except ValueError:
             return
+        if new_number == parsed["number"]:
+            return   # unchanged focus-out; don't rebuild the primitive
         new_raw = format_sheet_raw(parsed, new_number)
         self._project.set_spreadsheet(sheet_label, alias, new_raw)
         if self._body_name is not None:
@@ -568,9 +654,18 @@ class ElementEditorPane(QWidget):
         if self._body_name is None:
             return
         if not body_hint or body_hint == self._body_name:
-            self._refresh_properties()
-            self._refresh_facemap_table()
-            self._refresh_sheet_table()
+            # Deferred: this signal is emitted synchronously from Project
+            # mutations, i.e. potentially from inside one of our own row
+            # widgets' commit signals -- rebuilding rows right now would
+            # delete the emitting widget mid-signal (crash).
+            self._refresh_timer.start()
+
+    def _deferred_refresh(self):
+        if self._body_name is None:
+            return
+        self._refresh_properties()
+        self._refresh_facemap_table()
+        self._refresh_sheet_table()
 
     def _refresh_all(self):
         self._refresh_properties()
