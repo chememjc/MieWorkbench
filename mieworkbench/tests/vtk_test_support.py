@@ -140,7 +140,11 @@ def write_simple_vtp(path, with_rgb=False):
         colors.SetNumberOfComponents(3)
         colors.SetName("rgb")
         colors.InsertNextTuple3(255, 255, 0)
-        polydata.GetCellData().SetScalars(colors)
+        # AddArray, deliberately NOT SetScalars: real pre-fix rays.vtp
+        # files carry 'rgb' as a plain (non-active) cell array, and the
+        # GUI's field-data coloring must handle exactly that (the old
+        # SetScalars fixture masked the white-rays bug)
+        polydata.GetCellData().AddArray(colors)
 
     writer = vtkXMLPolyDataWriter()
     writer.SetFileName(str(path))

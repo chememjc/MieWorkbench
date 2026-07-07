@@ -100,7 +100,14 @@ def _data_array(name, arr, ncomp=1):
 def _cell_data_block(cell_data):
     if not cell_data:
         return "      <CellData>\n      </CellData>\n"
-    parts = ["      <CellData>\n"]
+    # Declare 'rgb' (when present) as the ACTIVE cell scalars: without the
+    # Scalars= attribute no array is active after reading, and any VTK
+    # mapper in UseCellData mode silently falls back to the actor's flat
+    # default color (rays rendered WHITE in the GUI despite a perfectly
+    # good rgb array sitting in the file).
+    names = [name for name, _arr, _n in cell_data]
+    active = ' Scalars="rgb"' if "rgb" in names else ""
+    parts = ["      <CellData%s>\n" % active]
     for name, arr, ncomp in cell_data:
         parts.append(_data_array(name, arr, ncomp))
     parts.append("      </CellData>\n")

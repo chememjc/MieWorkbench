@@ -506,14 +506,24 @@ def sample_viz_pattern(scene, body, src, source_id, pattern, n_lambda):
 
     lam_strata = wavelength_strata(src, n_lambda)
     n_strata = len(lam_strata)
+    # Replicate every pattern point across ALL wavelength strata: a
+    # broadband ("white") source then emits a red/green/blue bundle from
+    # each fan/ring position, so chromatic behavior (lens dispersion,
+    # prism/grating splits) reads directly off the overlay. Monochromatic
+    # sources have exactly one stratum, so nothing changes for them.
+    # Visual-only rays: the extra count never touches physics/audits.
+    if n_strata > 1:
+        pts = np.repeat(pts, n_strata, axis=0)
+        dirs = np.repeat(dirs, n_strata, axis=0)
+    n_total = len(pts)
     pol = src.get("polarization") or {"kind": "unpolarized"}
     power_W = src["power_mW"] * 1e-3
-    p_ray = power_W / n
+    p_ray = power_W / n_total
 
-    batch = RayBatch(n)
+    batch = RayBatch(n_total)
     batch.pos[:] = pts
     batch.dir[:] = dirs
-    idx = np.arange(n)
+    idx = np.arange(n_total)
     batch.lam[:] = lam_strata[idx % n_strata]
     batch.lam_stratum[:] = idx % n_strata
     batch.pol_stratum[:] = 0

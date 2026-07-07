@@ -289,3 +289,32 @@ def test_fan_on_spherical_cap_diverges():
                                 {"kind": "fan", "n": 5}, 1)
     assert np.array_equal(batch.pos, batch2.pos)
     assert np.array_equal(batch.dir, batch2.dir)
+
+
+def test_broadband_source_replicates_pattern_across_strata():
+    """A broadband source's viz pattern emits one ray PER WAVELENGTH
+    STRATUM from every pattern point (the red/green/blue bundle that
+    makes chromatic behavior visible in the overlay); a monochromatic
+    source keeps exactly one ray per point."""
+    scene = build_scene()
+    bidx, src = scene.sources[0]
+
+    mono = sample_viz_pattern(scene, scene.bodies[bidx], src, 0,
+                              PATTERN, 3)
+    n_points = 1 + 3 * 8
+    assert len(mono.pos) == n_points          # 1 stratum -> unchanged
+    assert len(np.unique(mono.lam)) == 1
+
+    wide = dict(src)
+    wide["lambdamin_nm"] = 450.0
+    wide["lambdamax_nm"] = 650.0
+    broad = sample_viz_pattern(scene, scene.bodies[bidx], wide, 0,
+                               PATTERN, 3)
+    assert len(broad.pos) == 3 * n_points
+    assert len(np.unique(broad.lam)) == 3
+    # consecutive triplets share the SAME position with distinct lambdas
+    trip = broad.pos.reshape(n_points, 3, 3)
+    assert np.allclose(trip[:, 0], trip[:, 1])
+    assert np.allclose(trip[:, 0], trip[:, 2])
+    lam_trip = broad.lam.reshape(n_points, 3)
+    assert (np.diff(np.sort(lam_trip[0])) > 0).all()

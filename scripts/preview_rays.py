@@ -174,7 +174,11 @@ def main(argv=None):
     kwargs = {}
     if args.max_bounces is not None:
         kwargs["max_reflections"] = args.max_bounces
-    viz_cfg = TraceConfig(rays=1, n_lambda=1, seed=0, viz_rays=1 << 30,
+    # n_lambda=3: broadband sources preview with three wavelength strata
+    # (red/green/blue fan rays showing dispersion through lenses/prisms);
+    # monochromatic sources still collapse to their single line
+    # (wavelength_strata returns 1 stratum when lambdamin/max are unset).
+    viz_cfg = TraceConfig(rays=1, n_lambda=3, seed=0, viz_rays=1 << 30,
                           **kwargs)
     tracer = Tracer(scene, viz_cfg, {})
     viz_batches = []

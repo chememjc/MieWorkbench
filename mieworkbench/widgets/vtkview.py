@@ -563,13 +563,19 @@ class VtkSceneView(QWidget):
     def _apply_overlay_coloring(actor, polydata):
         """Wavelength coloring: color by the per-cell 'rgb' array
         (written by raytracer.vtkexport.write_vtp_polylines from each ray
-        segment's wavelength) when present, else a uniform yellow."""
+        segment's wavelength) when present, else a uniform yellow.
+
+        Mode is UseCellFIELDData, not UseCellData: the latter only ever
+        colors by the ACTIVE cell scalars, so a rays.vtp whose 'rgb' array
+        wasn't marked active (every file written before the vtkexport
+        Scalars= fix) silently rendered flat white. Field-data mode honors
+        SelectColorArray by NAME, which works for old and new files."""
         mapper = actor.GetMapper()
         cell_data = polydata.GetCellData() if polydata is not None else None
         rgb_array = (cell_data.GetArray("rgb")
                      if cell_data is not None else None)
         if rgb_array is not None:
-            mapper.SetScalarModeToUseCellData()
+            mapper.SetScalarModeToUseCellFieldData()
             mapper.SelectColorArray("rgb")
             mapper.SetColorModeToDirectScalars()
             mapper.ScalarVisibilityOn()
