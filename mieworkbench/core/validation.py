@@ -427,7 +427,10 @@ def has_errors(findings):
 
 def run_deep_checks(project):
     """Worker-side geometric checks (recompute errors, open solids,
-    pairwise overlaps) via the live FreeCAD session. Returns [Finding]."""
+    pairwise overlaps) via the live FreeCAD session. Returns [Finding].
+
+    If no problems are found, returns a single INFO Finding describing
+    the successful check."""
     result = project.fc.request("check", {"doc": project.doc})
     out = []
     for name in result.get("invalid", []):
@@ -436,10 +439,23 @@ def run_deep_checks(project):
     for name in result.get("open_solids", []):
         out.append(Finding(ERROR, "%s is not a closed solid" % name,
                            body=name, check="deep-geometry"))
+    n_overlaps = 0
     for ov in result.get("overlaps", []):
         out.append(Finding(
             WARNING, "%s and %s overlap by %.3g mm^3 — optically "
             "contacted surfaces need a small air gap (5 um convention)"
             % (ov["a"], ov["b"], ov["volume_mm3"]),
             body=ov["a"], check="deep-geometry"))
+        n_overlaps += 1
+
+    # If no problems were found, append an INFO Finding describing the check
+    if not out:
+        n_bodies = len(project.structure.get("bodies", []))
+        n_face_pairs = result.get("face_pairs_checked", 0)
+        msg = "Deep check passed — %d bodies recomputed, 0 open solids, " \
+              "no overlapping pairs" % n_bodies
+        if n_face_pairs > 0:
+            msg += " (%d face pairs tested)" % n_face_pairs
+        out.append(Finding(INFO, msg, check="deep-geometry"))
+
     return out

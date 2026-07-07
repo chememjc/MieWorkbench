@@ -6,8 +6,8 @@ library + the config matrix's current values; errors gate the Run button
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
-    QVBoxLayout, QWidget,
+    QApplication, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
 from ..core import validation
@@ -76,12 +76,23 @@ class ProblemsPane(QWidget):
         v = validation.Validator(self.project.structure, optprops, config)
         findings = v.validate()
         if deep:
+            # Disable both buttons and show busy cursor while deep check runs
+            self.btn.setEnabled(False)
+            self.deep.setEnabled(False)
+            n_bodies = len(self.project.structure.get("bodies", []))
+            self.summary.setText("Deep check: recomputing %d bodies…" % n_bodies)
+            QApplication.processEvents()  # update UI before blocking op
+            QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
                 findings += validation.run_deep_checks(self.project)
             except Exception as exc:
                 findings.append(validation.Finding(
                     validation.WARNING, "deep check failed: %s" % exc,
                     check="deep-geometry"))
+            finally:
+                QApplication.restoreOverrideCursor()
+                self.btn.setEnabled(True)
+                self.deep.setEnabled(True)
         for f in findings:
             item = QListWidgetItem("%s  %s" % (_ICON.get(f.severity, "•"),
                                                f.message))
@@ -94,7 +105,11 @@ class ProblemsPane(QWidget):
                     if f.severity == validation.ERROR)
         n_warn = sum(1 for f in findings
                      if f.severity == validation.WARNING)
-        self.summary.setText("%d error(s), %d warning(s)" % (n_err, n_warn))
+        if deep:
+            self.summary.setText("Deep check: %d error(s), %d warning(s)" %
+                                (n_err, n_warn))
+        else:
+            self.summary.setText("%d error(s), %d warning(s)" % (n_err, n_warn))
         self.validationChanged.emit(n_err > 0)
         return findings
 

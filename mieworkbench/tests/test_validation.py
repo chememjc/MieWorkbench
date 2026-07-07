@@ -157,3 +157,57 @@ def test_real_example_structure_validates():
         fc.close(st["doc"])
     assert not validation.has_errors(findings), \
         [f.message for f in findings if f.severity == validation.ERROR]
+
+
+def test_deep_checks_clean_scene_has_info_finding():
+    """Deep check on a clean scene (mocked) returns INFO Finding."""
+    class MockFc:
+        def request(self, op, kwargs):
+            # Simulate successful check with no problems
+            return {"invalid": [], "open_solids": [], "overlaps": [],
+                    "face_pairs_checked": 42}
+    class MockProject:
+        doc = "fake_doc"
+        fc = MockFc()
+        structure = {"bodies": [
+            {"name": "L1", "label": "L1", "tip": "Pad"},
+            {"name": "L2", "label": "L2", "tip": "Pad"},
+            {"name": "D", "label": "D", "tip": "Pad"},
+        ]}
+    findings = validation.run_deep_checks(MockProject())
+    # Should return a single INFO Finding
+    assert len(findings) == 1
+    assert findings[0].severity == validation.INFO
+    assert "Deep check passed" in findings[0].message
+    assert "3 bodies recomputed" in findings[0].message
+
+
+def test_deep_checks_with_errors():
+    """Deep check returns ERRORs and WARNINGs for problems found."""
+    class MockFc:
+        def request(self, op, kwargs):
+            return {
+                "invalid": ["BadBody"],
+                "open_solids": ["OpenSolid"],
+                "overlaps": [{"a": "Part1", "b": "Part2", "volume_mm3": 0.5}]
+            }
+    class MockProject:
+        doc = "fake_doc"
+        fc = MockFc()
+        structure = {"bodies": [
+            {"name": "BadBody", "label": "BadBody"},
+            {"name": "OpenSolid", "label": "OpenSolid"},
+            {"name": "Part1", "label": "Part1"},
+            {"name": "Part2", "label": "Part2"},
+        ]}
+    findings = validation.run_deep_checks(MockProject())
+    # Should return errors and warning, no info
+    errors = [f for f in findings if f.severity == validation.ERROR]
+    warnings = [f for f in findings if f.severity == validation.WARNING]
+    infos = [f for f in findings if f.severity == validation.INFO]
+    assert len(errors) == 2
+    assert len(warnings) == 1
+    assert len(infos) == 0
+    assert any("failed to recompute" in f.message for f in errors)
+    assert any("not a closed solid" in f.message for f in errors)
+    assert any("overlap" in f.message for f in warnings)
