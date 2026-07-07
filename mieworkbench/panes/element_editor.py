@@ -82,6 +82,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..core.facemaps import (   # noqa: F401  (re-exported for back-compat)
+    FACEMAP_PROPERTIES, active_face_index, merge_facemap,
+    validate_facemap_value,
+)
 from ..core.units import label_with_unit
 
 DEFAULT_OPTPROPS_ROOT = "/home3/raytracegui/opticalproperties"
@@ -92,8 +96,6 @@ CONTRACT_PROPERTIES = (
     "polarizer", "polarizer_axis", "crystal_axis", "grating",
     "surface_override", "mirror", "absorbance",
 )
-FACEMAP_PROPERTIES = ("coating", "roughness", "diffuser", "grating",
-                      "surface_override")
 REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating", "grating")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
                       "absorbance")
@@ -171,66 +173,10 @@ TOOLTIPS = {
 
 
 # ---------------------------------------------------------------------------
-# Pure logic (no Qt) - unit-tested directly.
+# Pure logic (no Qt) - unit-tested directly. The per-face assignment
+# arithmetic (merge_facemap and friends) lives in core/facemaps.py and is
+# re-exported above.
 # ---------------------------------------------------------------------------
-def _bare_face_key(face_id):
-    """'Lens.Tip.Face3' -> 'Face3'."""
-    spec = common.parse_face_spec(face_id)
-    return "Face%d" % spec["face_index"]
-
-
-def _face_sort_key(face_id):
-    return common.parse_face_spec(face_id)["face_index"]
-
-
-def merge_facemap(existing_raw, body_name, feature, all_face_ids,
-                  selected_face_ids, value):
-    """Merge `value` onto `selected_face_ids` (full 'Body.Feature.FaceN'
-    ids) within a per-face property whose current raw string is
-    `existing_raw` (falsy if the property doesn't exist yet). Returns the
-    new raw string in the bare 'FaceN=value;...' form, collapsed to the
-    bare whole-value form when every face of the body ends up mapped to
-    the same value (matches common.py's 'apply to every face' shorthand).
-    Re-parses the result with common.parse_facemap_spec as an oracle and
-    raises ValueError if it doesn't round-trip.
-    """
-    all_face_ids = set(all_face_ids or [])
-    selected_face_ids = set(selected_face_ids or [])
-    if existing_raw:
-        current = common.parse_facemap_spec(str(existing_raw),
-                                            body=body_name, feature=feature)
-    else:
-        current = {}
-
-    if common.FACEMAP_ALL in current:
-        expanded = {fid: current[common.FACEMAP_ALL] for fid in all_face_ids}
-    else:
-        expanded = dict(current)
-    for fid in selected_face_ids:
-        expanded[fid] = value
-
-    values_on_all = ({expanded.get(fid) for fid in all_face_ids}
-                     if all_face_ids else set())
-    if (all_face_ids and len(expanded) == len(all_face_ids)
-            and all_face_ids <= set(expanded) and len(values_on_all) == 1):
-        new_raw = next(iter(values_on_all))
-    else:
-        parts = ["%s=%s" % (_bare_face_key(fid), expanded[fid])
-                for fid in sorted(expanded, key=_face_sort_key)]
-        new_raw = ";".join(parts)
-
-    reparsed = common.parse_facemap_spec(new_raw, body=body_name,
-                                         feature=feature)
-    if common.FACEMAP_ALL in reparsed:
-        check = {fid: reparsed[common.FACEMAP_ALL] for fid in all_face_ids}
-    else:
-        check = reparsed
-    if check != expanded:
-        raise ValueError("facemap merge failed to round-trip (%r != %r)"
-                         % (check, expanded))
-    return new_raw
-
-
 _SHEET_NUM_RE = re.compile(
     r'^(?P<eq>=?)(?P<num>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)'
     r'(?P<suffix>.*)$')
@@ -268,49 +214,6 @@ def _fmt_property_value(value):
     if isinstance(value, float):
         return "%g" % value
     return "" if value is None else str(value)
-
-
-def active_face_index(properties, faces_meta):
-    """The 'working face' of a source/detector body: the face whose
-    centroid is closest to the origin — the same auto-detection heuristic
-    extract_geometry uses for the emit/detector face. Returns the face
-    INDEX (1-based) or None for plain optics/no-geometry bodies."""
-    props = properties or {}
-    is_source = "power" in props and "lambdac" in props
-    is_detector = (props.get("material", {}).get("value") == "detector")
-    if not (is_source or is_detector) or not faces_meta:
-        return None
-    best_id, best_d = None, None
-    for f in faces_meta:
-        c = f.get("centroid_m")
-        if c is None:
-            continue
-        d = sum(x * x for x in c)
-        if best_d is None or d < best_d:
-            best_id, best_d = f["id"], d
-    if best_id is None:
-        return None
-    return common.parse_face_spec(best_id)["face_index"]
-
-
-def validate_facemap_value(raw, body_name, feature, face_count):
-    """Error-check a user-typed facemap value BEFORE it is committed:
-    must parse under the contract grammar, and every named face must
-    exist on the body. Returns None if ok, else a message."""
-    try:
-        parsed = common.parse_facemap_spec(str(raw), body=body_name,
-                                           feature=feature)
-    except ValueError as exc:
-        return str(exc)
-    for key in parsed:
-        if key == common.FACEMAP_ALL:
-            continue
-        idx = common.parse_face_spec(key)["face_index"]
-        if not 1 <= idx <= face_count:
-            return ("Face%d does not exist on %s (it has %d face%s)"
-                    % (idx, body_name, face_count,
-                       "s" if face_count != 1 else ""))
-    return None
 
 
 # ---------------------------------------------------------------------------

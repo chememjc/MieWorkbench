@@ -32,52 +32,8 @@ from mieworkbench.tests.vtk_test_support import (  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# merge_facemap (oracle: common.parse_facemap_spec)
-# ---------------------------------------------------------------------------
-def test_merge_facemap_adds_a_face_alongside_an_existing_one():
-    raw = merge_facemap("Face5=X", "Body", "Pad",
-                        ["Body.Pad.Face3", "Body.Pad.Face5"],
-                        {"Body.Pad.Face3"}, "MgF2")
-    parsed = common.parse_facemap_spec(raw, body="Body", feature="Pad")
-    assert parsed == {"Body.Pad.Face3": "MgF2", "Body.Pad.Face5": "X"}
-
-
-def test_merge_facemap_assigning_every_face_collapses_to_bare_value():
-    raw = merge_facemap(None, "Body", "Pad",
-                        ["Body.Pad.Face3", "Body.Pad.Face5"],
-                        {"Body.Pad.Face3", "Body.Pad.Face5"}, "MgF2")
-    assert raw == "MgF2"
-    parsed = common.parse_facemap_spec(raw, body="Body", feature="Pad")
-    assert parsed == {common.FACEMAP_ALL: "MgF2"}
-
-
-def test_merge_facemap_expands_existing_all_form_before_overriding():
-    raw = merge_facemap("MgF2", "Body", "Pad",
-                        ["Body.Pad.Face3", "Body.Pad.Face5"],
-                        {"Body.Pad.Face3"}, "SiO2")
-    parsed = common.parse_facemap_spec(raw, body="Body", feature="Pad")
-    assert parsed == {"Body.Pad.Face3": "SiO2", "Body.Pad.Face5": "MgF2"}
-    # not collapsed -- the two faces disagree
-    assert common.FACEMAP_ALL not in parsed
-
-
-def test_merge_facemap_reassigning_all_faces_to_same_value_recollapses():
-    raw = merge_facemap("Face3=A;Face5=B", "Body", "Pad",
-                        ["Body.Pad.Face3", "Body.Pad.Face5"],
-                        {"Body.Pad.Face3", "Body.Pad.Face5"}, "Z")
-    assert raw == "Z"
-
-
-def test_merge_facemap_single_face_body_is_bare_all_form():
-    # selecting the ONLY face of a body is selecting "every face" -- the
-    # per-face table's oracle re-parse should agree it's the whole-body
-    # shorthand, not a Face1=... entry.
-    raw = merge_facemap(None, "Lens", "Revolution",
-                        ["Lens.Revolution.Face1"],
-                        {"Lens.Revolution.Face1"}, "SiO2")
-    assert raw == "SiO2"
-
-
+# merge_facemap now lives in core/facemaps.py (tests in test_facemaps.py);
+# element_editor re-exports it, exercised via the widget tests below.
 # ---------------------------------------------------------------------------
 # parse_sheet_raw / format_sheet_raw
 # ---------------------------------------------------------------------------
