@@ -31,9 +31,9 @@
 #     AOI on the entrance face (not the intended 49.4 deg min-dev), so it TIRs
 #     at the exit and never forms the dispersed fan; the (rotated) detector face
 #     is also edge-on and catches 0 W.
-#   * wollaston     — the 5 um air gap between the two wedges double-splits o/e
-#     (4 beams instead of 2); the split magnitude does not match the ideal
-#     2(no-ne)tan(beta) Wollaston formula.
+#   * wollaston     — FIXED in round 2: the 4-beam double-split was the
+#     extractor's self-crossing trim loops (dead half-faces), not the wedge
+#     air gap; the clean two-spot test now passes at the ideal separation.
 #   * axicon_pcx    — the deflection angle is correct ((n-1)*alpha), but the
 #     detector at z=30 mm sits inside the Bessel/converging zone (z_max~55 mm
 #     for the Phi10 beam), so no clean ring at 2.70 mm forms there; the
@@ -762,13 +762,12 @@ def test_wollaston_energy_closes_and_splits():
 
 
 @requires("wollaston")
-@pytest.mark.xfail(reason="SCENE: the 5 um air gap between the two calcite "
-                          "wedges makes each wedge boundary an air interface, "
-                          "so o/e double-split into 4 beams (not 2) and the "
-                          "separation does not match the ideal 2(no-ne)tan(beta) "
-                          "Wollaston split (measured ~0.06-0.12 rad vs 0.199). "
-                          "Fix: optically contact the wedges (no air gap).",
-                   strict=True)
+# Previously xfail'd, blaming the 5 um wedge air gap for a 4-beam
+# double-split. The REAL culprit was the extractor's self-crossing trim
+# polylines (fixed in round 2): ~half of each wedge face was dead, so
+# rays crossed without interface events and produced spurious spots plus
+# a wrong split magnitude. With honest trims the scene yields the clean
+# two-spot split at the ideal 2(n_o-n_e)tan(beta) separation.
 def test_wollaston_clean_two_spot_split():
     s = SCENES["wollaston"]
     _, grids, _, _ = run_scene("wollaston", rays=20000, resolution=500,
