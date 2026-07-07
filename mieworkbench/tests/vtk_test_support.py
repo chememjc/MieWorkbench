@@ -202,12 +202,21 @@ class FakeProject(QObject):
         b["properties"].pop(name, None)
         self.propertiesChanged.emit(body)
 
-    def set_spreadsheet(self, sheet, alias, raw):
+    def set_spreadsheet(self, sheet, alias, raw, rebuild_group=None):
         self.calls.append(("set_spreadsheet", sheet, alias, raw))
         for s in self.sheets():
             if s["label"] == sheet and alias in s.get("aliases", {}):
                 s["aliases"][alias]["raw"] = raw
         self.propertiesChanged.emit("")
+        if rebuild_group:
+            self.rebuild_primitive(rebuild_group)
+
+    def set_element_parameters(self, sheet, values, rebuild_group=None,
+                               text=None):
+        for alias, raw in values.items():
+            self.set_spreadsheet(sheet, alias, raw)
+        if rebuild_group:
+            self.rebuild_primitive(rebuild_group)
 
     def rebuild_primitive(self, group):
         self.calls.append(("rebuild_primitive", group))

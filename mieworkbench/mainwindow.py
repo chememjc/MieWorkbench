@@ -30,6 +30,7 @@ import common  # noqa: E402  (stdlib-only shared contract hub)
 import miewb_tool  # noqa: E402  (stdlib-only archive engine)
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QHBoxLayout,
     QLabel, QMainWindow, QMessageBox, QProgressBar, QStyle, QVBoxLayout,
@@ -241,6 +242,20 @@ class MainWindow(QMainWindow):
         act.setToolTip("Exit MieWorkbench")
         act.triggered.connect(self.close)
 
+        edit_menu = menubar.addMenu("&Edit")
+        self.undo_action = edit_menu.addAction("&Undo")
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.setEnabled(False)
+        self.undo_action.triggered.connect(self._on_undo)
+        self.redo_action = edit_menu.addAction("&Redo")
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.setEnabled(False)
+        self.redo_action.triggered.connect(self._on_redo)
+        stack = self.project.undo_stack
+        stack.canUndoChanged.connect(self._on_can_undo_changed)
+        stack.canRedoChanged.connect(self._on_can_redo_changed)
+        stack.error.connect(self._on_undo_error)
+
         sim_menu = menubar.addMenu("&Simulation")
         self.run_action = sim_menu.addAction("&Run Pipeline…")
         self.run_action.setToolTip(
@@ -309,6 +324,15 @@ class MainWindow(QMainWindow):
         save_tb.setToolTip("Save the model / repack the workbench")
         save_tb.triggered.connect(self._on_save)
 
+        toolbar.addSeparator()
+        toolbar.addAction(self.undo_action)
+        self.undo_action.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        toolbar.addAction(self.redo_action)
+        self.redo_action.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
+        toolbar.addSeparator()
+
         run_tb = toolbar.addAction(
             style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay), "Run")
         run_tb.setToolTip("Run Pipeline… (configure and start)")
@@ -326,6 +350,34 @@ class MainWindow(QMainWindow):
         estimate_tb.setToolTip("Estimate runtime for the current "
                                "configuration")
         estimate_tb.triggered.connect(self._on_estimate)
+
+    # -- undo/redo -----------------------------------------------------------------
+    def _on_undo(self):
+        try:
+            self.project.undo()
+        except Exception as exc:
+            QMessageBox.warning(self, "Undo failed", str(exc))
+
+    def _on_redo(self):
+        try:
+            self.project.redo()
+        except Exception as exc:
+            QMessageBox.warning(self, "Redo failed", str(exc))
+
+    def _on_can_undo_changed(self, enabled, text):
+        self.undo_action.setEnabled(enabled)
+        self.undo_action.setText("&Undo %s" % text if text else "&Undo")
+
+    def _on_can_redo_changed(self, enabled, text):
+        self.redo_action.setEnabled(enabled)
+        self.redo_action.setText("&Redo %s" % text if text else "&Redo")
+
+    def _on_undo_error(self, message):
+        # mid-stack failure: the stack was cleared to avoid divergence
+        self.statusBar().showMessage("Undo history reset: %s" % message,
+                                     10000)
+        if self.isVisible():   # modal dialogs hang offscreen teardown
+            QMessageBox.warning(self, "Undo history reset", message)
 
     # -- pane wiring ---------------------------------------------------------------
     def _wire_panes(self):
@@ -392,22 +444,26 @@ class MainWindow(QMainWindow):
         label = dialog.element_label()
         if not label:
             return
+        # one undo step for the whole flow (import + params + rebuild)
+        self.project.begin_macro("Add %s" % label)
         try:
             self.project.import_primitive(info["path"], label)
             changed = dialog.changed_params()
             if changed:
                 units = {a: s.get("unit", "")
                          for a, s in info.get("params", {}).items()}
+                values = {}
                 for alias, value in changed.items():
                     unit = units.get(alias, "")
-                    raw = ("=%.10g %s" % (value, unit)).strip() \
+                    values[alias] = ("=%.10g %s" % (value, unit)).strip() \
                         if unit else "%.10g" % value
-                    self.project.set_spreadsheet("dim_%s" % label,
-                                                 alias, raw)
-                self.project.rebuild_primitive(label)
+                self.project.set_element_parameters(
+                    "dim_%s" % label, values, rebuild_group=label)
         except Exception as exc:
+            self.project.abort_macro()
             QMessageBox.warning(self, "Add element failed", str(exc))
             return
+        self.project.end_macro()
         self.statusBar().showMessage("Added %s" % label, 5000)
 
     def _open_prop_editor(self, category=None, which_library=None):

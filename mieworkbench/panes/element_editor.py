@@ -628,14 +628,16 @@ class ElementEditorPane(QWidget):
         if new_number == parsed["number"]:
             return   # unchanged focus-out; don't rebuild the primitive
         new_raw = format_sheet_raw(parsed, new_number)
-        self._project.set_spreadsheet(sheet_label, alias, new_raw)
+        rebuild_group = None
         if self._body_name is not None:
             body = self._project.body(self._body_name)
             props = body.get("properties", {}) or {}
             if "miewb_primitive" in props:
-                group = props.get("miewb_group", {}).get("value")
-                if group:
-                    self._project.rebuild_primitive(group)
+                rebuild_group = props.get("miewb_group", {}).get("value")
+        # one undoable step: undo restores the old raw AND re-derives the
+        # geometry (set_element_parameters handles the ordering)
+        self._project.set_spreadsheet(sheet_label, alias, new_raw,
+                                      rebuild_group=rebuild_group)
 
     # -- Project wiring -----------------------------------------------------
     def set_project(self, project):
