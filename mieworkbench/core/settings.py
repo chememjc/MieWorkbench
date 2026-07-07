@@ -78,6 +78,20 @@ class Settings:
         self._qs.setValue(key, value)
         self._qs.sync()
 
+    # -- boolean UI preferences (view toggles etc.) ----------------------------
+    # stored as "true"/"false" strings -- this wrapper is strings-only by
+    # design (see FIELDS), and QSettings round-trips booleans
+    # platform-dependently, so normalize explicitly.
+    def get_bool(self, key, default):
+        stored = self._qs.value(key, None)
+        if stored is None or stored == "":
+            return bool(default)
+        return str(stored).strip().lower() in ("true", "1", "yes")
+
+    def set_bool(self, key, value):
+        self._qs.setValue(key, "true" if value else "false")
+        self._qs.sync()
+
     # -- convenience accessors used by RunController / other panes ------------
     def freecad(self):
         return self.get("freecad")

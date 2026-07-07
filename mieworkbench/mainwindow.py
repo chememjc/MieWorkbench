@@ -358,6 +358,21 @@ class MainWindow(QMainWindow):
                      self.results_dock, self.problems_dock):
             view_menu.addAction(dock.toggleViewAction())
 
+        view_menu.addSeparator()
+        self.face_indicators_action = view_menu.addAction(
+            "Face Orientation &Indicators")
+        self.face_indicators_action.setCheckable(True)
+        self.face_indicators_action.setToolTip(
+            "Show orientation glyphs on faces: red half-disc = source "
+            "emit / detector face, blue dot = optic +x face, green = "
+            "aperture +x face (visual only, never traced)")
+        show_indicators = self.settings.get_bool("show_face_indicators",
+                                                 True)
+        self.face_indicators_action.setChecked(show_indicators)
+        self._apply_face_indicators(show_indicators)
+        self.face_indicators_action.toggled.connect(
+            self._on_face_indicators_toggled)
+
         help_menu = menubar.addMenu("&Help")
         act = help_menu.addAction("&About")
         act.setToolTip("About MieWorkbench")
@@ -540,6 +555,15 @@ class MainWindow(QMainWindow):
 
     def _on_geometry_changed(self, *_args):
         self.scene3d.set_rays_stale(True)
+
+    # -- face indicators -------------------------------------------------------
+    def _apply_face_indicators(self, visible):
+        self.scene3d.view.set_face_indicators_visible(visible)
+        self.inspector.view.set_face_indicators_visible(visible)
+
+    def _on_face_indicators_toggled(self, checked):
+        self._apply_face_indicators(checked)
+        self.settings.set_bool("show_face_indicators", checked)
 
     # -- undo/redo -----------------------------------------------------------------
     def _on_undo(self):

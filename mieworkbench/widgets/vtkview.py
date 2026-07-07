@@ -64,6 +64,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ..core.transforms import quat_to_matrix
+from .faceindicators import FaceIndicatorLayer
 from .facepicker import FacePicker
 
 # -- role -> (RGB 0..1, opacity) -------------------------------------------
@@ -274,6 +275,10 @@ class VtkSceneView(QWidget):
             self.renderer.AddObserver("StartEvent", self._on_render_start)
             self._update_scale_bar()
 
+        # face-orientation indicator glyphs (see widgets/faceindicators.py);
+        # actor construction is GPU-free, so this is offscreen-safe
+        self._indicators = FaceIndicatorLayer(self.renderer)
+
         # bookkeeping
         self._structure = None
         self._faces_dict = None
@@ -378,6 +383,7 @@ class VtkSceneView(QWidget):
             self.renderer.AddActor(actor)
 
         self._body_actors[name] = actors
+        self._indicators.rebuild_body(body, face_entries, transform, role)
         if self._selection:
             self.set_selection(self._selection)
 
@@ -390,6 +396,13 @@ class VtkSceneView(QWidget):
                         if a not in self._actor_face_map]:
             self._face_actor_map.pop(face_id, None)
         self._body_transforms.pop(body_name, None)
+        self._indicators.remove_body(body_name)
+
+    def set_face_indicators_visible(self, visible):
+        """Menu-toggle hook: show/hide every face-orientation glyph (in
+        this view); newly built glyphs inherit the state."""
+        self._indicators.set_visible(visible)
+        self._render()
 
     def _clear_scene(self):
         for name in list(self._body_actors):
