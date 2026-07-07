@@ -256,6 +256,22 @@ class ResultsPane(QWidget):
         self.summary.horizontalHeader().setStretchLastSection(True)
         self.summary.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tabs.addTab(self.summary, "Summary")
+
+        # per-element energy accounting from the trace ledger
+        self.power = QTableWidget(0, 5)
+        self.power.setHorizontalHeaderLabels(
+            ["Element", "In [mW]", "Out [mW]", "Absorbed [mW]",
+             "Detected [mW]"])
+        self.power.horizontalHeader().setStretchLastSection(True)
+        self.power.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.power.setToolTip(
+            "Boundary power flux per element (seed-averaged): In = power "
+            "arriving from outside, Out = power leaving again, Absorbed = "
+            "losses inside/at the element, Detected = power recorded by "
+            "detector faces. In − Out ≈ Absorbed; small shortfalls are "
+            "rays truncated by the generation/power caps.")
+        self.tabs.addTab(self.power, "Power")
+
         self.galleries = {}
         for name in ("images", "spectra", "plots", "viz"):
             g = _Gallery()
@@ -323,6 +339,8 @@ class ResultsPane(QWidget):
                 "energy closure: %s"
                 % ("OK ✓" if closure else
                    ("FAILED ✗" if closure is not None else "n/a")))
+            self._populate_power(report.get("elements")
+                                 or self._elements_from_audit())
 
         from glob import glob
         for name, gallery in self.galleries.items():
@@ -330,6 +348,32 @@ class ResultsPane(QWidget):
                 glob(os.path.join(self.case_dir, name, "*.png")))
         self.pv_btn.setEnabled(
             bool(paraview_launcher.viz_files(self.case_dir)))
+
+    def _populate_power(self, elements):
+        elements = elements or {}
+        self.power.setRowCount(len(elements))
+        for row, (label, e) in enumerate(sorted(elements.items())):
+            vals = [label,
+                    "%.4g" % (e.get("power_in_W", 0.0) * 1e3),
+                    "%.4g" % (e.get("power_out_W", 0.0) * 1e3),
+                    "%.4g" % (e.get("absorbed_W", 0.0) * 1e3),
+                    "%.4g" % (e.get("detected_W", 0.0) * 1e3)]
+            for col, val in enumerate(vals):
+                self.power.setItem(row, col, QTableWidgetItem(val))
+
+    def _elements_from_audit(self):
+        """Cases post-processed before report.json carried 'elements':
+        mine audit.json directly with the same aggregation (stdlib-only
+        common.element_power_table, shared with post_process)."""
+        path = os.path.join(self.case_dir, "audit.json")
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path) as fh:
+                audit = json.load(fh)
+            return common.element_power_table(audit)
+        except Exception:
+            return {}
 
     def _open_paraview(self):
         ok, msg = paraview_launcher.launch(self.case_dir, self.settings)

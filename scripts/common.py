@@ -935,6 +935,48 @@ def parse_viz_pattern_spec(spec):
 # ---------------------------------------------------------------------------
 # Self-check:  python3 scripts/common.py
 # ---------------------------------------------------------------------------
+def element_power_table(audit):
+    """Per-element power table from an audit.json dict, averaged across
+    seeds: {label: {power_in_W, power_out_W, absorbed_W, detected_W}}.
+
+    in/out come from the tracer's boundary-flux tallies
+    (element_flux_W); absorbed sums the body-tagged losses (by_body_W:
+    bulk/particle/polarizer/seam) plus surface absorption (by_surface_W
+    minus the detected share it historically also holds); detected keys
+    are detector FACE ids ('Body.Feature.FaceN'), grouped here under the
+    body name. Older audits without element_flux_W yield only the
+    absorbed/detected columns. Stdlib-only: shared by post_process (the
+    report.json writer) and the GUI results pane (old-case fallback)."""
+    seeds = audit.get("per_seed", [])
+    if not seeds:
+        return {}
+    table = {}
+
+    def row(label):
+        return table.setdefault(label, {"power_in_W": 0.0,
+                                        "power_out_W": 0.0,
+                                        "absorbed_W": 0.0,
+                                        "detected_W": 0.0})
+
+    n = float(len(seeds))
+    for rep in seeds:
+        detected = rep.get("detected_W", {})
+        for label, fx in rep.get("element_flux_W", {}).items():
+            r = row(label)
+            r["power_in_W"] += fx.get("in_W", 0.0) / n
+            r["power_out_W"] += fx.get("out_W", 0.0) / n
+        for label, w in rep.get("by_body_W", {}).items():
+            row(label)["absorbed_W"] += w / n
+        for label, w in rep.get("by_surface_W", {}).items():
+            absorbed = w - detected.get(label, 0.0)
+            if absorbed > 0:
+                row(label)["absorbed_W"] += absorbed / n
+        for face_id, w in detected.items():
+            body = face_id.split(".", 1)[0]
+            row(body)["detected_W"] += w / n
+    return {k: table[k] for k in sorted(table)}
+
+
 def _selfcheck():
     ok = True
 

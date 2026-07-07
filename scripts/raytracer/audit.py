@@ -35,9 +35,30 @@ class PowerLedger:
         # sub-ledgers for diagnostics (keyed by body/face name)
         self.by_surface = {}
         self.by_body = {}
+        # per-element boundary flux (diagnostic TALLIES, not closure
+        # buckets): power arriving at an element from outside ("in_W") and
+        # power leaving it back into the surroundings ("out_W"). in - out
+        # ~= power absorbed inside/at the element; small shortfalls from
+        # generation/power-truncated rays are expected and documented.
+        self.flux = {}
+        # detected power per detector label, kept separately from
+        # by_surface (which historically mixes surface absorption and
+        # detection under one name)
+        self.detected = {}
 
     def emit(self, source_id, power):
         np.add.at(self.emitted, source_id, power)
+
+    def flux_in(self, label, power):
+        entry = self.flux.setdefault(label, {"in_W": 0.0, "out_W": 0.0})
+        entry["in_W"] += float(power)
+
+    def flux_out(self, label, power):
+        entry = self.flux.setdefault(label, {"in_W": 0.0, "out_W": 0.0})
+        entry["out_W"] += float(power)
+
+    def detect(self, label, power):
+        self.detected[label] = self.detected.get(label, 0.0) + float(power)
 
     def credit(self, bucket, source_id, power, where=None):
         """Credit power [W] (arrays ok) to a bucket, optionally tagged with
@@ -61,6 +82,9 @@ class PowerLedger:
             "sources": {},
             "by_surface_W": {k: v for k, v in sorted(self.by_surface.items())},
             "by_body_W": {k: v for k, v in sorted(self.by_body.items())},
+            "element_flux_W": {k: dict(v)
+                               for k, v in sorted(self.flux.items())},
+            "detected_W": {k: v for k, v in sorted(self.detected.items())},
             "closure_gate": gate,
             "closure_ok": bool(np.all(err <= gate)),
         }

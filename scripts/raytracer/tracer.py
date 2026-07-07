@@ -318,11 +318,30 @@ class Tracer:
         self.ledger.by_surface[det.label] = (
             self.ledger.by_surface.get(det.label, 0.0)
             + float(np.sum(grp.power)))
+        # separate detected tally: by_surface historically mixes surface
+        # absorption and detection under one key space
+        self.ledger.detect(det.label, float(np.sum(grp.power)))
+
+    def _flux_out_children(self, body, children):
+        """Per-element boundary-flux tally (diagnostic, zero RNG use):
+        credit each child ray that leaves this interface OUTSIDE the body
+        as power flowing out of the element. 'Outside' is read off the
+        medium stack (a child created at B's boundary whose top-of-stack
+        is not B is in the surroundings), so the same test covers
+        specular, scattered, o/e and screen children uniformly."""
+        for ch in children:
+            if ch is None or len(ch) == 0:
+                continue
+            outside = ch.current_medium() != body.index
+            if np.any(outside):
+                self.ledger.flux_out(body.label,
+                                     float(np.sum(ch.power[outside])))
 
     def _screen_children(self, fid, grp):
         """Ideal thin screen: mirror fraction specular-reflects, absorbance
         eats its share of the rest, remainder continues UNREFRACTED."""
         body = self.scene.body_of_face(fid)
+        self.ledger.flux_in(body.label, float(np.sum(grp.power)))
         r_m = body.mirror
         a = body.absorbance
         face = self.scene.faces[fid]
@@ -350,6 +369,7 @@ class Tracer:
         if ab > 0:
             self.ledger.credit("absorbed_surface", grp.source_id,
                                grp.power * ab, where=body.label)
+        self._flux_out_children(body, out)
         return RayBatch.concatenate(out) if out else None
 
     # ------------------------------------------------------------------
@@ -382,6 +402,10 @@ class Tracer:
 
         n_hat = np.where(entering[:, None], n_out, -n_out)
         cos_i = np.clip(-np.sum(grp.dir * n_hat, axis=-1), 0.0, 1.0)
+
+        if np.any(entering):
+            self.ledger.flux_in(body.label,
+                                float(np.sum(grp.power[entering])))
 
         # ---- uniaxial birefringence: dedicated o/e split path ----
         if body.birefringent:
@@ -713,6 +737,7 @@ class Tracer:
         if np.any(absorbed > 0):
             self.ledger.credit("absorbed_surface", grp.source_id, absorbed,
                                where=body.label)
+        self._flux_out_children(body, out)
         return RayBatch.concatenate(out) if out else None
 
     # ------------------------------------------------------------------
@@ -1014,6 +1039,7 @@ class Tracer:
         if np.any(absorbed > 0):
             self.ledger.credit("absorbed_surface", grp.source_id, absorbed,
                                where=body.label)
+        self._flux_out_children(body, out)
         return RayBatch.concatenate(out) if out else None
 
     # ------------------------------------------------------------------

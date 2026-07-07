@@ -374,3 +374,49 @@ def test_results_gallery_lightbox_refresh_doesnt_crash(qtbot, tmp_path):
     # The lightbox should have updated its paths and clamped the index
     assert len(lightbox.paths) == 2
     assert lightbox.current_index < len(lightbox.paths)
+
+
+def test_results_power_tab_from_report(qtbot, tmp_path):
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    case = make_fake_case(tmp_path)
+    report = json.loads((case / "report.json").read_text())
+    report["elements"] = {
+        "Lens": {"power_in_W": 0.001, "power_out_W": 0.0008,
+                 "absorbed_W": 0.0002, "detected_W": 0.0},
+        "Screen": {"power_in_W": 0.0008, "power_out_W": 0.00026,
+                   "absorbed_W": 0.0, "detected_W": 0.00054},
+    }
+    (case / "report.json").write_text(json.dumps(report))
+    pane.load_case(str(case))
+    assert pane.power.rowCount() == 2
+    row = {pane.power.item(r, 0).text(): r
+           for r in range(pane.power.rowCount())}
+    assert pane.power.item(row["Lens"], 1).text() == "1"        # 1 mW in
+    assert pane.power.item(row["Lens"], 3).text() == "0.2"      # absorbed
+    assert pane.power.item(row["Screen"], 4).text() == "0.54"   # detected
+
+
+def test_results_power_tab_falls_back_to_audit(qtbot, tmp_path):
+    """Old cases: report.json has no 'elements' but audit.json exists —
+    the pane mines it with common.element_power_table."""
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    case = make_fake_case(tmp_path)
+    (case / "audit.json").write_text(json.dumps({
+        "gate": 1e-3,
+        "per_seed": [{
+            "sources": {}, "closure_gate": 1e-3, "closure_ok": True,
+            "by_body_W": {"Lens": 0.0002},
+            "by_surface_W": {"Det.Pad.Face1": 0.00054},
+            "element_flux_W": {"Lens": {"in_W": 0.001, "out_W": 0.0008}},
+            "detected_W": {"Det.Pad.Face1": 0.00054},
+        }]}))
+    pane.load_case(str(case))
+    labels = {pane.power.item(r, 0).text()
+              for r in range(pane.power.rowCount())}
+    assert labels == {"Lens", "Det"}
+    row = {pane.power.item(r, 0).text(): r
+           for r in range(pane.power.rowCount())}
+    assert pane.power.item(row["Det"], 4).text() == "0.54"
+    assert pane.power.item(row["Lens"], 3).text() == "0.2"
