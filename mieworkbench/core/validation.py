@@ -216,6 +216,9 @@ def check_library_names(v):
                                    body=b["name"], check="library-names"))
                 continue
             for face, name in values.items():
+                # the tagging contract treats ''/'none' as "no <what>"
+                if str(name).strip().lower() in ("", "none"):
+                    continue
                 if name not in registry:
                     out.append(Finding(
                         ERROR, "%s: unknown %s %r%s"
