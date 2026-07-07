@@ -1,0 +1,266 @@
+"""ElementEditorPane tests.
+
+Pure logic (no Qt): merge_facemap's recompose/collapse rules, checked
+against scripts/common.py's parse_facemap_spec as the oracle; and
+parse_sheet_raw/format_sheet_raw's unit-preserving number edit.
+
+Widget tests: offscreen construction against FakeProject, property add/
+edit/remove, per-face facemap assignment (set_face_selection wired the
+way InspectorPane.faceSelectionChanged would drive it), and the parameter-
+sheet table's commit -> set_spreadsheet (+ rebuild_primitive when the body
+is primitive-built).
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "scripts")))
+
+import common  # noqa: E402  (stdlib-only shared contract hub)
+import pytest  # noqa: E402
+from PySide6.QtWidgets import QFormLayout  # noqa: E402
+
+from mieworkbench.panes.element_editor import (  # noqa: E402
+    ElementEditorPane, format_sheet_raw, merge_facemap, parse_sheet_raw,
+)
+from mieworkbench.tests.vtk_test_support import (  # noqa: E402
+    FakeProject, make_lens_two_faces_scene, make_two_body_scene,
+)
+
+
+# ---------------------------------------------------------------------------
+# merge_facemap (oracle: common.parse_facemap_spec)
+# ---------------------------------------------------------------------------
+def test_merge_facemap_adds_a_face_alongside_an_existing_one():
+    raw = merge_facemap("Face5=X", "Body", "Pad",
+                        ["Body.Pad.Face3", "Body.Pad.Face5"],
+                        {"Body.Pad.Face3"}, "MgF2")
+    parsed = common.parse_facemap_spec(raw, body="Body", feature="Pad")
+    assert parsed == {"Body.Pad.Face3": "MgF2", "Body.Pad.Face5": "X"}
+
+
+def test_merge_facemap_assigning_every_face_collapses_to_bare_value():
+    raw = merge_facemap(None, "Body", "Pad",
+                        ["Body.Pad.Face3", "Body.Pad.Face5"],
+                        {"Body.Pad.Face3", "Body.Pad.Face5"}, "MgF2")
+    assert raw == "MgF2"
+    parsed = common.parse_facemap_spec(raw, body="Body", feature="Pad")
+    assert parsed == {common.FACEMAP_ALL: "MgF2"}
+
+
+def test_merge_facemap_expands_existing_all_form_before_overriding():
+    raw = merge_facemap("MgF2", "Body", "Pad",
+                        ["Body.Pad.Face3", "Body.Pad.Face5"],
+                        {"Body.Pad.Face3"}, "SiO2")
+    parsed = common.parse_facemap_spec(raw, body="Body", feature="Pad")
+    assert parsed == {"Body.Pad.Face3": "SiO2", "Body.Pad.Face5": "MgF2"}
+    # not collapsed -- the two faces disagree
+    assert common.FACEMAP_ALL not in parsed
+
+
+def test_merge_facemap_reassigning_all_faces_to_same_value_recollapses():
+    raw = merge_facemap("Face3=A;Face5=B", "Body", "Pad",
+                        ["Body.Pad.Face3", "Body.Pad.Face5"],
+                        {"Body.Pad.Face3", "Body.Pad.Face5"}, "Z")
+    assert raw == "Z"
+
+
+def test_merge_facemap_single_face_body_is_bare_all_form():
+    # selecting the ONLY face of a body is selecting "every face" -- the
+    # per-face table's oracle re-parse should agree it's the whole-body
+    # shorthand, not a Face1=... entry.
+    raw = merge_facemap(None, "Lens", "Revolution",
+                        ["Lens.Revolution.Face1"],
+                        {"Lens.Revolution.Face1"}, "SiO2")
+    assert raw == "SiO2"
+
+
+# ---------------------------------------------------------------------------
+# parse_sheet_raw / format_sheet_raw
+# ---------------------------------------------------------------------------
+def test_sheet_raw_with_unit_round_trips_and_edits_only_the_number():
+    parsed = parse_sheet_raw("=2 mm")
+    assert parsed == {"has_eq": True, "number": 2.0, "suffix": " mm"}
+    assert format_sheet_raw(parsed, 3) == "=3 mm"
+
+
+def test_bare_sheet_raw_stays_bare_after_edit():
+    parsed = parse_sheet_raw("633")
+    assert parsed["has_eq"] is False
+    assert parsed["suffix"] == ""
+    assert format_sheet_raw(parsed, 633) == "633"
+
+
+def test_sheet_raw_negative_float_with_unit():
+    parsed = parse_sheet_raw("=-1.5 deg")
+    assert parsed["number"] == pytest.approx(-1.5)
+    assert format_sheet_raw(parsed, 2.25) == "=2.25 deg"
+
+
+def test_sheet_raw_rejects_garbage():
+    with pytest.raises(ValueError):
+        parse_sheet_raw("not-a-number")
+
+
+# ---------------------------------------------------------------------------
+# widget construction + behavior (offscreen, FakeProject)
+# ---------------------------------------------------------------------------
+def _prop_labels(pane):
+    labels = []
+    for i in range(pane.props_form.rowCount()):
+        item = pane.props_form.itemAt(i, QFormLayout.ItemRole.LabelRole)
+        if item is not None:
+            labels.append(item.widget().text())
+    return labels
+
+
+def test_construct_offscreen(qtbot):
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    assert pane.props_form.rowCount() == 0
+
+
+def test_lists_properties_and_skips_internal(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    labels = _prop_labels(pane)
+    assert "material" in labels
+    assert "coating" in labels
+    assert not any(l.startswith("miewb_") for l in labels)
+
+
+def test_add_and_remove_property(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    pane.add_prop_combo.setCurrentText("power")
+    pane.add_prop_button.click()
+    assert project.body("Lens")["properties"]["power"]["value"] == ""
+    assert "power" in _prop_labels(pane)
+
+    pane._on_remove_property("power")
+    assert "power" not in project.body("Lens")["properties"]
+    assert "power" not in _prop_labels(pane)
+
+
+def test_editing_a_numeric_property_commits_a_float(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    project.set_property("Lens", "power", 5.0)
+    pane.set_face_selection("Lens", set())   # body unchanged, forces refresh
+    # (property lists rebuild lazily on body change; force it directly)
+    pane._refresh_properties()
+
+    pane._commit_property("power", 12.5)
+    assert project.body("Lens")["properties"]["power"]["value"] == 12.5
+    assert isinstance(project.body("Lens")["properties"]["power"]["value"],
+                      float)
+
+
+def test_facemap_assign_partial_selection_keeps_other_face(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", {"Lens.Revolution.Face1"})
+
+    pane.facemap_prop_combo.setCurrentText("coating")
+    pane.facemap_value_edit.setText("SiO2")
+    pane.facemap_assign_button.click()
+
+    new_raw = project.body("Lens")["properties"]["coating"]["value"]
+    parsed = common.parse_facemap_spec(new_raw, body="Lens",
+                                       feature="Revolution")
+    # existing whole-body 'MgF2' expands, Face1 is overridden to SiO2,
+    # Face2 keeps the old value
+    assert parsed == {"Lens.Revolution.Face1": "SiO2",
+                      "Lens.Revolution.Face2": "MgF2"}
+
+
+def test_facemap_table_lists_current_assignments(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    # canned Lens already has a whole-body coating='MgF2'
+    assert pane.facemap_table.rowCount() == 1
+    assert pane.facemap_table.item(0, 0).text() == "coating"
+    assert pane.facemap_table.item(0, 1).text() == "ALL"
+    assert pane.facemap_table.item(0, 2).text() == "MgF2"
+
+
+def _find_sheet_row(pane, alias):
+    for row in range(pane.sheet_table.rowCount()):
+        if pane.sheet_table.item(row, 0).text() == alias:
+            return row
+    raise AssertionError("no sheet row for alias %r" % alias)
+
+
+def test_sheet_edit_preserves_unit_and_rebuilds_primitive(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    row = _find_sheet_row(pane, "lensth")
+    editor = pane.sheet_table.cellWidget(row, 1)
+    assert editor.text() == "2"
+    editor.setText("3")
+    editor.editingFinished.emit()
+
+    assert ("set_spreadsheet", "dim", "lensth", "=3 mm") in project.calls
+    assert any(c[0] == "rebuild_primitive" and c[1] == "lensgrp"
+              for c in project.calls)
+
+
+def test_bare_sheet_alias_edit_stays_bare(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    row = _find_sheet_row(pane, "wavelength")
+    editor = pane.sheet_table.cellWidget(row, 1)
+    assert editor.text() == "633"
+    editor.setText("650")
+    editor.editingFinished.emit()
+
+    assert ("set_spreadsheet", "dim", "wavelength", "650") in project.calls
+
+
+def test_properties_changed_for_other_body_does_not_refresh(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    labels_before = _prop_labels(pane)
+    project.set_property("Screen", "absorbance", 0.1)
+    assert _prop_labels(pane) == labels_before
