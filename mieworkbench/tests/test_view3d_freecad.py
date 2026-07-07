@@ -103,7 +103,7 @@ def test_face_assignment_on_two_lens_faces_matches_facemap_oracle(
          "%s.%s.Face2" % (LENS_BODY, LENS_FEATURE)})
 
     pane.facemap_prop_combo.setCurrentText("coating")
-    pane.facemap_value_edit.setText("SomeCoating")
+    pane.facemap_value_combo.setCurrentText("SomeCoating")
     pane.facemap_assign_button.click()
 
     raw = project.body(LENS_BODY)["properties"]["coating"]["value"]

@@ -599,10 +599,19 @@ class MainWindow(QMainWindow):
 
         self.inspector.faceSelectionChanged.connect(
             self.element_editor.set_face_selection)
-        # the editor's face LIST is an alternative face-picking surface:
-        # rows chosen there highlight in the inspector's 3D view
+        # the editor's assignment LIST is an alternative face-picking
+        # surface: rows chosen there highlight in the inspector's 3D view
         self.element_editor.facesPicked.connect(
             lambda _body, faces: self.inspector.set_selected_faces(faces))
+        # every value dropdown reflects the ACTIVE property library (the
+        # project's embedded one when a .MieWB is open, else the system's)
+        self.element_editor.set_prop_library(
+            lambda: (self.library_manager.project_lib
+                     or self.library_manager.system_lib))
+        # right-click in the inspector's 3D view pops the same Active
+        # Properties menu as the editor's assignment table
+        self.inspector.contextMenuRequested.connect(
+            self._on_inspector_context_menu)
         self.problems.validationChanged.connect(
             self._on_validation_changed)
 
@@ -648,6 +657,11 @@ class MainWindow(QMainWindow):
     # through the shared selection model
     def _on_scene_selection(self, body_name, faces):
         self.selection.select(body_name, faces)
+
+    def _on_inspector_context_menu(self, global_pos):
+        menu = self.element_editor.build_active_properties_menu(self)
+        if menu is not None:
+            menu.exec(global_pos)
 
     def _on_validation_changed(self, has_errors):
         self._has_validation_errors = has_errors

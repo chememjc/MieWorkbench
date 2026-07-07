@@ -61,14 +61,18 @@ def sorted_face_ids(face_ids):
     return sorted(face_ids, key=_face_sort_key)
 
 
-def _compose_facemap(expanded, all_face_ids, body_name, feature):
+def _compose_facemap(expanded, all_face_ids, body_name, feature,
+                     collapse=True):
     """{full_face_id: value} -> raw string in the bare 'FaceN=value;...'
     form, collapsed to the bare whole-value shorthand when every face of
-    the body maps to the same value. Oracle-checked via re-parse."""
+    the body maps to the same value. Oracle-checked via re-parse.
+    collapse=False keeps the explicit per-face form even at full uniform
+    coverage -- required for `grating`, whose contract REJECTS the
+    whole-body shorthand (it must name specific faces)."""
     all_face_ids = set(all_face_ids or [])
     values_on_all = ({expanded.get(fid) for fid in all_face_ids}
                      if all_face_ids else set())
-    if (all_face_ids and len(expanded) == len(all_face_ids)
+    if (collapse and all_face_ids and len(expanded) == len(all_face_ids)
             and all_face_ids <= set(expanded) and len(values_on_all) == 1):
         new_raw = next(iter(values_on_all))
     else:
@@ -102,24 +106,26 @@ def _expand(existing_raw, body_name, feature, all_face_ids):
 
 
 def merge_facemap(existing_raw, body_name, feature, all_face_ids,
-                  selected_face_ids, value):
+                  selected_face_ids, value, collapse=True):
     """Merge `value` onto `selected_face_ids` (full 'Body.Feature.FaceN'
     ids) within a per-face property whose current raw string is
     `existing_raw` (falsy if the property doesn't exist yet). Returns the
     new raw string in the bare 'FaceN=value;...' form, collapsed to the
     bare whole-value form when every face of the body ends up mapped to
-    the same value (matches common.py's 'apply to every face' shorthand).
+    the same value (matches common.py's 'apply to every face' shorthand;
+    pass collapse=False for `grating`, which must name explicit faces).
     Re-parses the result with common.parse_facemap_spec as an oracle and
     raises ValueError if it doesn't round-trip.
     """
     expanded = _expand(existing_raw, body_name, feature, all_face_ids)
     for fid in set(selected_face_ids or []):
         expanded[fid] = value
-    return _compose_facemap(expanded, all_face_ids, body_name, feature)
+    return _compose_facemap(expanded, all_face_ids, body_name, feature,
+                            collapse=collapse)
 
 
 def remove_faces(existing_raw, body_name, feature, all_face_ids,
-                 faces_to_remove):
+                 faces_to_remove, collapse=True):
     """Remove `faces_to_remove` from a facemap string. Returns the new
     raw string, or None when the map empties -- the caller must then
     remove the property from the body instead of setting it."""
@@ -128,7 +134,15 @@ def remove_faces(existing_raw, body_name, feature, all_face_ids,
         expanded.pop(fid, None)
     if not expanded:
         return None
-    return _compose_facemap(expanded, all_face_ids, body_name, feature)
+    return _compose_facemap(expanded, all_face_ids, body_name, feature,
+                            collapse=collapse)
+
+
+def facemap_collapse_allowed(prop):
+    """Whether `prop` may use the bare whole-body shorthand. The grating
+    contract requires explicit face names (extract_geometry rejects a
+    bare grating value)."""
+    return prop != "grating"
 
 
 def assignments_for_body(properties, body_name, feature, all_face_ids):

@@ -133,6 +133,20 @@ def test_editing_a_numeric_property_commits_a_float(qtbot, tmp_path):
                       float)
 
 
+def _assignment_rows(pane):
+    """[(prop_text, value_text, faces_text), ...] from the Active
+    Properties table (cell widgets included)."""
+    from PySide6.QtWidgets import QComboBox as _QC
+    rows = []
+    for row in range(pane.assign_table.rowCount()):
+        prop = pane.assign_table.item(row, 0).text()
+        w = pane.assign_table.cellWidget(row, 1)
+        value = w.currentText() if isinstance(w, _QC) else w.text()
+        faces = pane.assign_table.cellWidget(row, 2).text()
+        rows.append((prop, value, faces))
+    return rows
+
+
 def test_facemap_assign_partial_selection_keeps_other_face(qtbot, tmp_path):
     structure, faces = make_lens_two_faces_scene(tmp_path)
     project = FakeProject(structure, faces)
@@ -142,7 +156,7 @@ def test_facemap_assign_partial_selection_keeps_other_face(qtbot, tmp_path):
     pane.set_face_selection("Lens", {"Lens.Revolution.Face1"})
 
     pane.facemap_prop_combo.setCurrentText("coating")
-    pane.facemap_value_edit.setText("SiO2")
+    pane.facemap_value_combo.setCurrentText("SiO2")
     pane.facemap_assign_button.click()
 
     new_raw = project.body("Lens")["properties"]["coating"]["value"]
@@ -154,7 +168,7 @@ def test_facemap_assign_partial_selection_keeps_other_face(qtbot, tmp_path):
                       "Lens.Revolution.Face2": "MgF2"}
 
 
-def test_faces_table_lists_every_face_with_assignments(qtbot, tmp_path):
+def test_assign_with_no_selection_targets_the_whole_body(qtbot, tmp_path):
     structure, faces = make_lens_two_faces_scene(tmp_path)
     project = FakeProject(structure, faces)
     pane = ElementEditorPane()
@@ -162,17 +176,199 @@ def test_faces_table_lists_every_face_with_assignments(qtbot, tmp_path):
     pane.set_project(project)
     pane.set_face_selection("Lens", set())
 
-    # one row per face; the canned Lens has a whole-body coating='MgF2'
-    # which shows on every row (marked as whole-body) in bold
-    assert pane.faces_table.rowCount() == 2
-    for row in range(2):
-        assert pane.faces_table.item(row, 0).text().startswith("Face")
-        note = pane.faces_table.item(row, 1).text()
-        assert "coating=MgF2" in note and "whole body" in note
-        assert pane.faces_table.item(row, 0).font().bold()
+    pane.facemap_prop_combo.setCurrentText("roughness")
+    pane.facemap_value_combo.setCurrentText("50")
+    pane.facemap_assign_button.click()
+    # both faces -> collapses to the bare whole-body form
+    assert project.body("Lens")["properties"]["roughness"]["value"] == "50"
 
 
-def test_faces_table_selection_drives_face_selection(qtbot, tmp_path):
+def test_assignments_table_groups_by_property_and_value(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    # canned Lens: whole-body coating='MgF2'; add a per-face roughness
+    project.set_property("Lens", "roughness", "Face1=50")
+    pane.set_face_selection("Lens", set())
+
+    rows = _assignment_rows(pane)
+    assert ("coating", "MgF2", "whole body") in rows
+    assert ("roughness", "50", "Face1") in rows
+    assert len(rows) == 2
+
+
+def test_assignments_table_filters_by_face_selection(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    project.set_property("Lens", "coating", "Face1=SiO2;Face2=MgF2")
+    project.set_property("Lens", "roughness", "Face1=50")
+
+    pane.set_face_selection("Lens", {"Lens.Revolution.Face2"})
+    rows = _assignment_rows(pane)
+    # only Face2-touching assignments survive the filter
+    assert rows == [("coating", "MgF2", "Face2")]
+    assert "Face2" in pane.selection_label.text()
+
+    pane.set_face_selection("Lens", set())
+    assert len(_assignment_rows(pane)) == 3
+
+
+def test_assignment_row_selection_picks_its_faces(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    project.set_property("Lens", "roughness", "Face1=50")
+    pane.set_face_selection("Lens", set())
+
+    picked = []
+    pane.facesPicked.connect(lambda b, f: picked.append((b, set(f))))
+    row = [r for r, entry in enumerate(_assignment_rows(pane))
+           if entry[0] == "roughness"][0]
+    pane.assign_table.selectRow(row)
+    assert picked and picked[-1] == ("Lens", {"Lens.Revolution.Face1"})
+    assert pane._face_selection == {"Lens.Revolution.Face1"}
+    # selecting a row must NOT collapse the table to the filtered view
+    assert len(_assignment_rows(pane)) == 2
+
+
+def test_assignment_value_edit_rewrites_those_faces_only(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    project.set_property("Lens", "coating", "Face1=SiO2;Face2=MgF2")
+    pane.set_face_selection("Lens", set())
+
+    row = [r for r, entry in enumerate(_assignment_rows(pane))
+           if entry[1] == "SiO2"][0]
+    combo = pane.assign_table.cellWidget(row, 1)
+    combo.setCurrentText("hard_gold")
+    combo.lineEdit().editingFinished.emit()
+
+    raw = project.body("Lens")["properties"]["coating"]["value"]
+    parsed = common.parse_facemap_spec(raw, body="Lens",
+                                       feature="Revolution")
+    assert parsed == {"Lens.Revolution.Face1": "hard_gold",
+                      "Lens.Revolution.Face2": "MgF2"}
+
+
+def test_assignment_face_toggle_add_and_remove(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    project.set_property("Lens", "roughness", "Face1=50")
+    pane.set_face_selection("Lens", set())
+
+    (a,) = [x for x in pane._current_assignments()[0]
+            if x.prop == "roughness"]
+    # add Face2 to the assignment -> both faces -> collapses to bare form
+    pane._on_assignment_face_toggled(a, "Lens.Revolution.Face2", True)
+    assert project.body("Lens")["properties"]["roughness"]["value"] == "50"
+
+    # remove both faces one by one; the property disappears with the last
+    (a,) = [x for x in pane._current_assignments()[0]
+            if x.prop == "roughness"]
+    pane._on_assignment_face_toggled(a, "Lens.Revolution.Face1", False)
+    (a,) = [x for x in pane._current_assignments()[0]
+            if x.prop == "roughness"]
+    pane._on_assignment_face_toggled(a, "Lens.Revolution.Face2", False)
+    assert "roughness" not in project.body("Lens")["properties"]
+
+
+def test_remove_assignment_button_removes_only_its_faces(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    project.set_property("Lens", "coating", "Face1=SiO2;Face2=MgF2")
+    pane.set_face_selection("Lens", set())
+
+    (a,) = [x for x in pane._current_assignments()[0]
+            if x.value == "SiO2"]
+    pane._on_remove_assignment(a)
+    raw = project.body("Lens")["properties"]["coating"]["value"]
+    parsed = common.parse_facemap_spec(raw, body="Lens",
+                                       feature="Revolution")
+    assert parsed == {"Lens.Revolution.Face2": "MgF2"}
+
+    # removing a whole-body assignment removes the property
+    (a,) = [x for x in pane._current_assignments()[0]
+            if x.prop == "coating"]
+    pane._on_remove_assignment(a)
+    assert "coating" not in project.body("Lens")["properties"]
+
+
+def test_invalid_raw_value_shows_as_invalid_row(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    project.set_property("Lens", "roughness", "Face1=50;Face1=60")
+    pane.set_face_selection("Lens", set())
+
+    rows = _assignment_rows(pane)
+    assert any(p == "roughness (invalid)" for p, _v, _f in rows)
+
+
+def test_active_properties_menu_checkmarks_and_apply(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    # coating=MgF2 whole body (canned) -> checked for any selection
+    pane.set_face_selection("Lens", {"Lens.Revolution.Face1"})
+
+    menu = pane.build_active_properties_menu()
+    assert menu is not None
+    # NOTE: never retrieve submenus via QAction.menu() -- PySide6 hands
+    # ownership of that wrapper to Python and the GC deletes the C++ menu
+    submenus = menu.property_submenus
+    assert set(submenus) == set(
+        ("coating", "roughness", "diffuser", "grating", "surface_override"))
+    coating_items = {a.text(): a for a in submenus["coating"].actions()
+                     if a.text() and a.text() != "Custom…"}
+    assert coating_items["MgF2"].isChecked()
+
+    # clicking the checked value removes it from the selected face
+    coating_items["MgF2"].trigger()
+    raw = project.body("Lens")["properties"]["coating"]["value"]
+    parsed = common.parse_facemap_spec(raw, body="Lens",
+                                       feature="Revolution")
+    assert parsed == {"Lens.Revolution.Face2": "MgF2"}
+
+
+def test_menu_grating_apply_never_collapses_to_bare_form(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())   # whole-body target
+
+    pane._on_menu_value("grating", "600:v", was_fully_applied=False)
+    raw = project.body("Lens")["properties"]["grating"]["value"]
+    # the grating contract forbids the bare whole-body shorthand
+    assert raw.startswith("Face")
+    parsed = common.parse_facemap_spec(raw, body="Lens",
+                                       feature="Revolution")
+    assert set(parsed) == {"Lens.Revolution.Face1",
+                           "Lens.Revolution.Face2"}
+
+
+def test_menu_select_and_clear_face_selection(qtbot, tmp_path):
     structure, faces = make_lens_two_faces_scene(tmp_path)
     project = FakeProject(structure, faces)
     pane = ElementEditorPane()
@@ -182,24 +378,28 @@ def test_faces_table_selection_drives_face_selection(qtbot, tmp_path):
 
     picked = []
     pane.facesPicked.connect(lambda b, f: picked.append((b, set(f))))
-    pane.faces_table.selectRow(0)
-    fid = pane.faces_table.item(0, 0).data(0x0100)
-    assert picked and picked[-1] == ("Lens", {fid})
-    assert pane._face_selection == {fid}
+    pane._menu_select_all()
+    assert picked[-1] == ("Lens", {"Lens.Revolution.Face1",
+                                   "Lens.Revolution.Face2"})
+    pane._menu_clear_selection()
+    assert picked[-1] == ("Lens", set())
 
 
-def test_faces_table_marks_active_face_for_sources(qtbot, tmp_path):
-    structure, faces = make_two_body_scene(tmp_path)
+def test_emit_marker_appears_in_faces_display(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
     project = FakeProject(structure, faces)
     pane = ElementEditorPane()
     qtbot.addWidget(pane)
     pane.set_project(project)
     project.set_property("Lens", "power", 5.0)
     project.set_property("Lens", "lambdac", 633.0)
+    # a per-face assignment names its faces, so the emit marker shows on
+    # the working face (Face1: centroid closest to the origin)
+    project.set_property("Lens", "roughness", "Face1=50")
     pane.set_face_selection("Lens", set())
     qtbot.waitUntil(
-        lambda: any("(emit)" in pane.faces_table.item(r, 0).text()
-                    for r in range(pane.faces_table.rowCount())),
+        lambda: any("Face1 (emit)" in f
+                    for _p, _v, f in _assignment_rows(pane)),
         timeout=2000)
 
 

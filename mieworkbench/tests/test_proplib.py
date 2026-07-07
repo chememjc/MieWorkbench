@@ -25,6 +25,7 @@ REGISTRY_RELPATHS = {
     "filters": "filter/filters.miefilt",
     "gratings": "grating/gratings.miegrat",
     "uniaxial": "birefringence/uniaxial.miebrf",
+    "diffusers": "diffuser/diffusers.miedif",
 }
 
 

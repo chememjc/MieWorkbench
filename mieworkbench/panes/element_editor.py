@@ -11,14 +11,19 @@ Layout: three QGroupBoxes.
      -> project.set_property (float for numeric contract props, bool for
      coherent, str otherwise); a per-row Remove button ->
      project.remove_property.
-  b) Per-face assignments - assigns coating/roughness/grating/
-     surface_override (the four per-face "facemap" properties, see
-     scripts/common.py's parse_facemap_spec) onto the CURRENT face
-     selection, fed by the slot set_face_selection(body, faces) (wire
-     InspectorPane.faceSelectionChanged straight into it). Builds/updates
-     the body's facemap string property by merging the new value onto the
-     selected faces (see merge_facemap()) and shows a table of every
-     current per-face entry across all four properties.
+  b) Active Properties - the per-face "facemap" properties (coating/
+     roughness/diffuser/grating/surface_override, see scripts/common.py's
+     parse_facemap_spec) shown ASSIGNMENT-centrically: one row per
+     (property, value) pair with the face names it covers. The faces cell
+     opens a checkable per-face menu (add/remove faces from the
+     assignment); the value cell is a registry-fed dropdown (typed escape
+     hatch included). With a face selection active (fed by
+     set_face_selection(body, faces) from InspectorPane, or by selecting
+     assignment rows here) the table filters to assignments touching the
+     selection. A right-click (here or in the inspector's 3D view, via
+     build_active_properties_menu) opens the property -> value apply/
+     remove menu tree with checkmarks. All set-arithmetic lives in
+     core/facemaps.py (pure, oracle-checked).
   c) Element parameters - the body's parameter-sheet aliases
      (project.sheet_for_body): each row's raw "=<num> <unit>" (or bare
      "<num>") string is parsed (parse_sheet_raw), the user edits just the
@@ -74,14 +79,15 @@ try:
 except Exception:                                    # pragma: no cover
     load_optical_properties = None
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from ..core import facemaps
 from ..core.facemaps import (   # noqa: F401  (re-exported for back-compat)
     FACEMAP_PROPERTIES, active_face_index, merge_facemap,
     validate_facemap_value,
@@ -96,10 +102,15 @@ CONTRACT_PROPERTIES = (
     "polarizer", "polarizer_axis", "crystal_axis", "grating",
     "surface_override", "mirror", "absorbance",
 )
-REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating", "grating")
+REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating",
+                       "grating", "diffuser")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
                       "absorbance")
 BOOL_PROPERTIES = ("coherent",)
+
+# offered in the Active Properties value dropdowns alongside registry rows
+ROUGHNESS_PRESETS = ("10", "50", "200")
+DIFFUSER_TEMPLATES = ("grit:120", "slope:0.08")
 
 # Sensible starting values written when a property is first added, so a
 # freshly added row is never the empty string (an empty `material` used to
@@ -228,6 +239,7 @@ class ElementEditorPane(QWidget):
         self._optprops_root = optprops_root or DEFAULT_OPTPROPS_ROOT
         self._optprops = None
         self._optprops_tried = False
+        self._prop_library_provider = None
 
         # Refreshes triggered by our own commits are deferred to the next
         # event-loop turn: rebuilding the rows synchronously would delete
@@ -351,17 +363,63 @@ class ElementEditorPane(QWidget):
             return   # validator-intermediate text like '-' or '1e'
         self._commit_property(name, value)
 
-    def _material_names(self):
-        props = self._get_optprops()
-        return list(props.matdb) if props is not None else []
+    def set_prop_library(self, provider):
+        """`provider`: zero-arg callable returning the ACTIVE
+        core.proplib.PropLibrary (the project library when a .MieWB is
+        open, else the system one) -- the mainwindow injects this so every
+        dropdown reflects the registries the trace will actually use. The
+        module-level loader (hardcoded repo root) remains as a fallback
+        when unset or failing."""
+        self._prop_library_provider = provider
 
-    def _registry_names(self, prop_name):
+    def _library_categories(self):
+        """{"materials": [...], "coatings": [...], ...} from the injected
+        PropLibrary, falling back to the legacy direct loader."""
+        if self._prop_library_provider is not None:
+            try:
+                return self._prop_library_provider().categories()
+            except Exception:
+                pass
         props = self._get_optprops()
         if props is None:
-            return []
-        mapping = {"polarizer": props.polarizers, "filter": props.filters,
-                  "coating": props.coatings, "grating": props.gratings}
-        return list(mapping.get(prop_name, {}))
+            return {}
+        return {
+            "materials": list(props.matdb),
+            "coatings": list(props.coatings),
+            "polarizers": list(props.polarizers),
+            "filters": list(props.filters),
+            "gratings": list(props.gratings),
+            "diffusers": list(getattr(props, "diffusers", {}) or {}),
+        }
+
+    _REGISTRY_CATEGORY = {"polarizer": "polarizers", "filter": "filters",
+                          "coating": "coatings", "grating": "gratings",
+                          "diffuser": "diffusers"}
+
+    def _material_names(self):
+        return list(self._library_categories().get("materials", []))
+
+    def _registry_names(self, prop_name):
+        cats = self._library_categories()
+        names = list(cats.get(self._REGISTRY_CATEGORY.get(prop_name, ""), []))
+        if prop_name == "diffuser":
+            # diffuser registry rows are referenced as '@name'; the two
+            # template entries cover the direct grit/slope grammar
+            return ["@%s" % n for n in names] + list(DIFFUSER_TEMPLATES)
+        return names
+
+    def _facemap_value_options(self, prop_name):
+        """Dropdown options for a per-face property VALUE (stored form)."""
+        if prop_name == "coating":
+            return self._registry_names("coating")
+        if prop_name == "grating":
+            return ["@%s" % n for n in
+                    self._library_categories().get("gratings", [])]
+        if prop_name == "diffuser":
+            return self._registry_names("diffuser")
+        if prop_name == "roughness":
+            return list(ROUGHNESS_PRESETS)
+        return []   # surface_override: exotic, typed by design
 
     def _get_optprops(self):
         if not self._optprops_tried:
@@ -436,37 +494,51 @@ class ElementEditorPane(QWidget):
             label.setToolTip(TOOLTIPS.get(name, name))
             self.props_form.addRow(label, row)
 
-    # -- section (b): faces ---------------------------------------------------
+    # -- section (b): Active Properties (per-face assignments) ----------------
     def _build_faces_box(self):
-        self.faces_box = QGroupBox("Faces")
-        # one row per face of the body: pick faces HERE (or in the
-        # inspector's 3D view — the two stay in sync); rows with per-face
-        # assignments render bold, and a source/detector body's working
-        # (emit/detector) face is marked
-        self.faces_table = QTableWidget(0, 2)
-        self.faces_table.setHorizontalHeaderLabels(["Face", "Assignments"])
-        self.faces_table.verticalHeader().setVisible(False)
-        self.faces_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.faces_table.setSelectionMode(QTableWidget.ExtendedSelection)
-        self.faces_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.faces_table.itemSelectionChanged.connect(
-            self._on_faces_table_selection)
-        self._faces_table_updating = False
+        self.faces_box = QGroupBox("Active Properties")
+        # one row per (property, value) ASSIGNMENT with the faces it
+        # covers -- not one row per face. With a face selection active
+        # (3D picks in the inspector, or assignment rows here) the table
+        # filters to assignments touching the selection.
+        self.selection_label = QLabel("")
+        self.selection_label.setWordWrap(True)
 
+        self.assign_table = QTableWidget(0, 4)
+        self.assign_table.setHorizontalHeaderLabels(
+            ["Property", "Value", "Faces", ""])
+        self.assign_table.verticalHeader().setVisible(False)
+        self.assign_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.assign_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.assign_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.assign_table.itemSelectionChanged.connect(
+            self._on_assignment_selection)
+        self.assign_table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.assign_table.customContextMenuRequested.connect(
+            self._on_table_context_menu)
+        self._assign_table_updating = False
+
+        # add-assignment row: property dropdown + context-sensitive value
+        # dropdown (registry rows / presets; the editable line edit is the
+        # typed escape hatch) -> applies to the selected faces, or the
+        # whole body when nothing is selected
         self.facemap_prop_combo = QComboBox()
         self.facemap_prop_combo.addItems(list(FACEMAP_PROPERTIES))
-        self.facemap_value_edit = QLineEdit()
-        self.facemap_value_edit.setPlaceholderText(
-            "value, e.g. MgF2 / 50:lcorr=5 / 600:v")
-        self.facemap_assign_button = QPushButton("Assign to selected faces")
+        self.facemap_prop_combo.currentTextChanged.connect(
+            self._on_facemap_prop_changed)
+        self.facemap_value_combo = QComboBox()
+        self.facemap_value_combo.setEditable(True)
+        self.facemap_assign_button = QPushButton("Assign")
         self.facemap_assign_button.setToolTip(
-            "Assign the value to every face selected above (or picked in "
-            "the Element Inspector's 3D view)")
+            "Assign the value to every selected face (pick faces in the "
+            "Element Inspector's 3D view or select assignment rows "
+            "above); with no selection it applies to the whole body")
         self.facemap_assign_button.clicked.connect(self._on_assign_facemap)
 
         assign_row = QHBoxLayout()
         assign_row.addWidget(self.facemap_prop_combo)
-        assign_row.addWidget(self.facemap_value_edit, 1)
+        assign_row.addWidget(self.facemap_value_combo, 1)
         assign_row.addWidget(self.facemap_assign_button)
 
         self.face_warning = QLabel("")
@@ -475,17 +547,20 @@ class ElementEditorPane(QWidget):
         self.face_warning.hide()
 
         layout = QVBoxLayout()
-        layout.addWidget(self.faces_table)
+        layout.addWidget(self.selection_label)
+        layout.addWidget(self.assign_table)
         layout.addLayout(assign_row)
         layout.addWidget(self.face_warning)
         self.faces_box.setLayout(layout)
+        self._on_facemap_prop_changed(self.facemap_prop_combo.currentText())
 
     facesPicked = Signal(str, set)   # body, faces chosen in the table
 
     def set_face_selection(self, body_name, faces):
         """Slot: wire InspectorPane.faceSelectionChanged straight in.
         Also tracks which body is "current" for sections (a)/(c) -- a
-        body change refreshes those too."""
+        body change refreshes those too. Any selection change re-filters
+        the Active Properties table."""
         body_changed = body_name != self._body_name
         self._body_name = body_name
         self._face_selection = set(faces or [])
@@ -493,97 +568,253 @@ class ElementEditorPane(QWidget):
         if body_changed:
             self._refresh_properties()
             self._refresh_sheet_table()
-            self._refresh_faces_table()
-        self._select_faces_table_rows()
+        self._refresh_assignments_table()
 
-    def _face_assignments(self):
-        """{face_id_or_ALL: 'prop=value; ...'} for the current body."""
+    # -- assignment data helpers ----------------------------------------------
+    def _faces_meta(self):
+        if self._project is None or self._body_name is None:
+            return []
+        return self._project.faces.get(self._body_name, {}).get("faces", [])
+
+    def _all_face_ids(self):
+        return [f["id"] for f in self._faces_meta()]
+
+    def _current_assignments(self):
+        """(assignments, all_face_ids) for the current body."""
+        if self._project is None or self._body_name is None:
+            return [], []
         body = self._project.body(self._body_name)
-        feature = body.get("tip")
-        props = body.get("properties", {}) or {}
-        out = {}
-        for prop_name in FACEMAP_PROPERTIES:
-            raw = props.get(prop_name, {}).get("value")
-            if not raw:
-                continue
-            try:
-                parsed = common.parse_facemap_spec(
-                    str(raw), body=self._body_name, feature=feature)
-            except ValueError:
-                continue
-            for face_key, value in parsed.items():
-                entry = "%s=%s" % (prop_name, value)
-                out.setdefault(face_key, []).append(entry)
-        return {k: "; ".join(v) for k, v in out.items()}
+        all_ids = self._all_face_ids()
+        assignments = facemaps.assignments_for_body(
+            body.get("properties"), self._body_name, body.get("tip"),
+            all_ids)
+        return assignments, all_ids
 
-    def _refresh_faces_table(self):
-        self._faces_table_updating = True
+    def _face_marker(self):
+        """(active_face_index, ' (emit)'/' (detector)') for the current
+        body, or (None, '')."""
+        if self._project is None or self._body_name is None:
+            return None, ""
+        body = self._project.body(self._body_name)
+        props = body.get("properties") or {}
+        active = active_face_index(props, self._faces_meta())
+        if active is None:
+            return None, ""
+        is_source = "power" in props and "lambdac" in props
+        return active, (" (emit)" if is_source else " (detector)")
+
+    def _face_display(self, face_ids, whole_body=False):
+        if whole_body:
+            return "whole body"
+        if not face_ids:
+            return "—"
+        active, marker = self._face_marker()
+        labels = []
+        for fid in facemaps.sorted_face_ids(face_ids):
+            label = facemaps.face_label(fid)
+            if active is not None and \
+                    common.parse_face_spec(fid)["face_index"] == active:
+                label += marker
+            labels.append(label)
+        return ", ".join(labels)
+
+    def _update_selection_label(self):
+        if self._face_selection:
+            self.selection_label.setText(
+                "Showing properties on: %s — clear the face selection to "
+                "see all" % self._face_display(self._face_selection))
+        else:
+            self.selection_label.setText(
+                "All assignments (no faces selected — new assignments "
+                "apply to the whole body)")
+
+    # -- assignment table -------------------------------------------------------
+    def _refresh_assignments_table(self):
+        self._assign_table_updating = True
         try:
-            self.faces_table.setRowCount(0)
+            self.assign_table.setRowCount(0)
+            self._update_selection_label()
             if self._project is None or self._body_name is None:
                 return
-            body = self._project.body(self._body_name)
-            faces_meta = (self._project.faces.get(self._body_name, {})
-                          .get("faces", []))
-            assignments = self._face_assignments()
-            all_note = assignments.get(common.FACEMAP_ALL)
-            active = active_face_index(body.get("properties"), faces_meta)
-            is_source = ("power" in (body.get("properties") or {})
-                         and "lambdac" in (body.get("properties") or {}))
-            marker = " (emit)" if is_source else " (detector)"
+            assignments, _all_ids = self._current_assignments()
+            shown = facemaps.filter_assignments(assignments,
+                                                self._face_selection)
+            self.assign_table.setRowCount(len(shown))
+            for row, a in enumerate(shown):
+                invalid = facemaps.assignment_is_invalid(a)
+                prop_item = QTableWidgetItem(
+                    a.prop + (" (invalid)" if invalid else ""))
+                prop_item.setData(Qt.ItemDataRole.UserRole, a)
+                prop_item.setToolTip(TOOLTIPS.get(a.prop, a.prop))
+                if invalid:
+                    prop_item.setForeground(Qt.GlobalColor.red)
+                self.assign_table.setItem(row, 0, prop_item)
+                self.assign_table.setCellWidget(
+                    row, 1, self._make_assignment_value_editor(a))
 
-            self.faces_table.setRowCount(len(faces_meta))
-            bold = self.faces_table.font()
-            bold.setBold(True)
-            for row, f in enumerate(faces_meta):
-                idx = common.parse_face_spec(f["id"])["face_index"]
-                label = "Face%d" % idx
-                if active is not None and idx == active:
-                    label += marker
-                note = assignments.get(f["id"]) or all_note or ""
-                if all_note and not assignments.get(f["id"]):
-                    note = all_note + "  (whole body)"
-                face_item = QTableWidgetItem(label)
-                face_item.setData(0x0100, f["id"])   # Qt.UserRole
-                note_item = QTableWidgetItem(note)
-                if note:
-                    face_item.setFont(bold)
-                    note_item.setFont(bold)
-                if active is not None and idx == active:
-                    face_item.setToolTip(
-                        "The auto-detected working face (closest to the "
-                        "origin) that the extractor will use as this "
-                        "body's %s face" % ("emit" if is_source
-                                            else "detector"))
-                self.faces_table.setItem(row, 0, face_item)
-                self.faces_table.setItem(row, 1, note_item)
-            self.faces_table.resizeColumnToContents(0)
+                faces_btn = QPushButton(
+                    self._face_display(a.face_ids, a.whole_body))
+                faces_btn.setFlat(True)
+                faces_btn.setStyleSheet("text-align: left;")
+                faces_btn.setToolTip(
+                    "The faces this %s applies to — click to add/remove "
+                    "faces (checkboxes)" % a.prop)
+                faces_btn.clicked.connect(
+                    lambda _c=False, a=a, b=faces_btn:
+                        self._on_faces_cell_clicked(a, b))
+                if invalid:
+                    faces_btn.setEnabled(False)
+                self.assign_table.setCellWidget(row, 2, faces_btn)
+
+                remove_btn = QPushButton("Remove")
+                remove_btn.setToolTip(
+                    "Remove this %s assignment entirely" % a.prop)
+                remove_btn.clicked.connect(
+                    lambda _c=False, a=a: self._on_remove_assignment(a))
+                self.assign_table.setCellWidget(row, 3, remove_btn)
+            self.assign_table.resizeColumnToContents(0)
+            self.assign_table.resizeColumnToContents(3)
         finally:
-            self._faces_table_updating = False
+            self._assign_table_updating = False
 
-    def _select_faces_table_rows(self):
-        self._faces_table_updating = True
-        try:
-            self.faces_table.clearSelection()
-            for row in range(self.faces_table.rowCount()):
-                item = self.faces_table.item(row, 0)
-                if item is not None and \
-                        item.data(0x0100) in self._face_selection:
-                    self.faces_table.selectRow(row)
-        finally:
-            self._faces_table_updating = False
+    def _make_assignment_value_editor(self, assignment):
+        if facemaps.assignment_is_invalid(assignment):
+            edit = QLineEdit(assignment.value)
+            edit.setStyleSheet("color: #b91c1c;")
+            edit.setToolTip(
+                "This value string doesn't parse under the per-face "
+                "grammar — fix it here or Remove the property")
+            edit.editingFinished.connect(
+                lambda p=assignment.prop, w=edit:
+                    self._commit_property(p, w.text()))
+            return edit
+        options = self._facemap_value_options(assignment.prop)
+        if options:
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.addItems(options)
+            combo.setCurrentText(assignment.value)
+            combo.lineEdit().editingFinished.connect(
+                lambda a=assignment, c=combo:
+                    self._on_assignment_value_edit(a, c.currentText()))
+            combo.activated.connect(
+                lambda _idx, a=assignment, c=combo:
+                    self._on_assignment_value_edit(a, c.currentText()))
+            return combo
+        edit = QLineEdit(assignment.value)
+        edit.editingFinished.connect(
+            lambda a=assignment, w=edit:
+                self._on_assignment_value_edit(a, w.text()))
+        return edit
 
-    def _on_faces_table_selection(self):
-        if self._faces_table_updating or self._body_name is None:
+    def _on_assignment_selection(self):
+        """Selecting assignment rows selects THEIR faces (union) -- the
+        'show me where that coating is' gesture. Deliberately does not
+        re-filter the table (rebuilding it mid-interaction would collapse
+        the view under the user's pointer); 3D picks do the filtering."""
+        if self._assign_table_updating or self._body_name is None:
             return
         faces = set()
-        for item in self.faces_table.selectedItems():
+        for item in self.assign_table.selectedItems():
             if item.column() == 0:
-                fid = item.data(0x0100)
-                if fid:
-                    faces.add(fid)
+                a = item.data(Qt.ItemDataRole.UserRole)
+                if a is not None:
+                    faces |= set(a.face_ids)
         self._face_selection = faces
+        self._update_selection_label()
         self.facesPicked.emit(self._body_name, set(faces))
+
+    # -- commits ---------------------------------------------------------------
+    def _facemap_raw(self, prop_name):
+        body = self._project.body(self._body_name)
+        return (body.get("properties", {}) or {}).get(
+            prop_name, {}).get("value")
+
+    def _commit_facemap_merge(self, prop_name, target_faces, value):
+        """Merge `value` onto `target_faces` for `prop_name` and commit --
+        one undoable set_property. Returns True on success."""
+        body = self._project.body(self._body_name)
+        try:
+            new_raw = merge_facemap(
+                existing_raw=self._facemap_raw(prop_name),
+                body_name=self._body_name, feature=body.get("tip"),
+                all_face_ids=self._all_face_ids(),
+                selected_face_ids=target_faces, value=value,
+                collapse=facemaps.facemap_collapse_allowed(prop_name))
+        except ValueError as exc:
+            self._show_face_warning("Invalid %s value: %s"
+                                    % (prop_name, exc))
+            return False
+        self._show_face_warning(None)
+        self._project.set_property(self._body_name, prop_name, new_raw)
+        return True
+
+    def _commit_facemap_removal(self, prop_name, target_faces):
+        """Remove `target_faces` from `prop_name`'s map; removing the
+        last face removes the property itself. One undoable step."""
+        body = self._project.body(self._body_name)
+        try:
+            new_raw = facemaps.remove_faces(
+                self._facemap_raw(prop_name), self._body_name,
+                body.get("tip"), self._all_face_ids(), target_faces,
+                collapse=facemaps.facemap_collapse_allowed(prop_name))
+        except ValueError as exc:
+            self._show_face_warning("Could not update %s: %s"
+                                    % (prop_name, exc))
+            return False
+        self._show_face_warning(None)
+        if new_raw is None:
+            self._project.remove_property(self._body_name, prop_name)
+        else:
+            self._project.set_property(self._body_name, prop_name, new_raw)
+        return True
+
+    def _on_assignment_value_edit(self, assignment, new_value):
+        if self._project is None or self._body_name is None:
+            return
+        new_value = str(new_value).strip()
+        if not new_value or new_value == assignment.value:
+            return
+        if not self._commit_facemap_merge(assignment.prop,
+                                          assignment.face_ids, new_value):
+            self._refresh_timer.start()   # restore the shown value
+
+    def _on_faces_cell_clicked(self, assignment, button):
+        """Checkable per-face menu: toggle a face's membership of this
+        assignment -- zero typing to re-scope it."""
+        if self._project is None or self._body_name is None:
+            return
+        menu = QMenu(self)
+        active, marker = self._face_marker()
+        for f in self._faces_meta():
+            fid = f["id"]
+            idx = common.parse_face_spec(fid)["face_index"]
+            label = "Face%d" % idx
+            if active is not None and idx == active:
+                label += marker
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(fid in assignment.face_ids)
+            act.triggered.connect(
+                lambda checked, a=assignment, fid=fid:
+                    self._on_assignment_face_toggled(a, fid, checked))
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _on_assignment_face_toggled(self, assignment, face_id, member):
+        if member:
+            self._commit_facemap_merge(assignment.prop, {face_id},
+                                       assignment.value)
+        else:
+            self._commit_facemap_removal(assignment.prop, {face_id})
+
+    def _on_remove_assignment(self, assignment):
+        if self._project is None or self._body_name is None:
+            return
+        if facemaps.assignment_is_invalid(assignment) or \
+                assignment.whole_body:
+            self._project.remove_property(self._body_name, assignment.prop)
+            return
+        self._commit_facemap_removal(assignment.prop, assignment.face_ids)
 
     def _show_face_warning(self, message):
         if message:
@@ -593,35 +824,130 @@ class ElementEditorPane(QWidget):
             self.face_warning.clear()
             self.face_warning.hide()
 
+    def _on_facemap_prop_changed(self, prop_name):
+        self.facemap_value_combo.clear()
+        self.facemap_value_combo.addItems(
+            self._facemap_value_options(prop_name))
+        self.facemap_value_combo.setCurrentText("")
+        self.facemap_value_combo.lineEdit().setPlaceholderText(
+            TOOLTIPS.get(prop_name, ""))
+
     def _on_assign_facemap(self):
-        if (self._project is None or self._body_name is None
-                or not self._face_selection):
-            self._show_face_warning(
-                "Select one or more faces first (in the list above or the "
-                "Element Inspector)")
+        if self._project is None or self._body_name is None:
             return
-        value = self.facemap_value_edit.text().strip()
+        value = self.facemap_value_combo.currentText().strip()
         if not value:
             return
         prop_name = self.facemap_prop_combo.currentText()
-        body = self._project.body(self._body_name)
-        feature = body.get("tip")
-        all_face_ids = [f["id"] for f in
-                        self._project.faces.get(self._body_name, {})
-                        .get("faces", [])]
-        try:
-            new_raw = merge_facemap(
-                existing_raw=body.get("properties", {})
-                .get(prop_name, {}).get("value"),
-                body_name=self._body_name, feature=feature,
-                all_face_ids=all_face_ids,
-                selected_face_ids=self._face_selection, value=value)
-        except ValueError as exc:
-            self._show_face_warning("Invalid %s value: %s"
-                                    % (prop_name, exc))
+        target = set(self._face_selection) or set(self._all_face_ids())
+        if not target:
+            self._show_face_warning("The body has no faces to assign to")
             return
-        self._show_face_warning(None)
-        self._project.set_property(self._body_name, prop_name, new_raw)
+        self._commit_facemap_merge(prop_name, target, value)
+
+    # -- "Active Properties" context menu ---------------------------------------
+    def build_active_properties_menu(self, parent=None):
+        """The property → value → apply/remove menu tree, shown on
+        right-click over the assignment table AND (via the mainwindow)
+        over the Element Inspector's 3D view. Checked = the value is on
+        every selected face (click removes it there); italic = on some
+        of them (click applies to all); unchecked = click applies. With
+        no face selection the target is the whole body. Returns None
+        when no body is current."""
+        if self._project is None or self._body_name is None:
+            return None
+        assignments, all_ids = self._current_assignments()
+        registry = {p: self._facemap_value_options(p)
+                    for p in FACEMAP_PROPERTIES}
+        model = facemaps.menu_model(assignments, self._face_selection,
+                                    registry, all_ids)
+        menu = QMenu(parent or self)
+        scope = (self._face_display(self._face_selection)
+                 if self._face_selection else "whole body")
+        title = menu.addAction("Active Properties — %s" % scope)
+        title.setEnabled(False)
+        menu.addSeparator()
+        # keep the submenu wrappers alive on the menu itself: PySide6's
+        # QAction.menu() hands ownership of a NEW wrapper to Python, so
+        # anyone (tests, tooling) retrieving a submenu that way would let
+        # the GC delete the underlying C++ QMenu. property_submenus is
+        # the supported access path.
+        menu.property_submenus = {}
+        for entry in model:
+            sub = menu.addMenu(entry["prop"])
+            menu.property_submenus[entry["prop"]] = sub
+            sub.setToolTipsVisible(True)
+            for item in entry["items"]:
+                act = sub.addAction(item["value"])
+                act.setCheckable(True)
+                act.setChecked(item["checked"])
+                if item["partial"]:
+                    font = act.font()
+                    font.setItalic(True)
+                    act.setFont(font)
+                    act.setToolTip("On some of the selected faces — "
+                                   "click to apply to all of them")
+                elif item["checked"]:
+                    act.setToolTip("Click to remove from the selected "
+                                   "faces")
+                act.triggered.connect(
+                    lambda _c=False, p=entry["prop"], v=item["value"],
+                    was=item["checked"]: self._on_menu_value(p, v, was))
+            if entry["items"]:
+                sub.addSeparator()
+            act = sub.addAction("Custom…")
+            act.setToolTip("Type a value by hand (%s)"
+                           % TOOLTIPS.get(entry["prop"], entry["prop"]))
+            act.triggered.connect(
+                lambda _c=False, p=entry["prop"]: self._on_menu_custom(p))
+        menu.addSeparator()
+        act = menu.addAction("Select all faces")
+        act.triggered.connect(self._menu_select_all)
+        act = menu.addAction("Clear face selection")
+        act.triggered.connect(self._menu_clear_selection)
+        return menu
+
+    def _menu_target_faces(self):
+        return set(self._face_selection) or set(self._all_face_ids())
+
+    def _on_menu_value(self, prop_name, value, was_fully_applied):
+        target = self._menu_target_faces()
+        if not target:
+            return
+        if was_fully_applied:
+            self._commit_facemap_removal(prop_name, target)
+        else:
+            self._commit_facemap_merge(prop_name, target, value)
+
+    def _on_menu_custom(self, prop_name):
+        value, ok = QInputDialog.getText(
+            self, "Custom %s value" % prop_name,
+            TOOLTIPS.get(prop_name, prop_name))
+        value = value.strip() if ok and value else ""
+        if not value:
+            return
+        target = self._menu_target_faces()
+        if target:
+            self._commit_facemap_merge(prop_name, target, value)
+
+    def _menu_select_all(self):
+        if self._body_name is None:
+            return
+        self._face_selection = set(self._all_face_ids())
+        self.facesPicked.emit(self._body_name, set(self._face_selection))
+        self._refresh_assignments_table()
+
+    def _menu_clear_selection(self):
+        if self._body_name is None:
+            return
+        self._face_selection = set()
+        self.facesPicked.emit(self._body_name, set())
+        self._refresh_assignments_table()
+
+    def _on_table_context_menu(self, pos):
+        menu = self.build_active_properties_menu(self)
+        if menu is not None:
+            menu.exec(self.assign_table.viewport().mapToGlobal(pos))
 
     # -- section (c): element parameters -------------------------------------
     def _build_sheet_box(self):
@@ -712,11 +1038,10 @@ class ElementEditorPane(QWidget):
         if self._body_name is None:
             return
         self._refresh_properties()
-        self._refresh_faces_table()
-        self._select_faces_table_rows()
+        self._refresh_assignments_table()
         self._refresh_sheet_table()
 
     def _refresh_all(self):
         self._refresh_properties()
-        self._refresh_faces_table()
+        self._refresh_assignments_table()
         self._refresh_sheet_table()

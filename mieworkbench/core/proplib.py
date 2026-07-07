@@ -34,7 +34,7 @@ from raytracer.optprops import load_optical_properties        # noqa: E402
 from raytracer.materials import MaterialError, resolve_prop_path  # noqa: E402
 
 CATEGORIES = ("materials", "coatings", "polarizers", "filters", "gratings",
-              "uniaxial")
+              "uniaxial", "diffusers")
 
 # subdir=None means the registry lives directly at <root>/<filename>.
 CATEGORY_INFO = {
@@ -71,6 +71,12 @@ CATEGORY_INFO = {
     "uniaxial": {
         "registry_rel": "birefringence/uniaxial.miebrf",
         "file_dir": None,           # rows reference OTHER materials, not files
+        "file_cols": (),
+        "file_alt_ext": None,
+    },
+    "diffusers": {
+        "registry_rel": "diffuser/diffusers.miedif",
+        "file_dir": None,           # rows are self-contained (grit or slope)
         "file_cols": (),
         "file_alt_ext": None,
     },
@@ -138,6 +144,7 @@ class PropLibrary:
             "filters": list(props.filters.keys()),
             "gratings": list(props.gratings.keys()),
             "uniaxial": list(props.uniaxial.keys()),
+            "diffusers": list(getattr(props, "diffusers", {}) or {}),
         }
 
     def material_names(self):
