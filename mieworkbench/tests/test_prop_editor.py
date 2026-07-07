@@ -25,9 +25,10 @@ REPO_ROOT = os.path.normpath(
 PRIMITIVES_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "primitives"))
 
-EXPECTED_COUNTS = {
-    "materials": 24, "coatings": 10, "polarizers": 5, "filters": 3,
-    "gratings": 3, "uniaxial": 3,
+CATEGORY_BY_LABEL = {
+    "materials": "Materials", "coatings": "Coatings",
+    "polarizers": "Polarizers", "filters": "Filters",
+    "gratings": "Gratings", "uniaxial": "Birefringence",
 }
 
 
@@ -59,15 +60,14 @@ def test_row_counts_match_registries(qtbot):
     pane = PropEditorPane(mgr)
     qtbot.addWidget(pane)
 
-    category_by_label = {
-        "materials": "Materials", "coatings": "Coatings",
-        "polarizers": "Polarizers", "filters": "Filters",
-        "gratings": "Gratings", "uniaxial": "Birefringence",
-    }
-    for category, expected in EXPECTED_COUNTS.items():
+    # the editor's row count must match the real registry csv's row count
+    # (not a hard-coded magic number, so this stays correct as rows are
+    # added to the library) -- and every category must actually have rows.
+    for category in CATEGORY_BY_LABEL:
         editor = pane.editor(category)
+        expected = len(editor.current_lib().registry_rows(category))
+        assert expected > 0, category
         assert editor.row_count() == expected, category
-        assert category_by_label[category]  # sanity
 
 
 def test_reference_column_flagged_when_blank(qtbot):

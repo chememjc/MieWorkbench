@@ -107,9 +107,12 @@ def test_system_summary_counts(qtbot):
     qtbot.addWidget(pane)
     texts = [pane.system_summary.list_widget.item(i).text()
             for i in range(pane.system_summary.list_widget.count())]
-    # rows are just "<category> (<count>)" -- no entry names (too noisy)
-    assert "materials (24)" in texts
-    assert "coatings (10)" in texts
+    # rows are just "<category> (<count>)" -- no entry names (too noisy).
+    # Compare against the real registry row counts (not hard-coded magic
+    # numbers) so this stays correct as rows are added to the library.
+    for category in CATEGORIES:
+        expected = len(mgr.system_lib.registry_rows(category))
+        assert "%s (%d)" % (category, expected) in texts
 
 
 def test_summary_rows_have_no_entry_names(qtbot):

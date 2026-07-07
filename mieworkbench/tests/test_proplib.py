@@ -14,9 +14,17 @@ from mieworkbench.core.proplib import PropLibrary  # noqa: E402
 REPO_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "opticalproperties"))
 
-EXPECTED_COUNTS = {
-    "materials": 24, "coatings": 10, "polarizers": 5, "filters": 3,
-    "gratings": 3, "uniaxial": 3,
+# category -> its registry csv, relative to REPO_ROOT (mirrors
+# proplib.CATEGORY_INFO's registry_rel). Row counts below are always
+# computed by reading these files directly -- never hard-coded -- so they
+# stay correct as rows are added to the shipped library.
+REGISTRY_RELPATHS = {
+    "materials": "materials.miemat",
+    "coatings": "coating/coatings.miecoat",
+    "polarizers": "polarizer/polarizers.miepol",
+    "filters": "filter/filters.miefilt",
+    "gratings": "grating/gratings.miegrat",
+    "uniaxial": "birefringence/uniaxial.miebrf",
 }
 
 
@@ -24,12 +32,18 @@ def _system_lib():
     return PropLibrary(REPO_ROOT)
 
 
+def _csv_row_count(category):
+    path = os.path.join(REPO_ROOT, REGISTRY_RELPATHS[category])
+    with open(path, newline="") as fh:
+        return len(list(csv.DictReader(fh)))
+
+
 def test_categories_counts():
     lib = _system_lib()
     cats = lib.categories()
-    assert set(cats) == set(EXPECTED_COUNTS)
-    for name, expected in EXPECTED_COUNTS.items():
-        assert len(cats[name]) == expected, name
+    assert set(cats) == set(REGISTRY_RELPATHS)
+    for name in REGISTRY_RELPATHS:
+        assert len(cats[name]) == _csv_row_count(name), name
 
 
 def test_material_names_matches_categories():
@@ -42,7 +56,7 @@ def test_material_names_matches_categories():
 def test_registry_rows_columns():
     lib = _system_lib()
     rows = lib.registry_rows("materials")
-    assert len(rows) == EXPECTED_COUNTS["materials"]
+    assert len(rows) == _csv_row_count("materials")
     expected_cols = {"name", "class", "model", "p1", "p2", "p3", "p4", "p5",
                      "p6", "nk_file", "density_kg_m3",
                      "transmission_um_min", "transmission_um_max", "notes",
@@ -51,7 +65,7 @@ def test_registry_rows_columns():
     assert all(row["reference"].strip() for row in rows)
 
     coating_rows = lib.registry_rows("coatings")
-    assert len(coating_rows) == EXPECTED_COUNTS["coatings"]
+    assert len(coating_rows) == _csv_row_count("coatings")
     assert {"name", "layers", "table", "aoi_deg", "reference"} \
         <= set(coating_rows[0].keys())
 
