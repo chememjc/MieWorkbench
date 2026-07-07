@@ -86,7 +86,7 @@ class Project(QObject):
     def new_document(self, path):
         if self.doc is not None:
             self.close()
-        self.structure = self.fc.request("new_document", {"path": path})
+        self.structure = self.fc.new_document(path)
         self.doc = self.structure["doc"]
         self.fcstd_path = os.path.abspath(path)
         self.faces = {}
@@ -219,6 +219,72 @@ class Project(QObject):
         self._refetch_structure()
         self._refresh_geometry(bodies=names or None)
         self.sceneLoaded.emit()      # new bodies + sheets: full view rebuild
+        self._set_dirty(True)
+        return result
+
+    # -- element-level operations (delete / duplicate / restore) --------------
+    def element_group(self, body_name):
+        """The element identity of a body: its miewb_group value, or its
+        own label for ungrouped single-body elements."""
+        b = self.body(body_name)
+        return (b["properties"].get("miewb_group", {}).get("value")
+                or b["label"])
+
+    def element_bodies(self, element):
+        """Body names belonging to an element (group value or a member
+        body's name/label)."""
+        element = str(element)
+        names = [b["name"] for b in self.structure.get("bodies", [])
+                 if b["properties"].get("miewb_group", {}).get("value")
+                 == element]
+        if names:
+            return names
+        b = self.body(element)
+        group = b["properties"].get("miewb_group", {}).get("value")
+        if group:
+            return [x["name"] for x in self.structure.get("bodies", [])
+                    if x["properties"].get("miewb_group", {}).get("value")
+                    == group]
+        return [b["name"]]
+
+    def delete_element(self, element, stash_path=None):
+        """Delete an element (group of bodies + its dim sheet). With
+        stash_path, the worker first saves the element to a standalone
+        .FCStd there (the undo pre-image for restore_from_stash)."""
+        params = {"doc": self.doc, "element": str(element)}
+        if stash_path:
+            params["stash_path"] = str(stash_path)
+        result = self.fc.request("delete_element", params)
+        for name in result.get("deleted", []):
+            self.faces.pop(name, None)
+            self.body_states.pop(name, None)
+        self._refetch_structure()
+        self.sceneLoaded.emit()      # bodies + sheets gone: full rebuild
+        self._set_dirty(True)
+        return result
+
+    def restore_from_stash(self, path):
+        """Re-import a delete_element stash verbatim (labels/placements/
+        props/group/sheet preserved) - the undo of delete_element."""
+        result = self.fc.request("import_bodies",
+                                 {"doc": self.doc, "path": str(path)})
+        names = [b["name"] for b in result.get("bodies", [])]
+        self._refetch_structure()
+        self._refresh_geometry(bodies=names or None)
+        self.sceneLoaded.emit()
+        self._set_dirty(True)
+        return result
+
+    def duplicate_element(self, element, new_label):
+        """Copy an element in-document under a new label/group (the paste
+        half of copy/paste). Returns the op result with the new bodies."""
+        result = self.fc.request("duplicate_element",
+                                 {"doc": self.doc, "element": str(element),
+                                  "new_label": str(new_label)})
+        names = [b["name"] for b in result.get("bodies", [])]
+        self._refetch_structure()
+        self._refresh_geometry(bodies=names or None)
+        self.sceneLoaded.emit()
         self._set_dirty(True)
         return result
 

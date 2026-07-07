@@ -36,7 +36,12 @@ PROTOCOL_VERSION = 1
 
 
 def _emit(obj):
-    line = "@FCJSON " + json.dumps(obj, separators=(",", ":")) + "\n"
+    # The LEADING newline matters: FreeCAD progress observers print noise
+    # to stdout WITHOUT a trailing newline ("Importing project files...."),
+    # and a response appended to such a partial line would not start with
+    # the @FCJSON prefix and be discarded as noise by the client (a real,
+    # history-dependent 300s-timeout bug). Clients skip blank lines.
+    line = "\n@FCJSON " + json.dumps(obj, separators=(",", ":")) + "\n"
     # single atomic write straight to fd 1; bypasses the AppImage's
     # sometimes-lossy sys.stdout buffering
     os.write(1, line.encode("utf-8", "replace"))

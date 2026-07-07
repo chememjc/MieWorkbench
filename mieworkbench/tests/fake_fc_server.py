@@ -34,7 +34,14 @@ for raw in sys.stdin:
     if op == "ping":
         print("interleaved noise line")               # noise mid-stream
         emit({"id": rid, "ok": True, "result": {"pong": True}})
-    elif op == "open_document":
+    elif op == "glued_ping":
+        # FreeCAD progress observers print without a trailing newline, so
+        # a response can arrive glued onto noise -- reproduce that exactly
+        os.write(1, ("Importing project files....@FCJSON "
+                     + json.dumps({"id": rid, "ok": True,
+                                   "result": {"pong": "glued"}})
+                     + "\n").encode())
+    elif op in ("open_document", "new_document"):
         name = os.path.splitext(os.path.basename(params["path"]))[0]
         OPEN_DOCS[name] = params["path"]
         emit({"id": rid, "ok": True,

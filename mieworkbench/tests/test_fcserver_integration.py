@@ -157,3 +157,105 @@ def test_geomcache_full_stack(fc, tmp_path_factory):
     assert {k: v["shape_key"] for k, v in r1.items()} == \
            {k: v["shape_key"] for k, v in r2.items()}
     fc.close(doc)
+
+
+PRIM_PCX = os.path.join(REPO, "primitives", "lens_pcx.FCStd")
+PRIM_ACHROMAT = os.path.join(REPO, "primitives", "lens_achromat.FCStd")
+
+
+def _bodies_by_label(structure):
+    return {b["label"]: b for b in structure["bodies"]}
+
+
+def _element_snapshot(fc, doc, group):
+    """Comparable snapshot of an element: label -> (placement, contract
+    props); sheet aliases of dim_<group>."""
+    st = fc.request("get_structure", {"doc": doc})
+    bodies = {}
+    for b in st["bodies"]:
+        if b["properties"].get("miewb_group", {}).get("value") == group \
+                or b["label"] == group:
+            props = {k: v["value"] for k, v in b["properties"].items()}
+            bodies[b["label"]] = (b["placement"], props)
+    sheets = {s["label"]: {a: e["raw"] for a, e in s["aliases"].items()}
+              for s in st["sheets"] if s["label"] == "dim_%s" % group}
+    return {"bodies": bodies, "sheets": sheets}
+
+
+def test_duplicate_delete_restore_element(fc, tmp_path_factory):
+    """The A2 op trio end-to-end on a multi-body primitive (achromat):
+    duplicate under a new group, delete-with-stash, restore verbatim."""
+    tmp = tmp_path_factory.mktemp("elops")
+    doc_path = str(tmp / "scene.FCStd")
+    st = fc.request("new_document", {"path": doc_path})
+    doc = st["doc"]
+
+    r = fc.request("import_primitive", {"doc": doc, "path": PRIM_ACHROMAT,
+                                        "label": "doublet"})
+    assert len(r["bodies"]) == 2
+
+    # move the element so restore has a non-identity placement to preserve
+    fc.request("set_placement", {"doc": doc, "body": "doublet",
+                                 "pos_mm": [1.0, 2.0, 3.0],
+                                 "quat": [0.0, 0.0, 0.0, 1.0]})
+    # and a user prop that must survive the stash round-trip
+    member = r["bodies"][0]["name"]
+    fc.request("set_property", {"doc": doc, "body": member,
+                                "name": "roughness", "value": "50"})
+
+    # -- duplicate ---------------------------------------------------------
+    d = fc.request("duplicate_element", {"doc": doc, "element": "doublet",
+                                         "new_label": "doublet2"})
+    assert len(d["bodies"]) == 2
+    labels = {b["label"] for b in d["bodies"]}
+    assert all(l.startswith("doublet2_") for l in labels)
+    for b in d["bodies"]:
+        assert b["properties"]["miewb_group"]["value"] == "doublet2"
+    st2 = fc.request("get_structure", {"doc": doc})
+    assert "dim_doublet2" in {s["label"] for s in st2["sheets"]}
+    assert len(st2["bodies"]) == 4
+
+    # -- delete with stash --------------------------------------------------
+    before = _element_snapshot(fc, doc, "doublet")
+    stash = str(tmp / "stash_doublet.FCStd")
+    dl = fc.request("delete_element", {"doc": doc, "element": "doublet",
+                                       "stash_path": stash})
+    assert len(dl["deleted"]) == 2
+    assert os.path.isfile(stash)
+    st3 = fc.request("get_structure", {"doc": doc})
+    assert len(st3["bodies"]) == 2          # only the duplicate remains
+    assert "dim_doublet" not in {s["label"] for s in st3["sheets"]}
+
+    # -- restore -------------------------------------------------------------
+    rs = fc.request("import_bodies", {"doc": doc, "path": stash})
+    assert len(rs["bodies"]) == 2
+    after = _element_snapshot(fc, doc, "doublet")
+    assert after == before                  # labels/placements/props verbatim
+    fc.close(doc)
+
+
+def test_delete_single_ungrouped_body(fc, tmp_path_factory):
+    """delete_element on a plain body (no miewb_group) removes just it."""
+    tmp = tmp_path_factory.mktemp("delone")
+    st = fc.open_document(LENS_DCX)
+    doc = st["doc"]
+    n_before = len(st["bodies"])
+    dl = fc.request("delete_element", {"doc": doc, "element": "Lens"})
+    assert len(dl["deleted"]) == 1
+    st2 = fc.request("get_structure", {"doc": doc})
+    assert len(st2["bodies"]) == n_before - 1
+    fc.close(doc)
+
+
+def test_duplicate_refuses_existing_label(fc, tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("dupdup")
+    doc_path = str(tmp / "scene.FCStd")
+    st = fc.request("new_document", {"path": doc_path})
+    doc = st["doc"]
+    fc.request("import_primitive", {"doc": doc, "path": PRIM_PCX,
+                                    "label": "L1"})
+    from mieworkbench.core.fcclient import FcError
+    with pytest.raises(FcError):
+        fc.request("duplicate_element", {"doc": doc, "element": "L1",
+                                         "new_label": "L1"})
+    fc.close(doc)

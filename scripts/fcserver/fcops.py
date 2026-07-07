@@ -558,6 +558,170 @@ def op_rebuild_primitive(params):
         "bodies": [_body_dict(b) for b in new_bodies]})
 
 
+def _element_bodies(doc, key):
+    """All bodies of the element identified by `key`, plus its group name.
+
+    `key` is a miewb_group value, or a single body's Name/Label; a matched
+    body that carries a miewb_group expands to the whole group (an element
+    is always moved/deleted/duplicated as a unit, same rigid-group rule as
+    op_set_placement). Returns (bodies, group_or_None)."""
+    key = str(key)
+    bodies = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"
+              and getattr(o, "miewb_group", None) == key]
+    if bodies:
+        return bodies, key
+    body = _body(doc, key)
+    group = getattr(body, "miewb_group", None)
+    if group:
+        return ([o for o in doc.Objects if o.TypeId == "PartDesign::Body"
+                 and getattr(o, "miewb_group", None) == group], str(group))
+    return [body], None
+
+
+def _element_sheets(doc, group):
+    if not group:
+        return []
+    return [o for o in doc.Objects if o.TypeId == "Spreadsheet::Sheet"
+            and o.Label == "dim_%s" % group]
+
+
+def _remove_body(doc, body):
+    """Remove a body and its owned features (same pattern as
+    primitivelib.rebuild_element)."""
+    feats = list(getattr(body, "Group", []) or [])
+    doc.removeObject(body.Name)
+    for f in feats:
+        try:
+            doc.removeObject(f.Name)
+        except Exception:
+            pass
+
+
+def op_delete_element(params):
+    """Delete an element (all bodies of a miewb_group, or one ungrouped
+    body) and its dim_<group> sheet.
+
+    params: doc, element (group value or body name/label),
+            stash_path (optional) - before deleting, save a copy of the
+            element into a standalone .FCStd there (labels/placements/
+            props preserved verbatim), the crash-safe pre-image that
+            op_import_bodies restores for undo.
+    """
+    doc = _doc(params["doc"])
+    bodies, group = _element_bodies(doc, params["element"])
+    sheets = _element_sheets(doc, group)
+    stash_path = params.get("stash_path")
+    if stash_path:
+        stash = FreeCAD.newDocument("miewb_stash")
+        try:
+            labels = {o.Name: o.Label for o in bodies + sheets}
+            pre = {o.Name for o in stash.Objects}
+            stash.copyObject(bodies + sheets, True)
+            new_objs = [o for o in stash.Objects if o.Name not in pre]
+            # copyObject can uniquify labels; reassert the originals (a
+            # fresh doc has no conflicts, so this always sticks)
+            by_label_order = [o for o in new_objs if o.TypeId in
+                              ("PartDesign::Body", "Spreadsheet::Sheet")]
+            src_order = bodies + sheets
+            if len(by_label_order) == len(src_order):
+                for src, dst in zip(src_order, by_label_order):
+                    dst.Label = labels[src.Name]
+            stash.recompute()
+            stash.saveAs(stash_path)
+        finally:
+            FreeCAD.closeDocument(stash.Name)
+    deleted = [b.Name for b in bodies]
+    for b in bodies:
+        _remove_body(doc, b)
+    for s in sheets:
+        try:
+            doc.removeObject(s.Name)
+        except Exception:
+            pass
+    return _mutation_result(doc, {"deleted": deleted,
+                                  "stash": stash_path or None})
+
+
+def op_import_bodies(params):
+    """Copy every body + sheet of a .FCStd into the open document with NO
+    relabeling (labels/placements/props/miewb_group/sheet labels preserved
+    verbatim) - the restore half of delete_element's stash, and the
+    verbatim counterpart of op_import_primitive.
+
+    params: doc, path.
+    """
+    doc = _doc(params["doc"])
+    path = params["path"]
+    if not os.path.isfile(path):
+        raise OpError("no such file: %s" % path)
+    pre_names = {o.Name for o in doc.Objects}
+    src = FreeCAD.openDocument(path)
+    try:
+        src_bodies = [o for o in src.Objects
+                      if o.TypeId == "PartDesign::Body"]
+        src_sheets = [o for o in src.Objects
+                      if o.TypeId == "Spreadsheet::Sheet"]
+        if not src_bodies:
+            raise OpError("%s has no PartDesign::Body" % path)
+        src_labels = [o.Label for o in src_bodies + src_sheets]
+        doc.copyObject(src_bodies + src_sheets, True)
+    finally:
+        FreeCAD.closeDocument(src.Name)
+    new_objs = [o for o in doc.Objects if o.Name not in pre_names]
+    new_bodies = [o for o in new_objs if o.TypeId == "PartDesign::Body"]
+    new_sheets = [o for o in new_objs if o.TypeId == "Spreadsheet::Sheet"]
+    if not new_bodies:
+        raise OpError("copyObject produced no bodies")
+    # reassert the source labels (copyObject may have uniquified them)
+    for label, obj in zip(src_labels, new_bodies + new_sheets):
+        obj.Label = label
+    return _mutation_result(doc, {
+        "bodies": [_body_dict(b) for b in new_bodies],
+        "sheets": [_sheet_dict(s) for s in new_sheets]})
+
+
+def op_duplicate_element(params):
+    """Duplicate an element in-document under a new label/group.
+
+    params: doc, element (group value or body name/label), new_label.
+    Single-body elements get Label=new_label; multi-body members swap
+    their '<group>_' label prefix for '<new_label>_'. miewb_group is
+    rewritten and dim_<group> is copied to dim_<new_label>.
+    """
+    doc = _doc(params["doc"])
+    new_label = str(params["new_label"])
+    for b in doc.Objects:
+        if b.TypeId == "PartDesign::Body" and b.Label == new_label:
+            raise OpError("label %r already used in document" % new_label)
+    bodies, group = _element_bodies(doc, params["element"])
+    sheets = _element_sheets(doc, group)
+    old_labels = [o.Label for o in bodies]
+
+    pre_names = {o.Name for o in doc.Objects}
+    doc.copyObject(bodies + sheets, True)
+    new_objs = [o for o in doc.Objects if o.Name not in pre_names]
+    new_bodies = [o for o in new_objs if o.TypeId == "PartDesign::Body"]
+    new_sheets = [o for o in new_objs if o.TypeId == "Spreadsheet::Sheet"]
+    if not new_bodies:
+        raise OpError("copyObject produced no bodies")
+    if len(new_bodies) == 1:
+        new_bodies[0].Label = new_label
+    else:
+        for old_label, b in zip(old_labels, new_bodies):
+            suffix = (old_label[len(group) + 1:]
+                      if group and old_label.startswith(group + "_")
+                      else old_label)
+            b.Label = "%s_%s" % (new_label, suffix)
+    for b in new_bodies:
+        if "miewb_group" in b.PropertiesList:
+            b.miewb_group = new_label
+    for sheet in new_sheets:
+        sheet.Label = "dim_%s" % new_label
+    return _mutation_result(doc, {
+        "bodies": [_body_dict(b) for b in new_bodies],
+        "sheets": [_sheet_dict(s) for s in new_sheets]})
+
+
 def op_save(params):
     doc = _doc(params["doc"])
     _, _, invalid = _recompute_and_diff(doc)

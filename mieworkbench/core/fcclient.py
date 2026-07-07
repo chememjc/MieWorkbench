@@ -26,7 +26,8 @@ FCJSON_PREFIX = "@FCJSON "
 
 MUTATING_OPS = {
     "set_property", "remove_property", "set_spreadsheet", "set_placement",
-    "import_primitive",
+    "import_primitive", "rebuild_primitive", "delete_element",
+    "import_bodies", "duplicate_element",
 }
 # ops that reset the journal for a document when they succeed
 JOURNAL_CLEARING_OPS = {"save", "save_as"}
@@ -149,6 +150,14 @@ class FcClient:
         self._open_docs[result["doc"]] = os.path.abspath(path)
         return result
 
+    def new_document(self, path):
+        """Create-and-save a fresh document. Tracked in _open_docs like an
+        open (the op saves the file immediately), so crash recovery can
+        re-open it -- an untracked new document would be unrecoverable."""
+        result = self.request("new_document", {"path": path})
+        self._open_docs[result["doc"]] = os.path.abspath(path)
+        return result
+
     def close(self, doc):
         result = self.request("close", {"doc": doc})
         self._open_docs.pop(doc, None)
@@ -207,9 +216,16 @@ class FcClient:
     def _read_stdout(self):
         proc = self._proc
         for line in proc.stdout:
-            if line.startswith(FCJSON_PREFIX):
+            # the prefix may not be at column 0: FreeCAD progress noise is
+            # printed without a trailing newline, so a protocol line can
+            # arrive glued to it ("Importing project files....@FCJSON {...}")
+            idx = line.find(FCJSON_PREFIX)
+            if idx >= 0:
+                if idx:
+                    self._note_noise(line[:idx])
                 try:
-                    self._responses.put(json.loads(line[len(FCJSON_PREFIX):]))
+                    self._responses.put(
+                        json.loads(line[idx + len(FCJSON_PREFIX):]))
                 except ValueError:
                     self._note_noise(line)
             else:

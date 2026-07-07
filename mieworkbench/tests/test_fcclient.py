@@ -94,3 +94,25 @@ def test_close_forgets_document():
         fc._open_docs.pop("model3", None)
         fc._journal = [e for e in fc._journal if e[0] != "model3"]
         assert fc.journal_length("model3") == 0
+
+
+def test_response_glued_to_progress_noise_is_parsed():
+    """FreeCAD progress observers print stdout noise WITHOUT a trailing
+    newline, so a protocol response can arrive as
+    'Importing project files....@FCJSON {...}' on one line. The client
+    must find the prefix mid-line instead of timing out (this was a real
+    300s-hang-then-misrecover bug)."""
+    with make_client() as fc:
+        r = fc.request("glued_ping")
+        assert r["pong"] == "glued"
+        # the noise half must land in the diagnostics tail
+        assert any("Importing project files" in n for n in fc._noise_tail)
+
+
+def test_new_document_is_tracked_for_recovery(tmp_path):
+    """new_document must register in _open_docs like open_document, or a
+    worker crash right after File->New leaves the doc unrecoverable."""
+    with make_client() as fc:
+        path = str(tmp_path / "fresh.FCStd")
+        r = fc.new_document(path)
+        assert fc._open_docs.get(r["doc"]) == os.path.abspath(path)
