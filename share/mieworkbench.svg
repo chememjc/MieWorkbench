@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- MieWorkbench icon: a biconvex lens focusing three rays -->
+  <rect width="128" height="128" rx="20" fill="#111827"/>
+  <!-- incoming collimated rays -->
+  <g stroke="#fbbf24" stroke-width="3" stroke-linecap="round">
+    <line x1="10" y1="40" x2="56" y2="40"/>
+    <line x1="10" y1="64" x2="54" y2="64"/>
+    <line x1="10" y1="88" x2="56" y2="88"/>
+  </g>
+  <!-- refracted converging rays -->
+  <g stroke="#f59e0b" stroke-width="3" stroke-linecap="round">
+    <line x1="72" y1="42" x2="112" y2="63"/>
+    <line x1="74" y1="64" x2="112" y2="64"/>
+    <line x1="72" y1="86" x2="112" y2="65"/>
+  </g>
+  <!-- focal point -->
+  <circle cx="112" cy="64" r="5" fill="#fde68a"/>
+  <!-- lens -->
+  <path d="M 64 22 C 76 36 76 92 64 106 C 52 92 52 36 64 22 Z"
+        fill="#60a5fa" fill-opacity="0.55" stroke="#93c5fd"
+        stroke-width="3"/>
+</svg>

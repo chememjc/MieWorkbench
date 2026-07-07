@@ -1,0 +1,11 @@
+#!/bin/sh
+# MieWorkbench launcher: runs the GUI from this repo's env/ virtualenv.
+# Usage: mieworkbench [model.FCStd | project.MieWB | results.MieSim]
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PY="$REPO/env/bin/python"
+if [ ! -x "$PY" ]; then
+    echo "mieworkbench: no GUI virtualenv at $REPO/env — see INSTALL.md" >&2
+    exit 1
+fi
+cd "$REPO" || exit 1
+exec "$PY" -m mieworkbench "$@"

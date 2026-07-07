@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MieWorkbench
+GenericName=Optical Ray Tracing Workbench
+Comment=Design, simulate and analyze optical systems (FreeCAD-driven Mie ray tracer)
+Exec=@REPO@/bin/mieworkbench %f
+Icon=@REPO@/share/mieworkbench.svg
+Terminal=false
+Categories=Science;Physics;Engineering;
+MimeType=application/x-mieworkbench;application/x-miesim;application/x-extension-fcstd;
+Keywords=optics;raytracing;lens;simulation;FreeCAD;
