@@ -73,7 +73,10 @@ def test_bodies_reshaped_reloads_only_named_body(qtbot, tmp_path):
     assert pane.view._body_actors["Screen"][0] is screen_before
 
 
-def test_face_picked_replaces_selection_across_bodies(qtbot, tmp_path):
+def test_face_picked_selects_whole_body_only(qtbot, tmp_path):
+    """The optical-train view picks ELEMENTS, never faces: any face click
+    selects the body (highlighted in full) and emits an empty face set —
+    face-level selection belongs exclusively to the Element Inspector."""
     structure, faces = make_two_body_scene(tmp_path)
     project = FakeProject(structure, faces)
     pane = Scene3DPane()
@@ -85,25 +88,12 @@ def test_face_picked_replaces_selection_across_bodies(qtbot, tmp_path):
         lambda body, fset: received.append((body, set(fset))))
 
     pane.view.facePicked.emit("Lens", "Lens.Revolution.Face1", False)
-    assert received[-1] == ("Lens", {"Lens.Revolution.Face1"})
-    assert pane.selection() == ("Lens", {"Lens.Revolution.Face1"})
-
-    # picking a face on a DIFFERENT body always replaces the selection,
-    # even with Ctrl held
-    pane.view.facePicked.emit("Screen", "Screen.Pad.Face1", True)
-    assert received[-1] == ("Screen", {"Screen.Pad.Face1"})
-
-
-def test_face_picked_ctrl_click_toggles_within_same_body(qtbot, tmp_path):
-    structure, faces = make_two_body_scene(tmp_path)
-    project = FakeProject(structure, faces)
-    pane = Scene3DPane()
-    qtbot.addWidget(pane)
-    pane.set_project(project)
-
-    pane.view.facePicked.emit("Lens", "Lens.Revolution.Face1", False)
-    pane.view.facePicked.emit("Lens", "Lens.Revolution.Face1", True)
+    assert received[-1] == ("Lens", set())
     assert pane.selection() == ("Lens", set())
+
+    # Ctrl-click on another body still just selects that body
+    pane.view.facePicked.emit("Screen", "Screen.Pad.Face1", True)
+    assert received[-1] == ("Screen", set())
 
 
 def test_reshape_of_selected_body_clears_selection(qtbot, tmp_path):

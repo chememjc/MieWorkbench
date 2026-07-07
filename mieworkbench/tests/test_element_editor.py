@@ -198,7 +198,7 @@ def test_facemap_assign_partial_selection_keeps_other_face(qtbot, tmp_path):
                       "Lens.Revolution.Face2": "MgF2"}
 
 
-def test_facemap_table_lists_current_assignments(qtbot, tmp_path):
+def test_faces_table_lists_every_face_with_assignments(qtbot, tmp_path):
     structure, faces = make_lens_two_faces_scene(tmp_path)
     project = FakeProject(structure, faces)
     pane = ElementEditorPane()
@@ -206,11 +206,75 @@ def test_facemap_table_lists_current_assignments(qtbot, tmp_path):
     pane.set_project(project)
     pane.set_face_selection("Lens", set())
 
-    # canned Lens already has a whole-body coating='MgF2'
-    assert pane.facemap_table.rowCount() == 1
-    assert pane.facemap_table.item(0, 0).text() == "coating"
-    assert pane.facemap_table.item(0, 1).text() == "ALL"
-    assert pane.facemap_table.item(0, 2).text() == "MgF2"
+    # one row per face; the canned Lens has a whole-body coating='MgF2'
+    # which shows on every row (marked as whole-body) in bold
+    assert pane.faces_table.rowCount() == 2
+    for row in range(2):
+        assert pane.faces_table.item(row, 0).text().startswith("Face")
+        note = pane.faces_table.item(row, 1).text()
+        assert "coating=MgF2" in note and "whole body" in note
+        assert pane.faces_table.item(row, 0).font().bold()
+
+
+def test_faces_table_selection_drives_face_selection(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    picked = []
+    pane.facesPicked.connect(lambda b, f: picked.append((b, set(f))))
+    pane.faces_table.selectRow(0)
+    fid = pane.faces_table.item(0, 0).data(0x0100)
+    assert picked and picked[-1] == ("Lens", {fid})
+    assert pane._face_selection == {fid}
+
+
+def test_faces_table_marks_active_face_for_sources(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    project.set_property("Lens", "power", 5.0)
+    project.set_property("Lens", "lambdac", 633.0)
+    pane.set_face_selection("Lens", set())
+    qtbot.waitUntil(
+        lambda: any("(emit)" in pane.faces_table.item(r, 0).text()
+                    for r in range(pane.faces_table.rowCount())),
+        timeout=2000)
+
+
+def test_typed_facemap_value_is_error_checked(qtbot, tmp_path):
+    """Manually typing 'Face99=...' into a per-face property must be
+    rejected with a visible message, not committed to the worker."""
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    calls_before = list(project.calls)
+    pane._commit_property("coating", "Face99=MgF2")
+    assert project.calls == calls_before          # nothing committed
+    assert pane.face_warning.isVisibleTo(pane)
+    assert "Face99" in pane.face_warning.text()
+
+    # a valid typed value goes through and clears the warning
+    pane._commit_property("coating", "Face1=SiO2")
+    assert ("set_property", "Lens", "coating", "Face1=SiO2") \
+        in project.calls
+    assert not pane.face_warning.isVisibleTo(pane)
+
+
+def test_validate_facemap_value_pure():
+    from mieworkbench.panes.element_editor import validate_facemap_value
+    assert validate_facemap_value("Face1=MgF2", "B", "Pad", 3) is None
+    assert "Face9" in validate_facemap_value("Face9=MgF2", "B", "Pad", 3)
+    assert validate_facemap_value("Face1=", "B", "Pad", 3) is not None
 
 
 def _find_sheet_row(pane, alias):

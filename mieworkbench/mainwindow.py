@@ -598,6 +598,10 @@ class MainWindow(QMainWindow):
 
         self.inspector.faceSelectionChanged.connect(
             self.element_editor.set_face_selection)
+        # the editor's face LIST is an alternative face-picking surface:
+        # rows chosen there highlight in the inspector's 3D view
+        self.element_editor.facesPicked.connect(
+            lambda _body, faces: self.inspector.set_selected_faces(faces))
         self.problems.validationChanged.connect(
             self._on_validation_changed)
 

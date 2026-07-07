@@ -139,6 +139,13 @@ class InspectorPane(QWidget):
         self._selection = set()
         self._apply_selection()
 
+    def set_selected_faces(self, faces):
+        """Programmatic selection (element editor's face list drives this
+        through the main window). Highlights only — does NOT re-emit
+        faceSelectionChanged, the caller already knows."""
+        self._selection = {f for f in (faces or ()) if f in self._face_ids}
+        self.view.set_selection(self._selection)
+
     def _apply_selection(self):
         self.view.set_selection(self._selection)
         self.faceSelectionChanged.emit(self._body_name, set(self._selection))

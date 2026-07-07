@@ -7,18 +7,16 @@ Wiring to Project (see core/project.py's signal docs):
     bodiesReshaped  -> reload_bodies(...) for just the reshaped bodies
     bodiesMoved     -> update_placement(name, placement) per moved body
 
-Face/body selection: a click resolves to (body_name, face_id) via the
-view's facePicked signal. Clicking a different body always replaces the
-selection with that one face; clicking within the same body follows
-widgets.facepicker.pick_to_selection's plain/Ctrl-click semantics. Either
-way the pane re-highlights the picked face(s) and emits
-selectionChanged(body_name, set_of_face_ids).
+Selection: a click resolves to (body_name, face_id) via the view's
+facePicked signal, but this pane selects whole ELEMENTS only — the hit
+body is highlighted in full and selectionChanged(body_name, set()) is
+emitted. Face-level selection lives exclusively in the Element
+Inspector's single-element view.
 """
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
-from ..widgets.facepicker import pick_to_selection
 from ..widgets.vtkview import VtkSceneView
 
 _VIEW_BUTTONS = [("+X", "+x"), ("-X", "-x"), ("+Y", "+y"), ("+Z", "+z")]
@@ -111,15 +109,13 @@ class Scene3DPane(QWidget):
 
     # -- selection ------------------------------------------------------------
     def _on_face_picked(self, body_name, face_id, additive):
-        if body_name != self._selected_body:
-            self._selected_body = body_name
-            self._selected_faces = {face_id}
-        else:
-            self._selected_faces = pick_to_selection(
-                self._selected_faces, face_id, additive)
-        self.view.set_selection(self._selected_faces)
-        self.selectionChanged.emit(self._selected_body,
-                                   set(self._selected_faces))
+        # the optical-train view picks whole ELEMENTS only: clicking any
+        # face selects that body (highlighted in full) and routes it to
+        # the inspector/editors. Building up a FACE selection is the
+        # Element Inspector's job (its dedicated single-element view) —
+        # having both views mutate the face selection was confusing.
+        self.select_body(body_name)
+        self.selectionChanged.emit(body_name, set())
 
     def _clear_selection(self):
         self._selected_body = None

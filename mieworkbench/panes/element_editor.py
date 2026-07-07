@@ -266,6 +266,49 @@ def _fmt_property_value(value):
     return "" if value is None else str(value)
 
 
+def active_face_index(properties, faces_meta):
+    """The 'working face' of a source/detector body: the face whose
+    centroid is closest to the origin — the same auto-detection heuristic
+    extract_geometry uses for the emit/detector face. Returns the face
+    INDEX (1-based) or None for plain optics/no-geometry bodies."""
+    props = properties or {}
+    is_source = "power" in props and "lambdac" in props
+    is_detector = (props.get("material", {}).get("value") == "detector")
+    if not (is_source or is_detector) or not faces_meta:
+        return None
+    best_id, best_d = None, None
+    for f in faces_meta:
+        c = f.get("centroid_m")
+        if c is None:
+            continue
+        d = sum(x * x for x in c)
+        if best_d is None or d < best_d:
+            best_id, best_d = f["id"], d
+    if best_id is None:
+        return None
+    return common.parse_face_spec(best_id)["face_index"]
+
+
+def validate_facemap_value(raw, body_name, feature, face_count):
+    """Error-check a user-typed facemap value BEFORE it is committed:
+    must parse under the contract grammar, and every named face must
+    exist on the body. Returns None if ok, else a message."""
+    try:
+        parsed = common.parse_facemap_spec(str(raw), body=body_name,
+                                           feature=feature)
+    except ValueError as exc:
+        return str(exc)
+    for key in parsed:
+        if key == common.FACEMAP_ALL:
+            continue
+        idx = common.parse_face_spec(key)["face_index"]
+        if not 1 <= idx <= face_count:
+            return ("Face%d does not exist on %s (it has %d face%s)"
+                    % (idx, body_name, face_count,
+                       "s" if face_count != 1 else ""))
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Widget
 # ---------------------------------------------------------------------------
@@ -373,6 +416,22 @@ class ElementEditorPane(QWidget):
             if current == value or (current is not None
                                     and str(current) == str(value)):
                 return
+        # hand-typed per-face values ('Face3=MgF2;...') are error-checked
+        # against the contract grammar AND the body's real face count
+        # before anything reaches the worker
+        if name in FACEMAP_PROPERTIES and value and \
+                str(value).lstrip().startswith("Face"):
+            faces_meta = (self._project.faces.get(self._body_name, {})
+                          .get("faces", []))
+            err = validate_facemap_value(value, self._body_name,
+                                         body.get("tip"),
+                                         len(faces_meta))
+            if err:
+                self._show_face_warning("Invalid %s value: %s"
+                                        % (name, err))
+                self._refresh_timer.start()   # restore the shown value
+                return
+            self._show_face_warning(None)
         self._project.set_property(self._body_name, name, value)
 
     def _commit_numeric_property(self, name, widget):
@@ -470,10 +529,22 @@ class ElementEditorPane(QWidget):
             label.setToolTip(TOOLTIPS.get(name, name))
             self.props_form.addRow(label, row)
 
-    # -- section (b): per-face assignments -----------------------------------
+    # -- section (b): faces ---------------------------------------------------
     def _build_faces_box(self):
-        self.faces_box = QGroupBox("Per-face assignments")
-        self.face_selection_label = QLabel("No faces selected")
+        self.faces_box = QGroupBox("Faces")
+        # one row per face of the body: pick faces HERE (or in the
+        # inspector's 3D view — the two stay in sync); rows with per-face
+        # assignments render bold, and a source/detector body's working
+        # (emit/detector) face is marked
+        self.faces_table = QTableWidget(0, 2)
+        self.faces_table.setHorizontalHeaderLabels(["Face", "Assignments"])
+        self.faces_table.verticalHeader().setVisible(False)
+        self.faces_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.faces_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.faces_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.faces_table.itemSelectionChanged.connect(
+            self._on_faces_table_selection)
+        self._faces_table_updating = False
 
         self.facemap_prop_combo = QComboBox()
         self.facemap_prop_combo.addItems(list(FACEMAP_PROPERTIES))
@@ -482,7 +553,8 @@ class ElementEditorPane(QWidget):
             "value, e.g. MgF2 / 50:lcorr=5 / 600:v")
         self.facemap_assign_button = QPushButton("Assign to selected faces")
         self.facemap_assign_button.setToolTip(
-            "Assign the value to every currently selected face")
+            "Assign the value to every face selected above (or picked in "
+            "the Element Inspector's 3D view)")
         self.facemap_assign_button.clicked.connect(self._on_assign_facemap)
 
         assign_row = QHBoxLayout()
@@ -490,16 +562,18 @@ class ElementEditorPane(QWidget):
         assign_row.addWidget(self.facemap_value_edit, 1)
         assign_row.addWidget(self.facemap_assign_button)
 
-        self.facemap_table = QTableWidget(0, 3)
-        self.facemap_table.setHorizontalHeaderLabels(
-            ["Property", "Face", "Value"])
-        self.facemap_table.verticalHeader().setVisible(False)
+        self.face_warning = QLabel("")
+        self.face_warning.setStyleSheet("color: #b91c1c;")
+        self.face_warning.setWordWrap(True)
+        self.face_warning.hide()
 
         layout = QVBoxLayout()
-        layout.addWidget(self.face_selection_label)
+        layout.addWidget(self.faces_table)
         layout.addLayout(assign_row)
-        layout.addWidget(self.facemap_table)
+        layout.addWidget(self.face_warning)
         self.faces_box.setLayout(layout)
+
+    facesPicked = Signal(str, set)   # body, faces chosen in the table
 
     def set_face_selection(self, body_name, faces):
         """Slot: wire InspectorPane.faceSelectionChanged straight in.
@@ -508,51 +582,19 @@ class ElementEditorPane(QWidget):
         body_changed = body_name != self._body_name
         self._body_name = body_name
         self._face_selection = set(faces or [])
+        self._show_face_warning(None)
         if body_changed:
             self._refresh_properties()
             self._refresh_sheet_table()
-        self._refresh_face_selection_label()
-        self._refresh_facemap_table()
+            self._refresh_faces_table()
+        self._select_faces_table_rows()
 
-    def _refresh_face_selection_label(self):
-        if not self._face_selection:
-            self.face_selection_label.setText("No faces selected")
-            return
-        try:
-            bare = sorted((_face_sort_key(f), _bare_face_key(f))
-                         for f in self._face_selection)
-            text = ", ".join(b for _, b in bare)
-        except ValueError:
-            text = ", ".join(sorted(self._face_selection))
-        self.face_selection_label.setText("Selected: " + text)
-
-    def _on_assign_facemap(self):
-        if (self._project is None or self._body_name is None
-                or not self._face_selection):
-            return
-        value = self.facemap_value_edit.text().strip()
-        if not value:
-            return
-        prop_name = self.facemap_prop_combo.currentText()
-        body = self._project.body(self._body_name)
-        feature = body.get("tip")
-        all_face_ids = [f["id"] for f in
-                        self._project.faces.get(self._body_name, {})
-                        .get("faces", [])]
-        existing_raw = body.get("properties", {}).get(
-            prop_name, {}).get("value")
-        new_raw = merge_facemap(existing_raw, self._body_name, feature,
-                                all_face_ids, self._face_selection, value)
-        self._project.set_property(self._body_name, prop_name, new_raw)
-
-    def _refresh_facemap_table(self):
-        self.facemap_table.setRowCount(0)
-        if self._project is None or self._body_name is None:
-            return
+    def _face_assignments(self):
+        """{face_id_or_ALL: 'prop=value; ...'} for the current body."""
         body = self._project.body(self._body_name)
         feature = body.get("tip")
         props = body.get("properties", {}) or {}
-        rows = []
+        out = {}
         for prop_name in FACEMAP_PROPERTIES:
             raw = props.get(prop_name, {}).get("value")
             if not raw:
@@ -563,19 +605,116 @@ class ElementEditorPane(QWidget):
             except ValueError:
                 continue
             for face_key, value in parsed.items():
-                if face_key == common.FACEMAP_ALL:
-                    face_label = "ALL"
-                else:
-                    try:
-                        face_label = _bare_face_key(face_key)
-                    except ValueError:
-                        face_label = face_key
-                rows.append((prop_name, face_label, value))
-        self.facemap_table.setRowCount(len(rows))
-        for r, (prop_name, face_label, value) in enumerate(rows):
-            self.facemap_table.setItem(r, 0, QTableWidgetItem(prop_name))
-            self.facemap_table.setItem(r, 1, QTableWidgetItem(face_label))
-            self.facemap_table.setItem(r, 2, QTableWidgetItem(str(value)))
+                entry = "%s=%s" % (prop_name, value)
+                out.setdefault(face_key, []).append(entry)
+        return {k: "; ".join(v) for k, v in out.items()}
+
+    def _refresh_faces_table(self):
+        self._faces_table_updating = True
+        try:
+            self.faces_table.setRowCount(0)
+            if self._project is None or self._body_name is None:
+                return
+            body = self._project.body(self._body_name)
+            faces_meta = (self._project.faces.get(self._body_name, {})
+                          .get("faces", []))
+            assignments = self._face_assignments()
+            all_note = assignments.get(common.FACEMAP_ALL)
+            active = active_face_index(body.get("properties"), faces_meta)
+            is_source = ("power" in (body.get("properties") or {})
+                         and "lambdac" in (body.get("properties") or {}))
+            marker = " (emit)" if is_source else " (detector)"
+
+            self.faces_table.setRowCount(len(faces_meta))
+            bold = self.faces_table.font()
+            bold.setBold(True)
+            for row, f in enumerate(faces_meta):
+                idx = common.parse_face_spec(f["id"])["face_index"]
+                label = "Face%d" % idx
+                if active is not None and idx == active:
+                    label += marker
+                note = assignments.get(f["id"]) or all_note or ""
+                if all_note and not assignments.get(f["id"]):
+                    note = all_note + "  (whole body)"
+                face_item = QTableWidgetItem(label)
+                face_item.setData(0x0100, f["id"])   # Qt.UserRole
+                note_item = QTableWidgetItem(note)
+                if note:
+                    face_item.setFont(bold)
+                    note_item.setFont(bold)
+                if active is not None and idx == active:
+                    face_item.setToolTip(
+                        "The auto-detected working face (closest to the "
+                        "origin) that the extractor will use as this "
+                        "body's %s face" % ("emit" if is_source
+                                            else "detector"))
+                self.faces_table.setItem(row, 0, face_item)
+                self.faces_table.setItem(row, 1, note_item)
+            self.faces_table.resizeColumnToContents(0)
+        finally:
+            self._faces_table_updating = False
+
+    def _select_faces_table_rows(self):
+        self._faces_table_updating = True
+        try:
+            self.faces_table.clearSelection()
+            for row in range(self.faces_table.rowCount()):
+                item = self.faces_table.item(row, 0)
+                if item is not None and \
+                        item.data(0x0100) in self._face_selection:
+                    self.faces_table.selectRow(row)
+        finally:
+            self._faces_table_updating = False
+
+    def _on_faces_table_selection(self):
+        if self._faces_table_updating or self._body_name is None:
+            return
+        faces = set()
+        for item in self.faces_table.selectedItems():
+            if item.column() == 0:
+                fid = item.data(0x0100)
+                if fid:
+                    faces.add(fid)
+        self._face_selection = faces
+        self.facesPicked.emit(self._body_name, set(faces))
+
+    def _show_face_warning(self, message):
+        if message:
+            self.face_warning.setText(message)
+            self.face_warning.show()
+        else:
+            self.face_warning.clear()
+            self.face_warning.hide()
+
+    def _on_assign_facemap(self):
+        if (self._project is None or self._body_name is None
+                or not self._face_selection):
+            self._show_face_warning(
+                "Select one or more faces first (in the list above or the "
+                "Element Inspector)")
+            return
+        value = self.facemap_value_edit.text().strip()
+        if not value:
+            return
+        prop_name = self.facemap_prop_combo.currentText()
+        body = self._project.body(self._body_name)
+        feature = body.get("tip")
+        all_face_ids = [f["id"] for f in
+                        self._project.faces.get(self._body_name, {})
+                        .get("faces", [])]
+        try:
+            new_raw = merge_facemap(
+                existing_raw=body.get("properties", {})
+                .get(prop_name, {}).get("value"),
+                body_name=self._body_name, feature=feature,
+                all_face_ids=all_face_ids,
+                selected_face_ids=self._face_selection, value=value)
+        except ValueError as exc:
+            self._show_face_warning("Invalid %s value: %s"
+                                    % (prop_name, exc))
+            return
+        self._show_face_warning(None)
+        self._project.set_property(self._body_name, prop_name, new_raw)
 
     # -- section (c): element parameters -------------------------------------
     def _build_sheet_box(self):
@@ -666,11 +805,11 @@ class ElementEditorPane(QWidget):
         if self._body_name is None:
             return
         self._refresh_properties()
-        self._refresh_facemap_table()
+        self._refresh_faces_table()
+        self._select_faces_table_rows()
         self._refresh_sheet_table()
 
     def _refresh_all(self):
         self._refresh_properties()
-        self._refresh_face_selection_label()
-        self._refresh_facemap_table()
+        self._refresh_faces_table()
         self._refresh_sheet_table()
