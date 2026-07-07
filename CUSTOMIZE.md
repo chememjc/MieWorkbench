@@ -245,6 +245,16 @@ primitive derives a real contract property from one of its own `dim`-sheet
 params: add the property name to `derived_props` so a rebuild can't
 resurrect a stale value.
 
+The asphere-backed primitives are the second shipped example, and the
+sharper trap: `lens_asphere` and `mirror_parabolic` write a
+`surface_override` string computed from their R/k/rfl/aperture params.
+Without `derived_props: ("surface_override",)`, editing a parabolic
+mirror's focal length rebuilds the geometry but restores the OLD override
+string — and the next extraction **hard-fails** on the <1 µm asphere
+verification (this is exactly how the Newtonian demo first died). If your
+builder writes `surface_override` (or any face-map string tied to
+geometry), list it here.
+
 ---
 
 ## 4. Body-tagging contract — quick reference

@@ -71,7 +71,20 @@ bin/mieworkbench
 # open a specific file directly
 env/bin/python -m mieworkbench example.FCStd
 bin/mieworkbench example.FCStd
+
+# or start from the demo gallery (ten classic systems, see demos/README.md):
+env/bin/python -m mieworkbench demos/newtonian.MieWB
+python3 scripts/miewb_tool.py run demos/fiber_coupler.MieWB -o /tmp/out.MieSim
 ```
+
+The **`demos/`** folder ships ten ready-to-run classic optical systems —
+beam expander, Newtonian/Dobsonian/Schmidt-Cassegrain telescopes, Cooke
+triplet camera, Lister microscope objective, Michelson interferometer,
+Czerny-Turner and prism spectrometers, and a ball-lens fiber coupler with
+75 mm of TIR-guided step-index fiber. Each is a self-contained `.MieWB`
+that completes on the quick preset; `demos/README.md` documents the
+prescriptions (with citations) and `scripts/make_demos.py` rebuilds them
+all through the GUI's own op path.
 
 From the GUI: **File → Open…** and pick `example.FCStd` (a
 divergent+collimated two-laser bench with a BK7 lens, a glass sphere, and
@@ -157,7 +170,30 @@ and scenes with no detector yet, where preview_rays injects a synthetic transpar
 far-field detector behind the scenes so the trace can still run. Simply **checking the
 Rays toggle** with nothing currently shown does something useful too: it loads the last
 run's `viz/rays.vtp` if a finished case is open, and otherwise offers the live preview
-directly. Geometry edits grey the overlay as "stale" until a new run reloads it.
+directly.
+
+Both preview and rendered rays are **colored by wavelength** (each segment
+carries a CIE-derived RGB from its source λ), so chromatic dispersion and
+diffraction orders read directly off the overlay. Edits that affect the
+optics grey the ray ACTORS out (low-opacity gray, plus a "Rays (stale)"
+button label) until fresh rays load.
+
+**Auto-updating preview** (View ▸ *Auto-update Ray Preview*, on by
+default, persisted): about a second after the last optics-affecting edit
+(geometry moves/reshapes, element add/delete, any contract-property
+change — GUI-internal bookkeeping doesn't count), the preview fan
+re-traces in the background and replaces the stale overlay. Edits made
+while a preview is running queue exactly one follow-up run; a running
+full pipeline is never competed with.
+
+**Face-orientation indicators** (View ▸ *Face Orientation Indicators*, on
+by default, persisted): purely visual glyphs in both 3D views showing
+which way each element faces — a **red half-disc** on a source's emission
+face and a detector's recording face (the same closest-to-origin face the
+extractor auto-picks; spherical emitters are skipped), a **green dot** on
+the local +x face of apertures (slit/iris/pinhole) and a **blue dot** on
+the local +x face of every other traced optic. They are never written to
+the model and never traced.
 
 ### 3.2 Scene Elements outliner (`panes/outliner.py`)
 
@@ -178,7 +214,12 @@ surface for building up a face selection to hand to the Element
 Properties pane (the central viewport can also pick faces, but this pane
 is where multi-face selections are expected to be built). Buttons:
 **Select all faces**, **Clear**. Plain click replaces the face selection;
-Ctrl+click toggles membership. A **Rays** toggle (like the main viewport)
+**Shift+click extends** (always adds, never removes); **Ctrl+click
+toggles** membership. A **right-click** anywhere in the view pops the
+same **Active Properties** menu as the Element Properties pane (§3.4):
+apply or remove per-face properties on the current selection without
+leaving the 3D view (this pane trades VTK's right-drag zoom for the menu;
+the scroll wheel still zooms). A **Rays** toggle (like the main viewport)
 traces a preview fan through just the inspected element, useful for checking a
 single component's behavior in isolation. Rotating is the standard VTK trackball
 interactor, not a dedicated control.
@@ -201,22 +242,32 @@ sections:
   defaults to 5.0 mW, `lambdac` to 633 nm, registry properties to a
   well-known library entry) and show inline unit labels (e.g.,
   "power [mW]", "lambdac [nm]") for clarity.
-- **Faces** — a list with one row per face of the selected body (as of
-  B0b, this replaces face-picking as the primary way to build a face
-  selection: rows can be picked here directly, in sync with the Element
-  Inspector's 3D view, with no 3D clicking required at all). Rows that
-  already carry a `coating` / `roughness` / `grating` / `surface_override`
-  assignment (the four properties that support a per-face map like
-  `'Face3=MgF2;Face5=x'`) render **bold** with a `prop=value` summary; a
-  source or detector body's auto-detected working face (the same
-  closest-to-origin heuristic the extractor uses) is marked `(emit)` or
-  `(detector)`, with a tooltip explaining why. Below the list, a
-  property/value assignment row applies one of the four facemap
-  properties to every face currently selected. A hand-typed value is
-  checked against the contract grammar **and** the body's real face count
-  before it's committed — a bad or out-of-range `FaceN=` shows a visible
-  red warning instead of silently writing something the extractor would
-  later reject.
+- **Active Properties** — the per-face assignments, organized by
+  ASSIGNMENT rather than by face: one row per `(property, value)` pair
+  (`coating` / `roughness` / `diffuser` / `grating` / `surface_override`,
+  the five properties supporting a per-face map like `'Face3=MgF2'`),
+  showing **Property | Value | Faces | Remove**. The **Value** cell is a
+  registry-fed dropdown (coatings/gratings/diffusers come from the active
+  property library — the project's embedded one when a `.MieWB` is open;
+  roughness offers presets; everything stays hand-editable as the escape
+  hatch). The **Faces** cell lists the covered faces (`Face1, Face3` or
+  `whole body`, with the source/detector working face marked `(emit)` /
+  `(detector)`) and clicking it opens a per-face **checkbox menu** to add
+  or remove faces from that assignment with zero typing. With faces
+  selected (3D picks or assignment rows), the table **filters** to
+  assignments touching the selection; selecting an assignment row
+  highlights its faces in the Element Inspector ("show me where that
+  coating is"). A **right-click** (here or in the inspector's 3D view)
+  opens the **Active Properties menu**: property → value tree with a
+  checkmark when the value is on every selected face (click to remove it
+  there), italics when it's on some of them (click to complete the
+  coverage), plus a `Custom…` entry per property. With no face selection,
+  menu and Assign row target the whole body. Hand-typed values are still
+  validated against the contract grammar **and** the body's real face
+  count before committing — a bad `FaceN=` shows a red warning instead of
+  silently writing something the extractor would later reject. Grating
+  assignments never collapse to the whole-body shorthand (the contract
+  requires explicit faces).
 - **Element parameters** — the parameter-sheet ("dim spreadsheet") editor:
   one row per aliased cell (`Alias` / `Value` / `Unit`), parsed from and
   recomposed back into the raw `"=<value> <unit>"` cell form. If the body
@@ -305,7 +356,7 @@ it configures the whole element, not just its geometry:
   fall back to focusing the Element Properties pane, since there's no
   primitive spec to drive a wizard from.
 
-### 3.6.2 Primitive catalog (52 elements)
+### 3.6.2 Primitive catalog (54 elements)
 
 Every entry below is one `primitives/*.FCStd` + `.meta.json` pair, built by
 `scripts/primitivelib.py`'s `PRIMITIVES` registry (CUSTOMIZE.md §§1–3).
@@ -323,8 +374,20 @@ doesn't apply); `source_broadband` (diameter, length, round_flag:
 incoherent broadband disc/box emitter, set `lambdamin`/`lambdamax` in the
 properties).
 
-**Detectors** — `detector_plane` (width, thickness, round_flag: thin
-transparent screen, its −x face records irradiance).
+**Detectors** — `detector_plane` (width, height, thickness, round_flag:
+thin transparent screen, its −x face records irradiance; height 0 = the
+legacy square shape, height > 0 gives a true rectangle — e.g. a
+36 × 24 mm full-frame CMOS sensor; the detector grid derives the
+non-square pixel layout from the face bbox automatically).
+
+**Fiber Optics** — `fiber_optic` (core_diameter, clad_diameter, length,
+gap: straight step-index multimode fiber along +x — analytic-cylinder
+core + concentric cladding annulus with flat polished ends; defaults
+model a 200 µm-core 0.22-NA silica fiber via the `fiber_core_na22`
+material row against a `fused_silica` cladding, swap either body's
+`material` to change the NA; the core/clad boundary uses the standard
+5 µm modeling air gap, so guided rays inside the NA TIR exactly as they
+should while leaky/cladding-mode power is not quantitative; two bodies).
 
 **Lenses** — `lens_pcx` plano-convex (R_front, ct, aperture);
 `lens_dcx` biconvex (R_front, R_back, ct, aperture); `lens_pcv`
@@ -359,7 +422,9 @@ any incoming ray antiparallel to itself); `anamorphic_pair` (wedge_deg,
 aperture, separation: two bodies, magnifies the beam in y only, net
 deviation cancels); `mirror_parabolic` (rfl, aperture, thickness:
 front-surface, exact on-axis paraxial and geometric focus — see the note
-below).
+below); `mirror_annular` (R, aperture, hole_diameter, ct: center-holed
+spherical concave mirror — a Cassegrain/SCT-style perforated primary; the
+hole is a genuinely open revolved annulus, not a plugged aperture stop).
 
 **Plates & Filters** — `window` plane-parallel plate (width, thickness,
 round_flag); `filter_plate` bulk spectral filter (width, thickness,

@@ -229,7 +229,11 @@ def demo_newtonian(d):
           params={"width": 20.0})
     d.note("newtonian: diagonal quaternion (-135 deg about z) had to be "
            "computed by hand; an 'aim at element' helper would remove it")
-    return {"preset": "quick"}
+    # the detector-face auto-pick (closest face centroid to the world
+    # origin) selects a thin EDGE face on off-axis/rotated detectors --
+    # every folded demo pins the true front face explicitly
+    return {"preset": "quick",
+            "detector_face": ["Eyepiece.Eyepiece_pad.Face5"]}
 
 
 def demo_dobsonian(d):
@@ -247,7 +251,8 @@ def demo_dobsonian(d):
           params={"width": 72.0, "thickness": 5.0, "round_flag": 1})
     d.add("detector_plane", "Eyepiece", pos=(xd, L, 0), rot_deg=90.0,
           params={"width": 25.0})
-    return {"preset": "quick"}
+    return {"preset": "quick",
+            "detector_face": ["Eyepiece.Eyepiece_pad.Face5"]}
 
 
 def demo_michelson(d):
@@ -258,7 +263,14 @@ def demo_michelson(d):
     d.add("laser_collimated", "Laser", pos=(-60, 0, 0),
           params={"diameter": 8.0},
           props={"lambdac": 633.0})          # coherent=True (default)
-    d.add("bs_cube", "BS", pos=(-12.5, 0, 0))      # entrance face at x=-12.5
+    # PLATE beamsplitter, not the cube: the cube's cemented 5 um gap sits
+    # at 45 deg to the internal beams and bleeds ~37% of the power into
+    # seam loss; the plate's coated front face splits cleanly (wedge 0 so
+    # the two arms stay parallel). Normal at 225 deg -> +x input reflects
+    # to -y, the recombined output leaves toward +y.
+    d.add("bs_plate", "BS", rot_deg=45.0,
+          params={"width": 30.0, "thickness": 3.0, "round_flag": 1,
+                  "wedge_deg": 0.0})
     d.add("mirror_flat", "M1", pos=(60, 0, 0),
           params={"width": 15.0, "round_flag": 1})
     d.add("mirror_flat", "M2", pos=(0, -60, 0), rot_deg=-90.0 + tilt_deg,
@@ -267,7 +279,8 @@ def demo_michelson(d):
           params={"width": 12.0, "round_flag": 0})
     d.note("michelson: the 0.158 mrad fringe tilt is invisible in the 3D "
            "view; a numeric rotation readout in the transform panel helps")
-    return {"preset": "quick"}
+    return {"preset": "quick",
+            "detector_face": ["Screen.Screen_pad.Face5"]}
 
 
 def demo_prism_spectrometer(d):
@@ -286,10 +299,55 @@ def demo_prism_spectrometer(d):
     inc = (A + dmin) / 2.0
     rotation = 30.0 - inc
     dev_dir = unit(-dmin)          # deviated (toward the base, -y)
-    prism_pos = (0.0, 0.0)
-    lens_c = tuple(prism_pos[i] + 40.0 * dev_dir[i] for i in range(2))
-    det_c = tuple(prism_pos[i] + 141.0 * dev_dir[i] for i in range(2))
-    d.add("source_broadband", "Source", pos=(-60, 0, 0),
+    # trace the CENTRAL ray (at the source height y0) through the two
+    # faces to anchor the camera arm at the real exit point -- the beam
+    # walks several mm down the exit face, so aiming from the prism
+    # centroid misses (found by the first 0 mW smoke run). y0 lifts the
+    # whole 8 mm bundle onto the entrance face (its lower vertex sits
+    # just below the axis).
+    y0 = 6.0
+    Rc = 25.0 / math.sqrt(3.0)
+    verts = [(Rc * math.cos(math.radians(a + rotation)),
+              Rc * math.sin(math.radians(a + rotation)))
+             for a in (90.0, 210.0, 330.0)]
+
+    def _outward(pf, qf):
+        ex, ey = qf[0] - pf[0], qf[1] - pf[1]
+        nx, ny = ey, -ex
+        mx = (pf[0] + qf[0]) / 2.0 - (verts[0][0] + verts[1][0]
+                                      + verts[2][0]) / 3.0
+        my = (pf[1] + qf[1]) / 2.0 - (verts[0][1] + verts[1][1]
+                                      + verts[2][1]) / 3.0
+        if nx * mx + ny * my < 0:
+            nx, ny = -nx, -ny
+        norm = math.hypot(nx, ny)
+        return nx / norm, ny / norm
+
+    def _refract(d_in, nrm, n1, n2):
+        dx, dy = d_in
+        nx, ny = nrm
+        if dx * nx + dy * ny > 0:
+            nx, ny = -nx, -ny
+        cosi = -(dx * nx + dy * ny)
+        eta = n1 / n2
+        s2 = eta * eta * (1.0 - cosi * cosi)
+        f = eta * cosi - math.sqrt(1.0 - s2)
+        return (eta * dx + f * nx, eta * dy + f * ny)
+
+    def _hit(p, dvec, a_pt, b_pt):
+        ex, ey = b_pt[0] - a_pt[0], b_pt[1] - a_pt[1]
+        det = dvec[0] * (-ey) - dvec[1] * (-ex)
+        t = ((a_pt[0] - p[0]) * (-ey) - (a_pt[1] - p[1]) * (-ex)) / det
+        return (p[0] + t * dvec[0], p[1] + t * dvec[1])
+
+    n_in = _outward(verts[0], verts[1])
+    n_out = _outward(verts[2], verts[0])
+    p_ent = _hit((-60.0, y0), (1.0, 0.0), verts[0], verts[1])
+    d_in = _refract((1.0, 0.0), n_in, 1.0, n550)
+    p_exit = _hit(p_ent, d_in, verts[2], verts[0])
+    lens_c = (p_exit[0] + 40.0 * dev_dir[0], p_exit[1] + 40.0 * dev_dir[1])
+    det_c = (p_exit[0] + 141.0 * dev_dir[0], p_exit[1] + 141.0 * dev_dir[1])
+    d.add("source_broadband", "Source", pos=(-60, y0, 0),
           params={"diameter": 8.0},
           props={"lambdac": 550.0, "lambdamin": 450.0, "lambdamax": 650.0})
     d.add("prism", "Prism", params={"side": 25.0, "height": 25.0,
@@ -305,7 +363,8 @@ def demo_prism_spectrometer(d):
     d.note("prism_spectrometer: min-deviation incidence angle needed "
            "offline trig; wizard support for 'rotate prism for min "
            "deviation at lambda' would be a one-click win")
-    return {"preset": "quick"}
+    return {"preset": "quick",
+            "detector_face": ["Screen.Screen_pad.Face5"]}
 
 
 def demo_czerny_turner(d):
@@ -350,7 +409,8 @@ def demo_czerny_turner(d):
     d.note("czerny_turner: four bodies needed hand trig for aim angles; "
            "the single most wanted tool while building the gallery was "
            "'point this element at that one'")
-    return {"preset": "quick"}
+    return {"preset": "quick",
+            "detector_face": ["Screen.Screen_pad.Face5"]}
 
 
 def demo_camera_triplet(d):

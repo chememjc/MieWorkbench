@@ -1257,7 +1257,8 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--steps extract,trace,post,viz]
     [--var ALIAS --min F --max F --n N]...   (repeatable group, paired positionally)
     [--dry-run] [--seeds N] [--rays F] [--resolution N] [--nlambda N]
-    [--spectral-bins N] [--viz-rays N] [--viz-density F] [--backend {auto,torch,numpy}]
+    [--spectral-bins N] [--max-reflections N]
+    [--viz-rays N] [--viz-density F] [--backend {auto,torch,numpy}]
     [--rough-fresnel {micro,macro}] [--ray-differentials] [--gather-occlusion]
     [--no-pol-scatter] [--mesh-flat-normals] [--save-fields] [--strict-analytic]
     [--optical-properties PATH]
@@ -1516,6 +1517,13 @@ exactly like `--seeds` on a rough-surface scene (§5.4).
 /home3/freecad/FreeCAD.AppImage -c scripts/make_test_scenes.py -- --scene all
 python3 scripts/run_pipeline.py --models basemodels/lens_pcx.FCStd --preset quick
 ```
+
+(For MULTI-element showcase systems — telescopes, a Cooke-triplet camera,
+a Michelson interferometer, spectrometers, a ball-lens fiber coupler —
+see the top-level `demos/` gallery instead: ten packed `.MieWB` scenes
+with cited prescriptions, built by `scripts/make_demos.py`. The scenes
+below stay single-element by design: they are the physics validation
+fixtures.)
 
 25 buildable scenes total: `doubleslit` (the original scene, documented
 in §5.10, still built with unchanged parameters — d=0.5mm slit
