@@ -251,6 +251,7 @@ fields on each `PartDesign::Body`:
 | `mirror` | Float, optional, [0,1] | achromatic partial-reflector fraction (§5.3 precedence) |
 | `absorbance` | Float, optional, [0,1] | fraction of the physical (non-mirror) remainder absorbed |
 | `roughness` | Float or String, optional | whole-body RMS nm, or a per-face map `'Face1=200:lcorr=5;Face2=50'` (§5.4) |
+| `diffuser` | String, optional | ground glass: `'grit:120'` \| `'slope:0.08'` \| `'@dg_600'`, whole-body or per-face map `'Face2=@dg_600'` (§5.4.1) — mutually exclusive with `roughness` on the same face |
 | `grating` | String, optional | a per-face map `'Face2=600:v:orders=-1..1'` or `'Face2=@registryname'` (§5.5) — must name specific faces, not the whole body |
 | `polarization` | String, optional | source-only: `'unpolarized'` (default) `'linear:<deg>'` `'circular:left|right'` `'elliptical:<psi>:<chi>'` (§5.2) |
 | `lambdamin`, `lambdamax` (nm, optional), `coherent` (bool, default False) | — | source-only, see §5.2 |
@@ -478,6 +479,44 @@ own (s,p) basis before applying per-polarization scattered amplitudes;
 legacy `macro` reuses the single nominal-angle (macroscopic specular)
 coefficient as a scalar average across the whole lobe, kept only for A/B
 comparison against the old behavior.
+
+### 5.4.1 Ground-glass diffusers
+
+The `diffuser` body property (same whole-body-or-per-face grammar as
+roughness; value grammar `common.parse_diffuser_value`) declares a
+ground-glass surface:
+
+```
+'grit:120'      catalog grit number (calibration below)
+'slope:0.08'    RMS microfacet slope directly (dimensionless)
+'@dg_600'       opticalproperties/diffuser/diffusers.miedif registry row
+'Face2=@dg_600' per-face map (put the ground surface on the EXIT face)
+```
+
+**Model: the deep-rough limit of §5.4's Beckmann machinery, not a new
+scatter path.** The slope resolves to an equivalent (σ = 20 µm,
+l_corr = √2·σ/m) roughness entry: σ ≫ λ drives the Davies/Bennett–Porteus
+specular retention to exactly 0.0 in float, so every ray scatters through
+Beckmann-sampled microfacets with the full `rough_fresnel=micro`
+treatment — per-microfacet Fresnel at the local angle, Jones rotation
+into each microfacet's own (s,p) basis, TIR suppression, grazing-NaN
+power folded into `absorbed_surface` by the exact difference, children
+flagged `scattered=True` (the coherent gather treats their pedestal as
+real intensity). Depolarization therefore EMERGES from the ensemble of
+rotated microfacet bases; there is no ad-hoc depolarizer.
+
+Grit calibration (`roughness.GRIT_FWHM_DEG`, log-log interpolated):
+approximate published DG-series transmitted FWHM at 633 nm
+(120→12°, 220→9°, 600→5°, 1500→2.5°) inverted through the small-angle
+model FWHM ≈ 2√(2 ln 2)·(n−1)·m_rms at n = 1.515. `test_diffuser.py`
+pins the traced spot width to this model within 15%.
+
+Honest limits: **single scatter** (one microfacet per interface event —
+no shadowing/masking, no multiple scattering, no subsurface transport),
+so depolarization is real but weak (measured: a slope-0.17 diffuser
+leaks ~4×10⁻⁶ of the incident power through a crossed polarizer, ~m³
+scaling); real ground glass depolarizes more. Declaring `diffuser` and
+`roughness` on the same face is a ContractError.
 
 ### 5.5 Gratings
 

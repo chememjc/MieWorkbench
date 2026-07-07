@@ -1035,6 +1035,21 @@ def extract_one(fcstd_path, outdir, strict):
                 else:
                     body_dict["roughness_nm"] = float(rv)
 
+            # diffuser: per-face map (or whole-body) of ground-glass specs
+            # 'grit:120' | 'slope:0.08' | '@dg_600' (common.
+            # parse_diffuser_value grammar; deep-rough scatter at trace).
+            diffuser_raw = str_prop_or_none(obj, "diffuser")
+            if diffuser_raw is not None:
+                try:
+                    dmap = parse_facemap_value_safe(
+                        diffuser_raw, obj.Name, tip_name)
+                    for fk, fv in dmap.items():
+                        common.parse_diffuser_value(fv)
+                except ValueError as e:
+                    die("%s: bad diffuser spec %r: %s"
+                        % (obj.Label, diffuser_raw, e))
+                body_dict["diffuser_faces"] = dmap
+
             # coating (schema v2): per-face map, {'__all__': name} for the
             # legacy "whole body, one coating" form.
             coating_raw = coating_value(obj)

@@ -24,9 +24,10 @@ FACEMAP_ALL = "__all__"     # matches common.FACEMAP_ALL (contract sentinel)
 class Body:
     __slots__ = ("index", "name", "label", "role", "material", "coating",
                  "mirror", "absorbance", "roughness_nm", "roughness_faces",
-                 "grating_map", "source", "detector", "closed", "face_ids",
-                 "polarizer", "polarizer_axis", "filter", "crystal_axis",
-                 "birefringent", "filter_lam_um", "filter_alpha_per_m")
+                 "diffuser_faces", "grating_map", "source", "detector",
+                 "closed", "face_ids", "polarizer", "polarizer_axis",
+                 "filter", "crystal_axis", "birefringent", "filter_lam_um",
+                 "filter_alpha_per_m")
 
     def __init__(self, index, rec):
         self.index = index
@@ -49,6 +50,7 @@ class Body:
         # mismatch — body-tagged roughness silently never reached the trace)
         self.roughness_nm = float(rec.get("roughness_nm") or 0.0)
         self.roughness_faces = rec.get("roughness_faces")   # dict or None
+        self.diffuser_faces = rec.get("diffuser_faces")     # dict or None
         self.grating_map = rec.get("grating")               # dict or None
         self.polarizer = rec.get("polarizer") or None
         pa = rec.get("polarizer_axis")
@@ -307,6 +309,50 @@ class Scene:
         for r in rough_specs:
             self.roughness[self._face_id_or_die(r["face"]["id"],
                                                 "roughness")] = r
+
+        # ---- ground-glass diffusers: the deep-rough limit of the same
+        # microfacet model. Each diffuser face resolves to an RMS slope
+        # (grit table / explicit / registry) and lands in self.roughness
+        # as a sigma>>lambda entry (specular retention exactly 0, every
+        # ray scattered through one Beckmann facet with full
+        # per-polarization Fresnel). A face carrying BOTH diffuser and
+        # roughness is a contract error, not a merge.
+        from .roughness import diffuser_equivalent, slope_for_grit
+        for body in self.bodies:
+            if not body.diffuser_faces:
+                continue
+            for face_name, value in body.diffuser_faces.items():
+                spec = _common.parse_diffuser_value(value)
+                if "registry" in spec:
+                    reg = (self.optprops.diffusers
+                           if self.optprops is not None else {})
+                    entry = reg.get(spec["registry"])
+                    if entry is None:
+                        raise ValueError(
+                            "body %s: unknown diffuser registry entry %r "
+                            "(opticalproperties/diffuser/diffusers.miedif)"
+                            % (body.label, spec["registry"]))
+                    slope = entry["slope_rms"]
+                elif "grit" in spec:
+                    slope = slope_for_grit(spec["grit"])
+                else:
+                    slope = spec["slope"]
+                sigma_nm, lcorr_um = diffuser_equivalent(slope)
+                if face_name == FACEMAP_ALL:
+                    fids = list(body.face_ids)
+                else:
+                    fids = [self._face_id_or_die(face_name, "diffuser")]
+                for fid in fids:
+                    if fid in self.roughness:
+                        raise ValueError(
+                            "body %s: face %s carries BOTH a diffuser and "
+                            "a roughness declaration — they are "
+                            "alternative models of one surface, pick one"
+                            % (body.label, self.faces[fid].id))
+                    self.roughness[fid] = {
+                        "face": {"id": self.faces[fid].id},
+                        "sigma_nm": sigma_nm, "lcorr_um": lcorr_um,
+                        "diffuser": True}
 
         # per-face coating map: {int fid: coating name}
         self.face_coatings = {}

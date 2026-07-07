@@ -296,6 +296,37 @@ def check_spec_syntax(v):
                 out.append(Finding(ERROR, "%s: bad %s spec: %s"
                                    % (b["label"], name, exc),
                                    body=b["name"], check="spec-syntax"))
+        draw = v.prop(b, "diffuser")
+        if draw is not None:
+            try:
+                dmap = v.facemap_values(b, "diffuser")
+                for value in dmap.values():
+                    spec = common.parse_diffuser_value(value)
+                    if "registry" in spec and v.optprops is not None:
+                        reg = getattr(v.optprops, "diffusers", {}) or {}
+                        if spec["registry"] not in reg:
+                            raise ValueError(
+                                "unknown diffuser registry entry %r"
+                                % spec["registry"])
+            except ValueError as exc:
+                out.append(Finding(ERROR, "%s: bad diffuser spec: %s"
+                                   % (b["label"], exc),
+                                   body=b["name"], check="spec-syntax"))
+            if v.prop(b, "roughness") is not None:
+                try:
+                    dmap = v.facemap_values(b, "diffuser")
+                    rmap = v.facemap_values(b, "roughness")
+                    clash = (common.FACEMAP_ALL in dmap
+                             or common.FACEMAP_ALL in rmap
+                             or set(dmap) & set(rmap))
+                except ValueError:
+                    clash = True   # unparseable maps already reported
+                if clash:
+                    out.append(Finding(
+                        ERROR, "%s: diffuser and roughness cover the same "
+                        "face(s) — they are alternative models of one "
+                        "surface, pick one per face" % b["label"],
+                        body=b["name"], check="spec-syntax"))
     return out
 
 

@@ -88,11 +88,12 @@ DEFAULT_OPTPROPS_ROOT = "/home3/raytracegui/opticalproperties"
 
 CONTRACT_PROPERTIES = (
     "material", "power", "lambdac", "lambdamin", "lambdamax", "coherent",
-    "polarization", "coating", "roughness", "filter", "polarizer",
-    "polarizer_axis", "crystal_axis", "grating", "surface_override",
-    "mirror", "absorbance",
+    "polarization", "coating", "roughness", "diffuser", "filter",
+    "polarizer", "polarizer_axis", "crystal_axis", "grating",
+    "surface_override", "mirror", "absorbance",
 )
-FACEMAP_PROPERTIES = ("coating", "roughness", "grating", "surface_override")
+FACEMAP_PROPERTIES = ("coating", "roughness", "diffuser", "grating",
+                      "surface_override")
 REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating", "grating")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
                       "absorbance")
@@ -152,6 +153,9 @@ TOOLTIPS = {
               "'FaceN=name;...'.",
     "roughness": "RMS roughness in nm (whole body), or a per-face map "
                 "'FaceN=sigma_nm[:lcorr=um];...'.",
+    "diffuser": "Ground-glass diffuser: 'grit:120' | 'slope:0.08' | "
+                "'@dg_600' (whole body or per-face map 'FaceN=...'); "
+                "mutually exclusive with roughness on the same face.",
     "filter": "filter/filters.csv registry name (bulk spectral absorber).",
     "polarizer": "polarizer/polarizers.csv registry name.",
     "polarizer_axis": "Body-local 'x,y,z' transmission axis (default "

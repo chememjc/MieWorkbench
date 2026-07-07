@@ -1,0 +1,5 @@
+name,grit,slope_rms,reference
+dg_120,120,,"approximate Thorlabs DG-series 120-grit ground glass diffusing angle (~12 deg FWHM at 633 nm); calibration in raytracer/roughness.py GRIT_FWHM_DEG"
+dg_220,220,,"approximate Thorlabs DG-series 220-grit ground glass diffusing angle (~9 deg FWHM at 633 nm); calibration in raytracer/roughness.py GRIT_FWHM_DEG"
+dg_600,600,,"approximate Thorlabs DG-series 600-grit ground glass diffusing angle (~5 deg FWHM at 633 nm); calibration in raytracer/roughness.py GRIT_FWHM_DEG"
+dg_1500,1500,,"approximate Thorlabs DG-series 1500-grit ground glass diffusing angle (~2.5 deg FWHM at 633 nm); calibration in raytracer/roughness.py GRIT_FWHM_DEG"

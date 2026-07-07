@@ -380,16 +380,54 @@ def _load_grating_table(path, ctx):
 # ---------------------------------------------------------------------------
 # one-call entry
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# diffuser/diffusers.miedif
+# ---------------------------------------------------------------------------
+def load_diffusers(csv_path=None):
+    """-> {name: {"slope_rms": float, "grit": int|None, "reference": str}}.
+
+    Ground-glass diffuser registry: each row gives EITHER a catalog grit
+    number (mapped to an RMS microfacet slope by roughness.slope_for_grit
+    at scene-build time) or an explicit slope_rms; if both are present
+    they must agree with the mapping to within 20% (a mislabeled row is a
+    data error worth failing loudly on)."""
+    from .roughness import slope_for_grit
+    csv_path = Path(csv_path) if csv_path is not None \
+        else DEFAULT_OPTPROPS_DIR / "diffuser" / "diffusers.miedif"
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "reference"}, "diffusers"):
+        grit_raw = (row.get("grit") or "").strip()
+        slope_raw = (row.get("slope_rms") or "").strip()
+        grit = int(grit_raw) if grit_raw else None
+        slope = float(slope_raw) if slope_raw else None
+        if grit is None and slope is None:
+            raise MaterialError("%s: needs grit or slope_rms" % ctx)
+        if slope is None:
+            slope = slope_for_grit(grit)
+        elif grit is not None:
+            expect = slope_for_grit(grit)
+            if abs(slope - expect) > 0.2 * expect:
+                raise MaterialError(
+                    "%s: slope_rms %.4g disagrees with grit %d "
+                    "(calibration gives %.4g)" % (ctx, slope, grit, expect))
+        if not 0.0 < slope < 1.0:
+            raise MaterialError("%s: slope_rms must be in (0, 1)" % ctx)
+        out[name] = {"slope_rms": slope, "grit": grit,
+                     "reference": row["reference"]}
+    return out
+
+
 class OpticalProperties:
     """Everything loaded from an opticalproperties/ root. Attributes:
     matdb (MaterialDB, with uniaxial attached), coatings, polarizers,
     filters, gratings, uniaxial — shapes per the load_* docstrings."""
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
-                 "gratings", "uniaxial")
+                 "gratings", "uniaxial", "diffusers")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
-                 uniaxial):
+                 uniaxial, diffusers=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -397,6 +435,7 @@ class OpticalProperties:
         self.filters = filters
         self.gratings = gratings
         self.uniaxial = uniaxial
+        self.diffusers = diffusers if diffusers is not None else {}
 
 
 def load_optical_properties(root=None, db=None):
@@ -428,7 +467,9 @@ def load_optical_properties(root=None, db=None):
                             root / "polarizer" / "polarizers.miepol"),
         filters=optional(load_filters, root / "filter" / "filters.miefilt"),
         gratings=optional(load_gratings, root / "grating" / "gratings.miegrat"),
-        uniaxial=uniaxial)
+        uniaxial=uniaxial,
+        diffusers=optional(load_diffusers,
+                           root / "diffuser" / "diffusers.miedif"))
 
 
 # ---------------------------------------------------------------------------
@@ -444,3 +485,4 @@ if __name__ == "__main__":
     print("  filters   : %d" % len(props.filters))
     print("  gratings  : %d" % len(props.gratings))
     print("  uniaxial  : %d" % len(props.uniaxial))
+    print("  diffusers : %d" % len(props.diffusers))

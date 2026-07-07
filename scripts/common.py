@@ -216,6 +216,37 @@ def parse_rough_value(value):
                              % (extra, value))
     return out
 
+def parse_diffuser_value(value):
+    """Ground-glass diffuser spec value grammar:
+        'grit:120'    catalog grit number (mapped to an RMS microfacet
+                      slope by raytracer.roughness.slope_for_grit)
+        'slope:0.08'  RMS microfacet slope directly (dimensionless)
+        '@dg_600'     opticalproperties diffuser-registry entry
+    -> {"grit": int} | {"slope": float} | {"registry": str}."""
+    value = str(value).strip()
+    if value.startswith("@"):
+        name = value[1:]
+        if not name:
+            raise ValueError("empty diffuser registry reference %r" % value)
+        return {"registry": name}
+    head, sep, rest = value.partition(":")
+    if not sep:
+        raise ValueError("bad diffuser value %r (expected grit:<G>, "
+                         "slope:<m>, or @registryname)" % value)
+    if head == "grit":
+        grit = int(rest)
+        if grit <= 0:
+            raise ValueError("diffuser grit must be > 0 in %r" % value)
+        return {"grit": grit}
+    if head == "slope":
+        slope = float(rest)
+        if not 0.0 < slope < 1.0:
+            raise ValueError("diffuser RMS slope must be in (0, 1) in %r"
+                             % value)
+        return {"slope": slope}
+    raise ValueError("unknown diffuser option %r in %r" % (head, value))
+
+
 def parse_rough_spec(spec):
     """'Body.Obj.FaceN:50[:lcorr=10]'  (sigma in nm, lcorr in um)"""
     spec = spec.strip()
@@ -534,6 +565,18 @@ def validate_model(model):
         if b.get("roughness_faces") is not None:
             _check_facemap(b["roughness_faces"], "roughness_faces", bctx,
                            value_check=parse_rough_value)
+        if b.get("diffuser_faces") is not None:
+            _check_facemap(b["diffuser_faces"], "diffuser_faces", bctx,
+                           value_check=parse_diffuser_value)
+            if b.get("roughness_faces") is not None:
+                overlap = set(b["diffuser_faces"]) \
+                    & set(b["roughness_faces"])
+                if overlap or FACEMAP_ALL in b["diffuser_faces"] \
+                        or FACEMAP_ALL in b["roughness_faces"]:
+                    raise ContractError(
+                        "%s: diffuser and roughness declared on the same "
+                        "face(s) — they are alternative models of one "
+                        "surface, pick one per face" % bctx)
         if b.get("grating") is not None:
             _check_facemap(b["grating"], "grating", bctx,
                            value_check=parse_grating_value)

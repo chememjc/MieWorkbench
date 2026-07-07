@@ -44,6 +44,55 @@ def slope_from_sigma_lcorr(sigma_m, lcorr_m):
     return np.sqrt(2.0) * sigma_m / lcorr_m
 
 
+# ---------------------------------------------------------------------------
+# Ground-glass diffusers: the DEEP-ROUGH limit of this same microfacet
+# model (sigma >> lambda so the specular retention A is exactly 0 in
+# float; every ray refracts/reflects through one Beckmann-sampled
+# microfacet with full per-polarization Fresnel + Jones rotation, so
+# depolarization emerges from the ensemble of rotated bases). A diffuser
+# is therefore parameterized by its RMS microfacet SLOPE alone; grit
+# numbers map to slopes via an approximate calibration against published
+# ground-glass diffusing angles (Thorlabs DG series, transmitted FWHM at
+# 633 nm through N-BK7, n ~ 1.515): small-angle refraction through a
+# tilted facet deflects by ~(n-1)*tilt, so FWHM ~ 2.355*(n-1)*m_rms.
+# ---------------------------------------------------------------------------
+DIFFUSER_SIGMA_NM = 20000.0     # 20 um RMS height: A = exp(-(4pi*sigma/lam)^2)
+                                # underflows to 0.0 for any optical lambda
+
+GRIT_FWHM_DEG = {               # approximate catalog diffusing angles
+    120: 12.0,
+    220: 9.0,
+    600: 5.0,
+    1500: 2.5,
+}
+
+
+def slope_for_grit(grit, n_design=1.515):
+    """RMS microfacet slope for a catalog grit number: FWHM(grit) from
+    the calibration table (log-log interpolated between entries, clamped
+    at the ends) inverted through FWHM = 2*sqrt(2*ln2)*(n-1)*m_rms."""
+    grit = float(grit)
+    gs = np.array(sorted(GRIT_FWHM_DEG), dtype=np.float64)
+    fw = np.array([GRIT_FWHM_DEG[int(g)] for g in gs])
+    lg = np.log(np.clip(grit, gs[0], gs[-1]))
+    fwhm_deg = float(np.exp(np.interp(lg, np.log(gs), np.log(fw))))
+    fwhm_rad = np.deg2rad(fwhm_deg)
+    return fwhm_rad / (2.0 * np.sqrt(2.0 * np.log(2.0))
+                       * (n_design - 1.0))
+
+
+def diffuser_equivalent(slope_rms):
+    """(sigma_nm, lcorr_um) whose slope_from_sigma_lcorr equals slope_rms
+    with sigma deep in the rough regime -- the roughness-map entry that
+    makes the standard scattering path behave as a pure diffuser."""
+    if not 0.0 < slope_rms < 1.0:
+        raise ValueError("diffuser RMS slope must be in (0, 1), got %r"
+                         % slope_rms)
+    sigma_m = DIFFUSER_SIGMA_NM * 1e-9
+    lcorr_m = np.sqrt(2.0) * sigma_m / slope_rms
+    return DIFFUSER_SIGMA_NM, lcorr_m * 1e6
+
+
 def _tangent_frame(n_hat):
     """Deterministic orthonormal in-plane frame (t1, t2) per row of n_hat.
 

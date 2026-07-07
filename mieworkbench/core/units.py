@@ -19,6 +19,7 @@ PROPERTY_UNITS = {
     "polarization": None,         # spec string
     "coating": None,              # registry name or per-face map
     "roughness": "nm RMS",
+    "diffuser": None,             # spec string (grit:/slope:/@registry)
     "filter": None,               # registry name
     "polarizer": None,            # registry name
     "polarizer_axis": "x,y,z",    # body-local axis triple
