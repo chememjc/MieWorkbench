@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+from PySide6.QtCore import Qt
+
 sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -96,6 +98,124 @@ def test_problems_pane_canned_scene(qtbot):
     assert "error" in pane.summary.text()
 
 
+def test_problems_pane_deep_check_clean_scene(qtbot, monkeypatch):
+    """Deep check on a clean scene appends an INFO Finding."""
+    pane = ProblemsPane()
+    qtbot.addWidget(pane)
+
+    class FakeProject:
+        structure = {"bodies": [
+            {"name": "Laser", "label": "Laser", "tip": "Pad",
+             "solid_closed": True, "placement": {"pos_mm": [0, 0, 0],
+                                                  "quat": [0, 0, 0, 1]},
+             "properties": {"power": {"type": "t", "group": "Base",
+                                     "value": 5.0},
+                           "lambdac": {"type": "t", "group": "Base",
+                                      "value": 633.0}}},
+            {"name": "Lens", "label": "Lens", "tip": "Pad",
+             "solid_closed": True, "placement": {"pos_mm": [0, 0, 0],
+                                                  "quat": [0, 0, 0, 1]},
+             "properties": {"material": {"type": "t", "group": "Base",
+                                        "value": "bk7"}}},
+            {"name": "Screen", "label": "Screen", "tip": "Pad",
+             "solid_closed": True, "placement": {"pos_mm": [0, 0, 0],
+                                                  "quat": [0, 0, 0, 1]},
+             "properties": {"material": {"type": "t", "group": "Base",
+                                        "value": "detector"}}}]}
+        doc = "fake_doc"
+        class FakeFc:
+            def request(self, op, kwargs):
+                # Simulate successful check with no problems
+                return {"invalid": [], "open_solids": [], "overlaps": [],
+                        "face_pairs_checked": 42}
+        fc = FakeFc()
+        def is_open(self):
+            return True
+    pane.project = FakeProject()
+    blocked = []
+    pane.validationChanged.connect(blocked.append)
+    findings = pane.run_checks(deep=True)
+    # Should have runtime estimate info + deep check passed info
+    info_findings = [f for f in findings if f.severity == "info"]
+    assert any("Deep check passed" in f.message for f in info_findings), \
+        [f.message for f in info_findings]
+    assert "Deep check:" in pane.summary.text()
+    # No errors
+    assert "0 error(s)" in pane.summary.text()
+
+
+def test_problems_pane_deep_check_worker_error(qtbot, monkeypatch):
+    """Deep check with worker exception surfaces the error text."""
+    pane = ProblemsPane()
+    qtbot.addWidget(pane)
+
+    class FakeProject:
+        structure = {"bodies": [
+            {"name": "Laser", "label": "Laser", "tip": "Pad",
+             "solid_closed": True, "placement": {"pos_mm": [0, 0, 0],
+                                                  "quat": [0, 0, 0, 1]},
+             "properties": {"power": {"type": "t", "group": "Base",
+                                     "value": 5.0},
+                           "lambdac": {"type": "t", "group": "Base",
+                                      "value": 633.0}}},
+            {"name": "Screen", "label": "Screen", "tip": "Pad",
+             "solid_closed": True, "placement": {"pos_mm": [0, 0, 0],
+                                                  "quat": [0, 0, 0, 1]},
+             "properties": {"material": {"type": "t", "group": "Base",
+                                        "value": "detector"}}}]}
+        doc = "fake_doc"
+        class FakeFc:
+            def request(self, op, kwargs):
+                raise RuntimeError("FreeCAD worker timeout: connection lost")
+        fc = FakeFc()
+        def is_open(self):
+            return True
+    pane.project = FakeProject()
+    findings = pane.run_checks(deep=True)
+    # Should have warning with the error text
+    warnings = [f for f in findings if f.severity == "warning"]
+    assert any("connection lost" in f.message for f in warnings), \
+        [f.message for f in warnings]
+    assert "Deep check:" in pane.summary.text()
+
+
+def test_problems_pane_deep_check_buttons_enabled_after(qtbot):
+    """Deep check re-enables both buttons after completion."""
+    pane = ProblemsPane()
+    qtbot.addWidget(pane)
+
+    class FakeProject:
+        structure = {"bodies": [
+            {"name": "Laser", "label": "Laser", "tip": "Pad",
+             "solid_closed": True, "placement": {"pos_mm": [0, 0, 0],
+                                                  "quat": [0, 0, 0, 1]},
+             "properties": {"power": {"type": "t", "group": "Base",
+                                     "value": 5.0},
+                           "lambdac": {"type": "t", "group": "Base",
+                                      "value": 633.0}}},
+            {"name": "Screen", "label": "Screen", "tip": "Pad",
+             "solid_closed": True, "placement": {"pos_mm": [0, 0, 0],
+                                                  "quat": [0, 0, 0, 1]},
+             "properties": {"material": {"type": "t", "group": "Base",
+                                        "value": "detector"}}}]}
+        doc = "fake_doc"
+        class FakeFc:
+            def request(self, op, kwargs):
+                return {"invalid": [], "open_solids": [], "overlaps": [],
+                        "face_pairs_checked": 0}
+        fc = FakeFc()
+        def is_open(self):
+            return True
+    pane.project = FakeProject()
+    # Both buttons should be enabled before check
+    assert pane.btn.isEnabled()
+    assert pane.deep.isEnabled()
+    pane.run_checks(deep=True)
+    # Both buttons should be re-enabled after check
+    assert pane.btn.isEnabled()
+    assert pane.deep.isEnabled()
+
+
 def test_paraview_find_and_viz_files(tmp_path):
     # sibling-of-pvpython discovery is machine-specific; just exercise
     # the no-files path
@@ -129,3 +249,128 @@ def test_reference_picker_specs(qtbot):
     p.kind.setCurrentIndex(3)     # com
     spec = p.spec()
     assert spec["kind"] == "com"
+
+
+def test_results_gallery_lightbox_click(qtbot, tmp_path):
+    """Test that clicking a thumbnail opens the lightbox dialog."""
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    case = make_fake_case(tmp_path)
+    pane.load_case(str(case))
+
+    # Get the images gallery
+    gallery = pane.galleries["images"]
+    assert gallery._paths  # ensure images were loaded
+
+    # Simulate clicking a thumbnail by calling the handler
+    first_path = gallery._paths[0]
+    gallery._thumbnail_clicked(first_path)
+
+    # Verify lightbox was created and shown
+    assert gallery._lightbox is not None
+    assert gallery._lightbox.isVisible()
+    assert os.path.basename(first_path) in gallery._lightbox.windowTitle()
+
+
+def test_results_gallery_lightbox_arrow_keys(qtbot, tmp_path):
+    """Test that arrow keys cycle through images in lightbox."""
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    case = make_fake_case(tmp_path)
+    # Create multiple test images (remove the one from make_fake_case first)
+    import shutil
+    shutil.rmtree(case / "images")
+    (case / "images").mkdir(parents=True)
+    png = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00"
+           b"\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\r"
+           b"IDATx\x9cc\xfc\xff\xff?\x00\x05\xfe\x02\xfe\xa75\x81\x84\x00"
+           b"\x00\x00\x00IEND\xaeB`\x82")
+    (case / "images" / "det_a.png").write_bytes(png)
+    (case / "images" / "det_b.png").write_bytes(png)
+    (case / "images" / "det_c.png").write_bytes(png)
+
+    pane.load_case(str(case))
+    gallery = pane.galleries["images"]
+    assert len(gallery._paths) == 3
+
+    # Open lightbox on first image
+    first_path = gallery._paths[0]
+    gallery._thumbnail_clicked(first_path)
+    lightbox = gallery._lightbox
+
+    # Initial index should be 0
+    assert lightbox.current_index == 0
+    initial_title = lightbox.windowTitle()
+
+    # Press Right arrow
+    from PySide6.QtGui import QKeyEvent
+    right_event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Right, Qt.NoModifier)
+    lightbox.keyPressEvent(right_event)
+    assert lightbox.current_index == 1
+    assert lightbox.windowTitle() != initial_title
+
+    # Press Right arrow again
+    lightbox.keyPressEvent(right_event)
+    assert lightbox.current_index == 2
+
+    # Press Right arrow (should wrap around)
+    lightbox.keyPressEvent(right_event)
+    assert lightbox.current_index == 0
+
+    # Press Left arrow
+    left_event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Left, Qt.NoModifier)
+    lightbox.keyPressEvent(left_event)
+    assert lightbox.current_index == 2
+
+
+def test_results_gallery_lightbox_esc_close(qtbot, tmp_path):
+    """Test that Esc key closes the lightbox."""
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    case = make_fake_case(tmp_path)
+    pane.load_case(str(case))
+
+    gallery = pane.galleries["images"]
+    first_path = gallery._paths[0]
+    gallery._thumbnail_clicked(first_path)
+    lightbox = gallery._lightbox
+
+    assert lightbox.isVisible()
+
+    # Simulate Esc key press
+    from PySide6.QtGui import QKeyEvent
+    esc_event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+    lightbox.keyPressEvent(esc_event)
+
+    assert not lightbox.isVisible()
+
+
+def test_results_gallery_lightbox_refresh_doesnt_crash(qtbot, tmp_path):
+    """Test that gallery refresh with open lightbox doesn't crash."""
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    case = make_fake_case(tmp_path)
+    pane.load_case(str(case))
+
+    gallery = pane.galleries["images"]
+    first_path = gallery._paths[0]
+    gallery._thumbnail_clicked(first_path)
+    lightbox = gallery._lightbox
+
+    assert lightbox.isVisible()
+
+    # Add more images and refresh
+    png = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00"
+           b"\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\r"
+           b"IDATx\x9cc\xfc\xff\xff?\x00\x05\xfe\x02\xfe\xa75\x81\x84\x00"
+           b"\x00\x00\x00IEND\xaeB`\x82")
+    (case / "images" / "det_extra.png").write_bytes(png)
+
+    # Refresh gallery
+    pane.refresh()
+
+    # Lightbox should still be visible and not crash
+    assert lightbox.isVisible()
+    # The lightbox should have updated its paths and clamped the index
+    assert len(lightbox.paths) == 2
+    assert lightbox.current_index < len(lightbox.paths)

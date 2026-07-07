@@ -16,7 +16,7 @@ import os
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+    QDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -32,6 +32,139 @@ from ..core import paraview_launcher
 _THUMB_W = 320
 
 
+class _ClickableLabel(QLabel):
+    """QLabel that calls a handler when clicked."""
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self._on_click = None
+
+    def set_click_handler(self, callback):
+        """Set callback to invoke on click; callback receives path."""
+        self._on_click = callback
+
+    def mousePressEvent(self, event):
+        if self._on_click:
+            self._on_click(self.path)
+        super().mousePressEvent(event)
+
+
+class _LightboxDialog(QDialog):
+    """Non-modal dialog for viewing gallery images full-size with arrow-key cycling."""
+
+    def __init__(self, paths, initial_index, parent=None):
+        super().__init__(parent)
+        self.paths = paths
+        self.current_index = max(0, min(initial_index, len(paths) - 1)) \
+            if paths else 0
+        self._original_pixmap = None
+
+        self.setWindowModality(Qt.NonModal)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+
+        layout = QVBoxLayout(self)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.scroll.setWidget(self.image_label)
+        layout.addWidget(self.scroll)
+        self.setLayout(layout)
+
+        self._load_image_at(self.current_index)
+        self._scale_to_fit()
+
+    def _load_image_at(self, index):
+        """Load and display image at the given index."""
+        if index < 0 or index >= len(self.paths):
+            return
+        self.current_index = index
+        path = self.paths[self.current_index]
+        pm = QPixmap(path)
+        self.setWindowTitle(os.path.basename(path))
+        if not pm.isNull():
+            self._original_pixmap = pm
+            # Scale if necessary
+            display_pm = self._scale_pixmap(pm)
+            self.image_label.setPixmap(display_pm)
+
+    def _scale_pixmap(self, pixmap):
+        """Scale pixmap to fit screen if larger than 85% of available space."""
+        if pixmap.isNull():
+            return pixmap
+
+        screen = self.screen()
+        if not screen:
+            return pixmap
+
+        geom = screen.availableGeometry()
+        max_width = int(geom.width() * 0.85)
+        max_height = int(geom.height() * 0.85)
+
+        w = pixmap.width()
+        h = pixmap.height()
+
+        if w > max_width or h > max_height:
+            scale = min(max_width / w, max_height / h)
+            scaled_pm = pixmap.scaledToWidth(
+                int(w * scale), Qt.SmoothTransformation)
+            return scaled_pm
+        return pixmap
+
+    def _scale_to_fit(self):
+        """Resize window to fit the displayed image."""
+        if not self._original_pixmap or self._original_pixmap.isNull():
+            return
+
+        screen = self.screen()
+        if not screen:
+            return
+
+        geom = screen.availableGeometry()
+        max_width = int(geom.width() * 0.85)
+        max_height = int(geom.height() * 0.85)
+
+        w = self._original_pixmap.width()
+        h = self._original_pixmap.height()
+
+        if w > max_width or h > max_height:
+            scale = min(max_width / w, max_height / h)
+            self.resize(int(w * scale) + 20, int(h * scale) + 20)
+        else:
+            self.resize(w + 20, h + 20)
+
+    def set_paths(self, paths):
+        """Update the list of paths (called when gallery refreshes)."""
+        old_path = self.paths[self.current_index] \
+            if self.paths else None
+        self.paths = paths
+
+        if not self.paths:
+            return
+
+        if old_path and old_path in self.paths:
+            self.current_index = self.paths.index(old_path)
+        else:
+            self.current_index = max(0, min(self.current_index,
+                                            len(self.paths) - 1))
+
+        self._load_image_at(self.current_index)
+
+    def keyPressEvent(self, event):
+        """Handle Esc, Left/Right arrow keys."""
+        if event.key() == Qt.Key_Escape:
+            self.close()
+        elif event.key() == Qt.Key_Left and self.paths:
+            next_index = (self.current_index - 1) % len(self.paths)
+            self._load_image_at(next_index)
+        elif event.key() == Qt.Key_Right and self.paths:
+            next_index = (self.current_index + 1) % len(self.paths)
+            self._load_image_at(next_index)
+        else:
+            super().keyPressEvent(event)
+
+
 class _Gallery(QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,6 +173,8 @@ class _Gallery(QScrollArea):
         self._grid = QGridLayout(self._host)
         self.setWidget(self._host)
         self._shown = {}
+        self._paths = []  # sorted list of current paths
+        self._lightbox = None  # reference to open lightbox dialog
 
     def show_images(self, paths):
         changed = False
@@ -56,9 +191,11 @@ class _Gallery(QScrollArea):
             if w is not None:
                 w.deleteLater()
         self._shown = {}
-        for i, path in enumerate(sorted(paths)):
+        self._paths = sorted(paths)
+        for i, path in enumerate(self._paths):
             box = QVBoxLayout()
-            label = QLabel()
+            label = _ClickableLabel(path)
+            label.set_click_handler(self._thumbnail_clicked)
             pm = QPixmap(path)
             if not pm.isNull():
                 label.setPixmap(pm.scaledToWidth(
@@ -73,6 +210,18 @@ class _Gallery(QScrollArea):
             self._grid.addWidget(cell, i // 3, i % 3)
             self._shown[path] = os.path.getmtime(path) \
                 if os.path.exists(path) else 0
+
+        # Update lightbox if it's open and visible
+        if self._lightbox is not None and self._lightbox.isVisible():
+            self._lightbox.set_paths(self._paths)
+
+    def _thumbnail_clicked(self, path):
+        """Open lightbox for the clicked image."""
+        if path not in self._paths:
+            return
+        index = self._paths.index(path)
+        self._lightbox = _LightboxDialog(self._paths, index, parent=self)
+        self._lightbox.show()
 
 
 class ResultsPane(QWidget):

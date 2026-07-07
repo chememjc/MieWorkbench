@@ -32,6 +32,7 @@ stays constructible -- and functional, short of an actual repaint -- in
 pytest's headless environment.
 """
 
+import math
 import os
 
 import numpy as np
@@ -42,6 +43,8 @@ import vtkmodules.qt
 vtkmodules.qt.PyQtImpl = "PySide6"
 
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+from vtkmodules.vtkCommonCore import vtkPoints
+from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
 from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkIOGeometry import vtkSTLReader
@@ -50,7 +53,8 @@ from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.vtkRenderingCore import (
-    vtkActor, vtkPolyDataMapper, vtkRenderer,
+    vtkActor, vtkActor2D, vtkCoordinate, vtkPolyDataMapper,
+    vtkPolyDataMapper2D, vtkRenderer, vtkTextActor,
 )
 # Registers the OpenGL2 factory overrides (mapper/actor GL implementations)
 # used by vtkRenderingCore classes above; import for side effects only.
@@ -127,6 +131,88 @@ def role_for_body(body):
     return "optic"
 
 
+# ---------------------------------------------------------------------------
+# scale bar -- pure math, no VTK objects touched, so the test suite can
+# exercise it offscreen with plain floats (see VtkSceneView._update_scale_bar
+# for the thin VTK-facing wrapper around these).
+# ---------------------------------------------------------------------------
+_NICE_MULTIPLIERS = (1.0, 2.0, 5.0)     # the 1-2-5 decade sequence
+_SCALEBAR_MARGIN_X = 0.03    # normalized-viewport gap from the right edge
+_SCALEBAR_Y = 0.06           # normalized-viewport height of the bar off the bottom
+_SCALEBAR_TICK_HALF = 0.01   # normalized-viewport half-height of the end ticks
+_SCALEBAR_LABEL_GAP = 0.025  # normalized-viewport gap between bar and label
+
+
+def px_per_metre_parallel(parallel_scale_m, viewport_height_px):
+    """Pixels-per-metre for an orthographic (parallel-projection) camera.
+    vtkCamera's ParallelScale is, by VTK convention, half the world-space
+    height visible in the viewport, so px/m = height_px / (2 * scale)."""
+    if parallel_scale_m <= 0 or viewport_height_px <= 0:
+        return 0.0
+    return viewport_height_px / (2.0 * parallel_scale_m)
+
+
+def px_per_metre_perspective(distance_m, view_angle_deg, viewport_height_px):
+    """Pixels-per-metre for a perspective camera: the world-space height
+    visible at the focal plane is 2 * distance * tan(view_angle / 2)
+    (similar triangles from the camera to the focal point)."""
+    if distance_m <= 0 or viewport_height_px <= 0:
+        return 0.0
+    half_angle_rad = math.radians(view_angle_deg) / 2.0
+    world_height_m = 2.0 * distance_m * math.tan(half_angle_rad)
+    if world_height_m <= 0:
+        return 0.0
+    return viewport_height_px / world_height_m
+
+
+def nice_bar_length(px_per_m, viewport_px, frac_lo=0.2, frac_hi=0.3):
+    """Snap the ideal bar length -- one that would occupy roughly the
+    midpoint of [frac_lo, frac_hi] of the viewport width -- to the nearest
+    1-2-5 decade sequence (1, 2, 5, 10, 20, 50, ... mm/um/m -- whatever
+    scale the metres happen to land in), returning the result in metres.
+    Falls back to the closest-to-band candidate if no exact 1-2-5 multiple
+    lands inside the band (can happen at extreme zoom). Returns 0.0 for a
+    degenerate camera/viewport (guards the log10 below)."""
+    if px_per_m <= 0 or viewport_px <= 0:
+        return 0.0
+    target_m = ((frac_lo + frac_hi) / 2.0) * viewport_px / px_per_m
+    if target_m <= 0:
+        return 0.0
+    exponent = int(math.floor(math.log10(target_m)))
+
+    best_length, best_gap = None, None
+    for e in (exponent - 1, exponent, exponent + 1):
+        for mult in _NICE_MULTIPLIERS:
+            length_m = mult * (10.0 ** e)
+            frac = length_m * px_per_m / viewport_px
+            if frac_lo <= frac <= frac_hi:
+                return length_m
+            gap = (frac_lo - frac) if frac < frac_lo else (frac - frac_hi)
+            if best_gap is None or gap < best_gap:
+                best_gap, best_length = gap, length_m
+    return best_length
+
+
+def _format_nice_number(value):
+    """Render a 1-2-5-sequence-derived number without float noise or a
+    pointless trailing ".0" -- 500.0000000001 -> "500", 0.5 -> "0.5"."""
+    rounded = round(value, 6)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return ("%.3f" % rounded).rstrip("0").rstrip(".")
+
+
+def format_bar_label(length_m):
+    """Physical length (metres, the scene's internal unit) -> a display
+    string in the GUI's mm convention, falling back to micrometres below
+    2.5 mm so small bars don't read as "0.5 mm" -- e.g. "500 µm",
+    "5 mm", "20 mm"."""
+    length_mm = length_m * 1e3
+    if length_mm < 2.5:
+        return "%s µm" % _format_nice_number(length_mm * 1e3)
+    return "%s mm" % _format_nice_number(length_mm)
+
+
 class VtkSceneView(QWidget):
     """A trackball-camera VTK render window with per-face actors grouped
     under per-body transforms, an orientation-axes overlay, and click-to-
@@ -159,6 +245,27 @@ class VtkSceneView(QWidget):
         if not is_offscreen():
             self._axes_widget.EnabledOn()
             self._axes_widget.InteractiveOff()
+
+        # scale bar (2D overlay, bottom-right, unobtrusive) -- the actors
+        # themselves touch the GPU no more than any other actor does (only
+        # Initialize()/Render() do real OpenGL work), but vtkTextActor logs
+        # a noisy "Failed getting the TextRenderer instance" the moment
+        # it's constructed under the offscreen platform plugin, so -- like
+        # the axes widget above -- the whole thing is built only when live;
+        # offscreen it just stays absent (see set_scale_bar_visible/
+        # _update_scale_bar, both no-ops when these are None).
+        self._scale_bar_visible = True
+        self._scalebar_points = None
+        self._scalebar_line_actor = None
+        self._scalebar_text_actor = None
+        if not is_offscreen():
+            self._build_scale_bar()
+            # Recompute on every render -- covers interactive camera moves
+            # (dolly/pan/rotate all end in a Render()) as well as the
+            # explicit fit_camera()/view_along()/load_bodies() call sites,
+            # with no need to hook each of those separately.
+            self.renderer.AddObserver("StartEvent", self._on_render_start)
+            self._update_scale_bar()
 
         # bookkeeping
         self._structure = None
@@ -313,6 +420,110 @@ class VtkSceneView(QWidget):
         camera.SetViewUp(*(0.0, 1.0, 0.0) if axis in ("+z", "-z")
                          else (0.0, 0.0, 1.0))
         self.renderer.ResetCameraClippingRange()
+        self._render()
+
+    # -- scale bar ------------------------------------------------------------
+    def _build_scale_bar(self):
+        """Create the (initially zero-length, repositioned on the first
+        _update_scale_bar()) scale-bar actors: a 2-point polyline for the
+        bar itself plus two short end ticks, all one polydata driven by a
+        Normalized-Viewport vtkCoordinate so its raw point coordinates are
+        plain 0..1 viewport fractions instead of pixels -- and a
+        vtkTextActor for the length label, positioned the same way."""
+        points = vtkPoints()
+        for _ in range(6):     # 0/1=bar ends, 2/3=left tick, 4/5=right tick
+            points.InsertNextPoint(0.0, 0.0, 0.0)
+        lines = vtkCellArray()
+        for a, b in ((0, 1), (2, 3), (4, 5)):
+            lines.InsertNextCell(2)
+            lines.InsertCellPoint(a)
+            lines.InsertCellPoint(b)
+        polydata = vtkPolyData()
+        polydata.SetPoints(points)
+        polydata.SetLines(lines)
+        self._scalebar_points = points
+
+        coord = vtkCoordinate()
+        coord.SetCoordinateSystemToNormalizedViewport()
+        mapper = vtkPolyDataMapper2D()
+        mapper.SetInputData(polydata)
+        mapper.SetTransformCoordinate(coord)
+
+        line_actor = vtkActor2D()
+        line_actor.SetMapper(mapper)
+        line_actor.GetProperty().SetColor(0.88, 0.88, 0.88)
+        line_actor.GetProperty().SetLineWidth(1.5)
+        self._scalebar_line_actor = line_actor
+        self.renderer.AddViewProp(line_actor)
+
+        text_actor = vtkTextActor()
+        text_actor.GetTextProperty().SetFontSize(12)
+        text_actor.GetTextProperty().SetColor(0.88, 0.88, 0.88)
+        text_actor.GetTextProperty().SetJustificationToCentered()
+        text_actor.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+        self._scalebar_text_actor = text_actor
+        self.renderer.AddViewProp(text_actor)
+
+    def _on_render_start(self, *_vtk_args):
+        # vtkObject observer callback signature is (caller, event_name);
+        # unused, but VTK always passes them.
+        self._update_scale_bar()
+
+    def _update_scale_bar(self):
+        """Recompute the bar's snapped length (nice_bar_length) and the
+        on-screen placement of its ticks/label from the current camera --
+        called on every render (see the StartEvent observer in __init__)
+        so it always fits regardless of what changed the camera."""
+        if self._scalebar_line_actor is None:
+            return
+        width_px, height_px = self.interactor.GetRenderWindow().GetSize()
+        if width_px <= 0 or height_px <= 0:
+            return
+
+        camera = self.renderer.GetActiveCamera()
+        if camera.GetParallelProjection():
+            ppm = px_per_metre_parallel(camera.GetParallelScale(), height_px)
+        else:
+            ppm = px_per_metre_perspective(
+                camera.GetDistance(), camera.GetViewAngle(), height_px)
+
+        length_m = nice_bar_length(ppm, width_px)
+        if length_m <= 0:
+            self._scalebar_line_actor.SetVisibility(False)
+            self._scalebar_text_actor.SetVisibility(False)
+            return
+
+        width_frac = length_m * ppm / width_px
+        right_x = 1.0 - _SCALEBAR_MARGIN_X
+        left_x = right_x - width_frac
+        centre_x = (left_x + right_x) / 2.0
+        y = _SCALEBAR_Y
+
+        points = self._scalebar_points
+        points.SetPoint(0, left_x, y, 0.0)
+        points.SetPoint(1, right_x, y, 0.0)
+        points.SetPoint(2, left_x, y - _SCALEBAR_TICK_HALF, 0.0)
+        points.SetPoint(3, left_x, y + _SCALEBAR_TICK_HALF, 0.0)
+        points.SetPoint(4, right_x, y - _SCALEBAR_TICK_HALF, 0.0)
+        points.SetPoint(5, right_x, y + _SCALEBAR_TICK_HALF, 0.0)
+        points.Modified()
+
+        self._scalebar_text_actor.SetInput(format_bar_label(length_m))
+        self._scalebar_text_actor.SetPosition(centre_x, y + _SCALEBAR_LABEL_GAP)
+
+        self._apply_scale_bar_visibility()
+
+    def _apply_scale_bar_visibility(self):
+        if self._scalebar_line_actor is None:
+            return
+        self._scalebar_line_actor.SetVisibility(self._scale_bar_visible)
+        self._scalebar_text_actor.SetVisibility(self._scale_bar_visible)
+
+    def set_scale_bar_visible(self, visible):
+        """Public toggle -- visible by default (see __init__). A no-op
+        offscreen, where the actors were never built."""
+        self._scale_bar_visible = bool(visible)
+        self._apply_scale_bar_visibility()
         self._render()
 
     # -- ray/result overlays --------------------------------------------------
