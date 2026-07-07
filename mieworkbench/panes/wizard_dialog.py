@@ -81,6 +81,8 @@ class ElementWizardDialog(QDialog):
         self._form = _FORM_FOR_PRIMITIVE.get(kind)
         if self._form is not None:
             lay.addWidget(self._build_designer())
+        if kind == "waveplate":
+            lay.addWidget(self._build_waveplate_designer())
 
         geom_box = QGroupBox("Geometry [mm/deg]")
         geom_lay = QVBoxLayout(geom_box)
@@ -168,6 +170,53 @@ class ElementWizardDialog(QDialog):
         self.design_out.setStyleSheet("color: gray;")
         g.addWidget(self.design_out, 1, 2, 1, 2)
         return box
+
+    # -- waveplate retardance designer -------------------------------------------
+    def _build_waveplate_designer(self):
+        box = QGroupBox("Design by retardance")
+        g = QGridLayout(box)
+        g.addWidget(QLabel("Type:"), 0, 0)
+        self.wp_kind = QComboBox()
+        self.wp_kind.addItem("half-wave (λ/2)", "half")
+        self.wp_kind.addItem("quarter-wave (λ/4)", "quarter")
+        self.wp_kind.setToolTip("Target retardance at the design "
+                                "wavelength")
+        g.addWidget(self.wp_kind, 0, 1)
+        g.addWidget(QLabel("λ [nm]:"), 0, 2)
+        self.wp_lambda = QLineEdit("633")
+        self.wp_lambda.setValidator(QDoubleValidator())
+        self.wp_lambda.setToolTip("Design wavelength")
+        g.addWidget(self.wp_lambda, 0, 3)
+        g.addWidget(QLabel("Order:"), 0, 4)
+        self.wp_order = QLineEdit("0")
+        self.wp_order.setToolTip("0 = true zero-order (thinnest); higher "
+                                 "orders add whole waves of retardance "
+                                 "(thicker, easier to make, more "
+                                 "wavelength-sensitive)")
+        g.addWidget(self.wp_order, 0, 5)
+        btn = QPushButton("Compute thickness")
+        btn.setToolTip("Solve the quartz plate thickness for this "
+                       "retardance at λ and fill the parameter table")
+        btn.clicked.connect(self._compute_waveplate)
+        g.addWidget(btn, 1, 0, 1, 2)
+        self.wp_out = QLabel("")
+        self.wp_out.setStyleSheet("color: gray;")
+        g.addWidget(self.wp_out, 1, 2, 1, 4)
+        return box
+
+    def _compute_waveplate(self):
+        try:
+            design = wizards.waveplate_thickness(
+                self.wp_kind.currentData(), float(self.wp_lambda.text()),
+                order=int(self.wp_order.text() or 0))
+        except Exception as exc:
+            self.wp_out.setText(str(exc))
+            return
+        self.table.set_value("thickness", design["thickness"])
+        self.wp_out.setText(
+            "thickness %.4f mm (%s, %.3g waves, Δn=%.5f)"
+            % (design["thickness"], design["crystal"], design["waves"],
+               design["delta_n"]))
 
     def _compute(self):
         try:

@@ -189,3 +189,26 @@ def test_waveplate_bad_kind_and_order_raise():
         wizards.waveplate_thickness("half", 633.0, order=-1)
     with pytest.raises(ValueError):
         wizards.waveplate_thickness("half", 633.0, order=0.5)
+
+
+def test_waveplate_designer_fills_thickness(qtbot):
+    """The waveplate wizard's retardance designer writes the solved
+    quartz thickness into the parameter table."""
+    import json
+    from mieworkbench.panes.wizard_dialog import ElementWizardDialog
+    repo = os.path.normpath(os.path.join(os.path.dirname(__file__),
+                                         "..", ".."))
+    meta_path = os.path.join(repo, "primitives", "waveplate.meta.json")
+    with open(meta_path) as fh:
+        info = json.load(fh)
+    info["path"] = os.path.join(repo, "primitives", "waveplate.FCStd")
+    dlg = ElementWizardDialog(info, "wp1")
+    qtbot.addWidget(dlg)
+    dlg.wp_lambda.setText("633")
+    dlg.wp_order.setText("0")
+    dlg.wp_kind.setCurrentIndex(0)      # half-wave
+    dlg._compute_waveplate()
+    from mieworkbench.core.wizards import waveplate_thickness
+    expected = waveplate_thickness("half", 633.0)["thickness"]
+    assert dlg.params()["thickness"] == pytest.approx(expected, rel=1e-4)
+    assert "mm" in dlg.wp_out.text()

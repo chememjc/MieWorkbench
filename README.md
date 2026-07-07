@@ -126,11 +126,13 @@ workspace directory.
 The `QMainWindow`'s central widget. Shows every body in the scene in one
 shared 3D view. Toolbar: **Fit** (reframe the whole scene), four
 axis-view buttons (**+X/−X/+Y/+Z**), and a **Rays** menu (show/hide the loaded ray
-overlay, reload, or launch **Live ray preview…**). Clicking a face resolves to
-`(body, face_id)`; clicking a different body always replaces the
-selection, plain vs. Ctrl-click within the same body follows the usual
-select/toggle convention. Standard VTK trackball-camera mouse controls
-(drag to rotate, scroll to zoom).
+overlay, reload, or launch **Live ray preview…**). This view selects **whole
+elements only**: clicking any face of a body highlights every face of
+that body and routes the selection to the Element Inspector and Element
+Properties panes — building up a multi-face selection is exclusively the
+Element Inspector's job (§3.3), so the two 3D views can't fight over what's
+picked. Clicking a different body always replaces the selection. Standard
+VTK trackball-camera mouse controls (drag to rotate, scroll to zoom).
 
 An adaptive **scale bar** (2D overlay) appears in the lower-left corner: 1-2-5-snapped
 to 20–30% of viewport width, labeled in mm and switching to µm below 2.5 mm,
@@ -147,8 +149,15 @@ legend widget.)
 **Ray displays**: a finished run auto-loads `viz/rays.vtp` as a 3D overlay.
 The **Rays** menu offers **show/hide**, **reload**, or **Live ray preview…**, which traces
 a small deterministic fan (center + top/bottom/left/right of each source's emit face,
-count adjustable) through the current scene without running a full simulation. Geometry
-edits grey the overlay as "stale" until a new run reloads it.
+count adjustable) through the current scene without running a full simulation. This
+includes divergent (spherical-cap) laser sources — the fan/rings pattern generates in
+the emit cap's rim plane and lifts onto the curved cap with per-point normal directions,
+so a diverging-laser scene previews correctly instead of silently producing zero rays —
+and scenes with no detector yet, where preview_rays injects a synthetic transparent
+far-field detector behind the scenes so the trace can still run. Simply **checking the
+Rays toggle** with nothing currently shown does something useful too: it loads the last
+run's `viz/rays.vtp` if a finished case is open, and otherwise offers the live preview
+directly. Geometry edits grey the overlay as "stale" until a new run reloads it.
 
 ### 3.2 Scene Elements outliner (`panes/outliner.py`)
 
@@ -192,10 +201,22 @@ sections:
   defaults to 5.0 mW, `lambdac` to 633 nm, registry properties to a
   well-known library entry) and show inline unit labels (e.g.,
   "power [mW]", "lambdac [nm]") for clarity.
-- **Per-face assignments** — assigns one of `coating` / `roughness` /
-  `grating` / `surface_override` onto the current face selection (these
-  four support per-face maps like `'Face3=MgF2;Face5=x'`); a table lists
-  every current per-face entry across all four properties.
+- **Faces** — a list with one row per face of the selected body (as of
+  B0b, this replaces face-picking as the primary way to build a face
+  selection: rows can be picked here directly, in sync with the Element
+  Inspector's 3D view, with no 3D clicking required at all). Rows that
+  already carry a `coating` / `roughness` / `grating` / `surface_override`
+  assignment (the four properties that support a per-face map like
+  `'Face3=MgF2;Face5=x'`) render **bold** with a `prop=value` summary; a
+  source or detector body's auto-detected working face (the same
+  closest-to-origin heuristic the extractor uses) is marked `(emit)` or
+  `(detector)`, with a tooltip explaining why. Below the list, a
+  property/value assignment row applies one of the four facemap
+  properties to every face currently selected. A hand-typed value is
+  checked against the contract grammar **and** the body's real face count
+  before it's committed — a bad or out-of-range `FaceN=` shows a visible
+  red warning instead of silently writing something the extractor would
+  later reject.
 - **Element parameters** — the parameter-sheet ("dim spreadsheet") editor:
   one row per aliased cell (`Alias` / `Value` / `Unit`), parsed from and
   recomposed back into the raw `"=<value> <unit>"` cell form. If the body
@@ -232,7 +253,8 @@ Dock **"Library"**, three tabs:
 - **Elements** — a tree of `primitives/*.FCStd`, grouped by category
   (Sources, Lenses, Mirrors, …). **Refresh** rescans the directory (drop a
   hand-authored `.FCStd` in and it appears); **Add to scene** (or
-  double-click) prompts for a label and adds it.
+  double-click) opens the **element wizard** on the selected primitive
+  (below) instead of just prompting for a label.
 - **Project library** / **System library** — summary tabs showing category titles
   with entry counts (e.g., "Coatings (14)", "Gratings (3)"); **double-click**
   a row opens the Property Library Editor at that category (CUSTOMIZE.md).
@@ -245,6 +267,183 @@ possibly-partial copy holding just the registry rows and table/nk files a
 given model actually uses, so a project directory (or a `.MieWB`) is
 self-contained and can be traced elsewhere with
 `--optical-properties <project>/opticalproperties`.
+
+### 3.6.1 The element wizard (`panes/element_wizard.py`, `panes/wizard_dialog.py`)
+
+`ElementWizardDialog` is how every primitive gets added or re-customized —
+it configures the whole element, not just its geometry:
+
+- A **geometry table** (Name / Value / Unit) prefilled from the
+  primitive's `dim`-sheet defaults, one row per parameter; the
+  `round_flag` convention (§3.6.2 below; CUSTOMIZE.md §3 for how it's
+  built) renders as a **"Circular shape" checkbox** instead of a bare 0/1
+  number, on every plate and source primitive that has one.
+- A **Device Properties** form below it, built from the primitive's baked
+  contract tags: **sources** expose `power` / `lambdac` / `coherent` /
+  `polarization` (+ `lambdamin`/`lambdamax` for broadband sources);
+  **detectors** expose `mirror` (reflectivity) and `absorbance`; **optics**
+  expose whatever registry-backed tags they bake in (`material`,
+  `coating`, `filter`, `polarizer`, `grating`, …) as combo boxes populated
+  from the live optical-property library, plus any plain float/bool/string
+  tags as ordinary editors.
+- Lens primitives that have a matching `LENS_FORMS` entry additionally get
+  a **"Design by focal length"** box (§6 of CUSTOMIZE.md).
+- A **Preview** button builds/rebuilds the element live in the 3D view
+  while the dialog stays open, so parameter and property changes can be
+  eyeballed before committing; **Cancel** rolls the preview back out via
+  the same undo macro used for a real add (nothing is left behind).
+- **Add element** (toolbar/menu, or the keyboard shortcut) opens a
+  **type-first** flow when nothing is selected in the Library: choose
+  *what* you want (Light source / Detector / Optical element / Generic
+  solid — each with an explanation), pick *which* primitive from the
+  filtered list, then **Configure…** opens the same wizard dialog above.
+- **Double-clicking an element in the Scene Elements outliner** reopens
+  this same wizard prefilled from the element's current parameter-sheet
+  values and body properties (`ElementWizardDialog.for_element`) — **Apply**
+  diffs the new values against the current ones and writes only what
+  changed, in one undo step. Hand-authored (non-primitive) bodies instead
+  fall back to focusing the Element Properties pane, since there's no
+  primitive spec to drive a wizard from.
+
+### 3.6.2 Primitive catalog (52 elements)
+
+Every entry below is one `primitives/*.FCStd` + `.meta.json` pair, built by
+`scripts/primitivelib.py`'s `PRIMITIVES` registry (CUSTOMIZE.md §§1–3).
+Dimensions are diameters/widths, never radii/half-sizes (§3.6.1); `round_flag`
+(present on every plate-like and source primitive) picks circular vs.
+rectangular. The Library's "Elements" tab groups them exactly by these
+category strings; the type-first Add flow's "Generic solid" role is a
+reserved slot in the chooser with no primitives in it yet.
+
+**Sources** — `laser_collimated` (diameter, length, round_flag: collimated
+beam off a flat +x end cap); `laser_divergent` (diameter, roc, length,
+round_flag: convex spherical emit cap so rays diverge from a virtual
+point — round form only, the rectangular form is a flat emitter and roc
+doesn't apply); `source_broadband` (diameter, length, round_flag:
+incoherent broadband disc/box emitter, set `lambdamin`/`lambdamax` in the
+properties).
+
+**Detectors** — `detector_plane` (width, thickness, round_flag: thin
+transparent screen, its −x face records irradiance).
+
+**Lenses** — `lens_pcx` plano-convex (R_front, ct, aperture);
+`lens_dcx` biconvex (R_front, R_back, ct, aperture); `lens_pcv`
+plano-concave (R_back, ct, aperture); `lens_dcv` biconcave (R_front,
+R_back, ct, aperture); `lens_meniscus` (R_front, R_back same sign, ct,
+aperture); `lens_ball` (diameter: full sphere); `lens_rod` (diameter,
+length: cylinder rod, axis z); `lens_cyl` (R signed, ct, aperture,
+height: line focus); `lens_asphere` (R, k conic constant, ct, aperture:
+revolved exact-sag BSpline + `surface_override`, extractor-verified
+<1 µm); `lens_fresnel` (aperture, f_design, n_design, n_facets, back:
+collapsed annular-facet plano-convex); `lens_achromat` (R_front, R_iface,
+R_back, ct_crown, ct_flint, gap, aperture: cemented crown+flint doublet,
+two bodies, 5 µm interface air gap); `axicon` (base_angle, aperture:
+conical front, turns a beam into a ring/Bessel zone).
+
+**Prisms & Mirrors** — `prism` equilateral dispersing prism (side, height,
+rotation); `mirror_flat` (width, thickness, round_flag: aluminum; combine
+with `mirror`/a coating for partial reflectors); `prism_right_angle`
+(leg, height: 45-45-90, hypotenuse TIRs the beam 90°); `prism_wedge`
+(diameter, thickness, wedge_deg: angular deviation, no reflection);
+`prism_dove` (aperture, length: image-rotation prism, TIRs once off the
+long face); `prism_penta` (aperture: 90° deviation regardless of prism
+orientation, no image reversal — the two reflecting faces don't satisfy
+TIR in bk7 so they carry a real Al mirror coating); `prism_rhomboid`
+(aperture, length: lateral beam displacement, direction/orientation
+preserved); `mirror_concave` (R, aperture, ct: front-surface spherical,
+converging, aluminum); `mirror_convex` (R, aperture, ct: front-surface
+spherical, diverging, aluminum); `mirror_d_shaped` (diameter, thickness,
+cut_offset: circular mirror with one flat edge for close beam-packing);
+`retro_corner_cube` (aperture: solid glass trihedral corner-cube, returns
+any incoming ray antiparallel to itself); `anamorphic_pair` (wedge_deg,
+aperture, separation: two bodies, magnifies the beam in y only, net
+deviation cancels); `mirror_parabolic` (rfl, aperture, thickness:
+front-surface, exact on-axis paraxial and geometric focus — see the note
+below).
+
+**Plates & Filters** — `window` plane-parallel plate (width, thickness,
+round_flag); `filter_plate` bulk spectral filter (width, thickness,
+round_flag, default filter `bp_550_40`); `grating_plate` (width,
+thickness, round_flag, front-face grating spec, default 600 l/mm
+vertical); `window_wedged` (width, thickness, wedge_deg, round_flag:
+tilted back face kills etalon fringes).
+
+**Polarization** — `polarizer_plate` (width, thickness, round_flag,
+polarizer registry row + `polarizer_axis`); `waveplate` quartz retarder
+(width, thickness — sets retardance, round_flag, `crystal_axis`);
+`pbs_cube` (cube, height, gap: two 45° prisms, coated hypotenuse, two
+bodies); `polarizer_glan_taylor` (aperture, length, gap, cut_angle: two
+calcite prisms — the o-ray TIRs at the internal air gap and is rejected
+sideways while the e-ray transmits straight through, extinction via TIR
+not absorption).
+
+**Beamsplitters** — `bs_plate` non-polarizing 50:50 (width, thickness,
+round_flag, wedge_deg; front face default `bs_5050_vis_45`); `pbs_plate`
+polarizing (width, thickness, round_flag; front face `pbs_visible_45`);
+`dichroic_plate` (width, thickness, round_flag; default
+`dichroic_567lp_45`, swappable to `hot_mirror_45`/`cold_mirror_45`);
+`pellicle` (diameter, membrane_thickness; ultra-thin membrane, front face
+default `pellicle_4555_45`, swappable to `pellicle_uncoated_45`);
+`bs_cube` (cube, height, gap: two bodies, 5 µm cemented-interface air
+gap, hypotenuse coated `bs_5050_vis_45` by default).
+
+**Filters** — `nd_filter` absorptive (width, thickness, round_flag,
+default filter `nd_od10`); `nd_reflective` metallic (width, thickness,
+round_flag; front face default coating `nd_refl_od10`); `filter_bandpass`
+(default `bp_550_40`, CWL 550 nm/FWHM 40 nm); `filter_longpass` (default
+`longpass_600`, cut-on 600 nm); `filter_shortpass` (default
+`shortpass_600`, cut-off 600 nm); `filter_notch` (default `notch_633_25`,
+OD4 notch at 633 nm, 25 nm FWHM).
+
+**Diffusers** — `diffuser_plate` (width, thickness, round_flag; exit face
+carries the ground-surface scatter, default `@dg_600`) — see §3.6.3 below.
+
+**Apertures** — `iris` circular stop (outer_diameter, thickness,
+hole_diameter, blackness: opaque annular disc + a `material=air` plug
+filling the opening); `pinhole` (width, height, thickness, hole_diameter,
+blackness: small circular pinhole in a blackened rectangular plate + air
+plug); `slit` (width, height, thickness, slit_width, slit_height,
+blackness: rectangular slit opening + air plug). All three follow the
+air-filler aperture contract (docs/RAYTRACER.md §5.10); `blackness` drives
+the plate/disc's `absorbance` property directly through the
+`derived_props` mechanism (CUSTOMIZE.md §1) — it is re-derived on every
+rebuild, so editing `absorbance` by hand would just be overwritten.
+
+**Swapping registry variants without changing geometry**: many of the
+plate primitives above default to one row of a larger registry family and
+can be pointed at a sibling row purely through the Element Properties or
+wizard Device Properties dropdown — no geometry rebuild needed. Beamsplitter
+ratio: any `bs_XXYY_vis_45` row (`bs_1090`/`3070`/`4060`/`5050`/`6040`/
+`7030`/`9010_vis_45`) on `bs_plate`/`bs_cube`'s `coating` property.
+Neutral density: any `nd_odXX` row on `nd_filter`'s `filter` property, or
+`nd_refl_odXX` on `nd_reflective`'s `coating`. Diffuser grit: any `@dg_120`/
+`@dg_220`/`@dg_600`/`@dg_1500` reference on `diffuser_plate`'s `diffuser`
+property (coarser number → finer grit → narrower scatter angle).
+
+**`mirror_parabolic` note**: this is an **on-axis** parabolic mirror only
+(conic k=−1, R=2×rfl) — exact paraxial *and* geometric on-axis focus, using
+the same revolved exact-sag-BSpline + verified `surface_override` technique
+as `lens_asphere`. An **off-axis** parabola (OAP) is not supported: the
+extractor's asphere vertex locator requires the retained face to include
+the r≈0 vertex, which a 90°-off-axis segment structurally never does — this
+is a limitation of the surface-verification step, not the physics, and is
+documented in the primitive's own tooltip.
+
+### 3.6.3 Diffusers (B6)
+
+`diffuser_plate` (and the `diffuser` body property in general — any
+primitive's face can carry one) declares a ground-glass scattering
+surface with grammar `'grit:120'` | `'slope:0.08'` | `'@dg_600'`, whole-body
+or per-face (`'Face2=@dg_600'`); the registry (`opticalproperties/diffuser/
+diffusers.miedif`) ships `dg_120`/`dg_220`/`dg_600`/`dg_1500` rows
+(coarser grit number → finer surface → narrower scatter cone). By
+convention the ground surface goes on the **exit** face of a plate (the
+shipped `diffuser_plate` puts it on the back/+x face). `diffuser` and
+`roughness` are **mutually exclusive on the same face** — declaring both
+is a validation error, both in the GUI's pre-run checks and in the engine's
+own scene build. The physics (deep-rough Beckmann limit, grit→slope
+calibration, honest single-scatter limits) is documented in
+docs/RAYTRACER.md §5.4.1.
 
 ### 3.7 Console, stage chips, progress (bottom dock, `panes/console.py`)
 
@@ -439,11 +638,13 @@ on a missing one.
 | `filter/filters.miefilt` (+ `filter/tables/*.mietab`) | bulk spectral filters (Beer-Lambert) | registry: `name,table_csv,ref_thickness_mm,reference`; table: `wavelength_nm,transmittance_internal` |
 | `grating/gratings.miegrat` (+ `grating/tables/*.mietab`) | lamellar/Kogelnik/Dammann/table registry | registry: `name,model,lines_per_mm,params,table_csv,reference`; table: `wavelength_nm,order,eta_s,eta_p` |
 | `birefringence/uniaxial.miebrf` | calcite/quartz/sapphire o/e crystal pairs | `name,n_o_material,n_e_material,reference` (+`notes`) |
+| `diffuser/diffusers.miedif` | ground-glass diffuser grit registry (no `tables/`) | `name,grit,slope_rms,reference` (exactly one of `grit`/`slope_rms` per row) |
 
 Full schema semantics, the citation policy, and the physics each category
 feeds into are in docs/RAYTRACER.md §7. Loader: `scripts/raytracer/optprops.py`
-(polarizer/filter/grating/birefringence) and `scripts/raytracer/materials.py`
-(materials/coatings). See [CUSTOMIZE.md](CUSTOMIZE.md) for adding entries.
+(polarizer/filter/grating/birefringence/diffuser) and
+`scripts/raytracer/materials.py` (materials/coatings). See
+[CUSTOMIZE.md](CUSTOMIZE.md) for adding entries.
 
 ---
 

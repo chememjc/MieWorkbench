@@ -146,6 +146,51 @@ parameters to avoid the collision: use `R_front`/`R_back` rather than
 convention — note `lens_dcx`'s *tooltip* says "R1 front, -R2 back" as
 prose shorthand, but its actual parameter aliases are `R_front`/`R_back`).
 
+**Plate-like primitives reuse two shared builders instead of one-off
+geometry code.** `_build_plate(doc, group, width_mm, thickness_mm,
+round_flag, name=None)` builds a round (cylinder) or rectangular (box) pad
+of diameter/edge-length `width_mm` and `thickness_mm`, front (−x) face at
+x=0 — every plain plate primitive (`window`, `mirror_flat`,
+`polarizer_plate`, `waveplate`, `filter_plate`, `grating_plate`,
+`detector_plane`, `nd_filter`, `filter_bandpass`/`longpass`/`shortpass`/
+`notch`, `diffuser_plate` before its face-property is applied, …) is
+literally this function via the `_plate_from_params(doc, group, p)`
+adapter, which just reads `p["width"]`/`p["thickness"]`/
+`p.get("round_flag", 0)` off the primitive's own params dict.
+`_build_wedge_plate(doc, group, width_mm, thickness_mm, wedge_deg,
+round_flag, name=None)` builds the same shape but with the back face
+tilted by `wedge_deg` (thickness increases toward +y; `wedge_deg == 0`
+degenerates to a plain `_build_plate` call) — used by `window_wedged`,
+`bs_plate`, `prism_wedge`, and shares its tilted-back-face technique with
+`anamorphic_pair`'s hand-rolled 2-D profile. The **round_flag convention**
+(`P(1|0, "", "1 = circular, 0 = rectangular")` in `params`, read via
+`p.get("round_flag", <default>)` in the builder) is what the wizard's
+`ParamTableWidget` (`mieworkbench/panes/element_wizard.py`) renders as a
+"Circular shape" checkbox instead of a bare 0/1 number — add a
+`round_flag` param to any new plate-like or source primitive to get that
+checkbox for free. Follow the existing **width-as-diameter/edge-length**
+wording in every `round_flag` primitive's `width`/`diameter` help text
+(the v2 rename retired `radius`/`half-size` params in favor of full
+diameters and widths — see `LEGACY_ALIASES` in `primitivelib.py` for how
+old saved scenes built with the old params keep rebuilding).
+
+For a plate primitive that needs a per-face property set on a
+dynamically-located face (a coating on the front cap, a diffuser on the
+back cap, …) rather than a whole-body prop, `_plate_with_face_prop(doc,
+group, width_mm, thickness_mm, round_flag, prop_name, front_value=None,
+back_value=None, name=None)` builds a plain `_build_plate` and then
+locates the front (−x) and/or back (+x) face with
+`_find_face_by_signed_normal` (sign-sensitive — the plain
+`mts._find_face_by_normal` helper scores by `abs(dot)` and can't tell a
+plate's front cap from its back cap, since both are exactly antiparallel
+to the x-axis) before writing `"Face%d=%s" % (face_index, value)` into
+`prop_name`. `pbs_plate`, `dichroic_plate`, `nd_reflective`, and
+`diffuser_plate` (§5.4.1 of docs/RAYTRACER.md) are all one-line callers of
+this helper; a new plate primitive that needs a coating/diffuser only on
+one specific face should do the same instead of hardcoding a `FaceN=`
+literal that would silently drift if `new_body_pad`'s face numbering ever
+changed.
+
 Once your entry and builder are in place, regenerate the library:
 
 ```bash
@@ -158,6 +203,47 @@ This writes both `primitives/<kind>.FCStd` (via `doc.saveAs`) and
 `tooltip`/`params`/`props` — minus the non-serializable `meridian` lambda,
 if present), after a recompute sanity check that hard-fails if any object
 came out `Invalid`/`Error`.
+
+### 3.1 `derived_props`: syncing a sheet param to a body property across rebuilds
+
+Some primitives compute a *contract* property (a real Base-group tag the
+engine reads, like `absorbance`) directly from a *geometry* parameter on
+the `dim` sheet, rather than exposing both separately. The `iris`,
+`pinhole`, and `slit` apertures are the shipped example: their
+`blackness` param (0.95–1.0, "fraction of incident power absorbed") is
+turned into the disc/plate body's `absorbance` property by the builder
+(`_build_iris`/`_build_pinhole`/`_build_slit` pass `"absorbance":
+p["blackness"]` straight into `mts.pad_body`'s `props=`), so editing
+`blackness` in the Element Properties pane and rebuilding changes
+`absorbance` too, with no separate edit.
+
+The wrinkle is `rebuild_element()`'s normal user-customization
+preservation: on every rebuild it snapshots each old body's extra
+`App::Property*` values (beyond `miewb_primitive`/`miewb_group`) and
+restores them onto the freshly-built replacement, so hand-added tags and
+edits made outside the sheet survive a topology-changing rebuild. Without
+an escape hatch, that snapshot would restore the **old** `absorbance`
+value onto the new body — overwriting the value the builder just
+recomputed from the current `blackness`, and silently freezing
+`absorbance` at whatever it happened to be the first time.
+
+A primitive spec declares which of its properties are derived-from-sheet,
+not preserve-across-rebuild, via a `"derived_props"` tuple:
+
+```python
+"iris": {
+    ...
+    "derived_props": ("absorbance",),
+},
+```
+
+`rebuild_element()` unions `derived_props` into its `baseline` exclusion
+set alongside `miewb_primitive`/`miewb_group`, so a listed property is
+*never* included in the "extra props to restore" snapshot — the builder's
+freshly-computed value always wins instead. Use this whenever a new
+primitive derives a real contract property from one of its own `dim`-sheet
+params: add the property name to `derived_props` so a rebuild can't
+resurrect a stale value.
 
 ---
 
@@ -201,9 +287,64 @@ categories whose entries reference tabulated spectral data, a
 plain CSV under self-describing extensions — see README.md §4.4 for the
 exact required-column table per category, and docs/RAYTRACER.md §7 for
 full physical-model semantics of each column. Loaders:
-`scripts/raytracer/optprops.py` (polarizer/filter/grating/birefringence)
-and `scripts/raytracer/materials.py` (materials/coatings, since those two
-predate the others and have their own loader path).
+`scripts/raytracer/optprops.py` (polarizer/filter/grating/birefringence,
+plus diffusers as of B6) and `scripts/raytracer/materials.py`
+(materials/coatings, since those two predate the others and have their
+own loader path).
+
+The newest category, `diffuser/diffusers.miedif`, has no `tables/`
+subdirectory — its rows are flat, `name,grit,slope_rms,reference`. Each
+row supplies **either** `grit` (a catalog grit number, e.g. `120`) **or**
+`slope_rms` (an RMS microfacet slope given directly), never both; the
+shipped rows (`dg_120`, `dg_220`, `dg_600`, `dg_1500`) all use `grit`. As
+with every other category, `reference` is mandatory (§5.2) — see
+`opticalproperties/diffuser/diffusers.miedif` for the shipped rows and
+`raytracer/roughness.py`'s `GRIT_FWHM_DEG` for the grit→scatter-angle
+calibration that consumes them (docs/RAYTRACER.md §5.4.1).
+
+#### 5.1.1 The registry-row generator (`scripts/tools/gen_registry_rows.py`)
+
+Some registry families are large enough (a whole beamsplitter-ratio
+ladder, a run of ND densities) that hand-typing each row invites
+transcription drift between siblings. `scripts/tools/gen_registry_rows.py`
+(stdlib-only, run from anywhere as `python3 scripts/tools/gen_registry_rows.py`)
+generates and **idempotently upserts** several such families by deriving
+every row from either a shipped source table or a closed-form formula, so
+re-running it produces byte-identical output (`git diff` stays empty on a
+repeat run) — it's meant to be safe to re-run after touching its source
+tables, not a one-shot migration script:
+
+- **BS ratio family** (`coating/coatings.miecoat` + per-row
+  `coating/tables/bs_XXYY_vis_45.mietab`): `bs_3070`/`4060`/`6040`/`7030`/
+  `9010`/`1090_vis_45`, each derived from the shipped `bs_5050_vis_45`
+  table by rescaling its average R/T to the target ratio while keeping
+  `Rs+Ts == Rp+Tp` equal to the source's per-wavelength total insertion
+  loss, and scaling its s/p asymmetry by `4*rR*rT` so every channel stays
+  in `[0,1]` even at extreme ratios (`gen_bs_ratio_family()`).
+- **Pellicle rows** (`pellicle_4555_45`, `pellicle_uncoated_45`): flat
+  R/T across the same wavelength grid as `bs_5050_vis_45`
+  (`gen_pellicle_rows()`).
+- **Reflective ND** (`coating/tables/nd_refl_od03..30.mietab`, 0° AOI,
+  400–1100 nm): `T=10^-OD`, metallic absorption `A=0.25*(1-T)`, `R=1-T-A`
+  (`gen_nd_refl_rows()`).
+- **Absorptive ND filters** (`filter/filters.miefilt` +
+  `filter/tables/nd_od01..40.mietab`): flat Beer-Lambert
+  `T=10^-OD` at a 2 mm reference thickness (`gen_nd_filter_rows()`).
+- **`shortpass_600`**: an exact mirror of the shipped `longpass_600`
+  table about 600 nm (`gen_shortpass_row()`).
+- **`notch_633_25`**: a synthetic OD4, 25 nm-FWHM Gaussian rejection
+  notch centered at 633 nm, using the same Gaussian-FWHM parametrization
+  `bp_550_40` uses for its passband, inverted into a notch
+  (`gen_notch_row()`).
+
+Every generated row's `reference` column names the generator and the
+formula/basis used (`GEN_TAG = "generated by scripts/tools/gen_registry_rows.py"`),
+so a generated row is never mistaken for a digitized vendor curve. Adding
+a new generated family means writing one `gen_*()` function returning
+`(rows, changed_table_filenames)` and wiring it into `main()`'s generator
+list — `upsert_registry()`/`write_table()` handle the idempotent CSV
+read-modify-write for you (matching the shipped CRLF line endings and
+`csv.QUOTE_MINIMAL` quoting so untouched rows round-trip byte-for-byte).
 
 ### 5.2 Citation policy
 
@@ -301,3 +442,43 @@ parameters that differ from the primitive's shipped defaults, via
 followed by `project.rebuild_primitive(label)` to regenerate the actual
 FreeCAD geometry from the new `dim`-sheet values — the same rebuild-on-
 edit path described in §1.
+
+### 6.1 Waveplate thickness solver
+
+`core/wizards.py` also ships a standalone solver for the other inverse
+problem a retarder primitive poses — target retardance → thickness —
+alongside the lens-focal-length solvers above:
+
+```python
+waveplate_thickness(kind, lambda_nm, order=0, matdb=None, crystal="quartz")
+```
+
+`kind` is `"half"` (0.5-wave retardance) or `"quarter"` (0.25-wave);
+`order` is the non-negative integer number of extra whole waves (a
+first-order half-wave plate, `order=1`, retards 1.5 waves total). It looks
+up the crystal's ordinary/extraordinary indices at `lambda_nm` from the
+**same** birefringence registry the ray tracer itself uses
+(`raytracer.optprops.load_optical_properties(...).matdb.get_uniaxial`,
+lazily loaded and cached if no `matdb` is passed in, so
+`waveplate_thickness("half", 633.0)` works standalone with no setup), then
+solves `thickness_mm = (order + retardance_waves) * lambda_nm * 1e-6 /
+|n_e - n_o|` — evaluating `|n_e - n_o|` **at** `lambda_nm` rather than a
+fixed d-line constant, so a design at a non-visible wavelength stays exact
+despite quartz's (weak) birefringence dispersion. It returns a dict
+(`thickness`, `waves`, `n_o`, `n_e`, `delta_n`, plus the inputs echoed
+back) so a caller can show the solved thickness alongside the indices that
+produced it, the same way the lens designer's "Compute radii" shows
+EFL/BFL. This maps directly onto the `waveplate` primitive's own
+`thickness` dim-sheet alias (§2/§3): feed the result's `thickness` through
+`project.set_spreadsheet("dim_<label>", "thickness", "=<value> mm")` +
+`project.rebuild_primitive(label)`, exactly like the lens forms' `map()`
+output.
+
+Unlike the lens forms, this solver is **not yet wired to a dedicated box
+in `ElementWizardDialog`** the way `design_lens` drives "Design by focal
+length" — there is no `waveplate` entry in `LENS_FORMS`/`_FORM_FOR_PRIMITIVE`
+(§6 above) triggering a "Design by retardance" section. It is fully
+implemented and tested (`mieworkbench/tests/test_wizards.py`) and callable
+directly, so it's ready to back such a box (or a scripted preset table of
+common half-/quarter-wave designs) the same way `design_lens` backs the
+lens forms — that GUI wiring is future work, not present behavior.
