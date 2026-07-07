@@ -1,5 +1,7 @@
 # FreeCAD → Coherent Monte-Carlo Ray Tracer → Detector Images / 3D Viz
 
+> This is the optical-engine reference. For the MieWorkbench GUI and project-level docs see the top-level [README.md](../README.md).
+
 > Numbers marked "measured" come from real completed runs in this repo's
 > `results/` tree (see §11/§12). Numbers marked "estimate" come from
 > `common.estimate()` / `case.json["estimates"]` — a self-calibrating linear
