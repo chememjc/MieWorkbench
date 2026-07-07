@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.normpath(
 from mieworkbench.panes.inspector3d import InspectorPane  # noqa: E402
 from mieworkbench.tests.vtk_test_support import (  # noqa: E402
     FakeProject, make_lens_two_faces_scene, make_two_body_scene,
+    write_simple_vtp,
 )
 
 
@@ -120,3 +121,89 @@ def test_bodies_moved_for_shown_body_updates_transform(qtbot, tmp_path):
         {"Lens": {"pos_mm": [5.0, 0.0, 0.0], "quat": [0, 0, 0, 1]}})
     m = pane.view._body_transforms["Lens"].GetMatrix()
     assert m.GetElement(0, 3) == 0.005
+
+
+# -- rays overlay ---------------------------------------------------------
+def test_rays_button_toggle_requests_a_preview_when_nothing_is_loaded(
+        qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = InspectorPane()
+    qtbot.addWidget(pane)
+    pane.set_body(project, "Lens")
+
+    requests = []
+    pane.raysPreviewRequested.connect(lambda: requests.append(1))
+
+    pane.rays_button.setChecked(True)
+    assert requests == [1]
+    assert pane.view._rays_actor is None    # nothing was actually loaded
+
+
+def test_load_rays_vtp_shows_overlay_and_checks_the_button(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = InspectorPane()
+    qtbot.addWidget(pane)
+    pane.set_body(project, "Lens")
+
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True)
+    pane.load_rays_vtp(path)
+
+    assert pane.view._rays_actor is not None
+    assert pane.rays_button.isChecked()
+    assert pane.view._rays_actor.GetVisibility() == 1
+
+
+def test_clear_rays_hides_overlay_and_unchecks_button(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = InspectorPane()
+    qtbot.addWidget(pane)
+    pane.set_body(project, "Lens")
+
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True)
+    pane.load_rays_vtp(path)
+
+    pane.clear_rays()
+    assert pane.view._rays_actor is None
+    assert not pane.rays_button.isChecked()
+
+
+def test_unchecking_rays_button_just_hides_the_loaded_overlay(
+        qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = InspectorPane()
+    qtbot.addWidget(pane)
+    pane.set_body(project, "Lens")
+
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True)
+    pane.load_rays_vtp(path)
+
+    pane.rays_button.setChecked(False)
+    assert pane.view._rays_actor is not None       # still loaded
+    assert pane.view._rays_actor.GetVisibility() == 0
+
+    pane.rays_button.setChecked(True)
+    assert pane.view._rays_actor.GetVisibility() == 1
+
+
+def test_switching_body_clears_the_rays_overlay(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = InspectorPane()
+    qtbot.addWidget(pane)
+    pane.set_body(project, "Lens")
+
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True)
+    pane.load_rays_vtp(path)
+    assert pane.view._rays_actor is not None
+
+    pane.set_body(project, "Screen")
+    assert pane.view._rays_actor is None
+    assert not pane.rays_button.isChecked()

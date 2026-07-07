@@ -34,6 +34,9 @@ class Scene3DPane(QWidget):
         self._selected_faces = set()
         self._rays_path = None
         self._rays_visible = True
+        self._rays_stale = False
+        self._rays_tooltip = (
+            "Show/hide the loaded ray overlay (results/viz/rays.vtp)")
 
         self.view = VtkSceneView(self)
         self.view.facePicked.connect(self._on_face_picked)
@@ -57,8 +60,7 @@ class Scene3DPane(QWidget):
         self.rays_button = QPushButton("Rays")
         self.rays_button.setCheckable(True)
         self.rays_button.setChecked(True)
-        self.rays_button.setToolTip(
-            "Show/hide the loaded ray overlay (results/viz/rays.vtp)")
+        self.rays_button.setToolTip(self._rays_tooltip)
         self.rays_button.toggled.connect(self._on_rays_toggled)
         toolbar.addStretch(1)
         toolbar.addWidget(self.rays_button)
@@ -123,6 +125,19 @@ class Scene3DPane(QWidget):
         self._selected_faces = set()
         self.view.clear_highlights()
 
+    def select_body(self, body_name):
+        """Programmatic selection (outliner/problems-pane driven):
+        highlight EVERY face of the body so the element is obvious in the
+        train. Does not re-emit selectionChanged (the shared selection
+        model is the caller)."""
+        if body_name == self._selected_body and not self._selected_faces:
+            return
+        self._selected_body = body_name
+        self._selected_faces = set()
+        faces = (self._project.faces.get(body_name, {}).get("faces", [])
+                 if self._project is not None else [])
+        self.view.set_selection({f["id"] for f in faces})
+
     def selection(self):
         return self._selected_body, set(self._selected_faces)
 
@@ -131,10 +146,35 @@ class Scene3DPane(QWidget):
         self._rays_path = path
         self.view.load_vtp_overlay(path)
         self.view.set_overlay_visible(self._rays_visible)
+        self.set_rays_stale(False)
 
     def remove_rays(self):
         self._rays_path = None
         self.view.remove_overlay()
+        self.set_rays_stale(False)
+
+    # clear_rays: same as remove_rays, kept as the name-symmetric API with
+    # InspectorPane.clear_rays() (the mainwindow orchestrator wires both
+    # panes the same way and shouldn't have to remember two verbs).
+    clear_rays = remove_rays
+
+    def set_rays_stale(self, stale):
+        """Grey out the rays button/tooltip after a geometry edit (the
+        mainwindow calls this on bodiesReshaped/bodiesMoved for a project
+        that has a loaded ray overlay) — the overlay itself is left in
+        place (still the last-known rays), just visually flagged as
+        possibly out of date until a fresh preview/trace reloads it."""
+        self._rays_stale = bool(stale)
+        if self._rays_stale:
+            self.rays_button.setText("Rays (stale)")
+            self.rays_button.setStyleSheet("color: gray;")
+            self.rays_button.setToolTip(
+                self._rays_tooltip + " -- STALE: the scene changed since "
+                "these rays were generated")
+        else:
+            self.rays_button.setText("Rays")
+            self.rays_button.setStyleSheet("")
+            self.rays_button.setToolTip(self._rays_tooltip)
 
     def _on_rays_toggled(self, checked):
         self._rays_visible = bool(checked)

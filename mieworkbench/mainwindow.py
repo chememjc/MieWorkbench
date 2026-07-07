@@ -34,12 +34,14 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QHBoxLayout,
-    QLabel, QMainWindow, QMessageBox, QProgressBar, QStyle, QVBoxLayout,
-    QWidget,
+    QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QProgressBar,
+    QStyle, QToolButton, QVBoxLayout, QWidget,
 )
 
+from .core import paraview_launcher
 from .core.librarymgr import LibraryManager
 from .core.project import Project, ProjectError
+from .core.raypreview import RayPreviewController
 from .core.runner import RunController
 from .core.selection import SelectionModel
 from .core.settings import Settings, SettingsDialog
@@ -92,6 +94,8 @@ class MainWindow(QMainWindow):
         self.settings = Settings()
         self.project = Project(self.settings)
         self.selection = SelectionModel(self)
+        self.raypreview = RayPreviewController(self)
+        self._preview_target = "scene"   # or "inspector"
         self.runner = RunController(self.settings, self)
         self.config_matrix = ConfigMatrix()
         self.config_matrix.estimateRequested.connect(self._show_estimate)
@@ -413,10 +417,116 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.validate_action)
 
         toolbar.addSeparator()
+        rays_btn = QToolButton()
+        rays_btn.setText("Rays")
+        rays_btn.setToolTip("Ray display: toggle the overlay, reload the "
+                            "last run's rays, or trace a live preview fan")
+        rays_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        rays_menu = QMenu(rays_btn)
+        act = rays_menu.addAction("Show/hide overlay")
+        act.triggered.connect(self.scene3d.rays_button.toggle)
+        act = rays_menu.addAction("Load last run's rays")
+        act.triggered.connect(self._load_case_rays)
+        act = rays_menu.addAction("Live ray preview…")
+        act.setToolTip("Trace a small deterministic fan from each source "
+                       "(center + top/bottom/left/right of the emit face) "
+                       "through the current scene")
+        act.triggered.connect(self._on_ray_preview)
+        rays_btn.setMenu(rays_menu)
+        toolbar.addWidget(rays_btn)
+
         fit_tb = toolbar.addAction(
             icon(QStyle.StandardPixmap.SP_BrowserReload), "Fit view")
         fit_tb.setToolTip("Reset the 3D camera to frame the whole scene")
         fit_tb.triggered.connect(self.scene3d.view.fit_camera)
+
+    # -- ray displays ---------------------------------------------------------------
+    def _case_rays_vtp(self):
+        case = getattr(self.results, "case_dir", None)
+        if not case:
+            return None
+        for f in paraview_launcher.viz_files(case):
+            if f.endswith("rays.vtp"):
+                return f
+        return None
+
+    def _load_case_rays(self):
+        path = self._case_rays_vtp()
+        if path is None:
+            self.statusBar().showMessage(
+                "No traced rays available — run the pipeline (or use "
+                "Live ray preview…)", 6000)
+            return
+        self.scene3d.load_rays_vtp(path)
+        self.scene3d.set_rays_stale(False)
+        self.statusBar().showMessage("Loaded ray overlay: %s" % path, 5000)
+
+    def _load_case_rays_quiet(self):
+        path = self._case_rays_vtp()
+        if path is not None:
+            self.scene3d.load_rays_vtp(path)
+            self.scene3d.set_rays_stale(False)
+
+    def _preview_workspace(self):
+        if self.workspace:
+            return self.workspace
+        digest = hashlib.sha1(
+            (self.model_path or "unsaved").encode("utf-8")).hexdigest()[:8]
+        ws = os.path.join(REPO, "var", "work", "preview-%s" % digest)
+        os.makedirs(ws, exist_ok=True)
+        return ws
+
+    def _on_ray_preview(self, only_bodies=None, target="scene"):
+        if not self.project.is_open():
+            self.statusBar().showMessage("Open or create a model first",
+                                         5000)
+            return
+        if self.raypreview.is_running():
+            self.statusBar().showMessage("Ray preview already running…",
+                                         4000)
+            return
+        n, ok = QInputDialog.getInt(
+            self, "Live ray preview",
+            "Rays per source (center + edge midpoints, then rim fill):",
+            5, 1, 999)
+        if not ok:
+            return
+        self._preview_target = target
+        started = self.raypreview.start(
+            self.project, self._preview_workspace(),
+            pattern="fan:n=%d" % n, only_bodies=only_bodies,
+            optical_properties=self._workspace_optprops())
+        if started:
+            self.statusBar().showMessage(
+                "Tracing %d preview ray(s) per source…" % n)
+
+    def _on_inspector_rays_requested(self):
+        body = self.inspector._body_name
+        if body is None:
+            return
+        try:
+            only = self.project.element_bodies(
+                self.project.element_group(body))
+        except ProjectError:
+            only = [body]
+        self._on_ray_preview(only_bodies=only, target="inspector")
+
+    def _on_preview_finished(self, vtp_path):
+        if self._preview_target == "inspector":
+            self.inspector.load_rays_vtp(vtp_path)
+        else:
+            self.scene3d.load_rays_vtp(vtp_path)
+            self.scene3d.set_rays_stale(False)
+        self.statusBar().showMessage("Ray preview ready", 5000)
+
+    def _on_preview_failed(self, message):
+        self.console.append_line("[preview] " + message)
+        self.console_dock.raise_()
+        self.statusBar().showMessage("Ray preview failed — see Console",
+                                     8000)
+
+    def _on_geometry_changed(self, *_args):
+        self.scene3d.set_rays_stale(True)
 
     # -- undo/redo -----------------------------------------------------------------
     def _on_undo(self):
@@ -486,6 +596,15 @@ class MainWindow(QMainWindow):
         self.project.sceneLoaded.connect(self._on_scene_loaded)
         self.project.dirtyChanged.connect(
             lambda dirty: self._update_window_title())
+
+        # ray displays: previews land in the requesting view; geometry
+        # edits mark any loaded overlay stale
+        self.raypreview.finished.connect(self._on_preview_finished)
+        self.raypreview.failed.connect(self._on_preview_failed)
+        self.inspector.raysPreviewRequested.connect(
+            self._on_inspector_rays_requested)
+        self.project.bodiesReshaped.connect(self._on_geometry_changed)
+        self.project.bodiesMoved.connect(self._on_geometry_changed)
 
     def _on_scene_loaded(self):
         self.save_action.setEnabled(True)
@@ -723,6 +842,7 @@ class MainWindow(QMainWindow):
         if case_dir and os.path.isdir(case_dir):
             self.results.load_case(case_dir)
             self.results_dock.raise_()
+            self._load_case_rays_quiet()
         if self.workspace and self.miewb_path \
                 and common.read_case_status(
                     os.path.join(case_dir or "", "case.json")) \

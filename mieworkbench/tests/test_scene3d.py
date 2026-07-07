@@ -137,3 +137,44 @@ def test_rays_overlay_load_toggle_remove(qtbot, tmp_path):
 
     pane.remove_rays()
     assert pane.view._rays_actor is None
+
+
+def test_clear_rays_is_the_same_as_remove_rays(qtbot, tmp_path):
+    pane = Scene3DPane()
+    qtbot.addWidget(pane)
+
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True)
+    pane.load_rays_vtp(path)
+    assert pane.view._rays_actor is not None
+
+    pane.clear_rays()
+    assert pane.view._rays_actor is None
+
+
+def test_set_rays_stale_greys_out_the_button_and_clears_on_reload(
+        qtbot, tmp_path):
+    pane = Scene3DPane()
+    qtbot.addWidget(pane)
+
+    base_tooltip = pane.rays_button.toolTip()
+    pane.set_rays_stale(True)
+    assert "stale" in pane.rays_button.text().lower()
+    assert pane.rays_button.styleSheet() != ""
+    assert "STALE" in pane.rays_button.toolTip()
+
+    pane.set_rays_stale(False)
+    assert pane.rays_button.text() == "Rays"
+    assert pane.rays_button.styleSheet() == ""
+    assert pane.rays_button.toolTip() == base_tooltip
+
+    # loading/clearing rays also clears any stale flag
+    pane.set_rays_stale(True)
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True)
+    pane.load_rays_vtp(path)
+    assert pane.rays_button.text() == "Rays"
+
+    pane.set_rays_stale(True)
+    pane.remove_rays()
+    assert pane.rays_button.text() == "Rays"

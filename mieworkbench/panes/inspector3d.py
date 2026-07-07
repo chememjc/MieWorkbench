@@ -18,6 +18,8 @@ from ..widgets.vtkview import VtkSceneView
 
 class InspectorPane(QWidget):
     faceSelectionChanged = Signal(str, set)   # body_name, {face_id, ...}
+    raysPreviewRequested = Signal()           # user asked for a ray preview
+                                              # here and none is loaded yet
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,6 +27,7 @@ class InspectorPane(QWidget):
         self._body_name = None
         self._face_ids = []
         self._selection = set()
+        self._rays_path = None
 
         self.view = VtkSceneView(self)
         self.view.facePicked.connect(self._on_face_picked)
@@ -38,10 +41,19 @@ class InspectorPane(QWidget):
         self.clear_button.setToolTip("Clear the face selection")
         self.clear_button.clicked.connect(self.clear_selection)
 
+        self.rays_button = QPushButton("Rays")
+        self.rays_button.setCheckable(True)
+        self.rays_button.setChecked(False)
+        self.rays_button.setToolTip(
+            "Show a ray-overlay preview for this element (asks the "
+            "orchestrator to run one if none is loaded yet)")
+        self.rays_button.toggled.connect(self._on_rays_toggled)
+
         toolbar = QHBoxLayout()
         toolbar.addWidget(self.select_all_button)
         toolbar.addWidget(self.clear_button)
         toolbar.addStretch(1)
+        toolbar.addWidget(self.rays_button)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -78,6 +90,9 @@ class InspectorPane(QWidget):
                 pass
 
     def _rebuild(self):
+        # a ray overlay is tied to the body it was previewed/traced for;
+        # switching (or clearing) the shown body invalidates it
+        self.clear_rays()
         if self._project is None or self._body_name is None:
             self.view.load_bodies({}, {"bodies": []})
             self._face_ids = []
@@ -127,6 +142,29 @@ class InspectorPane(QWidget):
     def _apply_selection(self):
         self.view.set_selection(self._selection)
         self.faceSelectionChanged.emit(self._body_name, set(self._selection))
+
+    # -- rays overlay ---------------------------------------------------------
+    def load_rays_vtp(self, path):
+        """Load/replace the ray overlay (mainwindow calls this once its
+        RayPreviewController/RunController produced a rays.vtp)."""
+        self._rays_path = path
+        self.view.load_vtp_overlay(path)
+        self.view.set_overlay_visible(True)
+        self.rays_button.setChecked(True)
+
+    def clear_rays(self):
+        self._rays_path = None
+        self.view.remove_overlay()
+        self.rays_button.setChecked(False)
+
+    def _on_rays_toggled(self, checked):
+        if checked and self._rays_path is None:
+            # nothing loaded yet: ask the orchestrator to run a preview for
+            # the element currently shown here (it decides scope/pattern
+            # and calls load_rays_vtp()/clear_rays() back when done)
+            self.raysPreviewRequested.emit()
+            return
+        self.view.set_overlay_visible(bool(checked))
 
     def selection(self):
         return self._body_name, set(self._selection)
