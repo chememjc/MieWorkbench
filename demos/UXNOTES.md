@@ -134,7 +134,30 @@ would remove the whole failure class.
 7. **Transform panel shows axis+angle** with enough digits for mrad-scale
    alignment (Michelson fringe tilts are invisible otherwise).
 
-## Fixed during this round (feedback already applied)
+## Fixed in round 2 (this round)
+
+- **BS/PBS cubes**: rebuilt as a single cube with a thin coated plate
+  NESTED inside (glass-glass split interface). The investigation showed
+  no coating can rescue the old air-gap build — 45° internal incidence is
+  past BK7's critical angle, so the gap TIR'd the transmitted arm; the
+  fix rode on a new extraction-contract allowance for properly nested
+  solids. Validated 46.7/43.4 % (bs), 91 %/0.04 % s-pol + 2.3 %/89 %
+  p-pol (pbs), zero seam loss.
+- **Self-crossing trim loops** (extractor): every multi-edge planar wire
+  emitted a bow-tie polyline, killing ~half of each pad rectangle face
+  repo-wide — dead half-faces, phantom transmission, the wollaston
+  anomaly, and the prism demo's missing 85 % of power (0.60 → 3.74 mW
+  after the fix). Table coatings past the critical angle now TIR
+  honestly instead of emitting grazing ghost rays.
+- **White rays in the GUI**: rays.vtp never marked `rgb` as the active
+  scalars and the GUI mapper only colored by active scalars — flat white
+  fallback. Fixed on both sides; broadband sources now preview an
+  R/G/B bundle per fan point and traced overlays carry per-λ colors.
+- **File lifecycle**: File ▸ Close, Revert to Saved (confirmed), Save/
+  Discard/Cancel prompts on Open/New, and a session-view reset that
+  stops old ray overlays from leaking into a newly opened model.
+
+## Fixed in round C (feedback already applied)
 
 - `detector_plane` grew a `height` param (36×24 CMOS sensor demo).
 - `--max-reflections` is now a first-class pipeline/simparams option.

@@ -19,10 +19,10 @@ the exercise caught).
 | Demo | System | What it shows | Detected (of 5 mW, quick preset) |
 |---|---|---|---|
 | `beam_expander` | 3× Keplerian expander: BK7 PCX f=50 + f=150, spacing f1+f2, convex sides out | Collimation preserved, 3× beam diameter; loss = the four uncoated Fresnel surfaces (0.96⁴ ≈ 0.85) | **4.23 mW** |
-| `newtonian` | 150 mm f/6: parabolic primary (rfl 900), 45° round diagonal, folded focus, WHITE-LIGHT star (450–650 nm) | Exact parabolic focus, 90° fold, central-obstruction shadow; loss = two Al bounces + obstruction | **3.58 mW** |
+| `newtonian` | 150 mm f/6: parabolic primary (rfl 900), 45° round diagonal, folded focus, WHITE-LIGHT star (450–650 nm) | Exact parabolic focus, 90° fold, central-obstruction shadow; loss = two Al bounces + obstruction | **3.74 mW** |
 | `dobsonian` | 200 mm f/5 Newtonian optics, white-light star (a Dobsonian is the same telescope on an alt-az mount) | Faster, larger variant of the above | **3.68 mW** |
-| `michelson` | 25 mm 50:50 **plate** beamsplitter at 45°, 60 mm arms, one mirror tilted 0.158 mrad | Coherent two-beam interference: straight fringes (measured visibility 0.90) across the detector at 633 nm, pitch λ/2θ | **1.05 mW** at the fringe port |
-| `prism_spectrometer` | 25 mm equilateral SF5 prism at minimum deviation (550 nm), f=100 camera lens | Chromatic dispersion: 450–650 nm spread ~2.3° → a ~4 mm spectrum (the honest prism-vs-grating tradeoff) | **0.60 mW** |
+| `michelson` | 25 mm 50:50 **plate** beamsplitter at 45°, 60 mm arms, one mirror tilted 0.158 mrad | Coherent two-beam interference: straight fringes (measured visibility 0.90) across the detector at 633 nm, pitch λ/2θ | **1.09 mW** at the fringe port |
+| `prism_spectrometer` | 25 mm equilateral SF5 prism at minimum deviation (550 nm), f=100 camera lens | Chromatic dispersion: 450–650 nm spread ~2.3° → a ~4 mm spectrum (the honest prism-vs-grating tradeoff) | **3.74 mW** (was 0.60 before the round-2 trim-loop extractor fix resurrected the prism's dead half-faces) |
 | `czerny_turner` | Crossed CT: divergent slit source, R=200 collimator, 600 g/mm reflective grating (`mirror=1.0`), R=200 camera mirror | Grating dispersion + off-axis mirror folding; 400–700 nm across ~25 mm, first order | **0.08 mW** (slit + overfill + order efficiency) |
 | `camera_triplet` | Cooke triplet ~50 mm EFL (published design rescaled), iris stop ~f/5.6, 36×24 mm sensor, white-light scene (450–650 nm) | A real multi-element photographic objective; detected ≈ the f/5.6 pupil fraction of the 14 mm input beam | **1.26 mW** |
 | `microscope_objective` | Lister-type: two air-spaced achromats (f=25 + f=50, 10 mm apart), finite conjugates, white-light point source | Aberration-corrected imaging of a point source | **2.79 mW** |
