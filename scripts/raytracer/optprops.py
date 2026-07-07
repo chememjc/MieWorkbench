@@ -27,12 +27,13 @@ from pathlib import Path
 import numpy as np
 
 from .materials import (MaterialDB, MaterialError, load_coatings,
-                        DEFAULT_OPTPROPS_DIR)
+                        DEFAULT_OPTPROPS_DIR, resolve_prop_path,
+                        _swap_suffix)
 
-DEFAULT_BIREFRINGENCE_CSV = DEFAULT_OPTPROPS_DIR / "birefringence" / "uniaxial.csv"
-DEFAULT_POLARIZERS_CSV = DEFAULT_OPTPROPS_DIR / "polarizer" / "polarizers.csv"
-DEFAULT_FILTERS_CSV = DEFAULT_OPTPROPS_DIR / "filter" / "filters.csv"
-DEFAULT_GRATINGS_CSV = DEFAULT_OPTPROPS_DIR / "grating" / "gratings.csv"
+DEFAULT_BIREFRINGENCE_CSV = DEFAULT_OPTPROPS_DIR / "birefringence" / "uniaxial.miebrf"
+DEFAULT_POLARIZERS_CSV = DEFAULT_OPTPROPS_DIR / "polarizer" / "polarizers.miepol"
+DEFAULT_FILTERS_CSV = DEFAULT_OPTPROPS_DIR / "filter" / "filters.miefilt"
+DEFAULT_GRATINGS_CSV = DEFAULT_OPTPROPS_DIR / "grating" / "gratings.miegrat"
 
 POLARIZER_TYPES = ("linear", "circular_left", "circular_right")
 GRATING_MODELS = ("lamellar", "bragg_kogelnik", "dammann", "table")
@@ -56,7 +57,7 @@ def interp_hard(lam_um, lam_tab, val_tab, ctx):
 
 
 def _read_registry(csv_path, required_cols, what):
-    csv_path = Path(csv_path)
+    csv_path = resolve_prop_path(Path(csv_path))
     if not csv_path.exists():
         raise MaterialError("%s csv not found: %s" % (what, csv_path))
     with open(csv_path, newline="") as fh:
@@ -87,8 +88,12 @@ def _read_table(path, columns, ctx, lam_col="wavelength_nm"):
     """Read a per-item table csv -> dict of float64 arrays, wavelength in um
     ('lam_um'), strictly increasing, >= 2 rows."""
     path = Path(path)
-    if not path.exists():
-        raise MaterialError("%s: table not found: %s" % (ctx, path))
+    resolved = resolve_prop_path(path, alt_ext=".mietab")
+    if not resolved.exists():
+        alt = _swap_suffix(path, ".mietab")
+        raise MaterialError("%s: table not found: %s or %s"
+                            % (ctx, path, alt))
+    path = resolved
     data = {c: [] for c in (lam_col,) + tuple(columns)}
     with open(path, newline="") as fh:
         reader = csv.DictReader(fh)
@@ -314,8 +319,12 @@ def _load_grating_table(path, ctx):
     {order: {"lam_um", "eta_s", "eta_p"}} with per-order strictly
     increasing wavelength grids."""
     path = Path(path)
-    if not path.exists():
-        raise MaterialError("%s: grating table not found: %s" % (ctx, path))
+    resolved = resolve_prop_path(path, alt_ext=".mietab")
+    if not resolved.exists():
+        alt = _swap_suffix(path, ".mietab")
+        raise MaterialError("%s: grating table not found: %s or %s"
+                            % (ctx, path, alt))
+    path = resolved
     rows_by_order = {}
     with open(path, newline="") as fh:
         reader = csv.DictReader(fh)
@@ -397,23 +406,28 @@ def load_optical_properties(root=None, db=None):
     required."""
     root = Path(root) if root is not None else DEFAULT_OPTPROPS_DIR
     if db is None:
-        db = MaterialDB.load(csv_path=root / "materials.csv",
+        db = MaterialDB.load(csv_path=root / "materials.miemat",
                              nk_dir=root / "nk")
-    coatings = load_coatings(csv_path=root / "coating" / "coatings.csv",
+    coatings = load_coatings(csv_path=root / "coating" / "coatings.miecoat",
                              db=db)
 
     def optional(loader, path, **kw):
-        return loader(csv_path=path, **kw) if path.exists() else {}
+        # path is the preferred (new-extension) name; also accept a
+        # pure-legacy library that only has the .csv sibling. Check
+        # existence directly (no NOTE here) -- the loader's own
+        # resolve_prop_path call emits the one-line legacy NOTE.
+        present = path.exists() or _swap_suffix(path, ".csv").exists()
+        return loader(csv_path=path, **kw) if present else {}
 
-    uniaxial = optional(load_uniaxial, root / "birefringence" / "uniaxial.csv",
-                        db=db)
+    uniaxial = optional(load_uniaxial,
+                        root / "birefringence" / "uniaxial.miebrf", db=db)
     db.attach_uniaxial(uniaxial)
     return OpticalProperties(
         root=root, matdb=db, coatings=coatings,
         polarizers=optional(load_polarizers,
-                            root / "polarizer" / "polarizers.csv"),
-        filters=optional(load_filters, root / "filter" / "filters.csv"),
-        gratings=optional(load_gratings, root / "grating" / "gratings.csv"),
+                            root / "polarizer" / "polarizers.miepol"),
+        filters=optional(load_filters, root / "filter" / "filters.miefilt"),
+        gratings=optional(load_gratings, root / "grating" / "gratings.miegrat"),
         uniaxial=uniaxial)
 
 

@@ -23,6 +23,7 @@
 # throughout the rest of the ray tracer.
 # =============================================================================
 import csv
+import sys
 import warnings
 from pathlib import Path
 
@@ -34,9 +35,49 @@ import numpy as np
 _THIS_DIR = Path(__file__).resolve().parent
 _PROJECT_DIR = _THIS_DIR.parent.parent
 DEFAULT_OPTPROPS_DIR = _PROJECT_DIR / "opticalproperties"
-DEFAULT_MATERIALS_CSV = DEFAULT_OPTPROPS_DIR / "materials.csv"
-DEFAULT_COATINGS_CSV = DEFAULT_OPTPROPS_DIR / "coating" / "coatings.csv"
+DEFAULT_MATERIALS_CSV = DEFAULT_OPTPROPS_DIR / "materials.miemat"
+DEFAULT_COATINGS_CSV = DEFAULT_OPTPROPS_DIR / "coating" / "coatings.miecoat"
 DEFAULT_NK_DIR = DEFAULT_OPTPROPS_DIR / "nk"
+
+
+# ---------------------------------------------------------------------------
+# Self-describing extensions (.miemat/.mienk/.miecoat/.mietab/...) with a
+# backward-compatible '.csv' fallback -- content is plain CSV either way.
+#
+# resolve_prop_path() handles the top-level registry files (materials,
+# coatings): callers always ask for the new extension first; if that's
+# missing, the legacy same-stem .csv sibling is used instead (one NOTE to
+# stderr), so an external all-.csv --optical-properties library keeps
+# working unmodified.
+#
+# _swap_suffix()/resolve_prop_path() also handle per-item files named in a
+# registry row (nk_file / coating 'table' column): the row may name either
+# extension while the file on disk uses the other; exact name is tried
+# first, then the swapped extension, then a hard error naming both.
+# ---------------------------------------------------------------------------
+def _swap_suffix(path, alt_ext):
+    path = Path(path)
+    alt_ext = alt_ext if alt_ext.startswith(".") else "." + alt_ext
+    other = ".csv" if path.suffix.lower() == alt_ext else alt_ext
+    return path.with_suffix(other)
+
+
+def resolve_prop_path(path, alt_ext=".csv"):
+    """Return an existing sibling of `path`: `path` itself if present,
+    else the sibling with its suffix swapped between '.csv' and alt_ext
+    if THAT exists (emitting a legacy-format NOTE to stderr when we fall
+    back to a plain '.csv' file), else `path` unchanged so the caller's
+    own "not found" error names the originally intended file."""
+    path = Path(path)
+    if path.exists():
+        return path
+    alt = _swap_suffix(path, alt_ext)
+    if alt.exists():
+        if alt.suffix.lower() == ".csv" and path.suffix.lower() != ".csv":
+            sys.stderr.write(
+                "NOTE: using legacy %s; rename to %s\n" % (alt, path))
+        return alt
+    return path
 
 VALID_CLASSES = {"gas", "glass", "liquid", "polymer", "metal", "oxide",
                   "film", "special"}
@@ -204,6 +245,7 @@ class MaterialDB:
     @classmethod
     def load(cls, csv_path=None, nk_dir=None):
         csv_path = Path(csv_path) if csv_path is not None else DEFAULT_MATERIALS_CSV
+        csv_path = resolve_prop_path(csv_path)
         nk_dir = Path(nk_dir) if nk_dir is not None else DEFAULT_NK_DIR
         if not csv_path.exists():
             raise MaterialError("materials csv not found: %s" % csv_path)
@@ -375,8 +417,13 @@ def _parse_params(row, model, ctx):
 
 def _attach_nk_table(mat, nk_dir, ctx):
     path = Path(nk_dir) / mat.nk_file
-    if not path.exists():
-        raise MaterialError("%s: nk_file %r not found at %s" % (ctx, mat.nk_file, path))
+    resolved = resolve_prop_path(path, alt_ext=".mienk")
+    if not resolved.exists():
+        alt = _swap_suffix(path, ".mienk")
+        raise MaterialError(
+            "%s: nk_file %r not found at %s or %s"
+            % (ctx, mat.nk_file, path, alt))
+    path = resolved
     lam, n, k = [], [], []
     with open(path, newline="") as fh:
         reader = csv.DictReader(fh)
@@ -535,7 +582,7 @@ def _load_coating_table(path, ctx):
 
 
 def _parse_coatings_csv(csv_path):
-    csv_path = Path(csv_path)
+    csv_path = resolve_prop_path(Path(csv_path))
     if not csv_path.exists():
         raise MaterialError("coatings csv not found: %s" % csv_path)
     tables_dir = csv_path.parent / "tables"
@@ -569,7 +616,14 @@ def _parse_coatings_csv(csv_path):
             else:
                 aoi = (row.get("aoi_deg") or "").strip()
                 aoi_deg = float(aoi) if aoi else 0.0
-                table = _load_coating_table(tables_dir / table_raw, ctx)
+                table_path = tables_dir / table_raw
+                resolved = resolve_prop_path(table_path, alt_ext=".mietab")
+                if not resolved.exists():
+                    alt = _swap_suffix(table_path, ".mietab")
+                    raise MaterialError(
+                        "%s: coating table not found: %s or %s"
+                        % (ctx, table_path, alt))
+                table = _load_coating_table(resolved, ctx)
                 specs.append(("table", name, None, table, aoi_deg, reference))
     return specs
 

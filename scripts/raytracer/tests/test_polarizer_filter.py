@@ -35,7 +35,13 @@ def props(tmp_path_factory):
     root = tmp_path_factory.mktemp("optprops") / "opticalproperties"
     real = SCRIPTS.parent / "opticalproperties"
     shutil.copytree(real, root)
-    (root / "polarizer" / "polarizers.csv").write_text(
+    # Overwrite the copied registries IN PLACE (new self-describing names,
+    # matching what copytree brought over from the renamed repo library) --
+    # writing to the legacy .csv name instead would leave the copied
+    # .miepol/.miefilt file sitting alongside a stray new .csv one, and the
+    # loader's fallback prefers the (untouched, real-library) .miepol/
+    # .miefilt file over this synthetic one.
+    (root / "polarizer" / "polarizers.miepol").write_text(
         'name,type,table_csv,retardance_waves,reference\n'
         'ideal_lp,linear,ideal_lp.csv,,"synthetic ideal"\n'
         'qcirc_r,circular_right,ideal_lp.csv,0.25,"synthetic"\n'
@@ -43,7 +49,7 @@ def props(tmp_path_factory):
     (root / "polarizer" / "tables" / "ideal_lp.csv").write_text(
         "wavelength_nm,T_parallel,T_perpendicular\n"
         "300,1.0,1e-6\n1200,1.0,1e-6\n")
-    (root / "filter" / "filters.csv").write_text(
+    (root / "filter" / "filters.miefilt").write_text(
         'name,table_csv,ref_thickness_mm,reference\n'
         'f_test,f_test.csv,2.0,"synthetic"\n')
     (root / "filter" / "tables" / "f_test.csv").write_text(

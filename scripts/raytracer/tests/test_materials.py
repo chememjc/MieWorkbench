@@ -65,7 +65,7 @@ def test_aluminum_visible(db):
     n(650nm) is close to ~1.55-1.6 (not the idealized ~1.47 sometimes
     quoted from smoothed Drude fits) -- verified directly against the
     tabulated source below."""
-    with open(DEFAULT_NK_DIR / "aluminum.csv", newline="") as fh:
+    with open(DEFAULT_NK_DIR / "aluminum.mienk", newline="") as fh:
         rows = list(csv.DictReader(fh))
     lam_nm = np.array([float(r["wavelength_nm"]) for r in rows])
     n_tab = np.array([float(r["n"]) for r in rows])

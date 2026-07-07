@@ -33,17 +33,44 @@ SCRIPTS_DIR = PROJECT_DIR / "scripts"
 BASEMODELS_DIR = PROJECT_DIR / "basemodels"
 GEOMETRY_DIR = _env_path("MIEWB_GEOMETRY_DIR", PROJECT_DIR / "geometry")
 RESULTS_DIR = _env_path("MIEWB_RESULTS_DIR", PROJECT_DIR / "results")
-# Optical-properties library: materials.csv at the root, one subdirectory
+# Optical-properties library: materials.miemat at the root, one subdirectory
 # per category, per-item tables under <category>/tables/ (README §7).
+#
+# Library files use self-describing extensions (.miemat/.mienk/.miecoat/
+# .miepol/.miefilt/.miegrat/.miebrf/.mietab); content is still plain CSV.
+# resolve_prop_file() keeps old-style all-.csv libraries (e.g. a user's
+# --optical-properties DIR that predates this migration) working: it
+# prefers the new name but falls back to the legacy same-stem .csv file.
 OPTPROPS_DIR = _env_path("MIEWB_OPTPROPS_DIR",
                          PROJECT_DIR / "opticalproperties")
-MATERIALS_CSV = OPTPROPS_DIR / "materials.csv"
+
+
+def resolve_prop_file(preferred_path):
+    """preferred_path: the new self-describing filename (e.g.
+    .../materials.miemat). Returns preferred_path if it exists; else the
+    legacy same-stem .csv sibling if THAT exists (printing a one-line
+    NOTE to stderr); else preferred_path unchanged, so a later "not
+    found" error names the new extension."""
+    preferred_path = Path(preferred_path)
+    legacy_path = preferred_path.with_suffix(".csv")
+    if preferred_path.exists():
+        return preferred_path
+    if legacy_path.exists():
+        print("NOTE: using legacy %s; rename to %s"
+              % (legacy_path, preferred_path), file=sys.stderr)
+        return legacy_path
+    return preferred_path
+
+
+MATERIALS_CSV = resolve_prop_file(OPTPROPS_DIR / "materials.miemat")
 NK_DATA_DIR = OPTPROPS_DIR / "nk"
-COATINGS_CSV = OPTPROPS_DIR / "coating" / "coatings.csv"
-BIREFRINGENCE_CSV = OPTPROPS_DIR / "birefringence" / "uniaxial.csv"
-POLARIZERS_CSV = OPTPROPS_DIR / "polarizer" / "polarizers.csv"
-FILTERS_CSV = OPTPROPS_DIR / "filter" / "filters.csv"
-GRATINGS_CSV = OPTPROPS_DIR / "grating" / "gratings.csv"
+COATINGS_CSV = resolve_prop_file(OPTPROPS_DIR / "coating" / "coatings.miecoat")
+BIREFRINGENCE_CSV = resolve_prop_file(
+    OPTPROPS_DIR / "birefringence" / "uniaxial.miebrf")
+POLARIZERS_CSV = resolve_prop_file(
+    OPTPROPS_DIR / "polarizer" / "polarizers.miepol")
+FILTERS_CSV = resolve_prop_file(OPTPROPS_DIR / "filter" / "filters.miefilt")
+GRATINGS_CSV = resolve_prop_file(OPTPROPS_DIR / "grating" / "gratings.miegrat")
 CALIBRATION_JSON = RESULTS_DIR / ".calibration.json"
 
 FREECAD_APPIMAGE = os.environ.get(
@@ -897,7 +924,7 @@ def _selfcheck():
     check("optics env python", os.path.exists(OPTICS_PYTHON), OPTICS_PYTHON)
     check("pvpython", os.path.exists(PVPYTHON), PVPYTHON)
     check("project dir", PROJECT_DIR.is_dir(), str(PROJECT_DIR))
-    check("materials.csv", MATERIALS_CSV.exists(), str(MATERIALS_CSV))
+    check("materials.miemat", MATERIALS_CSV.exists(), str(MATERIALS_CSV))
 
     # pure-math invariants
     check("sweep n=0", sweep_values(1, 5, 0) == [1])
