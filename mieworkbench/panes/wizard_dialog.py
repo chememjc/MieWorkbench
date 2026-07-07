@@ -1,22 +1,32 @@
-"""Add-element wizard dialog.
+"""Add/customize-element wizard dialog.
 
-Every primitive gets a parameter table prefilled with its defaults
-(alias / value / unit, tooltips from the primitive metadata). Lens
-primitives additionally get a "design by focal length" section driving
-core.wizards.design_lens: enter f + material (+ thickness), Compute fills
-the parameter table with the solved radii and shows the exact EFL/BFL
-cross-check.
+Every primitive gets a geometry-parameter table prefilled with its
+defaults (alias / value / unit, tooltips, `round_flag` as a "Circular
+shape" checkbox) AND a device-properties form (source power/wavelength/
+polarization, detector reflectivity, optic material/coating/filter...)
+so the whole element is configured in one place. Lens primitives
+additionally get a "design by focal length" section driving
+core.wizards.design_lens: enter f + material (+ thickness), Compute
+fills the parameter table with the solved radii and shows the exact
+EFL/BFL cross-check.
+
+The optional Preview button emits previewRequested — the main window
+imports/rebuilds the element live in the 3D view while the dialog stays
+open (Cancel rolls the previewed element back).
+
+Re-customizing an existing element uses for_element(): same dialog,
+prefilled from the element's parameter sheet and body properties, with
+Apply semantics.
 """
 
 import os
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox,
-    QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
-    QVBoxLayout,
+    QLabel, QLineEdit, QPushButton, QVBoxLayout,
 )
 
 _SCRIPTS = os.path.normpath(os.path.join(
@@ -25,6 +35,9 @@ if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
 from ..core import wizards
+from .element_wizard import (
+    ParamTableWidget, PropertiesFormWidget, property_rows_for,
+)
 
 # primitive kind -> wizard form (reverse of LENS_FORMS[form]['primitive'];
 # first form wins where two forms share a primitive)
@@ -34,15 +47,21 @@ for _form, _spec in wizards.LENS_FORMS.items():
 
 
 class ElementWizardDialog(QDialog):
-    """Collects (label, {alias: value}) for one primitive instance."""
+    """Collects (label, {alias: value}, {prop: value}) for one primitive
+    instance — geometry parameters AND device properties."""
+
+    previewRequested = Signal()
 
     def __init__(self, primitive_info, default_label, matdb=None,
-                 parent=None):
+                 registry_names=None, parent=None, customize=False,
+                 show_preview=False):
         super().__init__(parent)
         self.info = primitive_info
         self.matdb = matdb
+        self._customize = customize
         kind = primitive_info.get("kind", "?")
-        self.setWindowTitle("Add %s" % primitive_info.get("label", kind))
+        title = ("Customize %s" if customize else "Add %s")
+        self.setWindowTitle(title % primitive_info.get("label", kind))
 
         lay = QVBoxLayout(self)
         tip = QLabel(primitive_info.get("tooltip", ""))
@@ -54,6 +73,8 @@ class ElementWizardDialog(QDialog):
         grid.addWidget(QLabel("Element label:"), 0, 0)
         self.label_edit = QLineEdit(default_label)
         self.label_edit.setToolTip("Name of the new element in the scene")
+        if customize:
+            self.label_edit.setEnabled(False)
         grid.addWidget(self.label_edit, 0, 1)
         lay.addLayout(grid)
 
@@ -61,32 +82,56 @@ class ElementWizardDialog(QDialog):
         if self._form is not None:
             lay.addWidget(self._build_designer())
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Parameter", "Value", "Unit"])
-        self.table.horizontalHeader().setStretchLastSection(True)
-        params = primitive_info.get("params", {})
-        self.table.setRowCount(len(params))
-        self._aliases = []
-        for row, (alias, spec) in enumerate(sorted(params.items())):
-            self._aliases.append(alias)
-            name_item = QTableWidgetItem(alias)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            name_item.setToolTip(spec.get("help", ""))
-            self.table.setItem(row, 0, name_item)
-            self.table.setItem(row, 1, QTableWidgetItem(
-                "%g" % spec.get("default", 0.0)))
-            unit_item = QTableWidgetItem(spec.get("unit", ""))
-            unit_item.setFlags(unit_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 2, unit_item)
-        lay.addWidget(self.table)
+        geom_box = QGroupBox("Geometry [mm/deg]")
+        geom_lay = QVBoxLayout(geom_box)
+        self.table = ParamTableWidget(primitive_info.get("params", {}))
+        geom_lay.addWidget(self.table)
+        lay.addWidget(geom_box, 2)
+
+        rows = property_rows_for(primitive_info)
+        self.props_form = None
+        if rows:
+            props_box = QGroupBox("Device properties")
+            props_lay = QVBoxLayout(props_box)
+            self.props_form = PropertiesFormWidget(
+                rows, registry_names=registry_names)
+            props_lay.addWidget(self.props_form)
+            lay.addWidget(props_box, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok
                                    | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Add element")
+        buttons.button(QDialogButtonBox.Ok).setText(
+            "Apply" if customize else "Add element")
+        if show_preview:
+            self.preview_button = QPushButton("Preview")
+            self.preview_button.setToolTip(
+                "Build/update the element in the 3D view now, keeping "
+                "this dialog open (Cancel removes it again)")
+            buttons.addButton(self.preview_button,
+                              QDialogButtonBox.ActionRole)
+            self.preview_button.clicked.connect(self.previewRequested.emit)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
-        self.resize(430, 420)
+        self.resize(460, 560)
+
+    # -- prefill from an existing element ---------------------------------------
+    @classmethod
+    def for_element(cls, primitive_info, label, sheet_values=None,
+                    prop_values=None, matdb=None, registry_names=None,
+                    parent=None):
+        """Customize-mode dialog prefilled from an existing element's
+        sheet numbers ({alias: float}) and body properties
+        ({name: value})."""
+        dlg = cls(primitive_info, label, matdb=matdb,
+                  registry_names=registry_names, parent=parent,
+                  customize=True)
+        for alias, value in (sheet_values or {}).items():
+            dlg.table.set_value(alias, value)
+        if dlg.props_form is not None:
+            for name, value in (prop_values or {}).items():
+                dlg.props_form.set_value(name, value)
+        return dlg
 
     # -- focal-length designer -------------------------------------------------
     def _build_designer(self):
@@ -135,9 +180,7 @@ class ElementWizardDialog(QDialog):
             self.design_out.setText(str(exc))
             return
         for alias, value in design["params"].items():
-            if alias in self._aliases:
-                row = self._aliases.index(alias)
-                self.table.item(row, 1).setText("%.6g" % value)
+            self.table.set_value(alias, value)
         d = design["design"]
         parts = []
         if "efl" in d and d["efl"] is not None:
@@ -153,20 +196,17 @@ class ElementWizardDialog(QDialog):
         return self.label_edit.text().strip()
 
     def params(self):
-        out = {}
-        for row, alias in enumerate(self._aliases):
-            item = self.table.item(row, 1)
-            try:
-                out[alias] = float(item.text())
-            except (TypeError, ValueError):
-                pass
-        return out
+        return self.table.values()
 
     def changed_params(self):
         """Only the aliases whose value differs from the primitive default
         (these need sheet writes + a rebuild after import)."""
-        defaults = {a: s.get("default")
-                    for a, s in self.info.get("params", {}).items()}
-        return {a: v for a, v in self.params().items()
-                if defaults.get(a) is None
-                or abs(v - float(defaults[a])) > 1e-12}
+        return self.table.changed_values()
+
+    def props(self):
+        return self.props_form.values() if self.props_form else {}
+
+    def changed_props(self):
+        """Device properties that differ from the primitive's baked
+        defaults (these need set_property calls after import)."""
+        return self.props_form.changed_values() if self.props_form else {}

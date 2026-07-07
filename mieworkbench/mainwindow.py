@@ -57,6 +57,7 @@ from .panes.prop_editor import PropEditorPane
 from .panes.results import ResultsPane
 from .panes.scene3d import Scene3DPane
 from .panes.transform_panel import TransformPanel
+from .panes.element_wizard import TypeChooserDialog
 from .panes.wizard_dialog import ElementWizardDialog
 
 STAGE_ORDER = ["extract", "trace", "post", "viz"]
@@ -656,39 +657,98 @@ class MainWindow(QMainWindow):
         self.problems.run_checks()
 
     # -- element addition (library + wizard) ------------------------------------------
+    def _load_matdb(self):
+        try:
+            return (self.library_manager.project_lib
+                    or self.library_manager.system_lib).load().matdb
+        except Exception:
+            return None
+
+    def _registry_names(self, category):
+        lib = (self.library_manager.project_lib
+               or self.library_manager.system_lib)
+        return [row.get("name", "") for row in lib.registry_rows(category)
+                if row.get("name")]
+
+    def _apply_wizard_output(self, dialog, info, label):
+        """Write the wizard's changed parameters + device properties for
+        an (already imported) element. Runs inside the caller's macro."""
+        changed = dialog.changed_params()
+        if changed:
+            units = {a: s.get("unit", "")
+                     for a, s in info.get("params", {}).items()}
+            values = {}
+            for alias, value in changed.items():
+                unit = units.get(alias, "")
+                values[alias] = ("=%.10g %s" % (value, unit)).strip() \
+                    if unit else "%.10g" % value
+            self.project.set_element_parameters(
+                "dim_%s" % label, values, rebuild_group=label)
+        props = dialog.changed_props()
+        if props:
+            names = self.project.element_bodies(label)
+            for name, value in props.items():
+                # apply to the member body that carries the property
+                # (single-body elements: just that body); fall back to
+                # the first member for newly introduced props
+                target = names[0]
+                for member in names:
+                    if name in (self.project.body(member)
+                                .get("properties") or {}):
+                        target = member
+                        break
+                self.project.set_property(target, name, value)
+
     def _on_add_element(self, info, label):
         if not self.project.is_open():
             QMessageBox.information(
                 self, "MieWorkbench",
                 "Open or create a model first (File → Open…).")
             return
-        matdb = None
-        try:
-            matdb = (self.library_manager.project_lib
-                     or self.library_manager.system_lib).load().matdb
-        except Exception:
-            pass
-        dialog = ElementWizardDialog(info, label, matdb=matdb, parent=self)
-        if dialog.exec() != QDialog.Accepted:
-            return
+        dialog = ElementWizardDialog(
+            info, label, matdb=self._load_matdb(),
+            registry_names=self._registry_names, parent=self,
+            show_preview=True)
+        previewed = [False]
+        last_applied = [None]
+
+        def snapshot():
+            return (dialog.changed_params(), dialog.changed_props())
+
+        def do_preview():
+            new_label = dialog.element_label()
+            if not new_label:
+                return
+            try:
+                if not previewed[0]:
+                    self.project.begin_macro("Add %s" % new_label)
+                    self.project.import_primitive(info["path"], new_label)
+                    previewed[0] = True
+                    dialog.label_edit.setEnabled(False)
+                elif snapshot() == last_applied[0]:
+                    return
+                self._apply_wizard_output(dialog, info, new_label)
+                last_applied[0] = snapshot()
+                self.statusBar().showMessage(
+                    "Previewing %s — Cancel removes it" % new_label, 4000)
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Preview failed", str(exc))
+        dialog.previewRequested.connect(do_preview)
+
+        accepted = dialog.exec() == QDialog.Accepted
         label = dialog.element_label()
+        if not accepted:
+            if previewed[0]:
+                self.project.abort_macro()   # rolls the preview back
+            return
         if not label:
             return
-        # one undo step for the whole flow (import + params + rebuild)
-        self.project.begin_macro("Add %s" % label)
         try:
-            self.project.import_primitive(info["path"], label)
-            changed = dialog.changed_params()
-            if changed:
-                units = {a: s.get("unit", "")
-                         for a, s in info.get("params", {}).items()}
-                values = {}
-                for alias, value in changed.items():
-                    unit = units.get(alias, "")
-                    values[alias] = ("=%.10g %s" % (value, unit)).strip() \
-                        if unit else "%.10g" % value
-                self.project.set_element_parameters(
-                    "dim_%s" % label, values, rebuild_group=label)
+            if not previewed[0]:
+                self.project.begin_macro("Add %s" % label)
+                self.project.import_primitive(info["path"], label)
+            if snapshot() != last_applied[0]:
+                self._apply_wizard_output(dialog, info, label)
         except Exception as exc:
             self.project.abort_macro()
             QMessageBox.warning(self, "Add element failed", str(exc))
@@ -698,19 +758,106 @@ class MainWindow(QMainWindow):
 
     def _on_add_element_action(self):
         """Toolbar/menu 'Add element': start the add flow for the library's
-        current primitive, or just raise the library for browsing."""
-        self.library_dock.raise_()
+        current primitive, else the type-first wizard (what → which →
+        configure)."""
         if hasattr(self.library, "start_add_current"):
             if self.library.start_add_current():
                 return
-        self.statusBar().showMessage(
-            "Pick an element in the Library, then double-click or press "
-            "'Add to scene'", 6000)
+        if not self.project.is_open():
+            QMessageBox.information(
+                self, "MieWorkbench",
+                "Open or create a model first (File → New… / Open…).")
+            return
+        chooser = TypeChooserDialog(
+            self.library_manager.primitives_list(), parent=self)
+        if chooser.exec() != QDialog.Accepted:
+            return
+        info = chooser.chosen_info()
+        if info is None:
+            return
+        from .panes.library import default_label
+        used = {b["label"] for b in self.project.structure.get("bodies", [])}
+        self._on_add_element(info, default_label(info["kind"], used))
 
     def _on_customize_element(self, body_name):
-        """Outliner double-click: focus the editors on that element."""
+        """Outliner double-click: reopen the wizard on a primitive-built
+        element (prefilled), else focus the property editors."""
         self.selection.select(body_name, ())
-        self.element_editor_dock.raise_()
+        try:
+            body = self.project.body(body_name)
+        except ProjectError:
+            return
+        props = body.get("properties", {}) or {}
+        kind = props.get("miewb_primitive", {}).get("value")
+        group = props.get("miewb_group", {}).get("value")
+        info = None
+        if kind:
+            for candidate in self.library_manager.primitives_list():
+                if candidate.get("kind") == kind:
+                    info = candidate
+                    break
+        if info is None or not group:
+            self.element_editor_dock.raise_()   # hand-authored: editor
+            return
+        sheet = self.project.sheet_for_body(body_name)
+        sheet_values = {}
+        if sheet is not None:
+            from .panes.element_editor import parse_sheet_raw
+            for alias, entry in (sheet.get("aliases") or {}).items():
+                try:
+                    sheet_values[alias] = parse_sheet_raw(
+                        entry.get("raw", ""))["number"]
+                except ValueError:
+                    pass
+        prop_values = {}
+        for member in self.project.element_bodies(group):
+            for name, entry in (self.project.body(member)
+                                .get("properties") or {}).items():
+                if not name.startswith("miewb_") \
+                        and name not in prop_values:
+                    prop_values[name] = entry.get("value")
+        dialog = ElementWizardDialog.for_element(
+            info, group, sheet_values=sheet_values,
+            prop_values=prop_values, matdb=self._load_matdb(),
+            registry_names=self._registry_names, parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.project.begin_macro("Customize %s" % group)
+        try:
+            # diff against the CURRENT values, not the primitive defaults
+            units = {a: s.get("unit", "")
+                     for a, s in info.get("params", {}).items()}
+            values = {}
+            for alias, value in dialog.params().items():
+                if alias in sheet_values and \
+                        abs(value - sheet_values[alias]) <= 1e-12:
+                    continue
+                unit = units.get(alias, "")
+                values[alias] = ("=%.10g %s" % (value, unit)).strip() \
+                    if unit else "%.10g" % value
+            if values:
+                self.project.set_element_parameters(
+                    "dim_%s" % group, values, rebuild_group=group,
+                    text="Customize %s" % group)
+            for name, value in dialog.props().items():
+                if name in prop_values and (
+                        prop_values[name] == value
+                        or str(prop_values[name]) == str(value)):
+                    continue
+                names = self.project.element_bodies(group)
+                target = names[0]
+                for member in names:
+                    if name in (self.project.body(member)
+                                .get("properties") or {}):
+                        target = member
+                        break
+                self.project.set_property(target, name, value)
+        except Exception as exc:
+            self.project.abort_macro()
+            QMessageBox.warning(self, "Customize failed", str(exc))
+            return
+        self.project.end_macro()
+        self.statusBar().showMessage("Updated %s" % group, 5000)
 
     def _selected_element(self):
         if self.selection.body is None:
