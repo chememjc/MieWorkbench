@@ -13,7 +13,7 @@ from mieworkbench.mainwindow import MainWindow  # noqa: E402
 
 HOST_NAMES = (
     "scene3d_host", "inspector_host", "element_editor_host",
-    "transform_host", "library_host",
+    "transform_host", "library_host", "results_host", "problems_host",
 )
 
 
@@ -24,8 +24,10 @@ def test_docks_and_hosts_exist(qtbot):
     for name in HOST_NAMES:
         assert window.findChild(QWidget, name) is not None, name
 
+    # inspector, element editor, transform, library, console, results,
+    # problems
     docks = window.findChildren(QDockWidget)
-    assert len(docks) == 5
+    assert len(docks) == 7
 
 
 def test_menu_actions_exist(qtbot):

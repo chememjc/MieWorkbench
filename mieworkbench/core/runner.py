@@ -64,12 +64,17 @@ class RunController(QObject):
                 and self._proc.state() != QProcess.NotRunning)
 
     # -- lifecycle --------------------------------------------------------------
-    def start(self, model_path, extra_args=None, steps=None):
+    def start(self, model_path, extra_args=None, steps=None,
+              extra_env=None):
         """Launch run_pipeline.py --models <model_path> <extra_args>
-        (+ --steps <steps> if given). Returns True if launched, False if a
-        run was already in progress (refused, no-op)."""
+        (+ --steps <steps> if given). extra_env: dict merged over the
+        settings-derived environment (workspace runs point
+        MIEWB_GEOMETRY_DIR/MIEWB_RESULTS_DIR into the .MieWB workspace).
+        Returns True if launched, False if a run was already in progress
+        (refused, no-op)."""
         if self.is_running():
             return False
+        self._extra_env = dict(extra_env or {})
 
         argv = ["python3", str(RUN_PIPELINE_SCRIPT),
                "--models", str(model_path)]
@@ -112,6 +117,8 @@ class RunController(QObject):
         if self.settings is not None:
             for key, value in self.settings.env_overrides().items():
                 env.insert(key, value)
+        for key, value in getattr(self, "_extra_env", {}).items():
+            env.insert(key, str(value))
         return env
 
     # -- QProcess callbacks -------------------------------------------------------

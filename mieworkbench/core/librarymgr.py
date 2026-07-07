@@ -179,7 +179,12 @@ class LibraryManager:
         """Point the project library at <path>/opticalproperties, creating
         that (empty) directory if needed. Copies nothing -- use
         ensure_project_item()/ensure_project_library_selfcontained() to
-        populate it."""
+        populate it. path=None detaches the project library (bare-.FCStd
+        mode: only the system library exists)."""
+        if path is None:
+            self._project_root = None
+            self._project_lib = None
+            return
         self._project_root = Path(path)
         proj_optprops = self._project_root / "opticalproperties"
         proj_optprops.mkdir(parents=True, exist_ok=True)
