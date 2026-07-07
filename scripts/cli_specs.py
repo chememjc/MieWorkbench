@@ -92,7 +92,9 @@ def _build_pipeline_parser():
                    help="deterministic viz-ray layout instead of random: "
                         "'rings:dr=<mm>:nper=<N>[:nrings=<K>]' = central "
                         "ray + concentric rings every dr mm, N rays per "
-                        "ring (visualization only — physics unaffected)")
+                        "ring; or 'fan[:n=<K>]' (default K=5) = central ray "
+                        "+ up to 4 cardinal rays + rim fillers "
+                        "(visualization only — physics unaffected)")
     g.add_argument("--backend", default=None,
                    choices=["auto", "torch", "numpy"])
     g.add_argument("--rough-fresnel", default=None,
@@ -165,7 +167,9 @@ def _build_trace_parser():
                    help="deterministic viz-ray layout instead of random: "
                         "'rings:dr=<mm>:nper=<N>[:nrings=<K>]' = central "
                         "ray + concentric rings every dr mm, N rays per "
-                        "ring, traced in a separate viz-only pass "
+                        "ring; or 'fan[:n=<K>]' (default K=5) = central ray "
+                        "+ up to 4 cardinal rays + rim fillers, traced in "
+                        "a separate viz-only pass "
                         "(visualization only — physics unaffected)")
     p.add_argument("--ray-differentials", action="store_true",
                    help="track per-ray wavefront patch areas (Igehy) so "

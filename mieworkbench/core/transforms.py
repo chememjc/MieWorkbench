@@ -400,3 +400,33 @@ class Operation:
         M = self.matrix(resolver)
         body.current = apply_world(M, body.current)
         return body.current
+
+
+def element_bounds(bodies, body_states, names):
+    """World AABB (mm) of the named bodies as ([xmin,ymin,zmin],
+    [xmax,ymax,zmax]), or None if nothing had a bbox.
+
+    The worker's bbox_mm is world-space AS OF the last structure fetch;
+    pure GUI-side moves only update BodyState, so the box is corrected by
+    the body's (current - fetched) translation. Rotation drift is ignored
+    - this feeds paste-offset placement heuristics, not physics."""
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    found = False
+    for b in bodies:
+        if b["name"] not in names:
+            continue
+        bb = b.get("bbox_mm")
+        if not bb:
+            continue
+        delta = [0.0, 0.0, 0.0]
+        state = (body_states or {}).get(b["name"])
+        if state is not None:
+            cur = state.current.to_dict()["pos_mm"]
+            orig = (b.get("placement") or {}).get("pos_mm", cur)
+            delta = [c - o for c, o in zip(cur, orig)]
+        for k in range(3):
+            lo[k] = min(lo[k], bb[k] + delta[k])
+            hi[k] = max(hi[k], bb[3 + k] + delta[k])
+        found = True
+    return ([*lo], [*hi]) if found else None

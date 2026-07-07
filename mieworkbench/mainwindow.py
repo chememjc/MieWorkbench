@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import sys
 
 sys.path.insert(0, os.path.normpath(
@@ -40,12 +41,15 @@ from PySide6.QtWidgets import (
 from .core.librarymgr import LibraryManager
 from .core.project import Project, ProjectError
 from .core.runner import RunController
+from .core.selection import SelectionModel
 from .core.settings import Settings, SettingsDialog
+from .core.transforms import Operation, element_bounds
 from .panes.config_matrix import ConfigMatrix
 from .panes.console import ConsolePane
 from .panes.element_editor import ElementEditorPane
 from .panes.inspector3d import InspectorPane
 from .panes.library import LibraryPane
+from .panes.outliner import OutlinerPane
 from .panes.problems import ProblemsPane
 from .panes.prop_editor import PropEditorPane
 from .panes.results import ResultsPane
@@ -66,6 +70,11 @@ _CHIP_DEFAULT = "#6b7280"
 REPO = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
 
+def _aabb_overlap(a, b):
+    """Axis-aligned boxes ([lo3], [hi3]) intersect (touching counts)."""
+    return all(a[0][k] <= b[1][k] and b[0][k] <= a[1][k] for k in range(3))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,9 +87,11 @@ class MainWindow(QMainWindow):
         self.miewb_path = None          # archive to repack on Save
         self.miesim_out = None          # .MieSim to update after a rerun
         self._has_validation_errors = False
+        self._clipboard_element = None  # element label copied for paste
 
         self.settings = Settings()
         self.project = Project(self.settings)
+        self.selection = SelectionModel(self)
         self.runner = RunController(self.settings, self)
         self.config_matrix = ConfigMatrix()
         self.config_matrix.estimateRequested.connect(self._show_estimate)
@@ -107,11 +118,19 @@ class MainWindow(QMainWindow):
 
     # -- docks ------------------------------------------------------------------
     def _build_docks(self):
+        self.outliner = OutlinerPane()
+        self.outliner.setObjectName("outliner_host")
+        self.outliner_dock = self._add_dock(
+            "Scene Elements", "outliner_dock", self.outliner,
+            Qt.DockWidgetArea.LeftDockWidgetArea)
+
         self.inspector = InspectorPane()
         self.inspector.setObjectName("inspector_host")
         self.inspector_dock = self._add_dock(
             "Element Inspector", "inspector_dock", self.inspector,
             Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.splitDockWidget(self.outliner_dock, self.inspector_dock,
+                             Qt.Orientation.Vertical)
 
         self.element_editor = ElementEditorPane()
         self.element_editor.setObjectName("element_editor_host")
@@ -203,10 +222,18 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
 
         file_menu = menubar.addMenu("&File")
-        act = file_menu.addAction("&Open…")
-        act.setToolTip("Open an optical model or archive "
-                       "(.FCStd / .MieWB / .MieSim)")
-        act.triggered.connect(self._on_open)
+        self.new_action = file_menu.addAction("&New…")
+        self.new_action.setShortcut(QKeySequence.StandardKey.New)
+        self.new_action.setToolTip(
+            "Create a new simulation from scratch "
+            "(.MieWB workbench archive, or a bare .FCStd model)")
+        self.new_action.triggered.connect(self._on_new)
+
+        self.open_action = file_menu.addAction("&Open…")
+        self.open_action.setShortcut(QKeySequence.StandardKey.Open)
+        self.open_action.setToolTip("Open an optical model or archive "
+                                    "(.FCStd / .MieWB / .MieSim)")
+        self.open_action.triggered.connect(self._on_open)
 
         act = file_menu.addAction("Open &Results / Case…")
         act.setToolTip("View a results case directory (live cases open "
@@ -256,6 +283,30 @@ class MainWindow(QMainWindow):
         stack.canRedoChanged.connect(self._on_can_redo_changed)
         stack.error.connect(self._on_undo_error)
 
+        edit_menu.addSeparator()
+        self.add_element_action = edit_menu.addAction("&Add Element…")
+        self.add_element_action.setToolTip(
+            "Add an element from the primitive library")
+        self.add_element_action.triggered.connect(self._on_add_element_action)
+
+        # deliberately NOT Ctrl+C/Ctrl+V/Del: window-level shortcuts would
+        # steal those keys from every text field; the outliner handles Del
+        # itself when it has focus
+        self.copy_action = edit_menu.addAction("&Copy Element")
+        self.copy_action.setShortcut("Ctrl+Shift+C")
+        self.copy_action.setEnabled(False)
+        self.copy_action.triggered.connect(lambda: self._on_copy_element())
+
+        self.paste_action = edit_menu.addAction("&Paste Element")
+        self.paste_action.setShortcut("Ctrl+Shift+V")
+        self.paste_action.setEnabled(False)
+        self.paste_action.triggered.connect(self._on_paste_element)
+
+        self.delete_action = edit_menu.addAction("&Delete Element")
+        self.delete_action.setEnabled(False)
+        self.delete_action.triggered.connect(
+            lambda: self._on_delete_element())
+
         sim_menu = menubar.addMenu("&Simulation")
         self.run_action = sim_menu.addAction("&Run Pipeline…")
         self.run_action.setToolTip(
@@ -296,10 +347,10 @@ class MainWindow(QMainWindow):
         act.triggered.connect(self.results._open_paraview)
 
         view_menu = menubar.addMenu("&View")
-        for dock in (self.inspector_dock, self.element_editor_dock,
-                     self.transform_dock, self.library_dock,
-                     self.console_dock, self.results_dock,
-                     self.problems_dock):
+        for dock in (self.outliner_dock, self.inspector_dock,
+                     self.element_editor_dock, self.transform_dock,
+                     self.library_dock, self.console_dock,
+                     self.results_dock, self.problems_dock):
             view_menu.addAction(dock.toggleViewAction())
 
         help_menu = menubar.addMenu("&Help")
@@ -308,48 +359,64 @@ class MainWindow(QMainWindow):
         act.triggered.connect(self._on_about)
 
     def _build_toolbar(self):
+        """Grouped main toolbar: file | undo/redo | element ops |
+        run/stop/estimate | validate | view."""
         toolbar = self.addToolBar("Main")
         toolbar.setObjectName("main_toolbar")
         style = self.style()
 
-        open_tb = toolbar.addAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton),
-            "Open")
-        open_tb.setToolTip("Open a model or archive")
-        open_tb.triggered.connect(self._on_open)
+        def icon(pixmap):
+            return style.standardIcon(pixmap)
 
-        save_tb = toolbar.addAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton),
-            "Save")
-        save_tb.setToolTip("Save the model / repack the workbench")
-        save_tb.triggered.connect(self._on_save)
+        self.new_action.setIcon(icon(QStyle.StandardPixmap.SP_FileIcon))
+        toolbar.addAction(self.new_action)
+        self.open_action.setIcon(
+            icon(QStyle.StandardPixmap.SP_DialogOpenButton))
+        toolbar.addAction(self.open_action)
+        self.save_action.setIcon(
+            icon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        toolbar.addAction(self.save_action)
 
         toolbar.addSeparator()
+        self.undo_action.setIcon(icon(QStyle.StandardPixmap.SP_ArrowBack))
         toolbar.addAction(self.undo_action)
-        self.undo_action.setIcon(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
-        toolbar.addAction(self.redo_action)
         self.redo_action.setIcon(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
+            icon(QStyle.StandardPixmap.SP_ArrowForward))
+        toolbar.addAction(self.redo_action)
+
         toolbar.addSeparator()
+        self.add_element_action.setIcon(
+            icon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
+        toolbar.addAction(self.add_element_action)
+        self.copy_action.setIcon(
+            icon(QStyle.StandardPixmap.SP_FileDialogContentsView))
+        toolbar.addAction(self.copy_action)
+        self.paste_action.setIcon(
+            icon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        toolbar.addAction(self.paste_action)
+        self.delete_action.setIcon(
+            icon(QStyle.StandardPixmap.SP_TrashIcon))
+        toolbar.addAction(self.delete_action)
 
-        run_tb = toolbar.addAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay), "Run")
-        run_tb.setToolTip("Run Pipeline… (configure and start)")
-        run_tb.triggered.connect(self._on_run_pipeline_dialog)
+        toolbar.addSeparator()
+        self.run_action.setIcon(icon(QStyle.StandardPixmap.SP_MediaPlay))
+        toolbar.addAction(self.run_action)
+        self.stop_action.setIcon(icon(QStyle.StandardPixmap.SP_MediaStop))
+        toolbar.addAction(self.stop_action)
+        self.estimate_action.setIcon(
+            icon(QStyle.StandardPixmap.SP_MessageBoxInformation))
+        toolbar.addAction(self.estimate_action)
 
-        stop_tb = toolbar.addAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_MediaStop), "Stop")
-        stop_tb.setToolTip("Stop the running pipeline")
-        stop_tb.triggered.connect(self.runner.stop)
+        toolbar.addSeparator()
+        self.validate_action.setIcon(
+            icon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        toolbar.addAction(self.validate_action)
 
-        estimate_tb = toolbar.addAction(
-            style.standardIcon(
-                QStyle.StandardPixmap.SP_MessageBoxInformation),
-            "Estimate")
-        estimate_tb.setToolTip("Estimate runtime for the current "
-                               "configuration")
-        estimate_tb.triggered.connect(self._on_estimate)
+        toolbar.addSeparator()
+        fit_tb = toolbar.addAction(
+            icon(QStyle.StandardPixmap.SP_BrowserReload), "Fit view")
+        fit_tb.setToolTip("Reset the 3D camera to frame the whole scene")
+        fit_tb.triggered.connect(self.scene3d.view.fit_camera)
 
     # -- undo/redo -----------------------------------------------------------------
     def _on_undo(self):
@@ -390,11 +457,25 @@ class MainWindow(QMainWindow):
                      or self.library_manager.system_lib).load(),
             lambda: self.config_matrix.values())
 
-        self.scene3d.selectionChanged.connect(self._on_scene_selection)
+        # all selection flows through the shared SelectionModel: 3D picks,
+        # outliner rows and problems-pane jumps stay in sync
+        self.outliner.set_project(self.project)
+        self.scene3d.selectionChanged.connect(
+            lambda body, faces: self.selection.select(body, faces,
+                                                      origin="scene3d"))
+        self.outliner.selectBodyRequested.connect(
+            lambda body: self.selection.select(body, (), origin="outliner"))
+        self.problems.selectBodyRequested.connect(
+            lambda body: self.selection.select(body, ()))
+        self.selection.changed.connect(self._on_selection_changed)
+
+        self.outliner.customizeRequested.connect(self._on_customize_element)
+        self.outliner.deleteRequested.connect(self._on_delete_element)
+        self.outliner.copyRequested.connect(self._on_copy_element)
+        self.outliner.pasteRequested.connect(self._on_paste_element)
+
         self.inspector.faceSelectionChanged.connect(
             self.element_editor.set_face_selection)
-        self.problems.selectBodyRequested.connect(
-            lambda body: self._on_scene_selection(body, set()))
         self.problems.validationChanged.connect(
             self._on_validation_changed)
 
@@ -411,12 +492,24 @@ class MainWindow(QMainWindow):
         self.save_as_action.setEnabled(True)
         self._update_window_title()
 
-    def _on_scene_selection(self, body_name, faces):
+    def _on_selection_changed(self, body_name, faces, origin):
+        enable = bool(body_name)
+        self.copy_action.setEnabled(enable)
+        self.delete_action.setEnabled(enable)
         if not body_name:
             return
         self.inspector.set_body(self.project, body_name)
         self.element_editor.set_face_selection(body_name, set(faces))
         self.transform_panel.set_body(body_name)
+        if origin != "outliner":
+            self.outliner.set_selected_body(body_name)
+        if origin != "scene3d" and hasattr(self.scene3d, "select_body"):
+            self.scene3d.select_body(body_name)
+
+    # kept for tests/back-compat: route an explicit (body, faces) pair
+    # through the shared selection model
+    def _on_scene_selection(self, body_name, faces):
+        self.selection.select(body_name, faces)
 
     def _on_validation_changed(self, has_errors):
         self._has_validation_errors = has_errors
@@ -466,12 +559,126 @@ class MainWindow(QMainWindow):
         self.project.end_macro()
         self.statusBar().showMessage("Added %s" % label, 5000)
 
+    def _on_add_element_action(self):
+        """Toolbar/menu 'Add element': start the add flow for the library's
+        current primitive, or just raise the library for browsing."""
+        self.library_dock.raise_()
+        if hasattr(self.library, "start_add_current"):
+            if self.library.start_add_current():
+                return
+        self.statusBar().showMessage(
+            "Pick an element in the Library, then double-click or press "
+            "'Add to scene'", 6000)
+
+    def _on_customize_element(self, body_name):
+        """Outliner double-click: focus the editors on that element."""
+        self.selection.select(body_name, ())
+        self.element_editor_dock.raise_()
+
+    def _selected_element(self):
+        if self.selection.body is None:
+            return None
+        try:
+            return self.project.element_group(self.selection.body)
+        except ProjectError:
+            return None
+
+    def _on_copy_element(self, element=None):
+        element = element or self._selected_element()
+        if not element:
+            return
+        self._clipboard_element = element
+        self.paste_action.setEnabled(True)
+        self.statusBar().showMessage(
+            "Copied %s — paste with Ctrl+Shift+V" % element, 5000)
+
+    def _on_delete_element(self, element=None):
+        element = element or self._selected_element()
+        if not element or not self.project.is_open():
+            return
+        try:
+            self.project.delete_element(element)
+        except Exception as exc:
+            QMessageBox.warning(self, "Delete failed", str(exc))
+            return
+        self.selection.clear()
+        self.statusBar().showMessage(
+            "Deleted %s (Ctrl+Z to undo)" % element, 5000)
+
+    def _unique_element_label(self, base):
+        used = set()
+        for b in self.project.structure.get("bodies", []):
+            used.add(b["label"])
+            group = b["properties"].get("miewb_group", {}).get("value")
+            if group:
+                used.add(group)
+        n = 1
+        while True:
+            candidate = "%s_copy%s" % (base, "" if n == 1 else n)
+            if candidate not in used:
+                return candidate
+            n += 1
+
+    def _on_paste_element(self):
+        src = self._clipboard_element
+        if not src or not self.project.is_open():
+            return
+        try:
+            src_names = self.project.element_bodies(src)
+        except ProjectError:
+            self.statusBar().showMessage(
+                "Copied element %s no longer exists" % src, 5000)
+            return
+        new_label = self._unique_element_label(src)
+        bodies = self.project.structure.get("bodies", [])
+        bounds = element_bounds(bodies, self.project.body_states, src_names)
+        # offset the copy +x past the source (and past anything else
+        # occupying that spot) so it never lands invisibly coincident
+        if bounds is not None:
+            lo, hi = bounds
+            step = max(1.2 * (hi[0] - lo[0]), 5.0)
+        else:
+            step = 10.0
+        others = [element_bounds(bodies, self.project.body_states,
+                                 [b["name"]])
+                  for b in bodies if b["name"] not in src_names]
+        others = [o for o in others if o is not None]
+        shift = step
+        for _ in range(20):
+            if bounds is None:
+                break
+            lo, hi = bounds
+            cand = ([lo[0] + shift, lo[1], lo[2]],
+                    [hi[0] + shift, hi[1], hi[2]])
+            if not any(_aabb_overlap(cand, o) for o in others):
+                break
+            shift += step
+        self.project.begin_macro("Paste %s" % new_label)
+        try:
+            self.project.duplicate_element(src, new_label)
+            for name in self.project.element_bodies(new_label):
+                self.project.apply_operation(
+                    name, Operation("translate",
+                                    {"vector_mm": [shift, 0.0, 0.0]}))
+        except Exception as exc:
+            self.project.abort_macro()
+            QMessageBox.warning(self, "Paste failed", str(exc))
+            return
+        self.project.end_macro()
+        names = self.project.element_bodies(new_label)
+        if names:
+            self.selection.select(names[0], ())
+        self.statusBar().showMessage("Pasted %s" % new_label, 5000)
+
     def _open_prop_editor(self, category=None, which_library=None):
         if self._prop_editor_window is None:
             self._prop_editor_window = PropEditorPane(self.library_manager)
             self._prop_editor_window.setWindowTitle(
                 "MieWorkbench — Property Library Editor")
             self._prop_editor_window.resize(1000, 620)
+        if category:
+            self._prop_editor_window.show_category(
+                category, which_library or "system")
         self._prop_editor_window.show()
         self._prop_editor_window.raise_()
 
@@ -560,6 +767,59 @@ class MainWindow(QMainWindow):
         if path:
             self.open_model(path)
 
+    def _on_new(self):
+        path, selected = QFileDialog.getSaveFileName(
+            self, "New Simulation", "",
+            "Workbench archive (*.MieWB);;FreeCAD model (*.FCStd)")
+        if not path:
+            return
+        if not path.lower().endswith((".miewb", ".fcstd")):
+            path += ".FCStd" if "FCStd" in selected else ".MieWB"
+        try:
+            if path.lower().endswith(".miewb"):
+                self._new_miewb(path)
+            else:
+                self._new_fcstd(path)
+        except (ProjectError, OSError) as exc:
+            QMessageBox.critical(self, "New simulation failed", str(exc))
+            return
+        self.opened_path = path
+        self._update_window_title()
+        self.library_dock.raise_()
+        self.statusBar().showMessage(
+            "New simulation created — add elements from the Library "
+            "(Edit → Add Element…)", 8000)
+
+    def _new_fcstd(self, path):
+        self.workspace = None
+        self.miewb_path = None
+        self.miesim_out = None
+        self.project.new_document(path)
+        self.project.stash_root = None
+        self.model_path = path
+        self.library_manager.set_project_root(None)
+
+    def _new_miewb(self, path):
+        """A fresh workbench: workspace + empty model + the system optical
+        property library as the project library, packed immediately so
+        the .MieWB exists on disk from the start."""
+        ws = self._workspace_dir(path)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        model = os.path.join(ws, "%s.FCStd" % stem)
+        self.project.new_document(model)
+        self.project.stash_root = os.path.join(ws, "undo")
+        self.model_path = model
+        self.workspace = ws
+        self.miewb_path = path
+        self.miesim_out = None
+        optprops = os.path.join(ws, "opticalproperties")
+        if not os.path.isdir(optprops):
+            shutil.copytree(os.path.join(REPO, "opticalproperties"),
+                            optprops)
+        self.library_manager.set_project_root(ws)
+        miewb_tool.pack_miewb(model, path, optprops_dir=optprops,
+                              simparams=self.config_matrix.values())
+
     def open_model(self, path):
         kind = miewb_tool.sniff(path)
         try:
@@ -601,6 +861,7 @@ class MainWindow(QMainWindow):
         self.miewb_path = None
         self.miesim_out = None
         self.project.open_fcstd(path)
+        self.project.stash_root = None
         self.model_path = path
         self.library_manager.set_project_root(None)
 
@@ -615,6 +876,7 @@ class MainWindow(QMainWindow):
                                                        "model.FCStd")),
                          named)
         self.project.open_fcstd(named)
+        self.project.stash_root = os.path.join(ws, "undo")
         self.model_path = named
         self.workspace = ws
         self.miewb_path = path

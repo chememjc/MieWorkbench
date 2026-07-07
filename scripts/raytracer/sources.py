@@ -339,10 +339,66 @@ def _uv_to_xyz(surf, u, v):
     raise NotImplementedError("emitting face of type %s" % cls)
 
 
+def _rings_uv(loop_uv, c_uv, pattern):
+    """rings:dr=<mm>:nper=<N>[:nrings=<K>] -> centroid + concentric rings,
+    every dr mm, nper rays per ring, out to the trim rim (or K rings)."""
+    r_rim = float(np.max(np.linalg.norm(loop_uv - c_uv, axis=-1)))
+    dr = pattern["dr_mm"] * 1e-3
+    n_rings = pattern["nrings"]
+    if n_rings is None:
+        n_rings = int(np.floor(r_rim / dr + 1e-9))
+    uv = [c_uv]
+    for k in range(1, n_rings + 1):
+        theta = 2.0 * np.pi * np.arange(pattern["nper"]) / pattern["nper"]
+        ring = c_uv + (k * dr) * np.stack(
+            [np.cos(theta), np.sin(theta)], axis=-1)
+        uv.append(ring)
+    return np.concatenate([np.atleast_2d(p) for p in uv], axis=0)
+
+
+def _fan_uv(loop_uv, c_uv, pattern):
+    """fan[:n=<K>] (default K=5) -> centroid, then up to 4 cardinal rays
+    along the face's local +y/-y/+x/-x directions at 95% of the trim's
+    AXIS-ALIGNED extent in that direction (not the corner-to-corner rim
+    radius rings uses) so the cardinal points land inside non-circular
+    (e.g. square) apertures instead of past their corners. Any rays beyond
+    the 4 cardinals fill the largest inscribed circle (95% of the smallest
+    of the four axial extents) evenly spaced, offset by 45 deg so they
+    don't coincide with the cardinal directions.
+    """
+    n = pattern["n"]
+    u_lo, v_lo = loop_uv.min(axis=0)
+    u_hi, v_hi = loop_uv.max(axis=0)
+    ext_px = float(u_hi - c_uv[0])
+    ext_mx = float(c_uv[0] - u_lo)
+    ext_py = float(v_hi - c_uv[1])
+    ext_my = float(c_uv[1] - v_lo)
+
+    cardinals = [((0.0, 1.0), ext_py),    # +y (top)
+                 ((0.0, -1.0), ext_my),   # -y (bottom)
+                 ((1.0, 0.0), ext_px),    # +x (right)
+                 ((-1.0, 0.0), ext_mx)]   # -x (left)
+
+    uv = [c_uv]
+    n_cardinal = min(max(n - 1, 0), 4)
+    for (du, dv), ext in cardinals[:n_cardinal]:
+        uv.append(c_uv + 0.95 * ext * np.array([du, dv]))
+
+    extra = n - 1 - n_cardinal
+    if extra > 0:
+        r_fill = 0.95 * min(ext_px, ext_mx, ext_py, ext_my)
+        theta = 2.0 * np.pi * np.arange(extra) / extra + np.pi / 4.0
+        ring = c_uv + r_fill * np.stack(
+            [np.cos(theta), np.sin(theta)], axis=-1)
+        uv.append(ring)
+    return np.concatenate([np.atleast_2d(p) for p in uv], axis=0)
+
+
 def sample_viz_pattern(scene, body, src, source_id, pattern, n_lambda):
-    """Deterministic viz-overlay ray positions: one central ray plus
-    concentric rings (pattern from common.parse_viz_pattern_spec:
-    {"kind": "rings", "dr_mm", "nper", "nrings"}).
+    """Deterministic viz-overlay ray positions: one central ray plus either
+    concentric rings or a small cardinal fan (pattern from
+    common.parse_viz_pattern_spec: {"kind": "rings", "dr_mm", "nper",
+    "nrings"} or {"kind": "fan", "n"}).
 
     VISUAL HELPER ONLY: callers trace the returned batch in a separate
     viz-only pass (throwaway ledger, no detector grids), so these rays
@@ -363,31 +419,28 @@ def sample_viz_pattern(scene, body, src, source_id, pattern, n_lambda):
                       % (body.label, surf.__class__.__name__))
         return None
 
-    # face centroid + rim radius from the trim polygon (uv == metres for
-    # a Plane: t1/t2 are orthonormal)
+    # face centroid + trim geometry (uv == metres for a Plane: t1/t2 are
+    # orthonormal)
     if face.trim.mode == "untrimmed" or not getattr(face.trim, "loops", None):
         raise ValueError("source %s: emitting plane has no trim loops"
                          % body.label)
     loop_uv = np.concatenate([np.asarray(lp) for lp in face.trim.loops])
     c_uv = loop_uv.mean(axis=0)
-    r_rim = float(np.max(np.linalg.norm(loop_uv - c_uv, axis=-1)))
 
-    dr = pattern["dr_mm"] * 1e-3
-    n_rings = pattern["nrings"]
-    if n_rings is None:
-        n_rings = int(np.floor(r_rim / dr + 1e-9))
-    uv = [c_uv]
-    for k in range(1, n_rings + 1):
-        theta = 2.0 * np.pi * np.arange(pattern["nper"]) / pattern["nper"]
-        ring = c_uv + (k * dr) * np.stack(
-            [np.cos(theta), np.sin(theta)], axis=-1)
-        uv.append(ring)
-    uv = np.concatenate([np.atleast_2d(p) for p in uv], axis=0)
+    kind = pattern["kind"]
+    if kind == "rings":
+        uv = _rings_uv(loop_uv, c_uv, pattern)
+    elif kind == "fan":
+        uv = _fan_uv(loop_uv, c_uv, pattern)
+    else:
+        raise ValueError("sample_viz_pattern: unknown pattern kind %r"
+                         % (kind,))
     inside = face.trim.contains(uv)
     uv = uv[inside]
     if len(uv) == 0:
         raise ValueError("source %s: viz pattern produced no rays inside "
-                         "the emit face (dr too large?)" % body.label)
+                         "the emit face (pattern too large for the "
+                         "aperture?)" % body.label)
     pts = _uv_to_xyz(surf, uv[:, 0], uv[:, 1])
     n = len(pts)
 

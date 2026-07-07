@@ -46,6 +46,27 @@ def build_scene():
 PATTERN = {"kind": "rings", "dr_mm": 1.0, "nper": 8, "nrings": 3}
 
 
+# =============================================================================
+# --viz-pattern grammar (common.parse_viz_pattern_spec) — stdlib only.
+# =============================================================================
+def test_parse_fan_default():
+    spec = common.parse_viz_pattern_spec("fan")
+    assert spec == {"kind": "fan", "n": 5}
+
+
+def test_parse_fan_with_n():
+    spec = common.parse_viz_pattern_spec("fan:n=9")
+    assert spec == {"kind": "fan", "n": 9}
+
+
+def test_parse_fan_rejects_bad_grammar():
+    import pytest
+    for bad in ("fan:n=0", "fan:n=-1", "fan:n=x", "fan:bogus=1",
+                "fan:n", "spiral"):
+        with pytest.raises(ValueError):
+            common.parse_viz_pattern_spec(bad)
+
+
 def test_pattern_geometry_and_determinism():
     scene = build_scene()
     bidx, src = scene.sources[0]
@@ -129,3 +150,77 @@ def test_physics_bit_identical_with_and_without_pattern():
     starts = viz_pat[:, 3:6]
     assert np.sum(np.isclose(starts[:, 0], -0.02)) == n_rays
     assert len(viz_plain) > 0                    # sanity on the default path
+
+
+# =============================================================================
+# fan pattern: central ray + up to 4 cardinal rays + rim fillers.
+# =============================================================================
+FAN5 = {"kind": "fan", "n": 5}
+
+
+def test_fan_geometry_and_determinism():
+    scene = build_scene()
+    bidx, src = scene.sources[0]
+    b1 = sample_viz_pattern(scene, scene.bodies[bidx], src, 0, FAN5, 3)
+    b2 = sample_viz_pattern(scene, scene.bodies[bidx], src, 0, FAN5, 3)
+    assert len(b1.pos) == 5
+    assert np.array_equal(b1.pos, b2.pos)          # deterministic
+
+    # source face is a 10x10mm square centered on the beam axis (x=-20mm):
+    # ray 0 is the centroid, rays 1..4 are the +y/-y/+x/-x cardinals at 95%
+    # of the (square, so axis-aligned) half-width -> inside the aperture
+    centroid = b1.pos[0]
+    assert np.allclose(centroid, [-0.02, 0.0, 0.0], atol=1e-12)
+    half = 0.005
+    rel = b1.pos[1:] - centroid
+    expected = 0.95 * half
+    assert np.allclose(sorted(rel[:, 1].tolist(), reverse=True)[:1],
+                       [expected], atol=1e-9)              # +y (top)
+    assert np.allclose(sorted(rel[:, 1].tolist())[:1],
+                       [-expected], atol=1e-9)             # -y (bottom)
+    assert np.allclose(sorted(rel[:, 2].tolist(), reverse=True)[:1],
+                       [expected], atol=1e-9)              # +x (right)
+    assert np.allclose(sorted(rel[:, 2].tolist())[:1],
+                       [-expected], atol=1e-9)             # -x (left)
+    # every cardinal strictly inside the 10x10mm aperture
+    assert np.all(np.abs(rel) <= half + 1e-9)
+    # all rays share the emit direction (+x toward the detector)
+    assert np.allclose(b1.dir, [1.0, 0.0, 0.0], atol=1e-12)
+
+
+def test_fan_ray_count_and_rim_fillers_inside_aperture():
+    scene = build_scene()
+    bidx, src = scene.sources[0]
+    for n in (1, 2, 4, 5, 9):
+        pattern = {"kind": "fan", "n": n}
+        b = sample_viz_pattern(scene, scene.bodies[bidx], src, 0, pattern, 3)
+        assert len(b.pos) == n
+        half = 0.005 + 1e-9
+        assert np.all(np.abs(b.pos[:, 1]) <= half)
+        assert np.all(np.abs(b.pos[:, 2]) <= half)
+    # n=1 is exactly the centroid
+    b1 = sample_viz_pattern(scene, scene.bodies[bidx], src, 0,
+                            {"kind": "fan", "n": 1}, 3)
+    assert np.allclose(b1.pos[0], [-0.02, 0.0, 0.0], atol=1e-12)
+
+
+def test_fan_unknown_kind_rejected():
+    scene = build_scene()
+    bidx, src = scene.sources[0]
+    import pytest
+    with pytest.raises(ValueError):
+        sample_viz_pattern(scene, scene.bodies[bidx], src, 0,
+                           {"kind": "spiral"}, 3)
+
+
+def test_physics_bit_identical_with_and_without_fan_pattern():
+    cube_plain, audit_plain, viz_plain = run_trace_once(None)
+    cube_fan, audit_fan, viz_fan = run_trace_once(FAN5)
+    assert np.array_equal(cube_plain, cube_fan)
+    for src_name, rep in audit_plain["sources"].items():
+        for k, v in rep.items():
+            assert audit_fan["sources"][src_name][k] == v, (src_name, k)
+    n_rays = 5
+    assert len(viz_fan) == 2 * n_rays
+    starts = viz_fan[:, 3:6]
+    assert np.sum(np.isclose(starts[:, 0], -0.02)) == n_rays

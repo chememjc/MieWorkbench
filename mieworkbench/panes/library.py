@@ -236,6 +236,17 @@ class LibraryPane(QWidget):
         if info is not None:
             self._start_add_flow(info)
 
+    def start_add_current(self):
+        """Toolbar 'Add element' entry point: start the add flow for the
+        currently selected primitive. Returns False when nothing usable
+        is selected (caller raises the pane for browsing instead)."""
+        self.tabs.setCurrentIndex(0)
+        info = self._selected_primitive()
+        if info is None:
+            return False
+        self._start_add_flow(info)
+        return True
+
     def _start_add_flow(self, info):
         label = default_label(info["kind"], self._used_labels)
         dialog = LabelDialog(label, self)

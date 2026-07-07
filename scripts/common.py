@@ -871,41 +871,65 @@ def release_case_lock(case_dir):
 #   rings:dr=<mm>:nper=<N>[:nrings=<K>]
 #     one central ray plus concentric rings every dr mm with N rays per
 #     ring step, out to the emit face's rim (or K rings if given).
+#
+#   fan[:n=<K>]  (K default 5)
+#     one central ray plus up to 4 cardinal rays (top/bottom/right/left of
+#     the emit face) and, beyond that, evenly-spaced rim-filler rays.
 # ---------------------------------------------------------------------------
 def parse_viz_pattern_spec(spec):
     """Parse a --viz-pattern value; returns a dict or raises ValueError."""
     parts = str(spec).strip().split(":")
     kind = parts[0].strip().lower()
-    if kind != "rings":
-        raise ValueError("unknown viz pattern %r (expected 'rings:...')"
-                         % kind)
-    out = {"kind": "rings", "dr_mm": None, "nper": None, "nrings": None}
-    for part in parts[1:]:
-        if "=" not in part:
-            raise ValueError("bad viz-pattern field %r (expected k=v)" % part)
-        key, _, val = part.partition("=")
-        key = key.strip().lower()
-        try:
-            if key == "dr":
-                out["dr_mm"] = float(val)
-            elif key == "nper":
-                out["nper"] = int(val)
-            elif key == "nrings":
-                out["nrings"] = int(val)
-            else:
+    if kind == "rings":
+        out = {"kind": "rings", "dr_mm": None, "nper": None, "nrings": None}
+        for part in parts[1:]:
+            if "=" not in part:
+                raise ValueError("bad viz-pattern field %r (expected k=v)"
+                                 % part)
+            key, _, val = part.partition("=")
+            key = key.strip().lower()
+            try:
+                if key == "dr":
+                    out["dr_mm"] = float(val)
+                elif key == "nper":
+                    out["nper"] = int(val)
+                elif key == "nrings":
+                    out["nrings"] = int(val)
+                else:
+                    raise ValueError("unknown viz-pattern key %r" % key)
+            except (TypeError, ValueError) as exc:
+                if "viz-pattern" in str(exc):
+                    raise
+                raise ValueError("bad viz-pattern value %r for key %r"
+                                 % (val, key))
+        if out["dr_mm"] is None or out["dr_mm"] <= 0:
+            raise ValueError("viz pattern needs dr=<mm> > 0")
+        if out["nper"] is None or out["nper"] < 1:
+            raise ValueError("viz pattern needs nper=<int> >= 1")
+        if out["nrings"] is not None and out["nrings"] < 0:
+            raise ValueError("viz pattern nrings must be >= 0")
+        return out
+    elif kind == "fan":
+        out = {"kind": "fan", "n": 5}
+        for part in parts[1:]:
+            if "=" not in part:
+                raise ValueError("bad viz-pattern field %r (expected k=v)"
+                                 % part)
+            key, _, val = part.partition("=")
+            key = key.strip().lower()
+            if key != "n":
                 raise ValueError("unknown viz-pattern key %r" % key)
-        except (TypeError, ValueError) as exc:
-            if "viz-pattern" in str(exc):
-                raise
-            raise ValueError("bad viz-pattern value %r for key %r"
-                             % (val, key))
-    if out["dr_mm"] is None or out["dr_mm"] <= 0:
-        raise ValueError("viz pattern needs dr=<mm> > 0")
-    if out["nper"] is None or out["nper"] < 1:
-        raise ValueError("viz pattern needs nper=<int> >= 1")
-    if out["nrings"] is not None and out["nrings"] < 0:
-        raise ValueError("viz pattern nrings must be >= 0")
-    return out
+            try:
+                out["n"] = int(val)
+            except (TypeError, ValueError):
+                raise ValueError("bad viz-pattern value %r for key %r"
+                                 % (val, key))
+        if out["n"] < 1:
+            raise ValueError("viz pattern needs n=<int> >= 1")
+        return out
+    else:
+        raise ValueError("unknown viz pattern %r (expected 'rings:...' or "
+                         "'fan[:n=...]')" % kind)
 
 
 # ---------------------------------------------------------------------------
@@ -1013,8 +1037,13 @@ def _selfcheck():
           and vp["nrings"] == 4)
     vp2 = parse_viz_pattern_spec("rings:dr=1:nper=12")
     check("viz pattern open rings", vp2["nrings"] is None)
+    vp3 = parse_viz_pattern_spec("fan")
+    check("viz pattern fan default", vp3["kind"] == "fan" and vp3["n"] == 5)
+    vp4 = parse_viz_pattern_spec("fan:n=9")
+    check("viz pattern fan n", vp4["n"] == 9)
     for bad_vp in ("spiral:dr=1", "rings:dr=0:nper=4", "rings:nper=4",
-                   "rings:dr=1:nper=0", "rings:dr=x:nper=4"):
+                   "rings:dr=1:nper=0", "rings:dr=x:nper=4",
+                   "fan:n=0", "fan:n=x", "fan:bogus=1"):
         try:
             parse_viz_pattern_spec(bad_vp)
             check("reject viz %r" % bad_vp, False)
