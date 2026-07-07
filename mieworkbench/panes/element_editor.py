@@ -561,6 +561,9 @@ class ElementEditorPane(QWidget):
         Also tracks which body is "current" for sections (a)/(c) -- a
         body change refreshes those too. Any selection change re-filters
         the Active Properties table."""
+        # PySide6 coerces None through the str-typed signals into "" --
+        # normalize so the is-None guards downstream keep working
+        body_name = body_name or None
         body_changed = body_name != self._body_name
         self._body_name = body_name
         self._face_selection = set(faces or [])

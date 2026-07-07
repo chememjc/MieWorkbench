@@ -91,3 +91,41 @@ def test_run_requires_open_model(qtbot, monkeypatch):
     window._on_dry_run()
     assert warned
     assert not window.runner.is_running()
+
+
+# ---------------------------------------------------------------------------
+# file-lifecycle actions (offscreen, no document needed)
+# ---------------------------------------------------------------------------
+def test_close_and_revert_actions_exist_and_start_disabled(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert not window.close_action.isEnabled()
+    assert not window.revert_action.isEnabled()
+    # triggering them with nothing open must be a harmless no-op
+    window._on_close_model()
+    window._on_revert()
+    assert not window.project.is_open()
+
+
+def test_maybe_save_changes_true_when_nothing_open(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._maybe_save_changes("testing") is True
+
+
+def test_reset_session_views_safe_with_no_project(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._reset_session_views()      # must not raise
+    assert window.scene3d.view._rays_actor is None
+    assert window.results.case_dir is None
+
+
+def test_results_clear_case_resets_state(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.results.case_dir = str(tmp_path)
+    window.results.title.setText("something")
+    window.results.clear_case()
+    assert window.results.case_dir is None
+    assert window.results.title.text() == "No results loaded"

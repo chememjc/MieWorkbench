@@ -57,6 +57,14 @@ class PreviewScheduler(QObject):
     def is_enabled(self):
         return self._enabled
 
+    def reset(self):
+        """Session boundary (close/open/revert): stop the debounce, drop
+        any queued rerun and forget the busy state -- the next edit in
+        the NEW session starts from scratch."""
+        self._timer.stop()
+        self._pending = False
+        self._busy = False
+
     # -- inputs -------------------------------------------------------------
     def notify_change(self):
         """An optics-affecting edit happened: (re)start the debounce."""

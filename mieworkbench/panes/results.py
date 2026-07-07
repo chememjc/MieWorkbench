@@ -238,6 +238,7 @@ class ResultsPane(QWidget):
         lay = QVBoxLayout(self)
         head = QHBoxLayout()
         self.title = QLabel("No results loaded")
+        # (clear_case() below resets to exactly this state)
         self.title.setStyleSheet("font-weight: bold;")
         head.addWidget(self.title, 1)
         self.pv_btn = QPushButton("Open in ParaView")
@@ -291,6 +292,15 @@ class ResultsPane(QWidget):
 
     def stop_monitoring(self):
         self._monitor.stop()
+
+    def clear_case(self):
+        """Session boundary (File -> Close / opening a different model):
+        stop live monitoring and forget the loaded case so stale ray
+        overlays / results can't leak into the next session."""
+        self._monitor.stop()
+        self.case_dir = None
+        self.title.setText("No results loaded")
+        self.statusChanged.emit("")
 
     def refresh(self):
         if not self.case_dir or not os.path.isdir(self.case_dir):

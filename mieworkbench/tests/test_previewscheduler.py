@@ -91,3 +91,19 @@ def test_reenabling_does_not_resurrect_old_pending(qtbot):
     sched.notify_run_finished()
     qtbot.wait(20)
     assert fired == []
+
+
+def test_reset_drops_pending_and_busy(qtbot):
+    sched, fired = _make(qtbot)
+    sched.notify_busy(True)
+    sched.notify_change()
+    qtbot.waitUntil(sched.has_pending, timeout=2000)
+    sched.reset()
+    assert not sched.has_pending()
+    assert not sched.timer_active()
+    sched.notify_run_finished()        # nothing queued anymore
+    qtbot.wait(20)
+    assert fired == []
+    # scheduler still functional after the reset
+    sched.notify_change()
+    qtbot.waitUntil(lambda: len(fired) == 1, timeout=2000)

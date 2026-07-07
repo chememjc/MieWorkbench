@@ -123,3 +123,79 @@ def test_new_fcstd_from_scratch(window, qtbot, tmp_path):
     assert window.project.is_open()
     assert os.path.isfile(path)
     assert window.workspace is None and window.miewb_path is None
+
+
+# ---------------------------------------------------------------------------
+# file lifecycle: Close / Revert to Saved / session reset on open
+# ---------------------------------------------------------------------------
+def _example_copy(tmp_path, name="ex.FCStd"):
+    import shutil
+    dst = tmp_path / name
+    shutil.copy2(os.path.join(REPO, "example.FCStd"), dst)
+    return str(dst)
+
+
+def test_close_model_clears_session_and_rays(window, qtbot, tmp_path):
+    from mieworkbench.tests.vtk_test_support import write_simple_vtp
+    window.open_model(_example_copy(tmp_path))
+    assert window.project.is_open()
+    assert window.close_action.isEnabled()
+    assert window.revert_action.isEnabled()
+
+    rays = tmp_path / "rays.vtp"
+    write_simple_vtp(rays, with_rgb=True)
+    window.scene3d.load_rays_vtp(str(rays))
+    assert window.scene3d.view._rays_actor is not None
+
+    window._on_close_model()
+    assert not window.project.is_open()
+    assert window.model_path is None
+    assert window.opened_path is None
+    assert window.scene3d.view._rays_actor is None
+    assert len(window.scene3d.view._body_actors) == 0
+    assert not window.save_action.isEnabled()
+    assert not window.close_action.isEnabled()
+    assert not window.revert_action.isEnabled()
+
+
+def test_revert_discards_unsaved_changes(window, qtbot, tmp_path):
+    window.open_model(_example_copy(tmp_path))
+    window.project.set_property("Body", "absorbance", 0.5)
+    assert window.project.is_dirty()
+    assert "absorbance" in window.project.body("Body")["properties"]
+
+    window._on_revert()      # hidden window: no confirmation modal
+    assert window.project.is_open()
+    assert not window.project.is_dirty()
+    assert "absorbance" not in window.project.body("Body")["properties"]
+    assert len(window.project.body_names()) == 7
+
+
+def test_open_second_model_clears_old_ray_overlay(window, qtbot, tmp_path):
+    """The reported bug: rays from the previous session survived into a
+    newly opened model and wrecked the render."""
+    from mieworkbench.tests.vtk_test_support import write_simple_vtp
+    window.open_model(_example_copy(tmp_path, "first.FCStd"))
+    rays = tmp_path / "rays.vtp"
+    write_simple_vtp(rays, with_rgb=True)
+    window.scene3d.load_rays_vtp(str(rays))
+    window.inspector.set_body(window.project, "Body")
+    window.inspector.load_rays_vtp(str(rays))
+    window.results.case_dir = str(tmp_path)
+
+    window.open_model(_example_copy(tmp_path, "second.FCStd"))
+    assert window.project.is_open()
+    assert window.scene3d.view._rays_actor is None
+    assert window.inspector.view._rays_actor is None
+    assert window.results.case_dir is None
+    assert len(window.project.body_names()) == 7
+    # the new scene renders its bodies (28 face actors, per example.FCStd)
+    assert len(window.scene3d.view._actor_face_map) == 28
+
+
+def test_unsaved_prompt_skipped_when_hidden(window, qtbot, tmp_path):
+    window.open_model(_example_copy(tmp_path))
+    window.project.set_property("Body", "absorbance", 0.25)
+    assert window.project.is_dirty()
+    # hidden windows never block on the modal: treated as discard
+    assert window._maybe_save_changes("testing") is True

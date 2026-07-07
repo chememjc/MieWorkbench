@@ -114,7 +114,8 @@ class Project(QObject):
         self.sceneLoaded.emit()
 
     def close(self):
-        if self.doc is not None:
+        had_doc = self.doc is not None
+        if had_doc:
             try:
                 self.fc.close(self.doc)
             except Exception:
@@ -126,6 +127,21 @@ class Project(QObject):
         self.body_states = {}
         self.undo_stack.clear()
         self._set_dirty(False)
+        if had_doc:
+            # views rebuild against the now-empty structure (File -> Close);
+            # internal close-before-reopen paths re-emit right after with
+            # the new scene, so the extra clear is momentary and harmless
+            self.sceneLoaded.emit()
+
+    def revert(self):
+        """Discard every unsaved change by re-opening the document from
+        its last saved state on disk (the in-memory FreeCAD doc and the
+        undo history are dropped wholesale)."""
+        if self.doc is None:
+            raise ProjectError("no document open to revert")
+        path = self.fcstd_path
+        self.close()
+        self.open_fcstd(path)
 
     def shutdown(self):
         self.close()

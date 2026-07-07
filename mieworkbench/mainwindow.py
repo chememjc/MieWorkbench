@@ -260,6 +260,21 @@ class MainWindow(QMainWindow):
         self.save_as_action.triggered.connect(self._on_save_as)
         self.save_as_action.setEnabled(False)
 
+        self.revert_action = file_menu.addAction("&Revert to Saved")
+        self.revert_action.setToolTip(
+            "Discard all unsaved changes and restore the model to its "
+            "last saved state on disk")
+        self.revert_action.triggered.connect(self._on_revert)
+        self.revert_action.setEnabled(False)
+
+        self.close_action = file_menu.addAction("&Close")
+        self.close_action.setShortcut(QKeySequence.StandardKey.Close)
+        self.close_action.setToolTip(
+            "Close the current model (prompts if there are unsaved "
+            "changes)")
+        self.close_action.triggered.connect(self._on_close_model)
+        self.close_action.setEnabled(False)
+
         act = file_menu.addAction("&Export Run Script…")
         act.setToolTip("Pack a .MieWB and write a standalone shell script "
                        "that runs it headlessly (e.g. on a remote server) "
@@ -721,8 +736,11 @@ class MainWindow(QMainWindow):
             lambda _msg: self.preview_scheduler.notify_run_failed())
 
     def _on_scene_loaded(self):
-        self.save_action.setEnabled(True)
-        self.save_as_action.setEnabled(True)
+        has_doc = self.project.is_open()
+        self.save_action.setEnabled(has_doc)
+        self.save_as_action.setEnabled(has_doc)
+        self.revert_action.setEnabled(has_doc)
+        self.close_action.setEnabled(has_doc)
         self._update_window_title()
 
     def _on_selection_changed(self, body_name, faces, origin):
@@ -1145,7 +1163,90 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Pipeline error: %s" % message, 5000)
 
     # -- open flows -----------------------------------------------------------
+    def _maybe_save_changes(self, verb="continuing"):
+        """Prompt Save / Discard / Cancel when the open model has unsaved
+        changes. Returns False when the user cancels (the caller must
+        abort). Hidden windows (offscreen tests, teardown) never block on
+        the modal -- unsaved changes are then treated as discarded, same
+        policy as closeEvent."""
+        if not (self.project.is_open() and self.project.is_dirty()):
+            return True
+        if not self.isVisible():
+            return True
+        answer = QMessageBox.question(
+            self, "Unsaved changes",
+            "The model has unsaved changes. Save before %s?" % verb,
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel)
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Save:
+            self._on_save()
+            if self.project.is_dirty():   # save failed and was reported
+                return False
+        return True
+
+    def _reset_session_views(self):
+        """Clear every view artifact tied to the outgoing session: ray
+        overlays (the old rays used to survive into a newly opened model
+        and wreck the render), the preview chain/scheduler, the shared
+        selection and the loaded results case."""
+        if self.raypreview.is_running():
+            self.raypreview.cancel()
+        self.preview_scheduler.reset()
+        self.scene3d.clear_rays()
+        self.scene3d.set_rays_stale(False)
+        self.inspector.clear_rays()
+        self.inspector.set_rays_stale(False)
+        self.selection.clear()
+        self.inspector.set_body(self.project, None)
+        self.element_editor.set_face_selection(None, set())
+        self.results.clear_case()
+
+    def _clear_session_paths(self):
+        self.model_path = None
+        self.opened_path = None
+        self.workspace = None
+        self.miewb_path = None
+        self.miesim_out = None
+        self.library_manager.set_project_root(None)
+
+    def _on_close_model(self):
+        if not self.project.is_open():
+            return
+        if not self._maybe_save_changes("closing"):
+            return
+        self._reset_session_views()
+        self.project.close()          # emits sceneLoaded -> views empty
+        self._clear_session_paths()
+        self._update_window_title()
+        self.statusBar().showMessage("Model closed", 4000)
+
+    def _on_revert(self):
+        if not self.project.is_open():
+            return
+        if self.isVisible():
+            answer = QMessageBox.question(
+                self, "Revert to Saved",
+                "Discard ALL unsaved changes and restore %s to its last "
+                "saved state?" % os.path.basename(self.model_path or ""),
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.Cancel)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._reset_session_views()
+        try:
+            self.project.revert()
+        except ProjectError as exc:
+            QMessageBox.critical(self, "Revert failed", str(exc))
+            return
+        self._update_window_title()
+        self.statusBar().showMessage("Reverted to last saved state", 5000)
+
     def _on_open(self):
+        if not self._maybe_save_changes("opening another model"):
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Open optical model", "",
             "Optical models (*.FCStd *.MieWB *.MieSim);;All files (*)")
@@ -1153,6 +1254,8 @@ class MainWindow(QMainWindow):
             self.open_model(path)
 
     def _on_new(self):
+        if not self._maybe_save_changes("creating a new simulation"):
+            return
         path, selected = QFileDialog.getSaveFileName(
             self, "New Simulation", "",
             "Workbench archive (*.MieWB);;FreeCAD model (*.FCStd)")
@@ -1160,6 +1263,7 @@ class MainWindow(QMainWindow):
             return
         if not path.lower().endswith((".miewb", ".fcstd")):
             path += ".FCStd" if "FCStd" in selected else ".MieWB"
+        self._reset_session_views()
         try:
             if path.lower().endswith(".miewb"):
                 self._new_miewb(path)
@@ -1206,6 +1310,10 @@ class MainWindow(QMainWindow):
                               simparams=self.config_matrix.values())
 
     def open_model(self, path):
+        # the outgoing session's ray overlays/selection/results must never
+        # leak into the incoming one (old rays used to stay on screen and
+        # break the new scene's render)
+        self._reset_session_views()
         kind = miewb_tool.sniff(path)
         try:
             if kind == "FCStd":
