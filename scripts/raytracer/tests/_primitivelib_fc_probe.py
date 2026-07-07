@@ -235,13 +235,17 @@ def probe_batch3_geometry():
     doc = App.newDocument("probe_bs_cube")
     try:
         bodies = pl.build_primitive(doc, "bs_cube", group="bs_cube")
-        b_in = [b for b in bodies if b.Name.endswith("_in")][0]
-        b_out = [b for b in bodies if b.Name.endswith("_out")][0]
+        cube = [b for b in bodies if b.Name == "bs_cube"][0]
+        plate = [b for b in bodies if b.Name.endswith("_split")][0]
+        # nested-plate design: the splitter must sit STRICTLY inside the
+        # cube (proper nesting -- the common volume equals the plate's)
+        common_vol = cube.Shape.common(plate.Shape).Volume
         out["bs_cube"] = {
             "n_bodies": len(bodies),
-            "gap_mm": _gap(b_in, b_out),
-            "coating_in": getattr(b_in, "coating", None),
-            "coating_out": getattr(b_out, "coating", None),
+            "plate_inside": abs(common_vol - plate.Shape.Volume)
+                            <= 1e-6 * plate.Shape.Volume,
+            "coating_cube": getattr(cube, "coating", None),
+            "coating_plate": getattr(plate, "coating", None),
         }
     finally:
         App.closeDocument(doc.Name)

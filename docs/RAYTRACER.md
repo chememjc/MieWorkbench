@@ -1738,7 +1738,19 @@ high-resolution `--save-fields` runs.
   check that the gap is present and non-zero (a literal zero-thickness
   gap makes the two faces coincide, which is exactly the degenerate case
   §13's `seam_loss` bucket exists to catch) and that both sides' trims
-  describe the same footprint.
+  describe the same footprint. **The gap convention fails wherever the
+  internal incidence exceeds the critical angle** (a 45° beamsplitter
+  interface in BK7: critical angle 41.2° — the gap TIRs the transmitted
+  arm; there is no frustrated-TIR physics). For those interfaces use
+  **proper nesting** instead: one solid strictly inside another is
+  legal (the extractor classifies it `validation.nested_solids`; the
+  tracer's LIFO medium stack handles enter/exit), so a thin coated
+  plate nested inside a single cube gives a glass-glass interface where
+  a measured split table applies exactly — this is how the catalog
+  `bs_cube`/`pbs_cube` are built. PARTIAL overlap is still rejected.
+  Related trace-time honesty rule: a TABLE coating evaluated past the
+  critical angle now folds its transmitted power into the reflected
+  side (TIR) instead of emitting a degenerate grazing child.
 - **`seam_loss` in `audit.json`/`report.json`**: a ray's tracked medium
   stack disagreed with the direction it crossed a face — one face's trim
   rejected a true hit while a neighboring face's trim accepted a grazing

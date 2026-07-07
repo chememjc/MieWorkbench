@@ -746,13 +746,34 @@ def trim_polylines_xyz(face, face_id, warnings):
     for w in ordered:
         pts = []
         edges = w.OrderedEdges if hasattr(w, "OrderedEdges") else w.Edges
+        chains = []
         for e in edges:
             try:
                 epts = e.discretize(Deflection=TRIM_DEFLECTION_MM)
             except Exception:
                 epts = [e.Vertexes[0].Point, e.Vertexes[-1].Point]
-            for p in epts:
-                pm = [p.x / 1000.0, p.y / 1000.0, p.z / 1000.0]
+            chains.append([[q.x / 1000.0, q.y / 1000.0, q.z / 1000.0]
+                           for q in epts])
+        # Orient each edge chain head-to-tail before concatenating:
+        # OrderedEdges orders the EDGES but does NOT flip the point
+        # sequence of reversed edges, so multi-edge planar wires (every
+        # pad rectangle/triangle) used to emit SELF-CROSSING loops -- the
+        # even-odd trim containment test then rejected ~half of each such
+        # face (dead half-faces: phantom transmission and seam-leak
+        # kills; found via the BS-cube investigation, and the cause of
+        # the wollaston scene's documented detected-power anomaly).
+        for i, ch in enumerate(chains):
+            if not pts:
+                if len(chains) > 1:
+                    n2 = chains[1]
+                    if (close3(ch[0], n2[0]) or close3(ch[0], n2[-1])) and \
+                       not (close3(ch[-1], n2[0])
+                            or close3(ch[-1], n2[-1])):
+                        ch = ch[::-1]
+            else:
+                if close3(pts[-1], ch[-1]) and not close3(pts[-1], ch[0]):
+                    ch = ch[::-1]
+            for pm in ch:
                 if pts and close3(pts[-1], pm):
                     continue
                 pts.append(pm)
@@ -1176,6 +1197,7 @@ def extract_one(fcstd_path, outdir, strict):
             die("%s: no detectors found (material=detector)" % stem)
 
         overlaps = []
+        nested = []
         for i in range(len(bodies_solids)):
             ni, si = bodies_solids[i]
             bi = si.BoundBox
@@ -1188,7 +1210,21 @@ def extract_one(fcstd_path, outdir, strict):
                     continue   # bboxes disjoint -> solids can't overlap
                 common_vol = si.common(sj).Volume
                 if common_vol > 1e-12:
-                    overlaps.append({"a": ni, "b": nj, "volume_mm3": common_vol})
+                    # PROPER NESTING (one solid strictly inside another) is
+                    # supported by the tracer's LIFO medium stack and is how
+                    # the beamsplitter cubes model their coated internal
+                    # interface (a nested thin plate: glass-glass, no gap,
+                    # no TIR); only PARTIAL overlap is non-manifold and
+                    # rejected.
+                    vi, vj = si.Volume, sj.Volume
+                    inner = min(vi, vj)
+                    if abs(common_vol - inner) <= 1e-6 * inner:
+                        nested.append({"outer": ni if vi > vj else nj,
+                                       "inner": nj if vi > vj else ni,
+                                       "volume_mm3": common_vol})
+                    else:
+                        overlaps.append({"a": ni, "b": nj,
+                                         "volume_mm3": common_vol})
 
         model = {
             "schema_version": 2,
@@ -1200,6 +1236,7 @@ def extract_one(fcstd_path, outdir, strict):
             "bodies": bodies_out,
             "validation": {
                 "overlapping_solids": overlaps,
+                "nested_solids": nested,
                 "warnings": warnings,
             },
         }

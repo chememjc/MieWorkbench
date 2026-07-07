@@ -8,17 +8,17 @@
    "help": "cube edge length",
    "unit": "mm"
   },
-  "gap": {
-   "default": 0.005,
-   "help": "hypotenuse air gap",
-   "unit": "mm"
-  },
   "height": {
    "default": 20.0,
    "help": "extent along z",
    "unit": "mm"
+  },
+  "plate_ct": {
+   "default": 0.2,
+   "help": "internal splitter plate thickness",
+   "unit": "mm"
   }
  },
  "props": {},
- "tooltip": "Polarizing beamsplitter: two 45-deg prisms, coated hypotenuse, 5 um gap. Two bodies."
+ "tooltip": "Polarizing beamsplitter: a single BK7 cube with a thin pbs_visible_45-coated plate NESTED inside along the diagonal (glass-glass interface; s-pol reflects, p-pol transmits -- the old two-prism air-gap build TIR'd the transmitted arm at 45 deg). Two bodies (cube + splitter plate)."
 }

@@ -238,7 +238,8 @@ def demo_newtonian(d):
     xd = -(rfl - L)                 # diagonal position on axis
     d.add("laser_collimated", "Star", pos=(-rfl - 60.0, 0, 0),
           params={"diameter": ap * 0.98},
-          props={"lambdac": 550.0, "coherent": False})
+          props={"lambdac": 550.0, "lambdamin": 450.0,
+                 "lambdamax": 650.0, "coherent": False})
     d.add("mirror_parabolic", "Primary",
           params={"rfl": rfl, "aperture": ap, "thickness": 15.0})
     # fold the converging cone (traveling -x) into +y: normal (1,1)/sqrt2.
@@ -263,7 +264,8 @@ def demo_dobsonian(d):
     xd = -(rfl - L)
     d.add("laser_collimated", "Star", pos=(-rfl - 60.0, 0, 0),
           params={"diameter": ap * 0.98},
-          props={"lambdac": 550.0, "coherent": False})
+          props={"lambdac": 550.0, "lambdamin": 450.0,
+                 "lambdamax": 650.0, "coherent": False})
     d.add("mirror_parabolic", "Primary",
           params={"rfl": rfl, "aperture": ap, "thickness": 18.0})
     d.add("mirror_flat", "Diagonal", pos=(xd, 0, 0), rot_deg=-135.0,
@@ -466,7 +468,8 @@ def demo_camera_triplet(d):
 
     d.add("laser_collimated", "Scene", pos=(-40, 0, 0),
           params={"diameter": 14.0},
-          props={"lambdac": lam, "coherent": False})
+          props={"lambdac": lam, "lambdamin": 450.0, "lambdamax": 650.0,
+                 "coherent": False})
     d.add("lens_dcx", "L1", pos=(x1, 0, 0),
           params={"R_front": L1["R_front"], "R_back": L1["R_back"],
                   "ct": L1["ct"], "aperture": L1["ap"]})
@@ -515,7 +518,8 @@ def demo_microscope_objective(d):
 
     d.add("laser_divergent", "Object", pos=(x_obj, 0, 0),
           params={"diameter": 2.0, "roc": 5.0, "length": 6.0},
-          props={"lambdac": lam, "coherent": False})
+          props={"lambdac": lam, "lambdamin": 450.0, "lambdamax": 650.0,
+                 "coherent": False})
     # aperture must stay under the scaled R_iface (|R|=8.8 mm at f=20)
     # or the meridian arcs cannot close -- 10 mm covers the NA 0.25 cone
     def ach_params(a, aperture):
@@ -569,7 +573,8 @@ def demo_schmidt_cassegrain(d):
     x_focus = x_primary + 150.0
     d.add("laser_collimated", "Star", pos=(-60, 0, 0),
           params={"diameter": 198.0},
-          props={"lambdac": 550.0, "coherent": False})
+          props={"lambdac": 550.0, "lambdamin": 450.0,
+                 "lambdamax": 650.0, "coherent": False})
     d.add("mirror_annular", "Primary", pos=(x_primary, 0, 0),
           params={"R": 812.8, "aperture": 203.2, "hole_diameter": 60.0,
                   "ct": 18.0})

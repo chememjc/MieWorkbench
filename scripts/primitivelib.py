@@ -315,12 +315,18 @@ PRIMITIVES = {
     },
     "pbs_cube": {
         "category": "Polarization", "label": "PBS cube",
-        "tooltip": "Polarizing beamsplitter: two 45-deg prisms, coated "
-                   "hypotenuse, 5 um gap. Two bodies.",
+        "tooltip": "Polarizing beamsplitter: a single BK7 cube with a "
+                   "thin pbs_visible_45-coated plate NESTED inside along "
+                   "the diagonal (glass-glass interface; s-pol reflects, "
+                   "p-pol transmits -- the old two-prism air-gap build "
+                   "TIR'd the transmitted arm at 45 deg). Two bodies "
+                   "(cube + splitter plate).",
         "params": {"cube": P(20.0, "mm", "cube edge length"),
                    "height": P(20.0, "mm", "extent along z"),
-                   "gap": P(0.005, "mm", "hypotenuse air gap")},
+                   "plate_ct": P(0.2, "mm", "internal splitter plate "
+                                            "thickness")},
         "props": {},   # per-body props set by the builder
+        "derived_props": ("coating",),
     },
     # =========================================================================
     # Batch 1 -- plate-likes (all on _build_plate/_build_wedge_plate)
@@ -639,18 +645,25 @@ PRIMITIVES = {
     # =========================================================================
     "bs_cube": {
         "category": "Beamsplitters", "label": "Beamsplitter cube (50:50)",
-        "tooltip": "Non-polarizing beamsplitter cube: two 45-deg prisms "
-                   "with a 5 um cemented-interface air gap (optically-"
-                   "contacted solids don't exist -- model the cement line "
-                   "as a gap), hypotenuse coated (default bs_5050_vis_45). "
-                   "Swap the 'coating' property for any bs_XXYY_vis_45 "
-                   "registry row to change the split ratio -- e.g. "
-                   "bs_6040_vis_45 for a 60:40 cube. Two bodies.",
+        "tooltip": "Non-polarizing beamsplitter cube: a single BK7 cube "
+                   "with a thin coated plate NESTED inside along the "
+                   "diagonal (glass-glass interface -- the split table "
+                   "applies exactly; the old two-prism air-gap build "
+                   "TIR'd the transmitted arm at 45 deg and lost ~1/3 of "
+                   "the power to seam loss). Default coating "
+                   "bs_5050_vis_45; swap the plate body's 'coating' "
+                   "property for any bs_XXYY_vis_45 registry row to "
+                   "change the split ratio. Two bodies (cube + splitter "
+                   "plate).",
         "params": {"cube": P(25.0, "mm", "cube edge length"),
                    "height": P(25.0, "mm", "extent along z"),
-                   "gap": P(0.005, "mm", "hypotenuse air gap")},
-        "props": {},   # per-body props (material + hypotenuse coating) set
+                   "plate_ct": P(0.2, "mm", "internal splitter plate "
+                                            "thickness")},
+        "props": {},   # per-body props (material + splitter coating) set
                        # by the builder
+        # the coating string names a face index of the freshly built
+        # plate -- a rebuild must re-derive it, not restore the stale one
+        "derived_props": ("coating",),
     },
     "anamorphic_pair": {
         "category": "Prisms & Mirrors", "label": "Anamorphic prism pair",
@@ -1034,34 +1047,61 @@ def _build_prism(doc, group, p):
 
 
 def _build_cube_beamsplitter(doc, group, p, coating):
-    """Two 45-deg prisms split along the D-B diagonal, hypotenuse of the
-    entrance prism coated, exit prism shifted +gap along the hypotenuse
-    normal (1,1)/sqrt2 — geometry ported from make_test_scenes.make_pbs_cube.
-    Shared by pbs_cube (polarizing) and bs_cube (non-polarizing): the only
-    difference between the two catalog entries is which registry row goes
-    on the hypotenuse, so `coating` is the one parameter that varies."""
-    c, H, gap = p["cube"], p["height"], p["gap"]
+    """Single BK7 cube with a THIN COATED PLATE NESTED strictly inside
+    along the D-B diagonal. The coated interface is then glass-glass
+    (n1 = n2), so the registry split table applies exactly at 45 deg.
+
+    WHY NOT the old two-prisms + 5 um cemented air gap: 45 deg internal
+    incidence is past BK7's critical angle (41.2 deg) — the air gap TIRs
+    the transmitted arm (there is no frustrated-TIR physics), table
+    coatings then emit a grazing ghost child, and ~1/3 of the input power
+    drowned in seam loss. Proper NESTING (one solid strictly inside
+    another) is supported by the tracer's LIFO medium stack and is
+    classified as validation.nested_solids by the extractor (partial
+    overlap is still rejected). Validated: 46.7%/43.4% arms for bs, s-pol
+    91%/0.04% + p-pol 2.3%/89% for pbs, zero seam loss, closure ~1e-12.
+
+    The plate retracts from the cube edges (never touches the outer
+    faces); the small uncoated margin passes a centered beam untouched.
+    Shared by pbs_cube (polarizing) and bs_cube (non-polarizing): only
+    the hypotenuse registry row differs."""
+    c, H = p["cube"], p["height"]
+    plate_ct = p.get("plate_ct", 0.2)
     half = c / 2.0
-    A, B, C, D = (0.0, -half), (c, -half), (c, half), (0.0, half)
-    p1 = [A, D, B]
-    p1_edges = [mts._line(*p1[i], *p1[(i + 1) % 3]) for i in range(3)]
-    b1 = mts.pad_body(doc, group + "_in", p1_edges, plane="XY",
-                      offset=-H / 2.0, length=H,
-                      props={"material": "bk7"})
-    p2 = [D, B, C]
-    p2_edges = [mts._line(*p2[i], *p2[(i + 1) % 3]) for i in range(3)]
-    shift = gap / math.sqrt(2.0)
-    pl2 = App.Placement(App.Vector(shift, shift, 0.0), App.Rotation())
-    b2 = mts.pad_body(doc, group + "_out", p2_edges, plane="XY",
-                      offset=-H / 2.0, length=H,
-                      props={"material": "bk7"}, placement=pl2)
+    sq = [mts._line(0.0, -half, c, -half), mts._line(c, -half, c, half),
+          mts._line(c, half, 0.0, half), mts._line(0.0, half, 0.0, -half)]
+    cube = mts.pad_body(doc, group, sq, plane="XY",
+                        offset=-H / 2.0, length=H,
+                        props={"material": "bk7"})
+
+    ux, uy = math.sqrt(0.5), -math.sqrt(0.5)    # along the D-B diagonal
+    mx, my = math.sqrt(0.5), math.sqrt(0.5)     # diagonal (split) normal
+    cx, cy = half, 0.0
+    margin = max(0.5, 0.025 * c)                # keep strictly inside
+    hl = c * math.sqrt(2.0) / 2.0 - margin
+    ht = plate_ct / 2.0
+    corners = [(cx - ux * hl - mx * ht, cy - uy * hl - my * ht),
+               (cx + ux * hl - mx * ht, cy + uy * hl - my * ht),
+               (cx + ux * hl + mx * ht, cy + uy * hl + my * ht),
+               (cx - ux * hl + mx * ht, cy - uy * hl + my * ht)]
+    edges = [mts._line(*corners[i], *corners[(i + 1) % 4])
+             for i in range(4)]
+    z_margin = max(0.3, 0.015 * H)
+    plate = mts.pad_body(doc, group + "_split", edges, plane="XY",
+                         offset=-(H / 2.0 - z_margin),
+                         length=H - 2.0 * z_margin,
+                         props={"material": "bk7"})
     doc.recompute()
-    hyp = mts._find_face_by_normal(b1, (1.0, 1.0, 0.0))
-    if hyp is None:
-        raise ValueError("%s: hypotenuse face not found on %s"
-                         % (group, b1.Name))
-    safe_set_props(b1, {"coating": "Face%d=%s" % (hyp, coating)})
-    return [b1, b2]
+    # coat the FIRST face the +x beam hits (outward normal -(1,1)/sqrt2);
+    # sign-aware lookup — the abs-dot helper can't tell the two parallel
+    # plate faces apart
+    f = _find_face_by_signed_normal(
+        plate, (-math.sqrt(0.5), -math.sqrt(0.5), 0.0))
+    if f is None:
+        raise ValueError("%s: coated splitter face not found on %s"
+                         % (group, plate.Name))
+    safe_set_props(plate, {"coating": "Face%d=%s" % (f, coating)})
+    return [cube, plate]
 
 
 def _build_pbs_cube(doc, group, p):

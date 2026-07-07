@@ -127,6 +127,14 @@ property library from the system library, and packs the archive immediately) or 
 bare **`.FCStd`**. `.MieSim` archives can never be created directly — they are
 produced only by runs.
 
+**Open**/**New** prompt to **Save / Discard / Cancel** when the current
+model has unsaved changes. **File → Revert to Saved** (confirmation
+required) discards every unsaved change by re-opening the model from its
+last saved state on disk. **File → Close** (Ctrl+W) closes the session,
+prompting the same way. Opening or closing a model always clears the
+previous session's ray overlays, face selection and loaded results —
+stale rays can no longer bleed into a freshly opened scene.
+
 The **toolbar** is organized in logical groups: **New/Open/Save** | **Undo/Redo** |
 **Add/Copy/Paste/Delete element** | **Run/Stop/Estimate** | **Validate** | **Fit view**
 (plus a **Rays** menu for ray overlay controls). **Undo** (Ctrl+Z) / **Redo**
@@ -436,8 +444,10 @@ tilted back face kills etalon fringes).
 **Polarization** — `polarizer_plate` (width, thickness, round_flag,
 polarizer registry row + `polarizer_axis`); `waveplate` quartz retarder
 (width, thickness — sets retardance, round_flag, `crystal_axis`);
-`pbs_cube` (cube, height, gap: two 45° prisms, coated hypotenuse, two
-bodies); `polarizer_glan_taylor` (aperture, length, gap, cut_angle: two
+`pbs_cube` (cube, height, plate_ct: a single BK7 cube with a thin
+`pbs_visible_45`-coated plate NESTED inside along the diagonal —
+glass-glass interface, s-pol reflects/p-pol transmits; two bodies);
+`polarizer_glan_taylor` (aperture, length, gap, cut_angle: two
 calcite prisms — the o-ray TIRs at the internal air gap and is rejected
 sideways while the e-ray transmits straight through, extinction via TIR
 not absorption).
@@ -449,8 +459,11 @@ polarizing (width, thickness, round_flag; front face `pbs_visible_45`);
 `dichroic_567lp_45`, swappable to `hot_mirror_45`/`cold_mirror_45`);
 `pellicle` (diameter, membrane_thickness; ultra-thin membrane, front face
 default `pellicle_4555_45`, swappable to `pellicle_uncoated_45`);
-`bs_cube` (cube, height, gap: two bodies, 5 µm cemented-interface air
-gap, hypotenuse coated `bs_5050_vis_45` by default).
+`bs_cube` (cube, height, plate_ct: a single BK7 cube with a thin coated
+plate NESTED inside along the diagonal — the glass-glass interface makes
+the split table apply exactly; the earlier two-prism 5 µm-gap build
+TIR'd the transmitted arm at 45° and lost ~⅓ of the power to seam loss.
+Default `bs_5050_vis_45`; validated 46.7 %/43.4 % arms, zero seam loss).
 
 **Filters** — `nd_filter` absorptive (width, thickness, round_flag,
 default filter `nd_od10`); `nd_reflective` metallic (width, thickness,

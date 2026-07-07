@@ -250,7 +250,12 @@ def test_derived_props_excluded_from_rebuild_baseline_for_apertures():
     for kind in ("lens_asphere", "mirror_parabolic"):
         assert pl.PRIMITIVES[kind]["derived_props"] == \
             ("surface_override",), kind
-    exempt = set(APERTURE_KINDS) | {"lens_asphere", "mirror_parabolic"}
+    # the cube splitters' coating string names a face index of the
+    # freshly built plate -- re-derived every rebuild
+    for kind in ("bs_cube", "pbs_cube"):
+        assert pl.PRIMITIVES[kind]["derived_props"] == ("coating",), kind
+    exempt = set(APERTURE_KINDS) | {"lens_asphere", "mirror_parabolic",
+                                    "bs_cube", "pbs_cube"}
     for kind in set(pl.PRIMITIVES) - exempt:
         assert not pl.PRIMITIVES[kind].get("derived_props"), kind
 
@@ -303,13 +308,16 @@ def test_retro_corner_cube_has_three_mutually_perpendicular_back_faces(
 # the module docstring in primitivelib._build_mirror_parabolic).
 # ---------------------------------------------------------------------------
 @freecad_only
-def test_bs_cube_has_gap_and_hypotenuse_coating_on_one_body(fc_probe_result):
+def test_bs_cube_nested_plate_with_coating_on_the_plate(fc_probe_result):
+    """Nested-plate design (glass-glass split interface): the old
+    two-prism + 5 um air gap TIR'd the transmitted arm at 45 deg (past
+    BK7's critical angle) and lost ~1/3 of the power to seam loss."""
     info = fc_probe_result["batch3_geometry"]["bs_cube"]
     assert info["n_bodies"] == 2
-    assert info["gap_mm"] == pytest.approx(0.005, abs=1e-6)
-    assert info["coating_in"] is not None
-    assert "bs_5050_vis_45" in info["coating_in"]
-    assert info["coating_out"] is None
+    assert info["plate_inside"] is True
+    assert info["coating_cube"] is None
+    assert info["coating_plate"] is not None
+    assert "bs_5050_vis_45" in info["coating_plate"]
 
 
 @freecad_only

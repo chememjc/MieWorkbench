@@ -475,6 +475,18 @@ class Tracer:
             Rp = interp_hard(lam_um, cspec["lam_um"], cspec["Rp"], ctx)
             Ts = interp_hard(lam_um, cspec["lam_um"], cspec["Ts"], ctx)
             Tp = interp_hard(lam_um, cspec["lam_um"], cspec["Tp"], ctx)
+            # past the critical angle there IS no propagating transmitted
+            # direction: honor TIR by folding the table's T into the
+            # reflected side (energy-conserving). Without this, the table
+            # branch emitted a "transmitted" child whose refract_dir was
+            # a degenerate grazing ghost, silently booked as seam loss
+            # (found by the BS-cube investigation).
+            tir = fr.is_tir(cos_i, n1, n2)
+            if np.any(tir):
+                Rs = np.where(tir, np.clip(Rs + Ts, 0.0, 1.0), Rs)
+                Rp = np.where(tir, np.clip(Rp + Tp, 0.0, 1.0), Rp)
+                Ts = np.where(tir, 0.0, Ts)
+                Tp = np.where(tir, 0.0, Tp)
             rs = np.sqrt(Rs) * np.exp(1j * np.angle(rs))
             rp = np.sqrt(Rp) * np.exp(1j * np.angle(rp))
             ts = np.sqrt(np.maximum(Ts, 0.0)) * np.exp(1j * np.angle(ts))

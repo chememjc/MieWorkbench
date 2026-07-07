@@ -229,9 +229,16 @@ promote entries to the repo (system) library.
 - **`set_placement` resolves miewb_group BEFORE label** (an imported
   multi-body element's primary body carries the element label itself —
   label-first lookup moved only that body and tore elements apart).
-- **A BS cube is not an interferometer beamsplitter here**: its cemented
-  5 µm gap sits at 45° to the internal beams and bleeds ~1/3 of the power
-  into seam loss; use `bs_plate` (wedge_deg=0) for Michelson-style paths.
+- **Multi-edge planar trim wires used to self-cross** (OrderedEdges
+  doesn't flip reversed edges' point sequences) — the even-odd containment
+  then killed ~half of every pad rectangle/triangle face (dead
+  half-faces, phantom transmission, the wollaston scene's detected-power
+  anomaly). Fixed in `extract_geometry.trim_polylines_xyz` (head-to-tail
+  chain orientation); geometry/ caches from before the fix are stale —
+  re-extract.
+- **Table coatings past the critical angle now TIR honestly** (tracer
+  folds the table's T into R); before, they emitted a grazing ghost
+  "transmitted" child booked as seam loss.
 - **A sheet param must never live in the body Placement** —
   rebuild_element preserves the PRE-rebuild placement, silently reverting
   it (the prism's `rotation` is baked into sketch vertices for this
@@ -241,8 +248,14 @@ promote entries to the repo (system) library.
   were authored against.
 - **Gather keys are (source, λ-stratum, POL-stratum)**: budget rays
   accordingly or the `GatherError: undersampled` gate trips.
-- **Optically-contacted solids don't exist**: model cemented interfaces
-  (PBS halves, achromat elements) with a ~5 µm air gap.
+- **Optically-contacted solids don't exist** — but **proper NESTING does**
+  (one solid strictly inside another; extractor classifies it
+  `validation.nested_solids`, the tracer's LIFO medium stack handles it).
+  Model cemented interfaces either with a ~5 µm air gap (achromats — fine
+  at near-normal incidence) or, when the gap would TIR (45° internal
+  beamsplitter interfaces: past BK7's 41.2° critical angle), as a thin
+  coated plate NESTED in a single solid (how bs_cube/pbs_cube work now;
+  the old two-prism gap build lost ~1/3 of the power to TIR/seam loss).
 - **Detected power is a diagnostic, not a closure bucket**; the ledger
   partitions LOSSES only, gates at 1e-3. Detector maps are UNBIASED with
   zero-mean negative MC noise — clip only for display.
