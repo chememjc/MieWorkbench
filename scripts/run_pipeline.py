@@ -46,7 +46,6 @@ Logs: extract/permute (batch-level) log to results/log.<step>; trace/post/
 viz (per model) log to results/<model_stem>/<case>/log.<step>.
 """
 
-import argparse
 import itertools
 import json
 import subprocess
@@ -56,6 +55,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402  (stdlib-only shared contract hub)
+import cli_specs  # noqa: E402  (stdlib-only; single source of truth for CLIs)
 
 STEPS_ORDER = ["extract", "trace", "post", "viz"]
 GLOB_CHARS = "*?["
@@ -65,94 +65,7 @@ GLOB_CHARS = "*?["
 # CLI
 # ---------------------------------------------------------------------------
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(
-        prog="run_pipeline.py",
-        description="Chain FreeCAD -> optics -> ParaView optical ray "
-                    "tracer stages for one or more models.",
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--models", nargs="+", required=True, metavar="FCSTD",
-                   help="one or more .FCStd paths or globs (model stem = "
-                        "file name without .FCStd)")
-    p.add_argument("--preset", default="quick",
-                   choices=sorted(common.PRESETS),
-                   help="fidelity preset filling rays/resolution/nlambda/"
-                        "spectral-bins/viz-rays defaults (default: quick)")
-    p.add_argument("--tag", default=None,
-                   help="appended to the case name: results/<model>/"
-                        "<preset>-<tag>/")
-    p.add_argument("--steps", default=",".join(STEPS_ORDER), metavar="LIST",
-                   help="comma-separated subset of %s to run, executed in "
-                        "that fixed order (default: all)"
-                        % ",".join(STEPS_ORDER))
-
-    g = p.add_argument_group("parameter sweep (stage: permute, before "
-                             "extract)")
-    g.add_argument("--var", action="append", default=[],
-                   help="spreadsheet cell alias to sweep (repeatable, "
-                        "paired in order with --min/--max/--n)")
-    g.add_argument("--min", action="append", default=[], type=float)
-    g.add_argument("--max", action="append", default=[], type=float)
-    g.add_argument("--n", action="append", default=[], type=int)
-
-    g = p.add_argument_group("physics options (stage: trace)")
-    g.add_argument("--dry-run", action="store_true",
-                   help="trace builds estimates but does not run; post/viz "
-                        "are then skipped per model with a NOTICE")
-    g.add_argument("--seeds", type=int, default=None)
-    g.add_argument("--rays", type=float, default=None,
-                   help="primary rays per source (default: from --preset)")
-    g.add_argument("--resolution", type=int, default=None,
-                   help="detector grid resolution (default: from --preset)")
-    g.add_argument("--nlambda", type=int, default=None,
-                   help="wavelength strata (default: from --preset)")
-    g.add_argument("--spectral-bins", type=int, default=None,
-                   help="detector spectral bins (default: from --preset)")
-    g.add_argument("--viz-rays", type=int, default=None,
-                   help="absolute viz-ray cap per source (set this to "
-                        "override --viz-density; preset value acts as the "
-                        "density cap instead)")
-    g.add_argument("--viz-density", type=float, default=None,
-                   help="viz rays per mm^2 of source emit area "
-                        "(default 1.0; visualization only)")
-    g.add_argument("--backend", default=None,
-                   choices=["auto", "torch", "numpy"])
-    g.add_argument("--rough-fresnel", default=None,
-                   choices=["micro", "macro"],
-                   help="roughness-lobe Fresnel model (default micro)")
-    g.add_argument("--ray-differentials", action="store_true",
-                   help="per-ray wavefront-patch dA tracking (exact "
-                        "gather normalization; costs memory)")
-    g.add_argument("--gather-occlusion", action="store_true",
-                   help="shadow-test gather samples against scene bodies")
-    g.add_argument("--no-pol-scatter", action="store_true",
-                   help="legacy unpolarized Mie azimuth sampling")
-    g.add_argument("--mesh-flat-normals", action="store_true")
-    g.add_argument("--save-fields", action="store_true",
-                   help="save complex Ex/Ey detector field maps "
-                        "(enables Stokes polarization maps in post)")
-    g.add_argument("--strict-analytic", action="store_true",
-                   help="hard-error on mesh-type faces (v1 behavior)")
-    g.add_argument("--optical-properties", default=None,
-                   help="override the opticalproperties/ library root")
-    g.add_argument("--source-face", action="append", default=[],
-                   metavar="Body.Feature.FaceN")
-    g.add_argument("--detector-face", action="append", default=[],
-                   metavar="Body.Feature.FaceN")
-    g.add_argument("--grating", action="append", default=[], metavar="SPEC")
-    g.add_argument("--rough", action="append", default=[], metavar="SPEC")
-    g.add_argument("--particles", default=None, metavar="SPEC")
-    g.add_argument("--particle-threshold", type=float, default=None)
-    g.add_argument("--suppress-body", action="append", default=[],
-                   metavar="BODY")
-
-    g = p.add_argument_group("execution / orchestration")
-    g.add_argument("--keep-going", action="store_true",
-                   help="on a stage failure, print FAILED and continue "
-                        "with the next model instead of aborting (exit "
-                        "code still nonzero)")
-    g.add_argument("--print-only", action="store_true",
-                   help="compose and print every stage command without "
-                        "running anything")
+    p = cli_specs.build_parser("pipeline")
     return p.parse_args(argv)
 
 

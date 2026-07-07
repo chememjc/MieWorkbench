@@ -14,7 +14,6 @@
 # outlines, per-material n/k dispersion curves, coating R(lambda), energy
 # audit bars. Everything is regenerable without re-tracing.
 # =============================================================================
-import argparse
 import json
 import sys
 from pathlib import Path
@@ -29,6 +28,7 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
 import common                                            # noqa: E402
+import cli_specs                                          # noqa: E402
 from raytracer.detector import (spectral_cube_to_srgb,   # noqa: E402
                                 cie_xyz_weights)
 from raytracer.materials import MaterialDB, load_coatings  # noqa: E402
@@ -711,13 +711,7 @@ def plot_audit(audit, outdir):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser()
-    p.add_argument("--case-dir", required=True)
-    p.add_argument("--model-json", required=True)
-    p.add_argument("--viz-generations", type=int, default=None,
-                  help="declutter rays_xy.png to reconstructed-generation "
-                       "<= N segments only (default: all generations, "
-                       "unchanged behavior). See _assign_generations.")
+    p = cli_specs.build_parser("post")
     args = p.parse_args(argv)
     case_dir = Path(args.case_dir)
     with open(case_dir / "case.json") as fh:

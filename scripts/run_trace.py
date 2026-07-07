@@ -18,7 +18,6 @@
 # post_process.py renders images/plots from these files; make_viz.py does
 # 3D. This script never imports FreeCAD or paraview.
 # =============================================================================
-import argparse
 import json
 import sys
 import time
@@ -30,6 +29,7 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
 import common                                            # noqa: E402
+import cli_specs                                          # noqa: E402
 from raytracer.materials import MaterialDB, load_coatings  # noqa: E402
 from raytracer.scene import Scene                        # noqa: E402
 from raytracer.sources import (sample_source, wavelength_strata,  # noqa: E402
@@ -40,72 +40,7 @@ from raytracer import gather                             # noqa: E402
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="optical ray trace stage")
-    p.add_argument("--model-json", required=True)
-    p.add_argument("--case-dir", required=True)
-    p.add_argument("--rays", type=float, default=1e5,
-                   help="primary rays PER SOURCE")
-    p.add_argument("--nlambda", type=int, default=5)
-    p.add_argument("--resolution", type=int, default=512)
-    p.add_argument("--spectral-bins", type=int, default=16)
-    p.add_argument("--max-reflections", type=int, default=6)
-    p.add_argument("--power-floor", type=float, default=1e-4)
-    p.add_argument("--seeds", type=int, default=1)
-    p.add_argument("--seed0", type=int, default=42)
-    p.add_argument("--backend", default="auto",
-                   choices=["auto", "torch", "numpy"])
-    p.add_argument("--viz-rays", type=int, default=None,
-                   help="absolute viz-ray cap per source (overrides "
-                        "--viz-density when set)")
-    p.add_argument("--viz-density", type=float, default=1.0,
-                   help="viz rays per mm^2 of source emit area "
-                        "(visualization only — physics unaffected)")
-    p.add_argument("--viz-rays-max", type=int, default=20000,
-                   help="hard cap on density-derived viz rays per source")
-    p.add_argument("--ray-differentials", action="store_true",
-                   help="track per-ray wavefront patch areas (Igehy) so "
-                        "the gather uses exact per-sample dA instead of "
-                        "the source-referenced approximation (+96 B/ray)")
-    p.add_argument("--no-pol-scatter", action="store_true",
-                   help="legacy unpolarized Mie azimuth sampling "
-                        "(default: sample azimuth from the polarized "
-                        "differential cross-section)")
-    p.add_argument("--rough-fresnel", default="micro",
-                   choices=["micro", "macro"],
-                   help="roughness-lobe Fresnel: microfacet-local per-"
-                        "polarization (physical) or legacy nominal-angle "
-                        "scalar average")
-    p.add_argument("--source-face", action="append", default=[],
-                   help="override: Body.Feature.FaceN (matched to the "
-                        "source body owning that face)")
-    p.add_argument("--detector-face", action="append", default=[])
-    p.add_argument("--grating", action="append", default=[])
-    p.add_argument("--rough", action="append", default=[])
-    p.add_argument("--particles", default=None)
-    p.add_argument("--particle-threshold", type=float, default=2e5,
-                   help="explicit-sphere mode below this count (matches "
-                        "the brute-force traversal cap), continuum above")
-    p.add_argument("--suppress-body", action="append", default=[])
-    p.add_argument("--min-eff-samples", type=float, default=1000.0)
-    p.add_argument("--no-gather-gate", action="store_true")
-    p.add_argument("--save-fields", action="store_true",
-                   help="save per-(source,lam,pol) complex Ex/Ey field "
-                        "maps into detectors/<label>.h5 fields/ groups "
-                        "(post_process renders Stokes maps from them; "
-                        "seed0 only; large files at high resolution)")
-    p.add_argument("--gather-occlusion", action="store_true",
-                   help="ray-cast each gather sample->detector-tile segment "
-                        "against scene bodies and shadow blocked pairs "
-                        "(opaque occluders, tile-quantized; see gather.py)")
-    p.add_argument("--optical-properties", default=None,
-                   help="override the opticalproperties/ library root")
-    p.add_argument("--strict-analytic", action="store_true",
-                   help="hard-error on mesh-type faces (v1 behavior) "
-                        "instead of tracing them with the BVH")
-    p.add_argument("--mesh-flat-normals", action="store_true",
-                   help="flat facet normals on mesh faces (default: "
-                        "angle-weighted smoothed vertex normals)")
-    p.add_argument("--dry-run", action="store_true")
+    p = cli_specs.build_parser("trace")
     return p.parse_args(argv)
 
 

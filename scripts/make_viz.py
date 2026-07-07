@@ -36,9 +36,7 @@ FLOW
 4. Render each selected view's PNG(s) into ``<case_dir>/viz/``.
 """
 
-import argparse
 import os
-import re
 import subprocess
 import sys
 
@@ -47,6 +45,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 import common  # noqa: E402
+import cli_specs  # noqa: E402
 
 from viz_common import (  # noqa: E402
     load_model_json, geometry_dir, default_viz_dir, scene_bounds_m,
@@ -255,39 +254,8 @@ BUILDERS = {
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def parse_resolution(s):
-    m = re.match(r"^\s*(\d+)x(\d+)\s*$", s)
-    if not m:
-        raise argparse.ArgumentTypeError(
-            "invalid --resolution '%s' (expected WIDTHxHEIGHT)" % s)
-    return int(m.group(1)), int(m.group(2))
-
-
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(
-        description="Batch ParaView 3D visualizations for an optical ray "
-                    "tracer case directory.")
-    p.add_argument("--case-dir", required=True,
-                   help="results/<model>/<case> directory (run_trace.py + "
-                        "post_process.py output)")
-    p.add_argument("--model-json", required=True,
-                   help="geometry/<model>/model.json")
-    p.add_argument("--views", default=None,
-                   help="Comma-separated view names to render (default: "
-                        "all of %s)" % ",".join(v["name"] for v in VIEWS))
-    p.add_argument("--resolution", default=DEFAULT_RESOLUTION,
-                   type=parse_resolution,
-                   help="WIDTHxHEIGHT (default %dx%d; ignored by --smoke "
-                        "and forced to 2048x2048 for detector_closeup)"
-                        % DEFAULT_RESOLUTION)
-    p.add_argument("--out", default=None,
-                   help="Output directory (default: <case-dir>/viz)")
-    p.add_argument("--smoke", action="store_true",
-                   help="Render only the 'overview3d' view at 800x600 "
-                        "(fast end-to-end smoke test)")
-    p.add_argument("--skip-vtkexport", action="store_true",
-                   help="Skip the OPTICS_PYTHON vtkexport prep step "
-                        "(viz/*.vtp already produced by a previous run)")
+    p = cli_specs.build_parser("viz")
     return p.parse_args(argv)
 
 
