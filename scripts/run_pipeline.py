@@ -241,17 +241,30 @@ def trace_cmd(stem, case_dir, args):
     return cmd
 
 
+def _dim_rays_args(args):
+    """--dim-rays/--dim-rays-floor forwarding shared by post and viz;
+    empty at the defaults so existing command lines stay unchanged."""
+    if args.dim_rays == "off":
+        return []
+    cmd = ["--dim-rays", args.dim_rays]
+    if args.dim_rays_floor:
+        cmd += ["--dim-rays-floor", repr(args.dim_rays_floor)]
+    return cmd
+
+
 def post_cmd(stem, case_dir, args):
     model_json = common.GEOMETRY_DIR / stem / "model.json"
     return [common.OPTICS_PYTHON, str(common.SCRIPTS_DIR / "post_process.py"),
-           "--case-dir", str(case_dir), "--model-json", str(model_json)]
+           "--case-dir", str(case_dir), "--model-json", str(model_json)] \
+        + _dim_rays_args(args)
 
 
 def viz_cmd(stem, case_dir, args):
     model_json = common.GEOMETRY_DIR / stem / "model.json"
     return [common.PVPYTHON, "--force-offscreen-rendering",
            str(common.SCRIPTS_DIR / "make_viz.py"),
-           "--case-dir", str(case_dir), "--model-json", str(model_json)]
+           "--case-dir", str(case_dir), "--model-json", str(model_json)] \
+        + _dim_rays_args(args)
 
 
 STAGE_BUILDERS = {"trace": trace_cmd, "post": post_cmd, "viz": viz_cmd}

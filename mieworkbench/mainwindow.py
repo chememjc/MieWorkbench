@@ -31,7 +31,7 @@ import common  # noqa: E402  (stdlib-only shared contract hub)
 import miewb_tool  # noqa: E402  (stdlib-only archive engine)
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QHBoxLayout,
     QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QProgressBar,
@@ -402,6 +402,61 @@ class MainWindow(QMainWindow):
         self.auto_preview_action.toggled.connect(
             self._on_auto_preview_toggled)
 
+        # Ray dimming: submenu kept as an attribute on self, NEVER
+        # retrieved back via QAction.menu() (ownership would transfer to
+        # Python and the GC would delete the C++ menu).
+        self.ray_dimming_menu = view_menu.addMenu("Ray &Dimming")
+        self.ray_dimming_menu.setToolTipsVisible(True)
+        group = QActionGroup(self)
+        group.setExclusive(True)
+
+        def dim_action(label, mode, tip):
+            act = self.ray_dimming_menu.addAction(label)
+            act.setCheckable(True)
+            act.setToolTip(tip)
+            act.triggered.connect(
+                lambda checked=False, m=mode: self._on_ray_dimming_mode(m))
+            group.addAction(act)
+            return act
+
+        self.ray_dim_off_action = dim_action(
+            "&Off", "off",
+            "Rays render fully opaque regardless of remaining power")
+        self.ray_dim_linear_action = dim_action(
+            "&Linear (opacity = P/P₀)", "linear",
+            "Fade each segment linearly with its remaining power relative "
+            "to the ray's power at the source; splits/reflections dim "
+            "consistently (applies to the live preview and loaded run "
+            "overlays)")
+        self.ray_dim_sqrt_action = dim_action(
+            "&Perceptual (opacity = √(P/P₀))", "sqrt",
+            "Square-root curve: compensates the eye's nonlinearity so a "
+            "50/50 split looks half as bright instead of nearly gone "
+            "after a few bounces")
+        self.ray_dimming_menu.addSeparator()
+        self.ray_dim_floor_action = self.ray_dimming_menu.addAction(
+            "&Minimum Opacity…")
+        self.ray_dim_floor_action.setToolTip(
+            "Floor the dimmed opacity at a percentage so heavily "
+            "attenuated rays stay faintly traceable (0 = fade fully to "
+            "invisible)")
+        self.ray_dim_floor_action.triggered.connect(
+            self._on_ray_dimming_floor)
+
+        self._ray_dim_mode = self.settings.get("ray_dimming_mode", "off")
+        if self._ray_dim_mode not in ("off", "linear", "sqrt"):
+            self._ray_dim_mode = "off"
+        try:
+            self._ray_dim_floor = float(
+                self.settings.get("ray_dimming_floor", "0") or 0)
+        except (TypeError, ValueError):
+            self._ray_dim_floor = 0.0
+        {"off": self.ray_dim_off_action,
+         "linear": self.ray_dim_linear_action,
+         "sqrt": self.ray_dim_sqrt_action}[self._ray_dim_mode].setChecked(
+            True)
+        self._apply_ray_dimming()
+
         help_menu = menubar.addMenu("&Help")
         act = help_menu.addAction("&About")
         act.setToolTip("About MieWorkbench")
@@ -622,6 +677,33 @@ class MainWindow(QMainWindow):
     def _on_auto_preview_toggled(self, checked):
         self.preview_scheduler.set_enabled(checked)
         self.settings.set_bool("auto_preview_rays", checked)
+
+    # -- ray dimming -----------------------------------------------------------
+    def _apply_ray_dimming(self):
+        self.scene3d.view.set_ray_dimming(self._ray_dim_mode,
+                                          self._ray_dim_floor)
+        self.inspector.view.set_ray_dimming(self._ray_dim_mode,
+                                            self._ray_dim_floor)
+
+    def _on_ray_dimming_mode(self, mode):
+        self._ray_dim_mode = mode
+        self._apply_ray_dimming()
+        self.settings.set("ray_dimming_mode", mode)
+
+    def _set_ray_dimming_floor(self, floor_pct):
+        """Dialog-free setter (the QInputDialog path calls this; tests
+        call it directly -- modal dialogs hang offscreen runs)."""
+        self._ray_dim_floor = max(0.0, min(100.0, float(floor_pct)))
+        self._apply_ray_dimming()
+        self.settings.set("ray_dimming_floor", str(self._ray_dim_floor))
+
+    def _on_ray_dimming_floor(self):
+        value, ok = QInputDialog.getDouble(
+            self, "Ray Dimming Minimum Opacity",
+            "Minimum segment opacity (% of fully opaque):",
+            self._ray_dim_floor, 0.0, 100.0, 1)
+        if ok:
+            self._set_ray_dimming_floor(value)
 
     # -- face indicators -------------------------------------------------------
     def _apply_face_indicators(self, visible):

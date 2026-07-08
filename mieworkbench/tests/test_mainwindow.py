@@ -129,3 +129,47 @@ def test_results_clear_case_resets_state(qtbot, tmp_path):
     window.results.clear_case()
     assert window.results.case_dir is None
     assert window.results.title.text() == "No results loaded"
+
+def test_ray_dimming_menu_exists_and_persists(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    saved_mode = window.settings._qs.value("ray_dimming_mode", None)
+    saved_floor = window.settings._qs.value("ray_dimming_floor", None)
+    try:
+        # the View > Ray Dimming submenu with an exclusive mode group
+        assert window.ray_dimming_menu is not None
+        actions = (window.ray_dim_off_action,
+                   window.ray_dim_linear_action,
+                   window.ray_dim_sqrt_action)
+        for act in actions:
+            assert act.isCheckable()
+        assert sum(act.isChecked() for act in actions) == 1
+        assert window.ray_dim_floor_action is not None
+
+        # selecting a mode fans out to BOTH 3D views and persists
+        window.ray_dim_linear_action.trigger()
+        assert window.scene3d.view._dim_mode == "linear"
+        assert window.inspector.view._dim_mode == "linear"
+        assert window.settings.get("ray_dimming_mode") == "linear"
+
+        window.ray_dim_sqrt_action.trigger()
+        assert window.scene3d.view._dim_mode == "sqrt"
+        assert window.settings.get("ray_dimming_mode") == "sqrt"
+
+        # floor via the dialog-free setter (modal dialogs hang offscreen)
+        window._set_ray_dimming_floor(12.5)
+        assert window.scene3d.view._dim_floor == 12.5
+        assert window.inspector.view._dim_floor == 12.5
+        assert float(window.settings.get("ray_dimming_floor")) == 12.5
+
+        window.ray_dim_off_action.trigger()
+        assert window.scene3d.view._dim_mode == "off"
+    finally:
+        for key, val in (("ray_dimming_mode", saved_mode),
+                         ("ray_dimming_floor", saved_floor)):
+            if val is None:
+                window.settings._qs.remove(key)
+            else:
+                window.settings._qs.setValue(key, val)
+        window.settings._qs.sync()

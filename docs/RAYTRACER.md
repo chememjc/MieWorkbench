@@ -146,8 +146,9 @@ detected power per detector). Expected output tree after a completed run:
 results/example/quick/
 ├── case.json               # options echo + status ("estimated" -> "completed") + diagnostics
 ├── audit.json               # per-seed energy ledger (closure gated at 1e-3, §6/§11)
-├── rays.npy                 # viz polylines (N,10): source_id, lam_m, power_W, x0..z0, x1..z1,
-│                            #   pol_mode (0=isotropic/ordinary, 1=extraordinary o/e-split ray)
+├── rays.npy                 # viz polylines (N,11): source_id, lam_m, power_W, x0..z0, x1..z1,
+│                            #   pol_mode (0=isotropic/ordinary, 1=extraordinary o/e-split ray),
+│                            #   rel_power (power/birth_power in [0,1] — drives --dim-rays)
 ├── detectors/
 │   └── <safe_label>.h5      # spectral cube (mean [+std if --seeds>1]) + grid basis (§5.11)
 │                            #   + optional fields/<key>/{Ex,Ey} complex maps if --save-fields
@@ -213,12 +214,16 @@ and `--model-json` to `make_viz.py` — it does **not** forward
 `--views`/`--resolution`/`--smoke`. Driving the pipeline through
 `run_pipeline.py` therefore always renders all six views
 (`overview3d`, `top`, `side`, `detector_closeup`, `turntable`,
-`rays_polmode`) at 1920×1080 (2048×2048 for `detector_closeup`). Likewise
-`post_cmd()` forwards nothing beyond `--case-dir`/`--model-json`, so
-`post_process.py`'s `--viz-generations` is only reachable by invoking that
-script directly. To pick a subset of views, a different resolution/smoke
-test, or a decluttered ray plot, invoke `make_viz.py`/`post_process.py`
-directly (§8) on an already-completed case directory.
+`rays_polmode`) at 1920×1080 (2048×2048 for `detector_closeup`). The only
+display options `post_cmd()`/`viz_cmd()` forward beyond
+`--case-dir`/`--model-json` are `--dim-rays`/`--dim-rays-floor`
+(attenuation dimming: segment opacity = P/P_birth, linear or sqrt curve,
+optional percent floor — applies to `rays_xy.png` and the 3D ray
+renders); `post_process.py`'s `--viz-generations` remains reachable only
+by invoking that script directly. To pick a subset of views, a different
+resolution/smoke test, or a decluttered ray plot, invoke
+`make_viz.py`/`post_process.py` directly (§8) on an already-completed
+case directory.
 
 ---
 
@@ -1265,6 +1270,7 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--source-face SPEC]... [--detector-face SPEC]...
     [--grating SPEC]... [--rough SPEC]... [--particles SPEC]
     [--particle-threshold F] [--suppress-body NAME]...
+    [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--keep-going] [--print-only]
 ```
 
@@ -1342,6 +1348,7 @@ warning-level failure, not a crash).
 ```
 /home3/optics/env/bin/python scripts/post_process.py \
     --case-dir DIR --model-json PATH [--viz-generations N]
+    [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
 ```
 Requires `case.json["status"] == "completed"`; fully rerunnable without
 re-tracing (reads only `case.json`/`audit.json`/`rays.npy`/
@@ -1349,7 +1356,12 @@ re-tracing (reads only `case.json`/`audit.json`/`rays.npy`/
 `plots/rays_xy.png` to reconstructed-generation `<= N` segments only
 (default: every generation, unchanged behavior) — useful for scenes with
 many reflection/diffraction/o-e-split generations where the 2D plot would
-otherwise be an unreadable tangle. Unconditionally also renders (when the
+otherwise be an unreadable tangle. `--dim-rays` switches `rays_xy.png`'s
+segment alpha from the default ensemble 95th-percentile scaling to each
+segment's `rel_power` (power relative to its own ray's power at the
+source — linear, or sqrt for a perceptual curve; `--dim-rays-floor` sets
+a minimum opacity percent); falls back with a warning on a 10-column
+`rays.npy` predating the `rel_power` column. Unconditionally also renders (when the
 relevant body properties are present in the model) `polarizer_<name>.png`/
 `filter_<name>.png`/`grating_<name>.png` per-element response-curve plots
 and (when `--save-fields` produced `fields/` groups, §6.5)
@@ -1374,6 +1386,7 @@ that name would exceed 120 characters).
 pvpython make_viz.py --case-dir DIR --model-json PATH
     [--views geometry-view-names] [--resolution WIDTHxHEIGHT=1920x1080]
     [--out DIR] [--smoke] [--skip-vtkexport]
+    [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
 ```
 Registered views (`viz_configs.VIEWS`): `overview3d` (three-quarter
 perspective, all bodies+rays+detectors), `top`/`side` (parallel
@@ -1388,7 +1401,15 @@ the `pol_mode` array, e.g. a stale `viz/` combined with
 `--skip-vtkexport` reuses an existing `viz/rays.vtp`/`viz/det_*.vtp`
 (skips the `raytracer.vtkexport` sub-step, which itself always runs under
 `OPTICS_PYTHON` as a subprocess — pvpython never imports the `raytracer`
-package directly).
+package directly). `--dim-rays` fades ray segments by attenuation
+(opacity = P/P_birth from the `rel_power` column, linear or sqrt curve,
+`--dim-rays-floor` percent minimum): the flags are forwarded to the
+vtkexport prep step, which bakes an `rgba` cell array (wavelength rgb +
+power alpha) that ParaView renders as direct RGBA — deliberately NOT a
+pvpython ProgrammableFilter, which leaks `numpy_interface` names into
+`__main__` and shadows builtins. Falls back to undimmed rgb with a
+warning if `rays.vtp` lacks the array (`--skip-vtkexport` on a viz/
+exported without the flag, or a pre-dimming trace).
 
 ### 8.4 `sweep_variants.py` (system `python3` — batch jobs + auto-compare)
 

@@ -9,9 +9,10 @@
 # Writes : results/<model>/<case>/
 #            case.json         — options echo + status + diagnostics
 #            audit.json        — energy ledger (closure gated at 1e-3)
-#            rays.npy          — viz polyline segments (N,10):
+#            rays.npy          — viz polyline segments (N,11):
 #                                [source_id, lam_m, power_W, x0..z0,
-#                                 x1..z1, pol_mode (0=iso/o, 1=e)]
+#                                 x1..z1, pol_mode (0=iso/o, 1=e),
+#                                 rel_power (power/birth_power, [0,1])]
 #            detectors/<label>.h5 — spectral cube + grid metadata
 #                                (per-seed mean and std when --seeds > 1)
 #

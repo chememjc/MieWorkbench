@@ -73,7 +73,10 @@ class VizStore:
     viz_rays primaries per source; children inherit the flag)."""
 
     def __init__(self):
-        self.chunks = []   # (M, 9): source_id, lam, power, x0..z0, x1..z1
+        # (M, 11): source_id, lam, power, x0..z0, x1..z1, pol_mode,
+        # rel_power (power/birth_power in [0,1] -- drives attenuation
+        # dimming in the renderers)
+        self.chunks = []
 
     @staticmethod
     def flag_primaries(batch, cap):
@@ -88,15 +91,21 @@ class VizStore:
         m = batch.viz_flag
         if not np.any(m):
             return
+        power = batch.power[m]
+        birth = batch.birth_power[m]
+        rel = np.zeros_like(power)
+        np.divide(power, birth, out=rel, where=birth > 0)
+        np.clip(rel, 0.0, 1.0, out=rel)
         self.chunks.append(np.concatenate([
             batch.source_id[m, None].astype(np.float64),
-            batch.lam[m, None], batch.power[m, None],
+            batch.lam[m, None], power[:, None],
             batch.pos[m], p1[m],
-            batch.pol_mode[m, None].astype(np.float64)], axis=1))
+            batch.pol_mode[m, None].astype(np.float64),
+            rel[:, None]], axis=1))
 
     def as_array(self):
         return np.concatenate(self.chunks) if self.chunks \
-            else np.zeros((0, 10))
+            else np.zeros((0, 11))
 
 
 class TraceResult:

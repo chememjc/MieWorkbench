@@ -13,7 +13,8 @@ import struct
 
 from PySide6.QtCore import QObject, Signal
 
-from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
+from vtkmodules.vtkCommonCore import (vtkFloatArray, vtkPoints,
+                                      vtkUnsignedCharArray)
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
 from vtkmodules.vtkIOXML import vtkXMLPolyDataWriter
 
@@ -123,14 +124,20 @@ def make_lens_two_faces_scene(tmp_path):
 # ---------------------------------------------------------------------------
 # minimal .vtp writer for the rays-overlay tests
 # ---------------------------------------------------------------------------
-def write_simple_vtp(path, with_rgb=False):
+def write_simple_vtp(path, with_rgb=False, rel_power=None):
+    """One 2-point line cell per entry of `rel_power` (default: a single
+    cell). `rel_power`, when given, also writes the float cell array of
+    the same name that vtkexport.write_vtp_polylines emits for the
+    attenuation-dimming feature."""
+    n_cells = len(rel_power) if rel_power is not None else 1
     points = vtkPoints()
-    points.InsertNextPoint(0.0, 0.0, 0.0)
-    points.InsertNextPoint(1.0, 0.0, 0.0)
     lines = vtkCellArray()
-    lines.InsertNextCell(2)
-    lines.InsertCellPoint(0)
-    lines.InsertCellPoint(1)
+    for i in range(n_cells):
+        points.InsertNextPoint(0.0, float(i), 0.0)
+        points.InsertNextPoint(1.0, float(i), 0.0)
+        lines.InsertNextCell(2)
+        lines.InsertCellPoint(2 * i)
+        lines.InsertCellPoint(2 * i + 1)
 
     polydata = vtkPolyData()
     polydata.SetPoints(points)
@@ -139,12 +146,20 @@ def write_simple_vtp(path, with_rgb=False):
         colors = vtkUnsignedCharArray()
         colors.SetNumberOfComponents(3)
         colors.SetName("rgb")
-        colors.InsertNextTuple3(255, 255, 0)
+        for _ in range(n_cells):
+            colors.InsertNextTuple3(255, 255, 0)
         # AddArray, deliberately NOT SetScalars: real pre-fix rays.vtp
         # files carry 'rgb' as a plain (non-active) cell array, and the
         # GUI's field-data coloring must handle exactly that (the old
         # SetScalars fixture masked the white-rays bug)
         polydata.GetCellData().AddArray(colors)
+    if rel_power is not None:
+        rel = vtkFloatArray()
+        rel.SetNumberOfComponents(1)
+        rel.SetName("rel_power")
+        for v in rel_power:
+            rel.InsertNextValue(float(v))
+        polydata.GetCellData().AddArray(rel)
 
     writer = vtkXMLPolyDataWriter()
     writer.SetFileName(str(path))

@@ -130,6 +130,20 @@ def _build_pipeline_parser():
     g.add_argument("--suppress-body", action="append", default=[],
                    metavar="BODY")
 
+    g = p.add_argument_group("display options (stages: post, viz)")
+    g.add_argument("--dim-rays", default="off",
+                   choices=["off", "linear", "sqrt"],
+                   help="dim ray renders by remaining power relative to "
+                        "each ray's power at the source: opacity = "
+                        "P/P_birth (linear) or sqrt(P/P_birth) "
+                        "(perceptual); applies to rays_xy.png and the 3D "
+                        "viz renders (default: off)")
+    g.add_argument("--dim-rays-floor", type=float, default=0.0,
+                   metavar="PCT",
+                   help="minimum segment opacity in percent (0-100) when "
+                        "--dim-rays is on (default 0 = fade fully to "
+                        "invisible at zero power)")
+
     g = p.add_argument_group("execution / orchestration")
     g.add_argument("--keep-going", action="store_true",
                    help="on a stage failure, print FAILED and continue "
@@ -233,6 +247,17 @@ def _build_post_parser():
                   help="declutter rays_xy.png to reconstructed-generation "
                        "<= N segments only (default: all generations, "
                        "unchanged behavior). See _assign_generations.")
+    p.add_argument("--dim-rays", default="off",
+                   choices=["off", "linear", "sqrt"],
+                   help="dim rays_xy.png segments by remaining power "
+                        "relative to each ray's power at the source "
+                        "(alpha = P/P_birth, or its sqrt for the "
+                        "perceptual curve); default off = the existing "
+                        "ensemble-percentile alpha")
+    p.add_argument("--dim-rays-floor", type=float, default=0.0,
+                   metavar="PCT",
+                   help="minimum segment opacity in percent (0-100) when "
+                        "--dim-rays is on")
     return p
 
 
@@ -279,6 +304,17 @@ def _build_viz_parser():
     p.add_argument("--skip-vtkexport", action="store_true",
                    help="Skip the OPTICS_PYTHON vtkexport prep step "
                         "(viz/*.vtp already produced by a previous run)")
+    p.add_argument("--dim-rays", default="off",
+                   choices=["off", "linear", "sqrt"],
+                   help="dim 3D ray renders by remaining power relative "
+                        "to each ray's power at the source (alpha = "
+                        "P/P_birth, or its sqrt for the perceptual "
+                        "curve); needs a rays.vtp with the rel_power "
+                        "cell array")
+    p.add_argument("--dim-rays-floor", type=float, default=0.0,
+                   metavar="PCT",
+                   help="minimum segment opacity in percent (0-100) when "
+                        "--dim-rays is on")
     return p
 
 

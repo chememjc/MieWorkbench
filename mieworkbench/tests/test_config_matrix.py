@@ -107,3 +107,33 @@ def test_preset_change_updates_placeholder_not_values(qtbot):
     assert rays_widget.placeholderText() != initial_placeholder
     assert "rays" not in matrix.values()
     assert "resolution" not in matrix.values()
+
+def test_dim_rays_options_render_and_round_trip(qtbot):
+    """The attenuation-dimming pipeline options are reachable from the GUI
+    run config: a mode combo and a floor line edit, omitted at defaults,
+    forwarded as pipeline argv when set."""
+    from PySide6.QtWidgets import QLineEdit
+
+    matrix = ConfigMatrix()
+    qtbot.addWidget(matrix)
+
+    dim = matrix.widgets["dim_rays"]
+    assert isinstance(dim, QComboBox)
+    items = {dim.itemText(i) for i in range(dim.count())}
+    assert {"off", "linear", "sqrt"} <= items
+    assert dim.currentText() == "off"
+    assert isinstance(matrix.widgets["dim_rays_floor"], QLineEdit)
+
+    # defaults stay out of simparams/argv
+    assert "dim_rays" not in matrix.values()
+    assert "dim_rays_floor" not in matrix.values()
+
+    dim.setCurrentText("linear")
+    matrix.widgets["dim_rays_floor"].setText("5")
+    values = matrix.values()
+    assert values["dim_rays"] == "linear"
+    assert values["dim_rays_floor"] == 5.0
+    args = matrix.to_args()
+    assert "--dim-rays" in args
+    assert args[args.index("--dim-rays") + 1] == "linear"
+    assert "--dim-rays-floor" in args

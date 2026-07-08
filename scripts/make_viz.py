@@ -66,7 +66,8 @@ from paraview.simple import Render  # noqa: E402,F401
 # ---------------------------------------------------------------------------
 # Prep step: rays.npy + detectors/*.h5 -> viz/*.vtp (runs under OPTICS_PYTHON)
 # ---------------------------------------------------------------------------
-def run_vtkexport(case_dir, model_json, viz_dir):
+def run_vtkexport(case_dir, model_json, viz_dir, dim_rays="off",
+                  dim_rays_floor=0.0):
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(common.SCRIPTS_DIR) + (
@@ -74,6 +75,14 @@ def run_vtkexport(case_dir, model_json, viz_dir):
     cmd = [common.OPTICS_PYTHON, "-m", "raytracer.vtkexport",
            "--case-dir", str(case_dir), "--model-json", str(model_json),
            "--out-dir", str(viz_dir)]
+    if dim_rays != "off":
+        # the dimming curve is baked into rays.vtp's rgba array HERE (the
+        # prep step reruns per make_viz invocation, so the flags still
+        # select it at render time) -- a pvpython ProgrammableFilter
+        # would leak numpy_interface names into __main__ and shadow
+        # builtins like max()
+        cmd += ["--dim-rays", dim_rays,
+                "--dim-rays-floor", repr(dim_rays_floor)]
     print("[prep] " + " ".join(cmd))
     subprocess.check_call(cmd, env=env)
 
@@ -82,6 +91,25 @@ def run_vtkexport(case_dir, model_json, viz_dir):
 # Shared scene assembly (bodies + rays + detectors), reused by every
 # static/multi_frame view builder -- only the camera differs between them.
 # ---------------------------------------------------------------------------
+def _show_rays(ctx, reader, view):
+    """Show the rays reader wavelength-colored; when --dim-rays is on,
+    color by the rgba array the vtkexport prep step baked (rgb + alpha
+    from rel_power through the selected curve) so segment opacity tracks
+    each ray's remaining power. Falls back to plain rgb (with a one-time
+    warning) against a rays.vtp lacking the array (--skip-vtkexport on a
+    viz/ produced without --dim-rays, or a pre-dimming trace)."""
+    if ctx["dim_rays"] != "off":
+        if has_cell_array(reader, "rgba"):
+            return show_rgb_cells(reader, view, array="rgba")
+        if not ctx.get("_dim_warned"):
+            ctx["_dim_warned"] = True
+            print("[warn] --dim-rays: rays.vtp has no 'rgba' CELL array "
+                  "(viz/ exported without --dim-rays, or a pre-dimming "
+                  "trace -- re-run without --skip-vtkexport); rendering "
+                  "undimmed")
+    return show_rgb_cells(reader, view)
+
+
 def _build_scene(ctx, view):
     bounds_list = [ctx["model_bounds"]]
     show_geometry(ctx["model_json"], ctx["geom_dir"], view)
@@ -92,7 +120,7 @@ def _build_scene(ctx, view):
     rays_path = os.path.join(ctx["viz_dir"], "rays.vtp")
     if os.path.exists(rays_path):
         reader = load_vtp(rays_path)
-        show_rgb_cells(reader, view)
+        _show_rays(ctx, reader, view)
         bounds_list.append(reader.GetDataInformation().GetBounds())
     else:
         print("[warn] no rays.vtp at %s" % rays_path)
@@ -158,7 +186,7 @@ def build_detector_closeup(view_cfg, ctx):
         show_geometry(ctx["model_json"], ctx["geom_dir"], view)
         rays_path = os.path.join(ctx["viz_dir"], "rays.vtp")
         if os.path.exists(rays_path):
-            show_rgb_cells(load_vtp(rays_path), view)
+            _show_rays(ctx, load_vtp(rays_path), view)
         det_reader = load_vtp(path)
         show_rgb_cells(det_reader, view)
         det_bounds = det_reader.GetDataInformation().GetBounds()
@@ -289,7 +317,9 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     if not args.skip_vtkexport:
-        run_vtkexport(case_dir, model_json_path, viz_dir)
+        run_vtkexport(case_dir, model_json_path, viz_dir,
+                      dim_rays=args.dim_rays,
+                      dim_rays_floor=args.dim_rays_floor)
     else:
         print("[prep] --skip-vtkexport: assuming %s already has current "
               "rays.vtp / det_*.vtp" % viz_dir)
@@ -318,6 +348,7 @@ def main():
         "case_dir": case_dir, "model_json": model_json, "geom_dir": geom_dir,
         "viz_dir": viz_dir, "out_dir": out_dir, "resolution": resolution,
         "model_bounds": model_bounds, "smoke": args.smoke,
+        "dim_rays": args.dim_rays, "dim_rays_floor": args.dim_rays_floor,
     }
 
     if not selected:
