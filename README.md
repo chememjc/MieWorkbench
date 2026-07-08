@@ -341,6 +341,23 @@ you type in, or one of three element-relative points (**optical center**,
   operation applied this session. If a body's placement is itself
   spreadsheet-driven, the panel says so and routes the move through the
   driving expression instead of silently fighting it.
+- **Absolute (world frame)**: the selected element's world position
+  (X/Y/Z mm) and orientation (intrinsic X-Y-Z Euler angles Rx/Ry/Rz,
+  degrees), live-updated as it moves. Edit the fields and **Set
+  position** / **Set orientation** to jump it to an exact pose. A
+  **Relative to:** selector shows the element's optical-center offset from
+  the Origin (default) or from any other element's optical center.
+- **Snap to optical axis**: **Pick target face…**, then click a face in
+  the 3D view. The selected element rotates so its optical axis aligns
+  with the target (the target element's optical axis when *Use the target
+  element's optical axis* is checked, else the exact face normal you
+  clicked) and slides sideways onto that axis line — preserving its
+  along-axis distance — in a single undo step. It then enters a
+  **drag-along-axis** mode: move the mouse to slide the element up and
+  down the beam (a left click commits, **Esc** cancels), or type an
+  **along-axis offset** and **Apply offset** for an exact shift. This is
+  the fix for the folded-beam placement pain (e.g. dropping an iris onto a
+  prism's deviated beam without hand trig).
 
 ### 3.6 Library (`panes/library.py`)
 

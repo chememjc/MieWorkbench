@@ -24,7 +24,9 @@ from PySide6.QtCore import QObject, Signal
 
 from .fcclient import FcClient
 from .geomcache import GeomCache
-from .transforms import BodyState, Placement, ReferenceResolver
+from .transforms import (
+    BodyState, Operation, Placement, ReferenceResolver, snap_to_axis_ops,
+)
 from .undostack import Command, UndoStack
 
 
@@ -177,6 +179,11 @@ class Project(QObject):
 
     def resolver(self):
         return ReferenceResolver(self.body_states)
+
+    def current_placement(self, name):
+        """Live world Placement of a body (None if unknown)."""
+        state = self.body_states.get(name)
+        return state.current if state is not None else None
 
     # -- geometry -------------------------------------------------------------
     def _refresh_geometry(self, bodies=None):
@@ -470,12 +477,56 @@ class Project(QObject):
             lambda: self._do_apply_placement(body_name, pre)))
         return placement
 
+    def snap_to_axis(self, body_name, target_point, target_axis,
+                     offset_mm=0.0):
+        """Align an element's optical axis to `target_axis` and center it
+        on the axis line through `target_point`, then translate it
+        `offset_mm` along that axis. The whole snap is one undo entry.
+        Returns the list of applied Operations (may be empty if already
+        on-axis and no offset). Refuses expression-bound placements."""
+        state = self.body_states.get(body_name)
+        if state is None:
+            raise ProjectError("no body state for %r" % body_name)
+        if self.body(body_name).get("placement_bound"):
+            raise ProjectError(
+                "%s's position is driven by a spreadsheet expression; "
+                "edit the driving alias instead"
+                % self.body(body_name)["label"])
+        ops = snap_to_axis_ops(state, target_point, target_axis)
+        if offset_mm:
+            axis = self.resolver().resolve_axis(
+                {"kind": "vector", "vector": list(target_axis)})
+            ops.append(Operation("translate", {
+                "vector_mm": [float(offset_mm) * float(a) for a in axis]}))
+        if not ops:
+            return []
+        self.begin_macro("Snap %s to axis" % self._body_label(body_name))
+        try:
+            for op in ops:
+                self.apply_operation(body_name, op)
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        return ops
+
     def _flush_placement(self, body_name, placement):
-        self.fc.request("set_placement",
-                        {"doc": self.doc, "body": body_name,
-                         "pos_mm": placement["pos_mm"],
-                         "quat": placement["quat"]})
-        self.bodiesMoved.emit({body_name: placement})
+        result = self.fc.request(
+            "set_placement",
+            {"doc": self.doc, "body": body_name,
+             "pos_mm": placement["pos_mm"], "quat": placement["quat"]})
+        # set_placement moves the WHOLE miewb_group rigidly and returns
+        # every member's new placement; consume them so sibling BodyStates
+        # (and their scene actors) don't go stale (a multi-body element
+        # would otherwise tear apart on a move - only the addressed body
+        # tracked the new pose). Fall back to the single body if the
+        # worker returned nothing (older workers / single bodies).
+        placements = (result or {}).get("placements") or {body_name: placement}
+        for name, pl in placements.items():
+            state = self.body_states.get(name)
+            if state is not None:
+                state.current = Placement.from_dict(pl)
+        self.bodiesMoved.emit(dict(placements))
         self.opticsChanged.emit()
         self._set_dirty(True)
 

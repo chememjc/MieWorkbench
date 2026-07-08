@@ -979,6 +979,7 @@ class MainWindow(QMainWindow):
         self.scene3d.set_project(self.project)
         self.element_editor.set_project(self.project)
         self.transform_panel.set_project(self.project)
+        self.transform_panel.set_scene_view(self.scene3d.view)
         self.problems.set_project(self.project)
         self.problems.set_sources(
             lambda: (self.library_manager.project_lib
