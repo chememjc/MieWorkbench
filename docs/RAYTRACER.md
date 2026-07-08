@@ -146,9 +146,12 @@ detected power per detector). Expected output tree after a completed run:
 results/example/quick/
 ├── case.json               # options echo + status ("estimated" -> "completed") + diagnostics
 ├── audit.json               # per-seed energy ledger (closure gated at 1e-3, §6/§11)
-├── rays.npy                 # viz polylines (N,11): source_id, lam_m, power_W, x0..z0, x1..z1,
+├── rays.npy                 # viz polylines (N,13): source_id, lam_m, power_W, x0..z0, x1..z1,
 │                            #   pol_mode (0=isotropic/ordinary, 1=extraordinary o/e-split ray),
-│                            #   rel_power (power/birth_power in [0,1] — drives --dim-rays)
+│                            #   rel_power (power/birth_power in [0,1] — drives --dim-rays),
+│                            #   opl0_m, opl1_m (optical path Σn·ds at segment start/end; t = opl/c
+│                            #   drives the tracer-bead animation; escaped-ray stubs get a synthetic
+│                            #   opl1 = opl0 + n·0.25 m matching the drawn stub)
 ├── detectors/
 │   └── <safe_label>.h5      # spectral cube (mean [+std if --seeds>1]) + grid basis (§5.11)
 │                            #   + optional fields/<key>/{Ex,Ey} complex maps if --save-fields

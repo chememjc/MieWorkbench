@@ -73,9 +73,11 @@ class VizStore:
     viz_rays primaries per source; children inherit the flag)."""
 
     def __init__(self):
-        # (M, 11): source_id, lam, power, x0..z0, x1..z1, pol_mode,
+        # (M, 13): source_id, lam, power, x0..z0, x1..z1, pol_mode,
         # rel_power (power/birth_power in [0,1] -- drives attenuation
-        # dimming in the renderers)
+        # dimming in the renderers), opl0, opl1 (optical path Σn·ds in
+        # metres at the segment start/end -- t = opl/c drives the
+        # tracer-bead animation; escaped stubs get a synthetic opl1)
         self.chunks = []
 
     @staticmethod
@@ -87,7 +89,7 @@ class VizStore:
             idx = np.where(batch.source_id == sid)[0][:c]
             batch.viz_flag[idx] = True
 
-    def add(self, batch, p1):
+    def add(self, batch, p1, opl0, opl1):
         m = batch.viz_flag
         if not np.any(m):
             return
@@ -101,11 +103,12 @@ class VizStore:
             batch.lam[m, None], power[:, None],
             batch.pos[m], p1[m],
             batch.pol_mode[m, None].astype(np.float64),
-            rel[:, None]], axis=1))
+            rel[:, None],
+            opl0[m, None], opl1[m, None]], axis=1))
 
     def as_array(self):
         return np.concatenate(self.chunks) if self.chunks \
-            else np.zeros((0, 11))
+            else np.zeros((0, 13))
 
 
 class TraceResult:
@@ -238,7 +241,13 @@ class Tracer:
 
         # ---- viz segments ----
         p1 = batch.pos + np.where(hit, t, 0.25)[:, None] * batch.dir
-        self.viz.add(batch, p1)
+        # per-segment optical-path window for the bead animation:
+        # opl0 = value at the segment start (start_opl above), opl1 = the
+        # advanced batch.opl. Escaped rays advanced by zero (seg=0), so
+        # synthesize the drawn 0.25 m stub's optical path into a FRESH
+        # array -- batch.opl itself (the coherence path) is never touched.
+        viz_opl1 = np.where(hit, batch.opl, start_opl + n_phase * 0.25)
+        self.viz.add(batch, p1, start_opl, viz_opl1)
 
         # ---- escaped ----
         if np.any(~hit):

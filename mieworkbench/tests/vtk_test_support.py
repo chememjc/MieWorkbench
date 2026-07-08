@@ -124,12 +124,15 @@ def make_lens_two_faces_scene(tmp_path):
 # ---------------------------------------------------------------------------
 # minimal .vtp writer for the rays-overlay tests
 # ---------------------------------------------------------------------------
-def write_simple_vtp(path, with_rgb=False, rel_power=None):
+def write_simple_vtp(path, with_rgb=False, rel_power=None, opl=None):
     """One 2-point line cell per entry of `rel_power` (default: a single
     cell). `rel_power`, when given, also writes the float cell array of
     the same name that vtkexport.write_vtp_polylines emits for the
-    attenuation-dimming feature."""
-    n_cells = len(rel_power) if rel_power is not None else 1
+    attenuation-dimming feature; `opl` is a parallel list of (opl0, opl1)
+    metre pairs writing the bead-animation timing arrays. Each cell i
+    runs from (0, i, 0) to (1, i, 0)."""
+    n_cells = max(len(rel_power) if rel_power is not None else 1,
+                  len(opl) if opl is not None else 1)
     points = vtkPoints()
     lines = vtkCellArray()
     for i in range(n_cells):
@@ -160,6 +163,14 @@ def write_simple_vtp(path, with_rgb=False, rel_power=None):
         for v in rel_power:
             rel.InsertNextValue(float(v))
         polydata.GetCellData().AddArray(rel)
+    if opl is not None:
+        for name, col in (("opl0", 0), ("opl1", 1)):
+            arr = vtkFloatArray()
+            arr.SetNumberOfComponents(1)
+            arr.SetName(name)
+            for pair in opl:
+                arr.InsertNextValue(float(pair[col]))
+            polydata.GetCellData().AddArray(arr)
 
     writer = vtkXMLPolyDataWriter()
     writer.SetFileName(str(path))

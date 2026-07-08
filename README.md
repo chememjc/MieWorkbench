@@ -201,6 +201,28 @@ The rendered pipeline outputs have the equivalent `--dim-rays`
 panel and `run_pipeline.py`), covering `rays_xy.png` and the 3D viz
 renders.
 
+**Tracer-bead animation** (View ▸ *Tracer Bead Animation*, off by
+default, persisted): rides a photon-bunch bead along each ray at its true
+physical speed — c in vacuum, c/n inside glass, so beads visibly slow
+down in denser media — and spawns a child bead at a reflection/
+transmission split at the instant the parent bead reaches it. A dedicated
+Animation toolbar carries the enable toggle, Play/Pause/Stop/Step
+transport, a Bead size (mm) spinbox, a Speed (mm/s, default 2 mm/s of
+vacuum-equivalent path per real second) spinbox, and an FPS combo
+(5/10/15/24/30, default 15); a live readout shows `t = <auto-scaled
+fs/ps/ns/µs/ms>` and the corresponding vacuum-equivalent path in mm. Play
+loops at the latest ray's arrival time until Stop, which rewinds every
+bead to the sources; Step advances exactly one frame. Beads are colored
+by each ray's wavelength and stay fully opaque regardless of Ray
+Dimming — extinction never fades the beads themselves. Because viz
+segments carry no ray id, `anim_ray_cap` (default 300) bounds how many
+beads are drawn at once per source — a render cap, not a trace cap.
+Works against whatever overlay is loaded (live preview or a finished
+run); rays.npy files predating the opl columns disable the animation
+with a status-bar hint instead of erroring. The tabbed File ▸
+Settings… dialog's **Defaults** tab edits these same enabled/bead-size/
+speed/fps/cap values and pushes changes live into the open session.
+
 **Auto-updating preview** (View ▸ *Auto-update Ray Preview*, on by
 default, persisted): about a second after the last optics-affecting edit
 (geometry moves/reshapes, element add/delete, any contract-property

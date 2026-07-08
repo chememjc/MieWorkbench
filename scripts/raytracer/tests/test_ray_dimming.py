@@ -46,7 +46,7 @@ def _traced_viz():
 
 def test_rel_power_column_semantics():
     viz = _traced_viz()
-    assert viz.shape[1] == 11
+    assert viz.shape[1] == 13
     rel = viz[:, 10]
     assert np.all((rel >= 0.0) & (rel <= 1.0))
 
@@ -80,16 +80,18 @@ def test_vizstore_zero_birth_power_guarded():
         pos=np.zeros((2, 3)),
         pol_mode=np.array([0, 0]),
     )
-    store.add(batch, np.ones((2, 3)))
+    store.add(batch, np.ones((2, 3)),
+              np.array([0.0, 1e-3]), np.array([5e-4, 2e-3]))
     arr = store.as_array()
-    assert arr.shape == (2, 11)
+    assert arr.shape == (2, 13)
     assert np.all(np.isfinite(arr[:, 10]))
     assert arr[0, 10] == 0.0
     assert arr[1, 10] == 0.5
+    assert arr[1, 11] == 1e-3 and arr[1, 12] == 2e-3
 
 
 def test_vizstore_empty_shape():
-    assert VizStore().as_array().shape == (0, 11)
+    assert VizStore().as_array().shape == (0, 13)
 
 
 def _seg_rows(ncols, n=3):
@@ -102,6 +104,9 @@ def _seg_rows(ncols, n=3):
         rows[:, 9] = 0                   # pol_mode
     if ncols >= 11:
         rows[:, 10] = [1.0, 0.5, 0.0][:n]
+    if ncols >= 13:
+        rows[:, 11] = np.arange(n) * 1e-3          # opl0
+        rows[:, 12] = np.arange(n) * 1e-3 + 5e-4   # opl1
     return rows
 
 
