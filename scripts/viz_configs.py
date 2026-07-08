@@ -13,7 +13,9 @@ split, rewritten around the FreeCAD -> ray tracer -> ParaView pipeline:
     scripts/raytracer/vtkexport.py from rays.npy), CELL data 'rgb'
     (uint8x3, wavelength color), 'power' (float32 W), 'source_id' (int16),
     'pol_mode' (uint8, 0=ordinary/isotropic, 1=extraordinary o/e-split ray
-    -- absent/all-zero for a rays.npy predating birefringence support).
+    -- absent/all-zero for a rays.npy predating birefringence support),
+    'rel_power' (float32, power/birth_power in [0,1] -- absent for a
+    rays.npy predating attenuation dimming; drives --dim-rays).
   * detectors: results/<model>/<case>/viz/det_<safe-label>.vtp, a
     decimated (<=512x512) colored quad grid positioned in world space,
     CELL data 'rgb' and 'irradiance_W_m2'.

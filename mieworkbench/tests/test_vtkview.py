@@ -246,3 +246,81 @@ def test_overlay_stale_survives_reload_and_empty_view(qtbot, tmp_path):
     # a freshly loaded overlay is never stale
     assert not view.overlay_is_stale()
     assert actor.GetMapper().GetScalarVisibility() == 1
+
+
+# ---------------------------------------------------------------------------
+# ray dimming (opacity ~ rel_power through the selected curve)
+# ---------------------------------------------------------------------------
+def _dim_alphas(view):
+    arr = view._rays_polydata.GetCellData().GetArray("rgba_dim")
+    assert arr is not None and arr.GetNumberOfComponents() == 4
+    return [arr.GetTuple4(i)[3] for i in range(arr.GetNumberOfTuples())]
+
+
+def test_ray_dimming_composes_rgba_from_rel_power(qtbot, tmp_path):
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True, rel_power=[1.0, 0.25, 0.0])
+
+    view.set_ray_dimming("linear")
+    actor = view.load_vtp_overlay(path)
+    mapper = actor.GetMapper()
+    assert mapper.GetScalarVisibility() == 1
+    assert mapper.GetArrayName() == "rgba_dim"
+    assert _dim_alphas(view) == pytest.approx([255.0, 64.0, 0.0])
+
+    view.set_ray_dimming("sqrt")
+    assert _dim_alphas(view) == pytest.approx([255.0, 128.0, 0.0])
+
+    view.set_ray_dimming("linear", floor_pct=50.0)
+    assert _dim_alphas(view) == pytest.approx([255.0, 128.0, 128.0])
+
+    view.set_ray_dimming("off")
+    assert mapper.GetArrayName() == "rgb"
+
+
+def test_ray_dimming_applies_to_overlays_loaded_later(qtbot, tmp_path):
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    view.set_ray_dimming("linear")   # set BEFORE any overlay exists: safe
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True, rel_power=[0.5])
+    actor = view.load_vtp_overlay(path)
+    assert actor.GetMapper().GetArrayName() == "rgba_dim"
+    assert _dim_alphas(view) == pytest.approx([128.0])
+
+
+def test_ray_dimming_falls_back_on_legacy_vtp(qtbot, tmp_path):
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    view.set_ray_dimming("linear")
+    path = tmp_path / "rays_legacy.vtp"
+    write_simple_vtp(path, with_rgb=True)   # no rel_power array
+    actor = view.load_vtp_overlay(path)
+    mapper = actor.GetMapper()
+    assert mapper.GetScalarVisibility() == 1
+    assert mapper.GetArrayName() == "rgb"
+
+
+def test_ray_dimming_stale_cycle_restores_dimmed_coloring(qtbot, tmp_path):
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True, rel_power=[1.0, 0.5])
+    view.set_ray_dimming("linear")
+    actor = view.load_vtp_overlay(path)
+    assert actor.GetMapper().GetArrayName() == "rgba_dim"
+
+    view.set_overlay_stale(True)
+    assert actor.GetMapper().GetScalarVisibility() == 0
+    # changing the mode while stale just stores it; grey stays in charge
+    view.set_ray_dimming("sqrt", floor_pct=10.0)
+    assert actor.GetMapper().GetScalarVisibility() == 0
+
+    view.set_overlay_stale(False)
+    assert actor.GetMapper().GetScalarVisibility() == 1
+    assert actor.GetMapper().GetArrayName() == "rgba_dim"
+    import math
+    assert _dim_alphas(view) == pytest.approx(
+        [255.0, round(255.0 * math.sqrt(0.5))])

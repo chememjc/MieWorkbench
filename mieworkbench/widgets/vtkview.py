@@ -291,6 +291,8 @@ class VtkSceneView(QWidget):
         self._rays_actor = None
         self._rays_polydata = None
         self._overlay_stale = False
+        self._dim_mode = "off"         # 'off' | 'linear' | 'sqrt'
+        self._dim_floor = 0.0          # minimum opacity, percent 0-100
 
         self.picker = FacePicker(
             self.interactor, self.renderer, self._actor_face_map,
@@ -559,11 +561,40 @@ class VtkSceneView(QWidget):
         self._render()
 
     # -- ray/result overlays --------------------------------------------------
-    @staticmethod
-    def _apply_overlay_coloring(actor, polydata):
+    def _compose_dim_rgba(self, polydata):
+        """Build (or refresh) the per-cell 'rgba_dim' uchar array on
+        `polydata`: the 'rgb' wavelength triple plus alpha from
+        'rel_power' (each segment's power relative to its ray's power at
+        the source) through the current dimming curve and floor. Returns
+        True when the array was (re)built, False when the polydata lacks
+        the inputs (legacy rays.vtp predating rel_power)."""
+        from vtkmodules.util.numpy_support import (numpy_to_vtk,
+                                                   vtk_to_numpy)
+        cell_data = polydata.GetCellData()
+        rgb_array = cell_data.GetArray("rgb")
+        rel_array = cell_data.GetArray("rel_power")
+        if rgb_array is None or rel_array is None:
+            return False
+        rgb = vtk_to_numpy(rgb_array).reshape(-1, 3)
+        rel = np.clip(vtk_to_numpy(rel_array), 0.0, 1.0)
+        a = np.sqrt(rel) if self._dim_mode == "sqrt" else rel
+        a = np.maximum(a, self._dim_floor / 100.0)
+        rgba = np.empty((rgb.shape[0], 4), dtype=np.uint8)
+        rgba[:, :3] = rgb
+        rgba[:, 3] = np.clip(np.round(255.0 * a), 0, 255).astype(np.uint8)
+        vtk_rgba = numpy_to_vtk(rgba, deep=1)
+        vtk_rgba.SetName("rgba_dim")
+        cell_data.AddArray(vtk_rgba)   # replaces any previous instance
+        return True
+
+    def _apply_overlay_coloring(self, actor, polydata):
         """Wavelength coloring: color by the per-cell 'rgb' array
         (written by raytracer.vtkexport.write_vtp_polylines from each ray
-        segment's wavelength) when present, else a uniform yellow.
+        segment's wavelength) when present, else a uniform yellow. With
+        ray dimming on (set_ray_dimming) and a rel_power-carrying file,
+        color by a composed 4-component 'rgba_dim' array instead --
+        DirectScalars treats the 4th uchar component as per-cell alpha
+        and VTK routes the actor through the translucent pass by itself.
 
         Mode is UseCellFIELDData, not UseCellData: the latter only ever
         colors by the ACTIVE cell scalars, so a rays.vtp whose 'rgb' array
@@ -575,13 +606,41 @@ class VtkSceneView(QWidget):
         rgb_array = (cell_data.GetArray("rgb")
                      if cell_data is not None else None)
         if rgb_array is not None:
+            color_array = "rgb"
+            if self._dim_mode != "off" and self._compose_dim_rgba(polydata):
+                color_array = "rgba_dim"
             mapper.SetScalarModeToUseCellFieldData()
-            mapper.SelectColorArray("rgb")
+            mapper.SelectColorArray(color_array)
             mapper.SetColorModeToDirectScalars()
             mapper.ScalarVisibilityOn()
         else:
             mapper.ScalarVisibilityOff()
             actor.GetProperty().SetColor(1.0, 0.9, 0.2)
+
+    def ray_dimming_data_missing(self):
+        """True when dimming is requested but the loaded overlay lacks the
+        rel_power cell array (a rays.vtp from before the feature) -- the
+        extinction setting is silently inert on such data, and the shell
+        surfaces a status-bar hint instead of leaving the user guessing."""
+        if self._dim_mode == "off" or self._rays_polydata is None:
+            return False
+        cell_data = self._rays_polydata.GetCellData()
+        return (cell_data.GetArray("rgb") is not None
+                and cell_data.GetArray("rel_power") is None)
+
+    def set_ray_dimming(self, mode, floor_pct=0.0):
+        """Attenuation dimming for the ray overlay. mode: 'off' | 'linear'
+        (opacity = P/P_birth) | 'sqrt' (perceptual, sqrt of that);
+        floor_pct: minimum opacity in percent. Applies immediately to a
+        loaded overlay and to every overlay loaded later; a stale (greyed)
+        overlay just stores the state -- un-staling re-runs
+        _apply_overlay_coloring, which reads it."""
+        self._dim_mode = str(mode)
+        self._dim_floor = float(floor_pct)
+        if self._rays_actor is not None and not self._overlay_stale:
+            self._apply_overlay_coloring(self._rays_actor,
+                                         self._rays_polydata)
+            self._render()
 
     def load_vtp_overlay(self, path):
         """Read a .vtp polydata file (e.g. results/viz/rays.vtp); colors by

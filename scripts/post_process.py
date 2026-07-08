@@ -340,19 +340,29 @@ def _assign_generations(rays):
     return gen
 
 
-def plot_rays_2d(rays, model, outpath, max_generation=None):
+def plot_rays_2d(rays, model, outpath, max_generation=None,
+                 dim_mode="off", dim_floor=0.0):
     """XY cross-section: segments colored by wavelength, alpha ~ power.
     Ordinary/isotropic rays (pol_mode==0, or every ray in an old 9-column
     rays.npy) draw as before; extraordinary rays (pol_mode==1 -- a
     birefringent crystal's o/e split) draw dashed in a fixed distinct
     color with an 'e-ray' legend entry. `max_generation`, if given, drops
     reconstructed-generation > N segments to declutter reflection-heavy
-    scenes (see _assign_generations)."""
+    scenes (see _assign_generations).
+
+    dim_mode 'linear'|'sqrt' switches alpha from the default ensemble
+    95th-percentile scaling to each segment's power relative to its own
+    ray's power at the source (rel_power, column 10), so attenuation and
+    splits fade the trace; dim_floor is a minimum opacity in percent."""
     from matplotlib.lines import Line2D
     if rays.shape[1] >= 10:
         pol_mode = rays[:, 9]
     else:
         pol_mode = np.zeros(len(rays))
+    if dim_mode != "off" and rays.shape[1] < 11:
+        print("[post] --dim-rays: rays.npy has no rel_power column "
+              "(pre-dimming trace) — falling back to percentile alpha")
+        dim_mode = "off"
     if max_generation is not None and len(rays):
         gen = _assign_generations(rays)
         gkeep = gen <= max_generation
@@ -374,10 +384,15 @@ def plot_rays_2d(rays, model, outpath, max_generation=None):
                         color="0.55", lw=0.7, zorder=1)
     has_e_ray = False
     if len(rays):
-        power = rays[:, 2]
-        pmax = np.percentile(power[power > 0], 95) if np.any(power > 0) \
-            else 1.0
-        alpha = np.clip(power / pmax, 0.02, 0.6)
+        if dim_mode != "off":
+            rel = np.clip(rays[:, 10], 0.0, 1.0)
+            a = np.sqrt(rel) if dim_mode == "sqrt" else rel
+            alpha = np.clip(np.maximum(a, dim_floor / 100.0), 0.0, 1.0)
+        else:
+            power = rays[:, 2]
+            pmax = np.percentile(power[power > 0], 95) \
+                if np.any(power > 0) else 1.0
+            alpha = np.clip(power / pmax, 0.02, 0.6)
         colors = wavelength_rgb(rays[:, 1] / 1e-9)
         # limit draw count for file size
         idx = np.arange(len(rays))
@@ -410,7 +425,9 @@ def plot_rays_2d(rays, model, outpath, max_generation=None):
         half = max(hi[0] - lo[0], hi[1] - lo[1]) * 1e3 * 0.75
         ax.set_xlim(cx - half, cx + half)
         ax.set_ylim(cy - half, cy + half)
-    ax.set_title("ray trace — XY cross-section (alpha ~ ray power)")
+    ax.set_title("ray trace — XY cross-section (alpha ~ %s)"
+                 % ("power / birth power" if dim_mode != "off"
+                    else "ray power"))
     fig.savefig(outpath, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
@@ -745,7 +762,8 @@ def main(argv=None):
                          case_dir=case_dir)
     rays = np.load(case_dir / "rays.npy")
     plot_rays_2d(rays, model, plots / "rays_xy.png",
-                max_generation=args.viz_generations)
+                max_generation=args.viz_generations,
+                dim_mode=args.dim_rays, dim_floor=args.dim_rays_floor)
     plot_materials(model, plots)
     plot_optical_elements(model, plots)
     plot_audit(audit, plots)

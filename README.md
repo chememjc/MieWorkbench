@@ -186,6 +186,21 @@ diffraction orders read directly off the overlay. Edits that affect the
 optics grey the ray ACTORS out (low-opacity gray, plus a "Rays (stale)"
 button label) until fresh rays load.
 
+**Ray dimming** (View ▸ *Ray Dimming*, off by default, persisted): fades
+each ray segment by attenuation — opacity is the segment's remaining
+power relative to its own ray's power at the source (P/P₀), so
+absorption, coatings, and Fresnel splits all dim the trace consistently
+(a 50/50 beamsplitter yields two half-opacity arms). Choose **Linear**
+(opacity = P/P₀, fading fully to invisible at zero power), **Perceptual**
+(√(P/P₀), compensating the eye's nonlinearity), or set a **Minimum
+Opacity…** floor so heavily attenuated rays stay faintly traceable.
+Applies to the live preview and loaded run overlays in both 3D views;
+rays.vtp files from runs predating the feature simply render undimmed.
+The rendered pipeline outputs have the equivalent `--dim-rays`
+{off,linear,sqrt} / `--dim-rays-floor PCT` options (in the run config
+panel and `run_pipeline.py`), covering `rays_xy.png` and the 3D viz
+renders.
+
 **Auto-updating preview** (View ▸ *Auto-update Ray Preview*, on by
 default, persisted): about a second after the last optics-affecting edit
 (geometry moves/reshapes, element add/delete, any contract-property
@@ -808,10 +823,13 @@ FreeCAD expressions alone — see CUSTOMIZE.md).
 
 ```
 post_process.py --case-dir CASE_DIR --model-json MODEL_JSON [--viz-generations N]
+    [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
 ```
 
 Rerunnable without re-tracing. `--viz-generations N` declutters
-`rays_xy.png` to reconstructed-generation ≤ N segments only.
+`rays_xy.png` to reconstructed-generation ≤ N segments only. `--dim-rays`
+switches segment alpha to each ray's remaining/birth power (attenuation
+dimming) instead of the default ensemble-percentile scaling.
 
 ### 5.6 `make_viz.py` — 3D visualization (ParaView `pvpython`)
 
@@ -819,14 +837,17 @@ Rerunnable without re-tracing. `--viz-generations N` declutters
 /home3/paraview/.../bin/pvpython --force-offscreen-rendering scripts/make_viz.py \
     --case-dir CASE_DIR --model-json MODEL_JSON [--views v1,v2,...] \
     [--resolution WIDTHxHEIGHT] [--out DIR] [--smoke] [--skip-vtkexport]
+    [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
 ```
 
 `--views` picks a subset of the view registry (`overview3d`, `top`, `side`,
 `detector_closeup`, `turntable`, `rays_polmode`, …); `--smoke` renders only
 `overview3d` at 800×600 for a fast end-to-end check; `--skip-vtkexport`
 skips the optics-env `raytracer.vtkexport` prep sub-step if `.vtp` files
-already exist. `run_pipeline.py`'s internal viz step only ever forwards
-`--case-dir`/`--model-json`, so to pick views/resolution/smoke you invoke
+already exist; `--dim-rays` fades ray segments by remaining/birth power
+(wavelength coloring preserved). `run_pipeline.py`'s internal viz step
+forwards only `--case-dir`/`--model-json` plus the `--dim-rays` options,
+so to pick views/resolution/smoke you invoke
 `make_viz.py` directly on an already-completed case (docs/RAYTRACER.md
 §4.2).
 

@@ -8,11 +8,13 @@
 # docstring for the reasoning: pvpython never imports the raytracer package).
 #
 # Contents:
-#   write_vtp_polylines(path, rays)          rays.npy (N,9) or (N,10) ->
+#   write_vtp_polylines(path, rays)          rays.npy (N,9|10|11) ->
 #                                             ray segments (10th column,
 #                                             if present, is pol_mode:
 #                                             0=ordinary/isotropic,
-#                                             1=extraordinary o/e-split ray)
+#                                             1=extraordinary o/e-split ray;
+#                                             11th, if present, is
+#                                             rel_power = power/birth_power)
 #   write_vtp_mesh(path, vertices, triangles, color=None)
 #                                             triangle soup -> surface mesh
 #   write_detector_quads(path, h5_path, model=None, max_cells=512)
@@ -181,27 +183,41 @@ def _write_vtp(path, points, lines=None, polys=None, verts=None,
 
 
 # ---------------------------------------------------------------------------
-# write_vtp_polylines — rays.npy (N,9) or (N,10) -> N line cells
+# write_vtp_polylines — rays.npy (N,9|10|11) -> N line cells
 # ---------------------------------------------------------------------------
-def write_vtp_polylines(path, rays):
+def write_vtp_polylines(path, rays, dim_mode="off", dim_floor=0.0):
     """rays: (N,9) array [source_id, lam_m, power_W, x0,y0,z0, x1,y1,z1],
-    or (N,10) with a trailing pol_mode column (0=isotropic/ordinary ray,
-    1=extraordinary ray -- a birefringent crystal's o/e split). Older
-    (N,9) files are still accepted; pol_mode defaults to 0 for them (NOTE:
-    the caller must pass the array with its ACTUAL column count -- this
-    function no longer force-reshapes to 9 columns, since that would
-    silently corrupt a legitimate (N,10) array).
+    (N,10) with a trailing pol_mode column (0=isotropic/ordinary ray,
+    1=extraordinary ray -- a birefringent crystal's o/e split), or (N,11)
+    with a further rel_power column (power/birth_power in [0,1] -- the
+    per-segment attenuation the renderers map to opacity). Older narrower
+    files are still accepted; missing columns default to 0 (NOTE: the
+    caller must pass the array with its ACTUAL column count -- this
+    function does not force-reshape, since that would silently corrupt a
+    legitimately wider array).
 
     Writes N 2-point line cells (no point data), with CELL data:
       rgb (3x uint8, wavelength color), power (float32 W), source_id
-      (int16), pol_mode (uint8, 0=ordinary/isotropic, 1=extraordinary).
+      (int16), pol_mode (uint8, 0=ordinary/isotropic, 1=extraordinary),
+      and, for (N,11) input, rel_power (float32, [0,1]). rgb stays the
+      ACTIVE scalars; rel_power is appearance-neutral data so each
+      consumer applies its own dimming curve at render time (the GUI
+      composes its own RGBA from it per its View-menu setting).
+
+    dim_mode 'linear'|'sqrt' additionally bakes an rgba (4x uint8) cell
+    array -- rgb plus alpha = f(rel_power) floored at dim_floor percent
+    -- for ParaView's direct-RGBA path (make_viz --dim-rays; the curve
+    must be applied HERE because pvpython's ProgrammableFilter leaks
+    numpy_interface names into __main__, shadowing builtins). Ignored
+    for input narrower than (N,11).
     """
     rays = np.asarray(rays, dtype=np.float64)
-    if rays.ndim != 2 or rays.shape[1] not in (9, 10):
+    if rays.ndim != 2 or rays.shape[1] not in (9, 10, 11):
         raise ValueError(
-            "write_vtp_polylines: rays must be (N,9) or (N,10), got shape %r"
-            % (rays.shape,))
-    has_pol = rays.shape[1] == 10
+            "write_vtp_polylines: rays must be (N,9), (N,10) or (N,11), "
+            "got shape %r" % (rays.shape,))
+    has_pol = rays.shape[1] >= 10
+    has_rel = rays.shape[1] >= 11
     n = rays.shape[0]
     if n == 0:
         points = np.zeros((0, 3), dtype=np.float64)
@@ -211,6 +227,7 @@ def write_vtp_polylines(path, rays):
         power = np.zeros(0, dtype=np.float32)
         source_id = np.zeros(0, dtype=np.int16)
         pol_mode = np.zeros(0, dtype=np.uint8)
+        rel_power = np.zeros(0, dtype=np.float32)
     else:
         p0 = rays[:, 3:6]
         p1 = rays[:, 6:9]
@@ -224,10 +241,22 @@ def write_vtp_polylines(path, rays):
         source_id = rays[:, 0].astype(np.int16)
         pol_mode = (rays[:, 9] if has_pol
                     else np.zeros(n)).astype(np.uint8)
+        if has_rel:
+            rel_power = np.clip(rays[:, 10], 0.0, 1.0).astype(np.float32)
 
     cell_data = [("rgb", rgb, 3), ("power", power, 1),
                  ("source_id", source_id, 1),
                  ("pol_mode", pol_mode, 1)]
+    if has_rel:
+        cell_data.append(("rel_power", rel_power, 1))
+        if dim_mode != "off":
+            a = np.sqrt(rel_power) if dim_mode == "sqrt" else rel_power
+            a = np.maximum(a, float(dim_floor) / 100.0)
+            rgba = np.empty((n, 4), dtype=np.uint8)
+            rgba[:, :3] = rgb
+            rgba[:, 3] = np.clip(np.round(255.0 * a), 0,
+                                 255).astype(np.uint8)
+            cell_data.append(("rgba", rgba, 4))
     return _write_vtp(path, points, lines=(connectivity, offsets),
                       cell_data=cell_data)
 
@@ -420,6 +449,14 @@ def parse_args(argv=None):
     p.add_argument("--out-dir", default=None,
                    help="default: <case-dir>/viz")
     p.add_argument("--max-cells", type=int, default=512)
+    p.add_argument("--dim-rays", default="off",
+                   choices=["off", "linear", "sqrt"],
+                   help="bake an rgba cell array into rays.vtp with "
+                        "alpha from rel_power (attenuation dimming for "
+                        "make_viz --dim-rays)")
+    p.add_argument("--dim-rays-floor", type=float, default=0.0,
+                   metavar="PCT",
+                   help="minimum opacity percent for --dim-rays")
     return p.parse_args(argv)
 
 
@@ -438,7 +475,8 @@ def main(argv=None):
     if rays_path.exists():
         rays = np.load(rays_path)
         out_path = out_dir / "rays.vtp"
-        write_vtp_polylines(out_path, rays)
+        write_vtp_polylines(out_path, rays, dim_mode=args.dim_rays,
+                            dim_floor=args.dim_rays_floor)
         print("[vtkexport] wrote %s (%d ray segments)" % (out_path, len(rays)))
     else:
         print("[vtkexport] no rays.npy at %s, skipping" % rays_path)

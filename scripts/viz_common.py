@@ -20,7 +20,12 @@ rewritten for this project's data model:
     LOADS the resulting .vtp files with ParaView's own XML reader.
   * both ray segments and detector quads carry a 3-component uint8 CELL
     array named 'rgb' -- colored directly (MapScalars = 0), not through a
-    scalar lookup table.
+    scalar lookup table. Ray segments additionally carry 'rel_power'
+    (float32, power/birth_power) and, when the vtkexport prep step ran
+    with --dim-rays, a baked 4-component 'rgba' array for
+    attenuation-dimmed renders (alpha computed under OPTICS_PYTHON, NOT
+    via a pvpython ProgrammableFilter -- that leaks numpy_interface
+    names into __main__ and shadows builtins like max()).
 
 PV 6.1.1 notes carried over from the antenna project:
   * The first Render() after new representations are Shown auto-resets the
@@ -215,13 +220,15 @@ def load_detector_meta(vtp_path):
         return json.load(fh)
 
 
-def show_rgb_cells(reader, view, representation="Surface"):
+def show_rgb_cells(reader, view, representation="Surface", array="rgb"):
     """Show `reader`'s polydata, colored directly by its 3-component uint8
     CELL array 'rgb' (no lookup table -- MapScalars = 0 per VTK/ParaView's
-    direct-color convention)."""
+    direct-color convention). `array` may name a 4-component uint8 cell
+    array instead (e.g. dim_rays_filter's 'rgba'), rendered as direct
+    RGBA with per-cell opacity."""
     disp = Show(reader, view)
     disp.Representation = representation
-    ColorBy(disp, ("CELLS", "rgb"))
+    ColorBy(disp, ("CELLS", array))
     disp.MapScalars = 0
     return disp
 

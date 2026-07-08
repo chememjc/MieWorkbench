@@ -107,8 +107,10 @@ def test_allflags_composite(tmp_path):
             assert np.all(np.isfinite(Ex.real))
 
     rays = np.load(case / "rays.npy")
-    assert rays.shape[1] == 10
+    assert rays.shape[1] == 11
     assert np.any(rays[:, 9] == 1.0), "no e-rays recorded in viz output"
+    assert np.all((rays[:, 10] >= 0.0) & (rays[:, 10] <= 1.0)), \
+        "rel_power outside [0,1]"
 
 
 MESH_MODEL = SCRIPTS.parent / "geometry" / "mesh_freeform" / "model.json"

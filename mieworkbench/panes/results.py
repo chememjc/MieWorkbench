@@ -223,6 +223,21 @@ class _Gallery(QScrollArea):
         self._lightbox = _LightboxDialog(self._paths, index, parent=self)
         self._lightbox.show()
 
+    def clear(self):
+        """Session boundary: drop every thumbnail and close an open
+        lightbox (isVisible-guarded -- offscreen teardown safety)."""
+        if self._lightbox is not None:
+            if self._lightbox.isVisible():
+                self._lightbox.close()
+            self._lightbox = None
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._shown = {}
+        self._paths = []
+
 
 class ResultsPane(QWidget):
     statusChanged = Signal(str)     # case status string for the title bar
@@ -295,11 +310,19 @@ class ResultsPane(QWidget):
 
     def clear_case(self):
         """Session boundary (File -> Close / opening a different model):
-        stop live monitoring and forget the loaded case so stale ray
-        overlays / results can't leak into the next session."""
+        stop live monitoring, forget the loaded case AND wipe every
+        results widget -- forgetting only the pointer left the previous
+        model's summary/power tables, galleries and audit line on screen
+        after File > Open."""
         self._monitor.stop()
         self.case_dir = None
         self.title.setText("No results loaded")
+        self.summary.setRowCount(0)
+        self.power.setRowCount(0)
+        for gallery in self.galleries.values():
+            gallery.clear()
+        self.audit.setText("")
+        self.pv_btn.setEnabled(False)
         self.statusChanged.emit("")
 
     def refresh(self):
