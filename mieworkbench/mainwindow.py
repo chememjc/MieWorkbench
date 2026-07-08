@@ -33,12 +33,14 @@ import miewb_tool  # noqa: E402  (stdlib-only archive engine)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog,
-    QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
-    QProgressBar, QStyle, QToolButton, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
+    QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
+    QMessageBox, QProgressBar, QStyle, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .core import paraview_launcher
+from .core.beadanim import (AnimationController, format_sim_time,
+                            precompute_segments)
 from .core.librarymgr import LibraryManager
 from .core.previewscheduler import PreviewScheduler
 from .core.project import Project, ProjectError
@@ -113,8 +115,10 @@ class MainWindow(QMainWindow):
         self._build_central()
         self.stage_chips = {}
         self._build_docks()
+        self._init_animation()
         self._build_menus()
         self._build_toolbar()
+        self._build_animation_toolbar()
         self.statusBar().showMessage("Ready")
         self._wire_runner()
         self._wire_panes()
@@ -460,6 +464,21 @@ class MainWindow(QMainWindow):
             True)
         self._apply_ray_dimming()
 
+        # tracer-bead animation on/off: ONE checkable action shared by
+        # this menu and the Animation toolbar (Qt syncs both natively)
+        self.anim_enable_action = view_menu.addAction(
+            "Tracer Bead &Animation")
+        self.anim_enable_action.setCheckable(True)
+        self.anim_enable_action.setToolTip(
+            "Animate spheres ('tracer beads') riding each ray at the "
+            "physical speed c/n — beads slow down inside glass, splits "
+            "spawn both children the instant the parent arrives. "
+            "Controlled from the Animation toolbar; beads are hidden "
+            "when off.")
+        self.anim_enable_action.setChecked(self.anim_controller.enabled)
+        self.anim_enable_action.toggled.connect(
+            self._on_anim_enabled_toggled)
+
         help_menu = menubar.addMenu("&Help")
         act = help_menu.addAction("&About")
         act.setToolTip("About MieWorkbench")
@@ -769,6 +788,163 @@ class MainWindow(QMainWindow):
     def _on_face_indicators_toggled(self, checked):
         self._apply_face_indicators(checked)
         self.settings.set_bool("show_face_indicators", checked)
+
+    # -- tracer-bead animation ---------------------------------------------------
+    def _anim_setting(self, key, default):
+        try:
+            return float(self.settings.get(key, str(default)) or default)
+        except (TypeError, ValueError):
+            return default
+
+    def _init_animation(self):
+        """Controller + persisted defaults; the scene3d view owns the
+        BeadLayer (beads live in the main 3D view only)."""
+        view = self.scene3d.view
+        self.anim_controller = AnimationController(
+            layer=view.beads, render=view._render, parent=self)
+        self.anim_controller.apply_settings(
+            bead_size_mm=self._anim_setting("anim_bead_size", 1.0),
+            speed_mm_s=self._anim_setting("anim_speed_mm_s", 2.0),
+            fps=int(self._anim_setting("anim_fps", 15)),
+            ray_cap=int(self._anim_setting("anim_ray_cap", 300)),
+            enabled=self.settings.get_bool("anim_enabled", False))
+        view.overlayChanged.connect(self._on_scene_overlay_changed)
+        self.anim_controller.frameAdvanced.connect(self._on_anim_frame)
+        self.anim_controller.availabilityChanged.connect(
+            lambda _avail: self._update_anim_transport_enabled())
+
+    def _build_animation_toolbar(self):
+        tb = self.addToolBar("Animation")
+        tb.setObjectName("animation_toolbar")
+        style = self.style()
+
+        # the SAME checkable QAction lives in the View menu and here --
+        # Qt keeps the two representations in sync natively
+        tb.addAction(self.anim_enable_action)
+        tb.addSeparator()
+
+        self.anim_play_action = tb.addAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay), "Play")
+        self.anim_play_action.setToolTip(
+            "Play the tracer beads (loops until Stop)")
+        self.anim_play_action.triggered.connect(self.anim_controller.play)
+        self.anim_pause_action = tb.addAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_MediaPause),
+            "Pause")
+        self.anim_pause_action.setToolTip("Pause the beads in place")
+        self.anim_pause_action.triggered.connect(self.anim_controller.pause)
+        self.anim_stop_action = tb.addAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_MediaStop), "Stop")
+        self.anim_stop_action.setToolTip(
+            "Stop and rewind: beads return to the sources at t = 0")
+        self.anim_stop_action.triggered.connect(self.anim_controller.stop)
+        self.anim_step_action = tb.addAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward),
+            "Step")
+        self.anim_step_action.setToolTip(
+            "Single-step one frame (speed ÷ fps mm of vacuum path)")
+        self.anim_step_action.triggered.connect(self.anim_controller.step)
+        tb.addSeparator()
+
+        tb.addWidget(QLabel(" Bead "))
+        self.anim_size_spin = QDoubleSpinBox()
+        self.anim_size_spin.setRange(0.05, 50.0)
+        self.anim_size_spin.setDecimals(2)
+        self.anim_size_spin.setSingleStep(0.25)
+        self.anim_size_spin.setSuffix(" mm")
+        self.anim_size_spin.setValue(self.anim_controller.bead_size_mm)
+        self.anim_size_spin.setToolTip("Tracer bead diameter-ish sphere "
+                                       "radius in scene millimetres")
+        self.anim_size_spin.valueChanged.connect(self._on_anim_size)
+        tb.addWidget(self.anim_size_spin)
+
+        tb.addWidget(QLabel(" Speed "))
+        self.anim_speed_spin = QDoubleSpinBox()
+        self.anim_speed_spin.setRange(0.01, 1000.0)
+        self.anim_speed_spin.setDecimals(2)
+        self.anim_speed_spin.setSuffix(" mm/s")
+        self.anim_speed_spin.setValue(self.anim_controller.speed_mm_s)
+        self.anim_speed_spin.setToolTip(
+            "Playback speed: mm of ray path per real second for a bead "
+            "in vacuum -- beads inside glass move slower by 1/n")
+        self.anim_speed_spin.valueChanged.connect(self._on_anim_speed)
+        tb.addWidget(self.anim_speed_spin)
+
+        tb.addWidget(QLabel(" FPS "))
+        self.anim_fps_combo = QComboBox()
+        for fps in (5, 10, 15, 24, 30):
+            self.anim_fps_combo.addItem(str(fps))
+        self.anim_fps_combo.setCurrentText(str(self.anim_controller.fps))
+        self.anim_fps_combo.setToolTip("Animation frames per second")
+        self.anim_fps_combo.currentTextChanged.connect(self._on_anim_fps)
+        tb.addWidget(self.anim_fps_combo)
+
+        tb.addSeparator()
+        self.anim_readout = QLabel("")
+        self.anim_readout.setToolTip(
+            "Simulation clock (auto unit) and the vacuum-equivalent "
+            "optical path c·t travelled so far")
+        tb.addWidget(self.anim_readout)
+        self._on_anim_frame(0.0, 0.0)
+        self._update_anim_transport_enabled()
+
+    def _on_anim_enabled_toggled(self, checked):
+        self.anim_controller.apply_settings(enabled=checked)
+        self.settings.set_bool("anim_enabled", checked)
+        self._update_anim_transport_enabled()
+        if checked:
+            self._warn_if_anim_data_missing()
+
+    def _on_anim_size(self, value):
+        self.anim_controller.apply_settings(bead_size_mm=value)
+        self.settings.set("anim_bead_size", str(value))
+
+    def _on_anim_speed(self, value):
+        self.anim_controller.apply_settings(speed_mm_s=value)
+        self.settings.set("anim_speed_mm_s", str(value))
+
+    def _on_anim_fps(self, text):
+        try:
+            self.anim_controller.apply_settings(fps=int(text))
+            self.settings.set("anim_fps", text)
+        except ValueError:
+            pass
+
+    def _on_anim_frame(self, clock_s, path_mm):
+        readout = getattr(self, "anim_readout", None)
+        if readout is not None:
+            readout.setText(" t = %s   path = %.2f mm "
+                            % (format_sim_time(clock_s), path_mm))
+
+    def _update_anim_transport_enabled(self):
+        play = getattr(self, "anim_play_action", None)
+        if play is None:
+            return                       # toolbar not built yet
+        avail = (self.anim_controller.has_segments()
+                 and self.anim_controller.enabled)
+        for act in (self.anim_play_action, self.anim_pause_action,
+                    self.anim_stop_action, self.anim_step_action):
+            act.setEnabled(avail)
+
+    def _on_scene_overlay_changed(self):
+        view = self.scene3d.view
+        if view.overlay_is_stale() or view._rays_polydata is None:
+            self.anim_controller.set_segments(None)
+            return
+        self.anim_controller.set_segments(
+            precompute_segments(view._rays_polydata))
+        if self.anim_controller.enabled:
+            self._warn_if_anim_data_missing()
+
+    def _warn_if_anim_data_missing(self):
+        view = self.scene3d.view
+        if (view._rays_polydata is not None
+                and not view.overlay_is_stale()
+                and not self.anim_controller.has_segments()):
+            self.statusBar().showMessage(
+                "Loaded rays predate timing data (opl) — the bead "
+                "animation is unavailable until you re-run or "
+                "re-preview.", 6000)
 
     # -- undo/redo -----------------------------------------------------------------
     def _on_undo(self):

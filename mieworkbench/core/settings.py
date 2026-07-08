@@ -25,7 +25,8 @@ import common  # noqa: E402  (stdlib-only shared contract hub)
 
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (
-    QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QTabWidget,
     QVBoxLayout, QWidget, QFileDialog, QDialogButtonBox,
 )
 
@@ -133,8 +134,10 @@ class Settings:
 
 
 # ---------------------------------------------------------------------------
-# SettingsDialog - QFormLayout of path fields + Browse buttons + autodetect
-# status label per row, reachable from File > Settings…
+# SettingsDialog - a QTabWidget: "Tool Paths" (path fields + Browse +
+# autodetect status per row) and "Defaults" (ray extinction + tracer-bead
+# animation -- the SAME live QSettings keys the View menu/toolbars edit,
+# pushed into the open session on OK). Reachable from File > Settings…
 # ---------------------------------------------------------------------------
 class SettingsDialog(QDialog):
     def __init__(self, settings=None, parent=None):
@@ -187,14 +190,93 @@ class SettingsDialog(QDialog):
 
         self._refresh_status()
 
+        paths_page = QWidget()
+        paths_page.setLayout(form)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
 
+        tabs = QTabWidget()
+        tabs.addTab(paths_page, "Tool Paths")
+        tabs.addTab(self._build_defaults_page(), "Defaults")
+
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.addWidget(tabs)
         layout.addWidget(buttons)
+
+    # -- Defaults tab (extinction + animation live keys) -----------------------
+    def _num(self, key, default):
+        try:
+            return float(self.settings.get(key, str(default)) or default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _build_defaults_page(self):
+        page = QWidget()
+        form = QFormLayout(page)
+
+        self.dim_mode_combo = QComboBox()
+        for label in ("Off", "Linear", "Perceptual"):
+            self.dim_mode_combo.addItem(label)
+        modes = ("off", "linear", "sqrt")
+        current = self.settings.get("ray_dimming_mode", "off")
+        self.dim_mode_combo.setCurrentIndex(
+            modes.index(current) if current in modes else 0)
+        self.dim_mode_combo.setToolTip(
+            "Ray extinction: fade ray segments by remaining power "
+            "(same setting as the toolbar combo / View menu)")
+        form.addRow("Ray extinction:", self.dim_mode_combo)
+
+        self.dim_floor_spin = QDoubleSpinBox()
+        self.dim_floor_spin.setRange(0.0, 100.0)
+        self.dim_floor_spin.setSuffix(" %")
+        self.dim_floor_spin.setValue(self._num("ray_dimming_floor", 0.0))
+        self.dim_floor_spin.setToolTip(
+            "Minimum segment opacity under extinction (0 = fade fully)")
+        form.addRow("Extinction floor:", self.dim_floor_spin)
+
+        self.anim_enabled_check = QCheckBox("Show tracer beads")
+        self.anim_enabled_check.setChecked(
+            self.settings.get_bool("anim_enabled", False))
+        form.addRow("Animation:", self.anim_enabled_check)
+
+        self.anim_size_spin = QDoubleSpinBox()
+        self.anim_size_spin.setRange(0.05, 50.0)
+        self.anim_size_spin.setSuffix(" mm")
+        self.anim_size_spin.setValue(self._num("anim_bead_size", 1.0))
+        form.addRow("Bead size:", self.anim_size_spin)
+
+        self.anim_speed_spin = QDoubleSpinBox()
+        self.anim_speed_spin.setRange(0.01, 1000.0)
+        self.anim_speed_spin.setSuffix(" mm/s")
+        self.anim_speed_spin.setValue(self._num("anim_speed_mm_s", 2.0))
+        self.anim_speed_spin.setToolTip(
+            "mm of ray path per real second for a vacuum bead "
+            "(glass beads run slower by 1/n)")
+        form.addRow("Bead speed:", self.anim_speed_spin)
+
+        self.anim_fps_spin = QSpinBox()
+        self.anim_fps_spin.setRange(1, 120)
+        self.anim_fps_spin.setValue(int(self._num("anim_fps", 15)))
+        form.addRow("Animation FPS:", self.anim_fps_spin)
+
+        self.anim_cap_spin = QSpinBox()
+        self.anim_cap_spin.setRange(0, 100000)
+        self.anim_cap_spin.setValue(int(self._num("anim_ray_cap", 300)))
+        self.anim_cap_spin.setToolTip(
+            "Max beads DRAWN simultaneously per source (0 = unlimited); "
+            "an honest render cap on busy run overlays, not a trace cap")
+        form.addRow("Bead cap / source:", self.anim_cap_spin)
+
+        note = QLabel(
+            "These are the persisted values every session starts from — "
+            "the toolbar and View-menu controls edit the same settings.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray;")
+        form.addRow(note)
+        return page
 
     def _refresh_status(self):
         for key, _env, _default, _kind, _label in FIELDS:
@@ -208,4 +290,41 @@ class SettingsDialog(QDialog):
     def _on_accept(self):
         for key, _env, _default, _kind, _label in FIELDS:
             self.settings.set(key, self._edits[key].text())
+
+        # Defaults tab -> the same live keys the toolbars/menus edit
+        modes = ("off", "linear", "sqrt")
+        mode = modes[self.dim_mode_combo.currentIndex()]
+        self.settings.set("ray_dimming_mode", mode)
+        self.settings.set("ray_dimming_floor",
+                          str(self.dim_floor_spin.value()))
+        self.settings.set_bool("anim_enabled",
+                               self.anim_enabled_check.isChecked())
+        self.settings.set("anim_bead_size",
+                          str(self.anim_size_spin.value()))
+        self.settings.set("anim_speed_mm_s",
+                          str(self.anim_speed_spin.value()))
+        self.settings.set("anim_fps", str(self.anim_fps_spin.value()))
+        self.settings.set("anim_ray_cap", str(self.anim_cap_spin.value()))
+
+        # push into the open session (parent is the MainWindow at the
+        # only call site; guarded so the dialog stays usable standalone)
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_on_ray_dimming_mode"):
+            parent._on_ray_dimming_mode(mode)
+            parent._set_ray_dimming_floor(self.dim_floor_spin.value())
+        if parent is not None and hasattr(parent, "anim_controller"):
+            parent.anim_controller.apply_settings(
+                bead_size_mm=self.anim_size_spin.value(),
+                speed_mm_s=self.anim_speed_spin.value(),
+                fps=self.anim_fps_spin.value(),
+                ray_cap=self.anim_cap_spin.value())
+            # route enabled through the shared action so menu/toolbar
+            # check-state follows
+            parent.anim_enable_action.setChecked(
+                self.anim_enabled_check.isChecked())
+            # sync the toolbar spin/combo editors
+            parent.anim_size_spin.setValue(self.anim_size_spin.value())
+            parent.anim_speed_spin.setValue(self.anim_speed_spin.value())
+            parent.anim_fps_combo.setCurrentText(
+                str(self.anim_fps_spin.value()))
         self.accept()

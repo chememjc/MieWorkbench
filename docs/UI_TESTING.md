@@ -258,9 +258,18 @@ touches rendering, the ray-preview pipeline, or session lifecycle:
 9. Scale bar updates to the new model's extent; face-indicator toggles
    (View menu) show/hide the emit/detector red half-discs and +x
    blue/green dots.
+10. View ▸ Tracer Bead Animation, then Play: beads ride the loaded rays,
+    visibly slower inside glass than in air/vacuum; Pause holds them in
+    place, Step advances exactly one frame, Stop rewinds to the sources;
+    the `t = ...` / path readout advances during Play and the animation
+    loops at the last arrival instead of stopping dead.
+11. File ▸ Settings ▸ Defaults tab: change the bead speed and the
+    extinction (ray dimming) mode, then OK — the Animation toolbar and
+    View menu update live to match, and both values survive an app
+    restart.
 
-> This checklist is expected to grow — later rounds (animation transport,
-> snap-to-axis, etc.) add their own manual verification steps here.
+> This checklist is expected to grow — later rounds (snap-to-axis, etc.)
+> add their own manual verification steps here.
 
 ## 5. Where tests live / naming
 

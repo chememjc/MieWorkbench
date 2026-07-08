@@ -43,8 +43,10 @@ import vtkmodules.qt
 vtkmodules.qt.PyQtImpl = "PySide6"
 
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
-from vtkmodules.vtkCommonCore import vtkPoints
+from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
+from vtkmodules.vtkFiltersCore import vtkGlyph3D
+from vtkmodules.vtkFiltersSources import vtkSphereSource
 from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkIOGeometry import vtkSTLReader
@@ -214,6 +216,72 @@ def format_bar_label(length_m):
     return "%s mm" % _format_nice_number(length_mm)
 
 
+class BeadLayer:
+    """Tracer-bead glyphs (owned by VtkSceneView, driven per frame by
+    core/beadanim.AnimationController): one sphere per active ray
+    segment, positioned by the animation clock, colored by the segment's
+    wavelength rgb. Always fully opaque (ForceOpaque) -- attenuation
+    dimming applies to the ray LINES, never to the beads, so a bead stays
+    findable even on a nearly-faded ray. Construction is GPU-free
+    (offscreen-safe, same rationale as FaceIndicatorLayer)."""
+
+    def __init__(self, renderer):
+        self.renderer = renderer
+        self._points = vtkPoints()
+        self._rgb = vtkUnsignedCharArray()
+        self._rgb.SetNumberOfComponents(3)
+        self._rgb.SetName("rgb")
+        self._poly = vtkPolyData()
+        self._poly.SetPoints(self._points)
+        self._poly.GetPointData().SetScalars(self._rgb)
+
+        self._sphere = vtkSphereSource()
+        self._sphere.SetThetaResolution(12)
+        self._sphere.SetPhiResolution(12)
+        self._sphere.SetRadius(1e-3)          # 1 mm default, in metres
+
+        glyph = vtkGlyph3D()
+        glyph.SetInputData(self._poly)
+        glyph.SetSourceConnection(self._sphere.GetOutputPort())
+        glyph.SetColorModeToColorByScalar()
+        glyph.SetScaleModeToDataScalingOff()
+
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputConnection(glyph.GetOutputPort())
+        mapper.SetColorModeToDirectScalars()
+        mapper.ScalarVisibilityOn()
+        self.actor = vtkActor()
+        self.actor.SetMapper(mapper)
+        self.actor.GetProperty().SetOpacity(1.0)
+        self.actor.ForceOpaqueOn()
+        self.actor.SetVisibility(False)       # off until animation enabled
+        self.renderer.AddActor(self.actor)
+
+    def update_beads(self, points_m, rgb):
+        """points_m (M,3) float metres; rgb (M,3) uint8."""
+        self._points.Reset()
+        self._rgb.Reset()
+        for i in range(len(points_m)):
+            self._points.InsertNextPoint(*(float(c) for c in points_m[i]))
+            self._rgb.InsertNextTuple3(int(rgb[i][0]), int(rgb[i][1]),
+                                       int(rgb[i][2]))
+        self._points.Modified()
+        self._rgb.Modified()
+        self._poly.Modified()
+
+    def set_radius_m(self, radius_m):
+        self._sphere.SetRadius(max(1e-6, float(radius_m)))
+
+    def set_visible(self, visible):
+        self.actor.SetVisibility(bool(visible))
+
+    def clear(self):
+        self.update_beads(np.zeros((0, 3)), np.zeros((0, 3), np.uint8))
+
+    def bead_count(self):
+        return self._points.GetNumberOfPoints()
+
+
 class VtkSceneView(QWidget):
     """A trackball-camera VTK render window with per-face actors grouped
     under per-body transforms, an orientation-axes overlay, and click-to-
@@ -224,6 +292,10 @@ class VtkSceneView(QWidget):
     # old boolean `additive` flag still work (receivers normalize via
     # facepicker.normalize_pick_mode / pick_to_selection).
     facePicked = Signal(str, str, object)
+    overlayChanged = Signal()             # ray overlay loaded / removed /
+                                          # stale-flag flipped (the bead-
+                                          # animation controller re-reads
+                                          # the polydata on this)
     contextRequested = Signal(int, int)   # VTK event coords (origin
                                           # bottom-left); see
                                           # enable_context_menu()
@@ -278,6 +350,10 @@ class VtkSceneView(QWidget):
         # face-orientation indicator glyphs (see widgets/faceindicators.py);
         # actor construction is GPU-free, so this is offscreen-safe
         self._indicators = FaceIndicatorLayer(self.renderer)
+
+        # tracer-bead animation glyphs (driven by core/beadanim); also
+        # GPU-free to build, invisible until the animation is enabled
+        self.beads = BeadLayer(self.renderer)
 
         # bookkeeping
         self._structure = None
@@ -665,6 +741,7 @@ class VtkSceneView(QWidget):
         self._overlay_stale = False
         self.renderer.AddActor(actor)
         self._render()
+        self.overlayChanged.emit()
         return actor
 
     def remove_overlay(self):
@@ -674,6 +751,7 @@ class VtkSceneView(QWidget):
             self._rays_polydata = None
             self._overlay_stale = False
             self._render()
+            self.overlayChanged.emit()
 
     def set_overlay_stale(self, stale):
         """Grey the ray overlay itself (not just a button label) while the
@@ -682,6 +760,7 @@ class VtkSceneView(QWidget):
         stale = bool(stale)
         if stale == self._overlay_stale and self._rays_actor is None:
             return
+        changed = stale != self._overlay_stale
         self._overlay_stale = stale
         if self._rays_actor is None:
             return
@@ -695,6 +774,8 @@ class VtkSceneView(QWidget):
             self._apply_overlay_coloring(self._rays_actor,
                                          self._rays_polydata)
         self._render()
+        if changed:
+            self.overlayChanged.emit()
 
     def overlay_is_stale(self):
         return self._overlay_stale

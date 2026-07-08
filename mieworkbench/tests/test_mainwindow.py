@@ -265,3 +265,127 @@ def test_missing_relpower_hint_on_legacy_rays(qtbot, tmp_path):
         else:
             window.settings._qs.setValue("ray_dimming_mode", saved_mode)
         window.settings._qs.sync()
+
+# ---------------------------------------------------------------------------
+# tracer-bead animation shell (toolbar, overlay wiring, settings tab)
+# ---------------------------------------------------------------------------
+def _restore_key(window, key, saved):
+    if saved is None:
+        window.settings._qs.remove(key)
+    else:
+        window.settings._qs.setValue(key, saved)
+
+
+def test_animation_toolbar_exists_and_gates_on_overlay(qtbot, tmp_path):
+    from mieworkbench.tests.vtk_test_support import write_simple_vtp
+    window = MainWindow()
+    qtbot.addWidget(window)
+    saved = window.settings._qs.value("anim_enabled", None)
+    try:
+        toolbars = [tb.objectName() for tb in window.findChildren(
+            type(window.addToolBar("x")))]
+        assert "animation_toolbar" in toolbars
+        for name in ("anim_play_action", "anim_pause_action",
+                     "anim_stop_action", "anim_step_action",
+                     "anim_size_spin", "anim_speed_spin",
+                     "anim_fps_combo", "anim_readout",
+                     "anim_enable_action"):
+            assert getattr(window, name) is not None, name
+
+        # defaults per spec: 2 mm/s at 15 fps, transport gated off
+        assert window.anim_speed_spin.value() == 2.0
+        assert window.anim_fps_combo.currentText() == "15"
+        assert not window.anim_play_action.isEnabled()
+
+        window.anim_enable_action.setChecked(True)   # menu+toolbar action
+        assert window.anim_controller.enabled
+        assert not window.anim_play_action.isEnabled()   # still no rays
+
+        # a timed overlay arms the transport...
+        timed = tmp_path / "rays.vtp"
+        write_simple_vtp(timed, with_rgb=True, rel_power=[1.0, 0.5],
+                         opl=[(0.0, 0.02), (0.02, 0.05)])
+        window.scene3d.load_rays_vtp(str(timed))
+        assert window.anim_controller.has_segments()
+        assert window.anim_play_action.isEnabled()
+        assert "t = " in window.anim_readout.text()
+
+        # ...a legacy overlay disarms it and says why
+        legacy = tmp_path / "legacy.vtp"
+        write_simple_vtp(legacy, with_rgb=True)
+        window.scene3d.load_rays_vtp(str(legacy))
+        assert not window.anim_controller.has_segments()
+        assert not window.anim_play_action.isEnabled()
+        assert "timing" in window.statusBar().currentMessage()
+
+        # stale-grey also parks the animation
+        window.scene3d.load_rays_vtp(str(timed))
+        assert window.anim_play_action.isEnabled()
+        window.scene3d.set_rays_stale(True)
+        assert not window.anim_controller.has_segments()
+    finally:
+        _restore_key(window, "anim_enabled", saved)
+        window.settings._qs.sync()
+
+
+def test_animation_step_updates_readout_and_beads(qtbot, tmp_path):
+    from mieworkbench.tests.vtk_test_support import write_simple_vtp
+    window = MainWindow()
+    qtbot.addWidget(window)
+    saved = window.settings._qs.value("anim_enabled", None)
+    try:
+        timed = tmp_path / "rays.vtp"
+        write_simple_vtp(timed, with_rgb=True, rel_power=[1.0],
+                         opl=[(0.0, 0.5)])
+        window.scene3d.load_rays_vtp(str(timed))
+        window.anim_enable_action.setChecked(True)
+        assert window.scene3d.view.beads.actor.GetVisibility()
+        # at t=0 the bead sits at the source point of the segment
+        assert window.scene3d.view.beads.bead_count() == 1
+
+        window.anim_step_action.trigger()
+        assert "path = 0.13 mm" in window.anim_readout.text()  # 2/15 mm
+
+        window.anim_stop_action.trigger()
+        assert "path = 0.00 mm" in window.anim_readout.text()
+
+        window.anim_enable_action.setChecked(False)
+        assert not window.scene3d.view.beads.actor.GetVisibility()
+    finally:
+        _restore_key(window, "anim_enabled", saved)
+        window.settings._qs.sync()
+
+
+def test_settings_defaults_tab_round_trip(qtbot):
+    from mieworkbench.core.settings import SettingsDialog
+    window = MainWindow()
+    qtbot.addWidget(window)
+    keys = ("ray_dimming_mode", "ray_dimming_floor", "anim_enabled",
+            "anim_bead_size", "anim_speed_mm_s", "anim_fps",
+            "anim_ray_cap")
+    saved = {k: window.settings._qs.value(k, None) for k in keys}
+    try:
+        dialog = SettingsDialog(window.settings, window)
+        qtbot.addWidget(dialog)
+        dialog.dim_mode_combo.setCurrentIndex(1)      # Linear
+        dialog.dim_floor_spin.setValue(7.5)
+        dialog.anim_speed_spin.setValue(4.0)
+        dialog.anim_fps_spin.setValue(30)
+        dialog.anim_cap_spin.setValue(50)
+        dialog._on_accept()                            # dialog-free path
+
+        assert window.settings.get("ray_dimming_mode") == "linear"
+        assert float(window.settings.get("ray_dimming_floor")) == 7.5
+        assert float(window.settings.get("anim_speed_mm_s")) == 4.0
+        # pushed live into the open session, both editors synced
+        assert window._ray_dim_mode == "linear"
+        assert window.ray_dim_combo.currentIndex() == 1
+        assert window.anim_controller.speed_mm_s == 4.0
+        assert window.anim_controller.fps == 30
+        assert window.anim_controller.ray_cap == 50
+        assert window.anim_speed_spin.value() == 4.0
+        assert window.anim_fps_combo.currentText() == "30"
+    finally:
+        for k, v in saved.items():
+            _restore_key(window, k, v)
+        window.settings._qs.sync()
