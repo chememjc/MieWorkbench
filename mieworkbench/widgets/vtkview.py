@@ -374,14 +374,32 @@ class VtkSceneView(QWidget):
             self.interactor, self.renderer, self._actor_face_map,
             self._on_picked)
 
+        # one-shot pick + axis-drag state (see pick_face_once/begin_axis_drag)
+        self._once_pick_cb = None
+        self._axis_drag = None
+
         if not is_offscreen():
             self.interactor.Initialize()
 
     # -- picking --------------------------------------------------------
     def _on_picked(self, body_name, face_id, mode):
+        # a one-shot pick (armed by pick_face_once) consumes the NEXT click
+        # without touching the persistent selection; a miss disarms too.
+        if self._once_pick_cb is not None:
+            cb = self._once_pick_cb
+            self._once_pick_cb = None
+            cb(body_name, face_id)
+            return
         if body_name is None or face_id is None:
             return
         self.facePicked.emit(body_name, face_id, mode)
+
+    def pick_face_once(self, callback):
+        """Arm a one-shot face pick: the next click calls
+        callback(body_name, face_id) instead of changing the selection
+        (both None on an empty-space miss, which also disarms). Passing
+        None cancels a pending arm."""
+        self._once_pick_cb = callback
 
     def enable_context_menu(self):
         """Opt in to right-click context-menu requests: right-button
@@ -426,6 +444,96 @@ class VtkSceneView(QWidget):
         moved = placement_to_vtk_transform(placement_dict)
         transform.SetMatrix(moved.GetMatrix())
         self._render()
+
+    # -- drag along a fixed axis -------------------------------------------
+    def _display_ray(self, display_xy):
+        """World-space (origin, direction) of the viewing ray through a
+        display pixel (origin bottom-left, VTK convention)."""
+        ren = self.renderer
+        x, y = display_xy
+
+        def world_at(z):
+            ren.SetDisplayPoint(float(x), float(y), float(z))
+            ren.DisplayToWorld()
+            w = ren.GetWorldPoint()
+            return np.array(w[:3]) / (w[3] if abs(w[3]) > 1e-12 else 1.0)
+
+        near = world_at(0.0)
+        far = world_at(1.0)
+        d = far - near
+        n = np.linalg.norm(d)
+        return near, (d / n if n > 1e-12 else d)
+
+    def _drag_to_axis(self, display_xy):
+        """Point on the drag axis closest to the viewing ray through
+        `display_xy` (line-line nearest point). Pure geometry given the
+        current camera; exercised directly by tests."""
+        if self._axis_drag is None:
+            return None
+        a0, ad = self._axis_drag["point"], self._axis_drag["dir"]
+        r0, rd = self._display_ray(display_xy)
+        a = float(np.dot(rd, rd))
+        b = float(np.dot(rd, ad))
+        c = float(np.dot(ad, ad))
+        w0 = r0 - a0
+        d = float(np.dot(rd, w0))
+        e = float(np.dot(ad, w0))
+        denom = a * c - b * b
+        s = (e / c) if abs(denom) < 1e-12 else (a * e - b * d) / denom
+        return a0 + s * ad
+
+    def begin_axis_drag(self, axis_point, axis_dir, on_move, on_commit,
+                        on_abort):
+        """Enter a modal drag-along-axis mode: mouse motion reports the
+        nearest axis point via on_move(world_point), a left click commits
+        via on_commit(world_point), Esc aborts via on_abort(). Trackball
+        camera control is suppressed for the duration (high-priority
+        observers that abort the event) and fully restored on exit. No-op
+        offscreen -- tests drive _drag_to_axis() directly."""
+        self._axis_drag = {
+            "point": np.asarray(axis_point, float),
+            "dir": np.asarray(axis_dir, float)
+            / max(np.linalg.norm(axis_dir), 1e-12),
+            "on_move": on_move, "on_commit": on_commit,
+            "on_abort": on_abort, "obs": []}
+        if is_offscreen():
+            return
+        it = self.interactor
+        self._axis_drag["obs"] = [
+            it.AddObserver("MouseMoveEvent", self._axis_drag_move, 20.0),
+            it.AddObserver("LeftButtonPressEvent",
+                           self._axis_drag_click, 20.0),
+            it.AddObserver("KeyPressEvent", self._axis_drag_key, 20.0)]
+
+    def _end_axis_drag(self):
+        drag = self._axis_drag
+        self._axis_drag = None
+        if drag is not None:
+            for oid in drag.get("obs", []):
+                self.interactor.RemoveObserver(oid)
+
+    def _axis_drag_move(self, obj, event):
+        obj.SetAbortFlag(1)                       # keep the trackball out
+        pt = self._drag_to_axis(self.interactor.GetEventPosition())
+        if pt is not None and self._axis_drag is not None:
+            self._axis_drag["on_move"](pt)
+
+    def _axis_drag_click(self, obj, event):
+        obj.SetAbortFlag(1)
+        pt = self._drag_to_axis(self.interactor.GetEventPosition())
+        cb = self._axis_drag["on_commit"] if self._axis_drag else None
+        self._end_axis_drag()
+        if cb is not None and pt is not None:
+            cb(pt)
+
+    def _axis_drag_key(self, obj, event):
+        if self.interactor.GetKeySym() not in ("Escape", "Return", "KP_Enter"):
+            return
+        obj.SetAbortFlag(1)
+        cb = self._axis_drag["on_abort"] if self._axis_drag else None
+        self._end_axis_drag()
+        if cb is not None:
+            cb()
 
     # -- internals ----------------------------------------------------------
     def _build_body_actors(self, body, faces_dict):

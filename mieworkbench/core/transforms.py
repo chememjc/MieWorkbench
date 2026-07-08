@@ -105,6 +105,73 @@ def axis_angle_quat(axis, angle_deg):
     return np.array([*(axis * np.sin(half)), np.cos(half)])
 
 
+def quat_to_axis_angle(q):
+    """Quaternion (x,y,z,w) -> (unit axis, angle_deg). The identity
+    rotation returns the +z axis and 0 degrees (any axis is valid)."""
+    x, y, z, w = quat_normalize(q)
+    w = float(np.clip(w, -1.0, 1.0))
+    angle = 2.0 * np.arccos(w)
+    s = np.sqrt(max(1.0 - w * w, 0.0))
+    if s < _EPS:
+        return np.array([0.0, 0.0, 1.0]), 0.0
+    return np.array([x, y, z]) / s, float(np.degrees(angle))
+
+
+def quat_from_euler(rx_deg, ry_deg, rz_deg):
+    """Intrinsic X-Y-Z Tait-Bryan angles (degrees) -> quaternion.
+    R = Rx(rx) @ Ry(ry) @ Rz(rz): rotate about X, then the new Y, then
+    the new Z."""
+    R = (quat_to_matrix(axis_angle_quat([1, 0, 0], rx_deg))
+         @ quat_to_matrix(axis_angle_quat([0, 1, 0], ry_deg))
+         @ quat_to_matrix(axis_angle_quat([0, 0, 1], rz_deg)))
+    return matrix_to_quat(R)
+
+
+def euler_from_quat(q):
+    """Quaternion -> intrinsic X-Y-Z Tait-Bryan angles (degrees),
+    inverse of quat_from_euler. At the gimbal-lock pole (ry = +/-90 deg)
+    the X/Z split is arbitrary; rz is pinned to 0 and rx carries the
+    combined rotation (documented caveat - absolute entry stays exact)."""
+    R = quat_to_matrix(q)
+    sy = float(np.clip(R[0, 2], -1.0, 1.0))
+    ry = np.arcsin(sy)
+    if abs(np.cos(ry)) > 1e-9:
+        rx = np.arctan2(-R[1, 2], R[2, 2])
+        rz = np.arctan2(-R[0, 1], R[0, 0])
+    else:                                   # gimbal lock: rx + rz coupled
+        rx = np.arctan2(R[2, 1], R[1, 1])
+        rz = 0.0
+    return np.degrees([rx, ry, rz])
+
+
+def align_rotation(from_axis, to_axis, keep_hemisphere=True):
+    """Minimal rotation (quaternion) taking unit `from_axis` onto
+    `to_axis` (Rodrigues / half-vector construction). When
+    `keep_hemisphere` and the axes point into opposite hemispheres
+    (dot < 0), align to -to_axis instead, so an already-placed element
+    only tilts by the acute angle rather than flipping ~180 degrees."""
+    a = np.asarray(from_axis, float)
+    b = np.asarray(to_axis, float)
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na < _EPS or nb < _EPS:
+        raise ValueError("zero alignment axis")
+    a = a / na
+    b = b / nb
+    if keep_hemisphere and np.dot(a, b) < 0.0:
+        b = -b
+    d = float(np.clip(np.dot(a, b), -1.0, 1.0))
+    if d > 1.0 - _EPS:
+        return np.array([0.0, 0.0, 0.0, 1.0])          # already aligned
+    if d < -1.0 + _EPS:                                 # antiparallel
+        # any axis perpendicular to a works; pick a stable one
+        perp = np.cross(a, [1.0, 0.0, 0.0])
+        if np.linalg.norm(perp) < _EPS:
+            perp = np.cross(a, [0.0, 1.0, 0.0])
+        return axis_angle_quat(perp, 180.0)
+    axis = np.cross(a, b)
+    return quat_normalize([*axis, 1.0 + d])             # half-vector form
+
+
 # ---------------------------------------------------------------------------
 # Placement
 # ---------------------------------------------------------------------------
@@ -174,6 +241,22 @@ def rotate_matrix(axis, angle_deg, about_mm=(0.0, 0.0, 0.0)):
 def apply_world(M, placement):
     """P' = M @ P (world-frame pre-multiplication)."""
     return Placement.from_matrix(np.asarray(M, float) @ placement.matrix())
+
+
+def project_point_on_axis(point, axis_point, axis_dir):
+    """Foot of the perpendicular from `point` onto the line through
+    `axis_point` with direction `axis_dir`, plus the signed distance
+    `t_along` from `axis_point` to the foot (mm). `axis_dir` need not be
+    unit."""
+    p = np.asarray(point, float)
+    a = np.asarray(axis_point, float)
+    d = np.asarray(axis_dir, float)
+    n = np.linalg.norm(d)
+    if n < _EPS:
+        raise ValueError("zero axis direction")
+    d = d / n
+    t = float(np.dot(p - a, d))
+    return a + t * d, t
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +452,9 @@ class Operation:
                        <point spec>} - translate along from->toward.
     kind "rotate":    params {"axis": <axis spec>, "angle_deg": a,
                       "about": <point spec>}.
+    kind "set_placement": params {"pos_mm": [x,y,z], "quat": [x,y,z,w]} -
+                      ABSOLUTE world placement (replaces the current pose,
+                      not composed onto it). For direct field entry.
     """
     kind: str
     params: dict
@@ -391,15 +477,64 @@ class Operation:
             about = resolver.resolve_point(
                 self.params.get("about", {"kind": "origin"}))
             return rotate_matrix(axis, self.params["angle_deg"], about)
+        if self.kind == "set_placement":
+            return Placement(self.params["pos_mm"],
+                             self.params["quat"]).matrix()
         raise ValueError("unknown operation kind %r" % self.kind)
 
     def apply(self, resolver: ReferenceResolver, body: BodyState):
         """Apply to a body's CURRENT placement; returns the new Placement
         (caller stores it / pushes undo). The matrix is resolved at apply
-        time, so 'apply again' after other moves uses live references."""
+        time, so 'apply again' after other moves uses live references.
+        `set_placement` is absolute - it ignores the current pose."""
+        if self.kind == "set_placement":
+            body.current = Placement(
+                np.asarray(self.params["pos_mm"], float),
+                np.asarray(self.params["quat"], float))
+            return body.current
         M = self.matrix(resolver)
         body.current = apply_world(M, body.current)
         return body.current
+
+
+def snap_to_axis_ops(body_state, target_point, target_axis,
+                     keep_hemisphere=True):
+    """Two Operations that snap `body_state` onto the optical axis line
+    through `target_point` with direction `target_axis`:
+
+      1. rotate the body's optical axis onto `target_axis`, about the
+         body's own optical center (so the center stays fixed);
+      2. translate the optical center onto the axis LINE by its
+         perpendicular offset, preserving the along-axis coordinate.
+
+    Both operations carry WORLD-frame constants captured now (a fixed
+    about-point and a world vector), so applying them in sequence is
+    deterministic and undoes cleanly. The body is not otherwise moved
+    along the beam - the caller supplies any along-axis offset as a
+    further translate."""
+    a_hat = np.asarray(target_axis, float)
+    n = np.linalg.norm(a_hat)
+    if n < _EPS:
+        raise ValueError("zero target axis")
+    a_hat = a_hat / n
+    c = body_state.optical_center_world()
+    src_axis = body_state.optical_axis_world()
+    ops = []
+    if src_axis is not None:
+        q = align_rotation(src_axis, a_hat, keep_hemisphere=keep_hemisphere)
+        axis, angle_deg = quat_to_axis_angle(q)
+        if abs(angle_deg) > _EPS:
+            ops.append(Operation("rotate", {
+                "axis": {"kind": "vector", "vector": [float(v) for v in axis]},
+                "angle_deg": float(angle_deg),
+                "about": {"kind": "fixed",
+                          "point_mm": [float(v) for v in c]}}))
+    to_target = np.asarray(target_point, float) - c
+    delta = to_target - np.dot(to_target, a_hat) * a_hat   # perp component
+    if np.linalg.norm(delta) > _EPS:
+        ops.append(Operation("translate",
+                             {"vector_mm": [float(v) for v in delta]}))
+    return ops
 
 
 def element_bounds(bodies, body_states, names):

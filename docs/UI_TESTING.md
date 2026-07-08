@@ -267,9 +267,20 @@ touches rendering, the ray-preview pipeline, or session lifecycle:
     extinction (ray dimming) mode, then OK — the Animation toolbar and
     View menu update live to match, and both values survive an app
     restart.
+12. Position / Orientation ▸ Absolute: select an element; the world
+    X/Y/Z and Rx/Ry/Rz fields show its live pose and follow it as it
+    moves. Type a new position and **Set position** (then **Set
+    orientation**) — the element jumps to exactly that pose. The
+    **Relative to:** readout tracks the optical-center offset from the
+    chosen reference.
+13. Snap-to-axis (open the `prism_spectrometer` demo): select the iris,
+    **Pick target face…**, click the Camera lens — the iris rotates onto
+    the deviated-beam axis and centers on it. Drag along the axis in the
+    3D view (Esc cancels; a click commits), or type an offset and **Apply
+    offset**. A single **Undo** restores the iris to where it started
+    (the validated pain case that used to need offline trigonometry).
 
-> This checklist is expected to grow — later rounds (snap-to-axis, etc.)
-> add their own manual verification steps here.
+> This checklist grows as rounds land; add new manual steps here.
 
 ## 5. Where tests live / naming
 
