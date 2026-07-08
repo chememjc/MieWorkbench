@@ -116,19 +116,48 @@ def test_maybe_save_changes_true_when_nothing_open(qtbot):
 def test_reset_session_views_safe_with_no_project(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
+    # dirty every per-session indicator the reset must cover
+    window.stage_chips["trace"].setStyleSheet(
+        window._chip_style("#22c55e"))
+    window.progress_bar.setValue(80)
+    window.console.append_line("old run output")
+    window.config_matrix.widgets["seeds"].setValue(9)
     window._reset_session_views()      # must not raise
     assert window.scene3d.view._rays_actor is None
     assert window.results.case_dir is None
+    assert "#22c55e" not in window.stage_chips["trace"].styleSheet()
+    assert window.progress_bar.value() == 0
+    assert window.config_matrix.values() == {}
 
 
 def test_results_clear_case_resets_state(qtbot, tmp_path):
     window = MainWindow()
     qtbot.addWidget(window)
-    window.results.case_dir = str(tmp_path)
-    window.results.title.setText("something")
-    window.results.clear_case()
-    assert window.results.case_dir is None
-    assert window.results.title.text() == "No results loaded"
+    results = window.results
+    results.case_dir = str(tmp_path)
+    results.title.setText("something")
+    # populate every widget clear_case must wipe (the leak: only the
+    # pointer/title used to be reset; the tables/galleries/audit line
+    # survived File > Open and showed the previous model's simulation)
+    results.summary.setRowCount(2)
+    results.power.setRowCount(3)
+    results.audit.setText("energy closure: OK")
+    results.pv_btn.setEnabled(True)
+    img = tmp_path / "det.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")   # unloadable pixmap is fine
+    results.galleries["images"].show_images([str(img)])
+    assert results.galleries["images"]._grid.count() == 1
+
+    results.clear_case()
+    assert results.case_dir is None
+    assert results.title.text() == "No results loaded"
+    assert results.summary.rowCount() == 0
+    assert results.power.rowCount() == 0
+    assert results.audit.text() == ""
+    assert not results.pv_btn.isEnabled()
+    for gallery in results.galleries.values():
+        assert gallery._grid.count() == 0
+        assert gallery._paths == []
 
 def test_ray_dimming_menu_exists_and_persists(qtbot):
     window = MainWindow()
@@ -172,4 +201,67 @@ def test_ray_dimming_menu_exists_and_persists(qtbot):
                 window.settings._qs.remove(key)
             else:
                 window.settings._qs.setValue(key, val)
+        window.settings._qs.sync()
+
+def test_extinction_combo_syncs_menu(qtbot):
+    """Toolbar combo and View-menu radio group are two editors of the
+    same extinction mode: changing either updates the other, with no
+    signal recursion."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    saved_mode = window.settings._qs.value("ray_dimming_mode", None)
+    calls = []
+    original = window._apply_ray_dimming
+    window._apply_ray_dimming = lambda: calls.append(1) or original()
+    try:
+        # combo -> menu
+        window.ray_dim_combo.setCurrentIndex(1)   # Linear
+        assert window._ray_dim_mode == "linear"
+        assert window.ray_dim_linear_action.isChecked()
+        assert len(calls) == 1                    # exactly once, no loop
+
+        # menu -> combo
+        window.ray_dim_sqrt_action.trigger()
+        assert window._ray_dim_mode == "sqrt"
+        assert window.ray_dim_combo.currentIndex() == 2
+        assert len(calls) == 2
+
+        window.ray_dim_off_action.trigger()
+        assert window.ray_dim_combo.currentIndex() == 0
+    finally:
+        if saved_mode is None:
+            window.settings._qs.remove("ray_dimming_mode")
+        else:
+            window.settings._qs.setValue("ray_dimming_mode", saved_mode)
+        window.settings._qs.sync()
+
+
+def test_missing_relpower_hint_on_legacy_rays(qtbot, tmp_path):
+    """Dimming on + a rays.vtp predating rel_power = silently inert
+    coloring; the shell must say so in the status bar."""
+    from mieworkbench.tests.vtk_test_support import write_simple_vtp
+    window = MainWindow()
+    qtbot.addWidget(window)
+    saved_mode = window.settings._qs.value("ray_dimming_mode", None)
+    try:
+        legacy = tmp_path / "rays_legacy.vtp"
+        write_simple_vtp(legacy, with_rgb=True)   # rgb but no rel_power
+        window.scene3d.view.load_vtp_overlay(legacy)
+        window._on_ray_dimming_mode("linear")
+        assert "rel_power" in window.statusBar().currentMessage()
+        assert window.scene3d.view.ray_dimming_data_missing()
+
+        # with timing-capable rays there is no complaint
+        window.statusBar().clearMessage()
+        modern = tmp_path / "rays_modern.vtp"
+        write_simple_vtp(modern, with_rgb=True, rel_power=[1.0, 0.5])
+        window.scene3d.view.load_vtp_overlay(modern)
+        window._on_ray_dimming_mode("sqrt")
+        assert "rel_power" not in window.statusBar().currentMessage()
+        assert not window.scene3d.view.ray_dimming_data_missing()
+    finally:
+        if saved_mode is None:
+            window.settings._qs.remove("ray_dimming_mode")
+        else:
+            window.settings._qs.setValue("ray_dimming_mode", saved_mode)
         window.settings._qs.sync()

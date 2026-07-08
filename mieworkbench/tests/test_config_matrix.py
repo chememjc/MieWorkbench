@@ -137,3 +137,22 @@ def test_dim_rays_options_render_and_round_trip(qtbot):
     assert "--dim-rays" in args
     assert args[args.index("--dim-rays") + 1] == "linear"
     assert "--dim-rays-floor" in args
+
+def test_reset_to_defaults_round_trip(qtbot):
+    """A reset widget must be indistinguishable from a fresh one — the
+    session-boundary guarantee that a previous project's run config
+    can't leak into the next."""
+    matrix = ConfigMatrix()
+    qtbot.addWidget(matrix)
+    matrix.preset_combo.setCurrentText("detailed")
+    matrix.widgets["seeds"].setValue(7)
+    matrix.widgets["backend"].setCurrentText("numpy")
+    matrix.widgets["dry_run"].setChecked(True)
+    matrix.widgets["rays"].setText("123456")
+    matrix.widgets["source_face"].setText("Body.Pad.Face1")
+    assert matrix.values() != {}
+
+    matrix.reset_to_defaults()
+    assert matrix.values() == {}
+    assert matrix.to_args() == []
+    assert matrix.preset_combo.currentText() == "quick"

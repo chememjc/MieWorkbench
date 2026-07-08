@@ -173,7 +173,8 @@ def test_revert_discards_unsaved_changes(window, qtbot, tmp_path):
 
 def test_open_second_model_clears_old_ray_overlay(window, qtbot, tmp_path):
     """The reported bug: rays from the previous session survived into a
-    newly opened model and wrecked the render."""
+    newly opened model and wrecked the render — and (round two) the
+    Results pane, run indicators and run config leaked across the open."""
     from mieworkbench.tests.vtk_test_support import write_simple_vtp
     window.open_model(_example_copy(tmp_path, "first.FCStd"))
     rays = tmp_path / "rays.vtp"
@@ -182,12 +183,21 @@ def test_open_second_model_clears_old_ray_overlay(window, qtbot, tmp_path):
     window.inspector.set_body(window.project, "Body")
     window.inspector.load_rays_vtp(str(rays))
     window.results.case_dir = str(tmp_path)
+    window.results.summary.setRowCount(2)
+    window.results.pv_btn.setEnabled(True)
+    window.stage_chips["trace"].setStyleSheet(
+        window._chip_style("#22c55e"))
+    window.config_matrix.widgets["seeds"].setValue(5)
 
     window.open_model(_example_copy(tmp_path, "second.FCStd"))
     assert window.project.is_open()
     assert window.scene3d.view._rays_actor is None
     assert window.inspector.view._rays_actor is None
     assert window.results.case_dir is None
+    assert window.results.summary.rowCount() == 0
+    assert not window.results.pv_btn.isEnabled()
+    assert "#22c55e" not in window.stage_chips["trace"].styleSheet()
+    assert window.config_matrix.values() == {}
     assert len(window.project.body_names()) == 7
     # the new scene renders its bodies (28 face actors, per example.FCStd)
     assert len(window.scene3d.view._actor_face_map) == 28

@@ -235,6 +235,24 @@ class ConfigMatrix(QWidget):
                 else:
                     widget.setText(str(value))
 
+    def reset_to_defaults(self):
+        """Session boundary (File > Open/New/Close): put every widget back
+        to its parser default so the previous project's run config can't
+        leak into the next one. Mirrors _make_widget's initial state; a
+        .MieWB open re-applies its own simparams.json right after."""
+        self.preset_combo.setCurrentText(self._preset_action.default)
+        for dest, widget in self.widgets.items():
+            action = self.actions[dest]
+            if isinstance(widget, QCheckBox):
+                widget.setChecked(False)
+            elif isinstance(widget, QComboBox):
+                widget.setCurrentText("" if action.default is None
+                                      else str(action.default))
+            elif isinstance(widget, QSpinBox):
+                widget.setValue(0)
+            elif isinstance(widget, QLineEdit):
+                widget.clear()
+
     # -- args / json ------------------------------------------------------------
     def to_args(self):
         from mieworkbench.core.runner import RunController

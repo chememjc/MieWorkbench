@@ -33,9 +33,9 @@ import miewb_tool  # noqa: E402  (stdlib-only archive engine)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QHBoxLayout,
-    QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QProgressBar,
-    QStyle, QToolButton, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog,
+    QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
+    QProgressBar, QStyle, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .core import paraview_launcher
@@ -70,6 +70,9 @@ _CHIP_COLORS = {
     "failed": "#ef4444",
 }
 _CHIP_DEFAULT = "#6b7280"
+
+# ray extinction modes, in the toolbar combo's index order
+_RAY_DIM_MODES = ("off", "linear", "sqrt")
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -535,6 +538,24 @@ class MainWindow(QMainWindow):
         rays_btn.setMenu(rays_menu)
         toolbar.addWidget(rays_btn)
 
+        ext_label = QLabel(" Extinction: ")
+        ext_label.setToolTip("Ray extinction (attenuation dimming): fade "
+                             "ray segments by remaining power")
+        toolbar.addWidget(ext_label)
+        self.ray_dim_combo = QComboBox()
+        for label in ("Off", "Linear", "Perceptual"):
+            self.ray_dim_combo.addItem(label)
+        self.ray_dim_combo.setToolTip(
+            "Ray extinction: Off = full opacity; Linear = opacity is each "
+            "segment's remaining power relative to its ray's power at the "
+            "source (P/P₀); Perceptual = √(P/P₀). Same setting as "
+            "View ▸ Ray Dimming; applies live to loaded rays.")
+        self.ray_dim_combo.setCurrentIndex(
+            _RAY_DIM_MODES.index(self._ray_dim_mode))
+        self.ray_dim_combo.currentIndexChanged.connect(
+            self._on_ray_dim_combo)
+        toolbar.addWidget(self.ray_dim_combo)
+
         fit_tb = toolbar.addAction(
             icon(QStyle.StandardPixmap.SP_BrowserReload), "Fit view")
         fit_tb.setToolTip("Reset the 3D camera to frame the whole scene")
@@ -560,6 +581,7 @@ class MainWindow(QMainWindow):
         self.scene3d.load_rays_vtp(path)
         self.scene3d.set_rays_stale(False)
         self.statusBar().showMessage("Loaded ray overlay: %s" % path, 5000)
+        self._warn_if_dim_data_missing()
 
     def _load_case_rays_quiet(self):
         path = self._case_rays_vtp()
@@ -635,6 +657,7 @@ class MainWindow(QMainWindow):
             if self.inspector.rays_button.isChecked():
                 self.inspector.load_rays_vtp(vtp_path)
         self.statusBar().showMessage("Ray preview ready", 5000)
+        self._warn_if_dim_data_missing()
 
     def _on_preview_failed(self, message):
         self.console.append_line("[preview] " + message)
@@ -684,9 +707,42 @@ class MainWindow(QMainWindow):
                                           self._ray_dim_floor)
         self.inspector.view.set_ray_dimming(self._ray_dim_mode,
                                             self._ray_dim_floor)
+        self._warn_if_dim_data_missing()
+
+    def _warn_if_dim_data_missing(self):
+        if (self.scene3d.view.ray_dimming_data_missing()
+                or self.inspector.view.ray_dimming_data_missing()):
+            self.statusBar().showMessage(
+                "Loaded rays predate per-segment power data (rel_power) — "
+                "extinction has no effect until you re-run or re-preview.",
+                6000)
+
+    def _set_ray_dim_ui(self, mode):
+        """Sync BOTH extinction editors (View-menu radio group + toolbar
+        combo) to `mode` with signals blocked, so neither re-triggers the
+        handler. The combo may not exist yet during _build_menus."""
+        action = {"off": self.ray_dim_off_action,
+                  "linear": self.ray_dim_linear_action,
+                  "sqrt": self.ray_dim_sqrt_action}[mode]
+        for act in (self.ray_dim_off_action, self.ray_dim_linear_action,
+                    self.ray_dim_sqrt_action):
+            act.blockSignals(True)
+        action.setChecked(True)
+        for act in (self.ray_dim_off_action, self.ray_dim_linear_action,
+                    self.ray_dim_sqrt_action):
+            act.blockSignals(False)
+        combo = getattr(self, "ray_dim_combo", None)
+        if combo is not None:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(_RAY_DIM_MODES.index(mode))
+            combo.blockSignals(False)
+
+    def _on_ray_dim_combo(self, index):
+        self._on_ray_dimming_mode(_RAY_DIM_MODES[index])
 
     def _on_ray_dimming_mode(self, mode):
         self._ray_dim_mode = mode
+        self._set_ray_dim_ui(mode)
         self._apply_ray_dimming()
         self.settings.set("ray_dimming_mode", mode)
 
@@ -1174,10 +1230,13 @@ class MainWindow(QMainWindow):
         self.runner.finished.connect(self._on_finished)
         self.runner.error.connect(self._on_error)
 
-    def _on_started(self):
+    def _reset_run_indicators(self):
         for chip in self.stage_chips.values():
             chip.setStyleSheet(self._chip_style(_CHIP_DEFAULT))
         self.progress_bar.setValue(0)
+
+    def _on_started(self):
+        self._reset_run_indicators()
         self.console_dock.raise_()
         self.statusBar().showMessage("Pipeline started")
 
@@ -1273,9 +1332,13 @@ class MainWindow(QMainWindow):
         """Clear every view artifact tied to the outgoing session: ray
         overlays (the old rays used to survive into a newly opened model
         and wreck the render), the preview chain/scheduler, the shared
-        selection and the loaded results case."""
+        selection, the loaded results case (full widget wipe), the run
+        indicators/console, a still-running pipeline, and the run config
+        (a .MieWB re-applies its own simparams right after this)."""
         if self.raypreview.is_running():
             self.raypreview.cancel()
+        if self.runner.is_running():
+            self.runner.stop()
         self.preview_scheduler.reset()
         self.scene3d.clear_rays()
         self.scene3d.set_rays_stale(False)
@@ -1285,6 +1348,9 @@ class MainWindow(QMainWindow):
         self.inspector.set_body(self.project, None)
         self.element_editor.set_face_selection(None, set())
         self.results.clear_case()
+        self._reset_run_indicators()
+        self.console.clear()
+        self.config_matrix.reset_to_defaults()
 
     def _clear_session_paths(self):
         self.model_path = None

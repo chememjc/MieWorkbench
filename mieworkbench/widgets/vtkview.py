@@ -617,6 +617,17 @@ class VtkSceneView(QWidget):
             mapper.ScalarVisibilityOff()
             actor.GetProperty().SetColor(1.0, 0.9, 0.2)
 
+    def ray_dimming_data_missing(self):
+        """True when dimming is requested but the loaded overlay lacks the
+        rel_power cell array (a rays.vtp from before the feature) -- the
+        extinction setting is silently inert on such data, and the shell
+        surfaces a status-bar hint instead of leaving the user guessing."""
+        if self._dim_mode == "off" or self._rays_polydata is None:
+            return False
+        cell_data = self._rays_polydata.GetCellData()
+        return (cell_data.GetArray("rgb") is not None
+                and cell_data.GetArray("rel_power") is None)
+
     def set_ray_dimming(self, mode, floor_pct=0.0):
         """Attenuation dimming for the ray overlay. mode: 'off' | 'linear'
         (opacity = P/P_birth) | 'sqrt' (perceptual, sqrt of that);
