@@ -1,0 +1,101 @@
+{
+ "bodies": {
+  "Diagonal": {
+   "group": "Diagonal",
+   "label": "Diagonal",
+   "placement": {
+    "pos_mm": [
+     -750.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     -0.9238795325112867,
+     0.38268343236508984
+    ]
+   },
+   "primitive": "mirror_flat"
+  },
+  "Eyepiece": {
+   "group": "Eyepiece",
+   "label": "Eyepiece",
+   "placement": {
+    "pos_mm": [
+     -750.0,
+     250.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.7071067811865475,
+     0.7071067811865476
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Primary": {
+   "group": "Primary",
+   "label": "Primary",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "mirror_parabolic"
+  },
+  "Star": {
+   "group": "Star",
+   "label": "Star",
+   "placement": {
+    "pos_mm": [
+     -1060.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  }
+ },
+ "demo": "dobsonian",
+ "sheets": {
+  "dim": {},
+  "dim_Diagonal": {
+   "round_flag": "1",
+   "thickness": "=5 mm",
+   "width": "=72 mm"
+  },
+  "dim_Eyepiece": {
+   "height": "=0 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=25 mm"
+  },
+  "dim_Primary": {
+   "aperture": "=200 mm",
+   "rfl": "=1000 mm",
+   "thickness": "=18 mm"
+  },
+  "dim_Star": {
+   "diameter": "=196 mm",
+   "length": "=10 mm",
+   "round_flag": "1"
+  }
+ }
+}

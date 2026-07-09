@@ -1,0 +1,169 @@
+{
+ "bodies": {
+  "L1": {
+   "group": "L1",
+   "label": "L1",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_dcx"
+  },
+  "L2": {
+   "group": "L2",
+   "label": "L2",
+   "placement": {
+    "pos_mm": [
+     8.026,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_dcv"
+  },
+  "L3": {
+   "group": "L3",
+   "label": "L3",
+   "placement": {
+    "pos_mm": [
+     13.946000000000002,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_dcx"
+  },
+  "Scene": {
+   "group": "Scene",
+   "label": "Scene",
+   "placement": {
+    "pos_mm": [
+     -40.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Sensor": {
+   "group": "Sensor",
+   "label": "Sensor",
+   "placement": {
+    "pos_mm": [
+     144.50194063404112,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Stop": {
+   "group": "Stop",
+   "label": "Stop_iris",
+   "placement": {
+    "pos_mm": [
+     9.478,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "iris"
+  },
+  "Stop_plug": {
+   "group": "Stop",
+   "label": "Stop_iris_plug",
+   "placement": {
+    "pos_mm": [
+     9.478,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "iris"
+  }
+ },
+ "demo": "camera_triplet",
+ "sheets": {
+  "dim": {},
+  "dim_L1": {
+   "R_back": "=269.375 mm",
+   "R_front": "=20.115 mm",
+   "aperture": "=15 mm",
+   "ct": "=3.01 mm"
+  },
+  "dim_L2": {
+   "R_back": "=20.065 mm",
+   "R_front": "=23.577 mm",
+   "aperture": "=10 mm",
+   "ct": "=0.502 mm"
+  },
+  "dim_L3": {
+   "R_back": "=19.012 mm",
+   "R_front": "=117.632 mm",
+   "aperture": "=12.5 mm",
+   "ct": "=2.96 mm"
+  },
+  "dim_Scene": {
+   "diameter": "=14 mm",
+   "length": "=10 mm",
+   "round_flag": "1"
+  },
+  "dim_Sensor": {
+   "height": "=24 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=36 mm"
+  },
+  "dim_Stop": {
+   "blackness": "0.98",
+   "hole_diameter": "=6.94 mm",
+   "outer_diameter": "=18 mm",
+   "thickness": "=0.4 mm"
+  }
+ }
+}

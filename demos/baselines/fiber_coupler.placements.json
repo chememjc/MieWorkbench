@@ -1,0 +1,118 @@
+{
+ "bodies": {
+  "Ball": {
+   "group": "Ball",
+   "label": "Ball",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_ball"
+  },
+  "Exit": {
+   "group": "Exit",
+   "label": "Exit",
+   "placement": {
+    "pos_mm": [
+     78.07177893987259,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Fiber": {
+   "group": "Fiber",
+   "label": "Fiber_fiber_optic",
+   "placement": {
+    "pos_mm": [
+     2.4717789398725913,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "fiber_optic"
+  },
+  "Fiber_clad": {
+   "group": "Fiber",
+   "label": "Fiber_fiber_optic_clad",
+   "placement": {
+    "pos_mm": [
+     2.4717789398725913,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "fiber_optic"
+  },
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -6.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  }
+ },
+ "demo": "fiber_coupler",
+ "sheets": {
+  "dim": {},
+  "dim_Ball": {
+   "diameter": "=2 mm"
+  },
+  "dim_Exit": {
+   "height": "=0 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=2 mm"
+  },
+  "dim_Fiber": {
+   "clad_diameter": "=0.24 mm",
+   "core_diameter": "=0.2 mm",
+   "gap": "=0.005 mm",
+   "length": "=75 mm"
+  },
+  "dim_Laser": {
+   "diameter": "=0.6 mm",
+   "length": "=5 mm",
+   "round_flag": "1"
+  }
+ }
+}

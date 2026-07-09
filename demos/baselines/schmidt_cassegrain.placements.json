@@ -1,0 +1,120 @@
+{
+ "bodies": {
+  "Corrector": {
+   "group": null,
+   "label": "Corrector",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": null
+  },
+  "Focus": {
+   "group": "Focus",
+   "label": "Focus",
+   "placement": {
+    "pos_mm": [
+     475.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Primary": {
+   "group": "Primary",
+   "label": "Primary",
+   "placement": {
+    "pos_mm": [
+     325.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "mirror_annular"
+  },
+  "Secondary": {
+   "group": "Secondary",
+   "label": "Secondary",
+   "placement": {
+    "pos_mm": [
+     12.379999999999995,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     1.0,
+     6.123233995736766e-17
+    ]
+   },
+   "primitive": "mirror_convex"
+  },
+  "Star": {
+   "group": "Star",
+   "label": "Star",
+   "placement": {
+    "pos_mm": [
+     -60.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  }
+ },
+ "demo": "schmidt_cassegrain",
+ "sheets": {
+  "dim": {},
+  "dim_Focus": {
+   "height": "=0 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=15 mm"
+  },
+  "dim_Primary": {
+   "R": "=812.8 mm",
+   "aperture": "=203.2 mm",
+   "ct": "=18 mm",
+   "hole_diameter": "=60 mm"
+  },
+  "dim_Secondary": {
+   "R": "=231.07 mm",
+   "aperture": "=66 mm",
+   "ct": "=6 mm"
+  },
+  "dim_Star": {
+   "diameter": "=198 mm",
+   "length": "=10 mm",
+   "round_flag": "1"
+  }
+ }
+}

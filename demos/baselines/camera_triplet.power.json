@@ -1,0 +1,13 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "Sensor.Sensor_pad.Face5": {
+   "peak_irradiance_W_m2": 36431.85794648715,
+   "power_seed_std_W": 3.2571136366349342e-06,
+   "profile_visibility": 0.9999999996575406,
+   "total_power_W": 0.0012593148250226317
+  }
+ },
+ "seeds": 3
+}
