@@ -912,6 +912,200 @@ LEGACY_ALIASES = {
 
 
 # ---------------------------------------------------------------------------
+# port_frames — element-local beam-port geometry (importable WITHOUT FreeCAD)
+#
+# The optical-train chain solver (scripts/train_solver.py) positions elements
+# by VERTEX-TO-VERTEX distances along the beam. It needs each primitive's
+# element-local port geometry, derived EXACTLY from the same dim-sheet
+# parameters the builders above consume -- NEVER from faces (FaceN is unstable
+# across rebuilds, and this must work in the plain-python GUI interpreter with
+# no FreeCAD). Every formula below was read off the corresponding _build_*
+# function and cross-checked against the shipped primitives/*.FCStd bounding
+# boxes / face normals.
+#
+# LOCAL-AXIS CONVENTION: every library primitive is authored so the beam
+# travels along local +x, with the transverse reference along local +z (the
+# revolve axis for lenses/mirrors is +x; plate pads front-face at x=0 padding
+# toward +x; sources emit from their +x cap). So axis=(1,0,0), up=(0,0,1) for
+# all kinds. Multi-body elements (achromat, cube BS, fiber, ...) all author
+# their bodies in one SHARED local frame with identity body placements (offsets
+# baked into geometry; op_import_primitive/set_placement move the whole group
+# rigidly), so ports are computed across the whole element in that frame:
+# entry = first surface of the first optic, exit = last surface of the last.
+# ---------------------------------------------------------------------------
+_PORT_AXIS = [1.0, 0.0, 0.0]
+_PORT_UP = [0.0, 0.0, 1.0]
+
+
+def _port_unit(v):
+    n = math.sqrt(sum(c * c for c in v))
+    return [c / n for c in v]
+
+
+def _port_params(kind, params):
+    """Merge caller params (subset, mm/deg floats) over the spec defaults, so
+    port_frames tolerates missing optional params exactly as the builders do
+    (they read every param from the sheet, which always carries the defaults).
+    Legacy alias names (radius/half) are accepted and scaled like read_params."""
+    spec = PRIMITIVES[kind]
+    given = dict(params or {})
+    out = {}
+    for alias, pspec in spec["params"].items():
+        if alias in given:
+            out[alias] = float(given[alias])
+            continue
+        legacy = LEGACY_ALIASES.get(alias)
+        if legacy and legacy[0] in given:
+            out[alias] = float(given[legacy[0]]) * legacy[1]
+            continue
+        out[alias] = float(pspec["default"])
+    return out
+
+
+def _port_result(entry_x, exit_x, reflect_point=None, reflect_normal=None):
+    reflect_plane = None
+    if reflect_normal is not None:
+        pt = reflect_point if reflect_point is not None else [entry_x, 0.0, 0.0]
+        reflect_plane = {"point": [float(pt[0]), float(pt[1]), float(pt[2])],
+                         "normal": _port_unit(reflect_normal)}
+    return {"entry": [float(entry_x), 0.0, 0.0],
+            "exit": [float(exit_x), 0.0, 0.0],
+            "axis": list(_PORT_AXIS), "up": list(_PORT_UP),
+            "reflect_plane": reflect_plane}
+
+
+# Kinds handled by generic families (thickness param name -> exit vertex x).
+# Transmissive plates: front vertex at x=0, back vertex at x=thickness (on-axis
+# center thickness; wedged plates are plane-parallel AT y=0). _build_plate /
+# _plate_from_params / _build_wedge_plate all front-face at x=0, pad toward +x.
+_PORT_TRANSMISSIVE_PLATES = {
+    "window": "thickness", "window_wedged": "thickness",
+    "filter_plate": "thickness", "nd_filter": "thickness",
+    "filter_bandpass": "thickness", "filter_longpass": "thickness",
+    "filter_shortpass": "thickness", "filter_notch": "thickness",
+    "polarizer_plate": "thickness", "waveplate": "thickness",
+    "diffuser_plate": "thickness", "prism_wedge": "thickness",
+}
+# Front-coated plates: same body as a transmissive plate, but the front (-x)
+# face at x=0 carries the reflective/splitting coating (bs/pbs/dichroic/nd-
+# refl/pellicle) or the grating spec. The transmit port still exits the back
+# face; the reflect plane is the front face, normal -x (back into the beam).
+_PORT_FRONT_COATED_PLATES = {
+    "bs_plate": "thickness", "pbs_plate": "thickness",
+    "dichroic_plate": "thickness", "nd_reflective": "thickness",
+    "pellicle": "membrane_thickness", "grating_plate": "thickness",
+}
+# Flat front-surface reflectors: reflective -x face at x=0, entry==exit there.
+_PORT_FLAT_MIRRORS = ("mirror_flat", "mirror_d_shaped")
+# Curved front-surface mirrors: the reflective surface's on-axis VERTEX is at
+# x=0 for every one of these (verified: mirror_concave/parabolic bulge toward
+# -x with the axis vertex at x=0; convex apex at x=0; annular hole-center
+# vertex extrapolated to x=0). entry==exit==vertex; tangent-plane normal -x.
+_PORT_CURVED_MIRRORS = ("mirror_concave", "mirror_convex",
+                        "mirror_parabolic", "mirror_annular")
+# Center-thickness lenses: lens_meridian always puts the front vertex at x=0
+# and the back vertex at x=ct, regardless of surface curvature signs, so the
+# axis-pierce vertices are exactly (0,0,0) and (ct,0,0).
+_PORT_CT_LENSES = ("lens_pcx", "lens_dcx", "lens_pcv", "lens_dcv",
+                   "lens_meniscus", "lens_asphere")
+
+
+def port_frames(kind, params):
+    """Element-local beam-port geometry for a primitive kind, computed from its
+    dim-sheet parameters (mm, floats). Returns
+      {"entry": [x,y,z], "exit": [x,y,z],   # vertices ON the optical axis
+       "axis": [x,y,z],                     # unit local beam direction entry->exit
+       "up":   [x,y,z],                     # unit local transverse reference
+       "reflect_plane": {"point": [x,y,z], "normal": [x,y,z]} or None}
+
+    entry/exit are the optical VERTICES (axis-pierce points of the first and
+    last optical surfaces, including sag: for the library's lenses that is
+    always the front vertex at x=0 and the back vertex at x=ct). For mirrors
+    entry == exit == the axis/reflective-surface intersection; for sources the
+    emission point on the +x exit cap; for detectors the sensing-face center.
+    reflect_plane (mirrors, the coated splitting surface of beamsplitters, and
+    reflective gratings) is that surface's plane with normal signed to point
+    back toward the entry side (into the incoming beam).
+
+    axis is local +x and up is local +z for every kind: all builders construct
+    the element along +x with the transverse reference in the y-z plane.
+
+    APPROXIMATIONS (documented per the port contract):
+      * prism -- a dispersing prism is a "deviate" port whose deviation is
+        genuinely ray-/wavelength-dependent, so no fixed entry/exit surface
+        vertex is meaningful. entry == exit == the prism's geometric center on
+        the beam axis (local origin, the triangle centroid); only the port
+        ORIGIN matters for the chain solver's downstream distance bookkeeping.
+      * mirror_annular -- the reflect-plane POINT is the axis/vertex
+        intersection even though the annular primary has a clear hole there
+        (no material on axis); the plane geometry is still well-defined.
+
+    Raises KeyError(kind) for kinds without a port formula (the caller falls
+    back to a bbox heuristic): lens_cyl, lens_fresnel, axicon's cousins with
+    internal TIR/reflective folds (retro_corner_cube, the right-angle/dove/
+    penta/rhomboid prisms, the anamorphic pair, the Glan-Taylor polarizer)."""
+    if kind not in PRIMITIVES:
+        raise KeyError(kind)
+    p = _port_params(kind, params)
+
+    # -- sources: emission on the flat (or convex-cap) +x face at x=0 --------
+    if PRIMITIVES[kind].get("category") == "Sources":
+        return _port_result(0.0, 0.0)
+
+    # -- thin sensing/aperture planes: entry == exit at the plane center -----
+    if kind in ("detector_plane", "iris", "slit", "pinhole"):
+        return _port_result(0.0, 0.0)
+
+    # -- center-thickness lenses --------------------------------------------
+    if kind in _PORT_CT_LENSES:
+        return _port_result(0.0, p["ct"])
+    if kind == "lens_ball":
+        return _port_result(0.0, p["diameter"])            # sphere: 2R
+    if kind == "lens_rod":
+        return _port_result(0.0, p["diameter"])            # cylinder x-span 2R
+    if kind == "lens_achromat":
+        return _port_result(0.0, p["ct_crown"] + p["gap"] + p["ct_flint"])
+    if kind == "axicon":
+        axial = (p["aperture"] / 2.0) * math.tan(math.radians(p["base_angle"]))
+        return _port_result(0.0, axial)                    # apex x=0, base x=axial
+
+    # -- straight fiber: flat polished end faces at x=0 and x=length ---------
+    if kind == "fiber_optic":
+        return _port_result(0.0, p["length"])
+
+    # -- prism (deviate port; center-origin approximation) ------------------
+    if kind == "prism":
+        return _port_result(0.0, 0.0)
+
+    # -- plates -------------------------------------------------------------
+    if kind in _PORT_TRANSMISSIVE_PLATES:
+        return _port_result(0.0, p[_PORT_TRANSMISSIVE_PLATES[kind]])
+    if kind in _PORT_FRONT_COATED_PLATES:
+        thick = p[_PORT_FRONT_COATED_PLATES[kind]]
+        return _port_result(0.0, thick, reflect_point=[0.0, 0.0, 0.0],
+                            reflect_normal=[-1.0, 0.0, 0.0])
+
+    # -- flat / curved front-surface mirrors --------------------------------
+    if kind in _PORT_FLAT_MIRRORS or kind in _PORT_CURVED_MIRRORS:
+        return _port_result(0.0, 0.0, reflect_point=[0.0, 0.0, 0.0],
+                            reflect_normal=[-1.0, 0.0, 0.0])
+
+    # -- beamsplitter cubes (nested diagonal splitter plate) ----------------
+    if kind in ("bs_cube", "pbs_cube"):
+        c = p["cube"]
+        # cube front face x=0, back face x=cube; the splitter plane runs along
+        # the D-B diagonal through the cube center (cube/2, 0). A +x axis at
+        # y=0 meets that plane at x=cube/2. The coated face outward normal
+        # (first face the +x beam hits) is (-1,-1)/sqrt2 -> back toward entry.
+        return _port_result(0.0, c,
+                            reflect_point=[c / 2.0, 0.0, 0.0],
+                            reflect_normal=[-math.sqrt(0.5),
+                                            -math.sqrt(0.5), 0.0])
+
+    raise KeyError(kind)
+
+
+# ---------------------------------------------------------------------------
 # Builders (FreeCAD only). Each: fn(doc, group, p) -> [bodies]
 # `group` is the element label stem; single-body builders name the body
 # `group` itself, multi-body builders append a suffix.

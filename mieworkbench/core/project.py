@@ -24,6 +24,10 @@ from PySide6.QtCore import QObject, Signal
 
 from .fcclient import FcClient
 from .geomcache import GeomCache
+from .train import (
+    TRAIN_GROUP, EDGE_FIELDS, FIELD_PROPS, TrainModel, edge_props,
+    variables_from_sheets,
+)
 from .transforms import (
     BodyState, Operation, Placement, ReferenceResolver, snap_to_axis_ops,
 )
@@ -228,11 +232,13 @@ class Project(QObject):
     # it through the undo stack. Undo/redo invoke _do_* directly, so they
     # never re-record. Panes keep calling the public methods unchanged.
 
-    def _do_set_property(self, body, name, value, ptype=None):
+    def _do_set_property(self, body, name, value, ptype=None, group=None):
         params = {"doc": self.doc, "body": body, "name": name,
                   "value": value}
         if ptype:
             params["ptype"] = ptype
+        if group:
+            params["group"] = group
         result = self._route_mutation(
             self.fc.request("set_property", params), body)
         if not str(name).startswith("miewb_"):
@@ -265,15 +271,18 @@ class Project(QObject):
         except ProjectError:
             return str(body)
 
-    def set_property(self, body, name, value, ptype=None):
+    def set_property(self, body, name, value, ptype=None, group=None):
         old = self._prop_preimage(body, name)
         if old is None:
             undo = lambda: self._do_remove_property(body, name)
         else:
-            undo = lambda: self._do_set_property(body, name, old[0], old[1])
+            undo = lambda: self._do_set_property(body, name, old[0], old[1],
+                                                 group=group)
         self.undo_stack.push_and_do(Command(
             "Set %s on %s" % (name, self._body_label(body)),
-            lambda: self._do_set_property(body, name, value, ptype), undo))
+            lambda: self._do_set_property(body, name, value, ptype,
+                                          group=group),
+            undo))
 
     def remove_property(self, body, name):
         old = self._prop_preimage(body, name)
@@ -510,6 +519,110 @@ class Project(QObject):
         self.end_macro()
         return ops
 
+    # -- optical train -----------------------------------------------------------
+    def train(self):
+        """A fresh TrainModel snapshot over the current structure (cheap;
+        build one per interaction, never cache across mutations)."""
+        return TrainModel(self.structure, self.body_states)
+
+    def train_variables(self):
+        """{name: float} from the miewb_vars sheet (FreeCAD-evaluated)."""
+        return variables_from_sheets(self.sheets())
+
+    def _push_ripple_moves(self, text_prefix="Ripple"):
+        """Re-solve the train and flush every chained element whose pose
+        changed, pushing one done-command per move. MUST be called inside
+        an open macro (the composite operators own the macro; nothing
+        here opens one). Returns the number of elements moved."""
+        tm = self.train()
+        moves = tm.solve_moves(self.train_variables())
+        for element, placement in moves.items():
+            body = tm.primary_body_name(element)
+            state = self.body_states.get(body)
+            pre = state.current.to_dict() if state else dict(placement)
+            self._do_apply_placement(body, placement)
+            self.undo_stack.push_done(Command(
+                "%s %s" % (text_prefix, element),
+                lambda b=body, p=placement: self._do_apply_placement(b, p),
+                lambda b=body, p=pre: self._do_apply_placement(b, p)))
+        return len(moves)
+
+    def set_chain(self, element, edge, text=None):
+        """Chain an element / edit its chain edge, then ripple everything
+        downstream — one undo step. `edge` maps solver record fields
+        (mode, ref, port, distance, decenter_x/y, tilt_rx/ry/rz,
+        rot_order, pos_rot_order, pivot, fold, folded, fold_deviation,
+        fold_azimuth) to values; numeric fields accept variable
+        expressions ("2*gap+5"); mode defaults to "chained"."""
+        element = str(element)
+        tm = self.train()
+        body = tm.primary_body_name(element)
+        if self.body(body).get("placement_bound"):
+            raise ProjectError(
+                "%s's position is driven by a spreadsheet expression; "
+                "unbind it before chaining" % element)
+        edge = dict(edge)
+        edge.setdefault("mode", "chained")
+        props = edge_props(edge)
+        self.begin_macro(text or "Chain %s" % element)
+        try:
+            for name, value in sorted(props.items()):
+                ptype = "bool" if isinstance(value, bool) else "string"
+                self.set_property(body, name, value, ptype=ptype,
+                                  group=TRAIN_GROUP)
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+
+    def set_anchored(self, element):
+        """Freeze an element at its current pose (chain edge fields stay
+        behind, inert, for painless re-chaining). Undoable."""
+        element = str(element)
+        body = self.train().primary_body_name(element)
+        self.set_property(body, FIELD_PROPS["mode"], "anchored",
+                          ptype="string", group=TRAIN_GROUP)
+
+    def sync_chain_from_pose(self, element, text=None):
+        """After a spatial move of a CHAINED element: re-derive its
+        distance/decenter/tilt from the new pose (expressions are
+        replaced by literals) and ripple downstream. One undo step."""
+        element = str(element)
+        edge = self.train().derive_edge(element, self.train_variables())
+        edge = {k: float(v) for k, v in edge.items() if k in EDGE_FIELDS}
+        self.set_chain(element, edge,
+                       text=text or "Reposition %s" % element)
+
+    def move_element(self, body_name, operation):
+        """Pane-facing move that keeps the optical train consistent: a
+        chained element's edge fields re-derive from the new pose, and
+        everything chained downstream follows rigidly. One undo step.
+        (apply_operation stays the raw primitive — no ripple.)"""
+        element = self.element_group(body_name)
+        tm = self.train()
+        in_train = element in tm.records() and (
+            tm.is_chained(element) or tm.downstream_of(element))
+        if not in_train:
+            return self.apply_operation(body_name, operation)
+        self.begin_macro("Move %s" % self._body_label(body_name))
+        try:
+            placement = self.apply_operation(body_name, operation)
+            if tm.is_chained(element):
+                edge = {k: float(v) for k, v in self.train().derive_edge(
+                    element, self.train_variables()).items()
+                        if k in EDGE_FIELDS}
+                body = tm.primary_body_name(element)
+                for name, value in sorted(edge_props(edge).items()):
+                    self.set_property(body, name, value, ptype="string",
+                                      group=TRAIN_GROUP)
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        return placement
+
     def _flush_placement(self, body_name, placement):
         result = self.fc.request(
             "set_placement",
@@ -559,6 +672,15 @@ class Project(QObject):
             self._set_dirty(False)
 
     # -- persistence ---------------------------------------------------------------
+    def export_fcstd(self, path):
+        """Write a standalone .FCStd copy of the CURRENT document state
+        (fold states, placements and MieTrain metadata as they stand).
+        The copy opens and edits in plain FreeCAD; the live document and
+        dirty state are untouched."""
+        path = os.path.abspath(path)
+        self.fc.request("save_copy", {"doc": self.doc, "path": path})
+        return path
+
     def save(self):
         self.fc.request("save", {"doc": self.doc})
         self.undo_stack.mark_clean()

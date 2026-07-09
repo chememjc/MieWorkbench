@@ -23,6 +23,7 @@
 
 import math
 import os
+import re
 import struct
 import sys
 import traceback
@@ -390,15 +391,23 @@ def _face_normal_hint(face):
 
 
 def op_set_property(params):
-    """Set (creating if absent) a dynamic property in group 'Base'.
+    """Set (creating if absent) a dynamic property, in group 'Base' unless
+    `group` is given.
 
     params: doc, body, name, value, ptype optional
-            ("string"|"float"|"bool" -> App::Property*; default from value).
+            ("string"|"float"|"bool" -> App::Property*; default from value),
+            group optional (default "Base").
+
+    addProperty() only fires for a name that is not already on the object,
+    so changing an EXISTING property's group requires an explicit
+    remove/re-add round-trip (migration) rather than a second addProperty
+    call, which FreeCAD would silently ignore.
     """
     doc = _doc(params["doc"])
     body = _body(doc, params["body"])
     name = str(params["name"])
     value = params["value"]
+    group = str(params.get("group") or "Base")
     ptype = params.get("ptype")
     if ptype is None:
         ptype = ("bool" if isinstance(value, bool)
@@ -410,7 +419,15 @@ def op_set_property(params):
     if fc_type is None:
         raise OpError("unsupported ptype %r" % ptype)
     if name not in body.PropertiesList:
-        body.addProperty(fc_type, name, "Base")
+        body.addProperty(fc_type, name, group)
+    else:
+        current_group = body.getGroupOfProperty(name)
+        if current_group != group:
+            # migrate: capture the current value before the property is
+            # torn down, then rebuild it in the requested group.
+            _ = getattr(body, name, None)
+            body.removeProperty(name)
+            body.addProperty(fc_type, name, group)
     setattr(body, name,
             value if ptype != "string" else str(value))
     return _mutation_result(doc)
@@ -442,6 +459,101 @@ def op_set_spreadsheet(params):
         raise OpError("sheet %s has no alias %r" % (sheet.Label, alias))
     sheet.set(cell, str(params["raw"]))
     return _mutation_result(doc, {"cell": cell})
+
+
+def op_create_sheet(params):
+    """Create a Spreadsheet::Sheet with the given Label, idempotently.
+
+    params: doc, label.
+    If a sheet with that Label already exists, succeed and return it
+    unchanged (no duplicate is created). A new empty sheet changes no
+    bodies, so this follows op_set_spreadsheet's mutation-result shape.
+    """
+    doc = _doc(params["doc"])
+    label = str(params["label"])
+    existing = [o for o in doc.Objects if o.TypeId == "Spreadsheet::Sheet"
+                and o.Label == label]
+    if existing:
+        sheet = existing[0]
+    else:
+        sheet = doc.addObject("Spreadsheet::Sheet", "Spreadsheet")
+        sheet.Label = label
+    return _mutation_result(doc, {"sheet": _sheet_dict(sheet)})
+
+
+# alias must be a valid FreeCAD-identifier-shaped name...
+_ALIAS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# ...and must NOT also look like a spreadsheet cell address (A1, B12, AA3),
+# which FreeCAD hard-rejects with a cryptic internal error.
+_CELL_ADDR_RE = re.compile(r"^[A-Za-z]{1,2}[0-9]+$")
+
+
+def _validate_alias(alias):
+    if _CELL_ADDR_RE.match(alias):
+        raise OpError(
+            "alias %r looks like a cell address (matches "
+            "^[A-Za-z]{1,2}[0-9]+$); FreeCAD rejects aliases shaped like a "
+            "cell reference - pick a name that isn't ambiguous with a "
+            "column+row address" % alias)
+    if not _ALIAS_RE.match(alias):
+        raise OpError(
+            "alias %r is not a valid identifier: must match "
+            "^[A-Za-z_][A-Za-z0-9_]*$" % alias)
+
+
+def _sheet_by_label_or_name(doc, name):
+    """Resolve a sheet by Label FIRST, then by internal Name.
+
+    (op_set_cell's contract, distinct from the shared _sheet() helper used
+    by set_spreadsheet, which checks internal Name first - sheets created
+    via op_create_sheet are addressed by their Label by callers.)
+    """
+    name = str(name)
+    matches = [o for o in doc.Objects if o.TypeId == "Spreadsheet::Sheet"
+               and o.Label == name]
+    if len(matches) == 1:
+        return matches[0]
+    obj = doc.getObject(name)
+    if obj is not None and obj.TypeId == "Spreadsheet::Sheet":
+        return obj
+    raise OpError("no spreadsheet %r in document %r" % (name, doc.Name))
+
+
+def op_set_cell(params):
+    """Set (or clear) one spreadsheet cell, optionally assigning an alias.
+
+    params: doc, sheet (Label or internal Name), cell (e.g. "B3"),
+            raw (cell content string; "=<expr>" or plain text),
+            alias (optional string).
+
+    raw == "" clears the cell's content AND its alias (if it had one).
+    Otherwise the content is set and, if `alias` is given, assigned to the
+    cell (validated up front so FreeCAD never sees an alias shaped like a
+    cell address - it rejects those with a cryptic error).
+    """
+    doc = _doc(params["doc"])
+    sheet = _sheet_by_label_or_name(doc, params["sheet"])
+    cell = str(params["cell"])
+    raw = params.get("raw", "")
+    alias = params.get("alias")
+    if alias is not None:
+        alias = str(alias)
+        _validate_alias(alias)
+
+    if raw == "":
+        try:
+            sheet.clear(cell)
+        except Exception:
+            sheet.set(cell, "")
+        try:
+            sheet.setAlias(cell, "")
+        except Exception:
+            pass
+    else:
+        sheet.set(cell, str(raw))
+        if alias:
+            sheet.setAlias(cell, alias)
+    return _mutation_result(doc, {"cell": cell, "sheet": sheet.Name})
 
 
 def op_set_placement(params):

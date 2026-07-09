@@ -52,6 +52,7 @@ import FreeCAD
 # directory the way plain `python3 scripts/foo.py` does).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common   # noqa: E402
+import train_fcstd   # noqa: E402
 
 SPREADSHEET_LABEL = "dim"   # object label; internal name is usually "Spreadsheet"
 
@@ -261,11 +262,24 @@ def permute(model_path, varspecs, outdir, unit):
                 else:
                     sheet = find_sheet(doc, sheet_label)
                 cell = resolve_alias_cell(sheet, alias)
-                sheet.set(cell, "=%.10g %s" % (value, unit))
+                # global-variables cells are UNITLESS by contract (they
+                # feed expressions and train fields that expect plain
+                # numbers); dim cells keep the length unit
+                if sheet.Label == train_fcstd.VARIABLES_SHEET:
+                    sheet.set(cell, "=%.10g" % value)
+                else:
+                    sheet.set(cell, "=%.10g %s" % (value, unit))
                 if sheet not in touched_sheets:
                     touched_sheets.append(sheet)
             doc.recompute()
             rebuild_primitive_groups(doc, touched_sheets)
+            # optical train: re-bake expression-driven props and re-solve
+            # every chained placement against the variant's variable
+            # values (the GUI's exact solver — see train_fcstd.py)
+            n_train = train_fcstd.apply_train(doc, log=log)
+            if n_train:
+                doc.recompute()
+                log("train: re-solved %d chained element(s)" % n_train)
             check_recompute(doc)
 
             doc.saveAs(str(out_path))
