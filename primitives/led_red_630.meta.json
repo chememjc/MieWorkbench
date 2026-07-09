@@ -1,0 +1,30 @@
+{
+ "category": "Sources",
+ "kind": "led_red_630",
+ "label": "Red LED (625 nm)",
+ "params": {
+  "diameter": {
+   "default": 10.0,
+   "help": "emit face diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 625.0,
+  "lambdamax": 633.49,
+  "lambdamin": 616.51,
+  "power": 5.0
+ },
+ "tooltip": "Red monochromatic LED source (CWL 625 nm, FWHM 20 nm; Cree XP-E2 CLD-DS56 R2-R3 (620-630nm); FWHM Lumileds DS105 (LXZ1-PD01))."
+}

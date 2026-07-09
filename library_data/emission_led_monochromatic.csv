@@ -1,0 +1,11 @@
+# Monochromatic LED presets - DATA-ONLY, already supported by the existing Gaussian source.
+# Map to: lambdac=cwl_nm, lambdamin=cwl-FWHM/2.3548, lambdamax=cwl+FWHM/2.3548 (half-normal FWHM; NOT +/-FWHM/2).
+led_type,cwl_nm,fwhm_nm,reference
+deep_red_660,660,20,"Lumileds LUXEON Z DS105 Table 1a/2 (LXZ1-PA01); Cree XP-E2 CLD-DS56 Photo Red 650-670nm bins"
+red_630,625,20,"Cree XP-E2 CLD-DS56 R2-R3 (620-630nm); FWHM Lumileds DS105 (LXZ1-PD01)"
+amber_590,590,20,"Cree XP-E2 CLD-DS56 A2-A3 (585-595nm); FWHM Lumileds DS105 (LXZ1-PL03)"
+green_525,527,30,"Cree XP-E2 CLD-DS56 G2-G4 (520-535nm); FWHM Lumileds DS105 (LXZ1-PM01)"
+blue_470,472,20,"Cree XP-E2 CLD-DS56 B3-B6 (465-485nm); FWHM Lumileds DS105 (LXZ1-PB01)"
+royal_blue_450,452,20,"Cree XP-E2 CLD-DS56 D3-D5 (450-465nm); FWHM Lumileds DS105 (LXZ1-PR01)"
+uv_365,365,9.0,"Nichia NCSU276CT-E datasheet lambda_p=365nm dlambda=9.0nm (grep-verified PDF)"
+uv_385,385,11,"Nichia NVSU233A-D1-E U385 bin; UNVERIFIED-lite (FWHM secondary-sourced, not PDF-verified)"

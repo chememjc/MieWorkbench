@@ -1,0 +1,30 @@
+{
+ "category": "Sources",
+ "kind": "led_blue_470",
+ "label": "Blue LED (472 nm)",
+ "params": {
+  "diameter": {
+   "default": 10.0,
+   "help": "emit face diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 472.0,
+  "lambdamax": 480.49,
+  "lambdamin": 463.51,
+  "power": 5.0
+ },
+ "tooltip": "Blue monochromatic LED source (CWL 472 nm, FWHM 20 nm; Cree XP-E2 CLD-DS56 B3-B6 (465-485nm); FWHM Lumileds DS105 (LXZ1-PB01))."
+}

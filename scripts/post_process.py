@@ -30,7 +30,8 @@ sys.path.insert(0, str(SCRIPTS))
 import common                                            # noqa: E402
 import cli_specs                                          # noqa: E402
 from raytracer.detector import (spectral_cube_to_srgb,   # noqa: E402
-                                cie_xyz_weights)
+                                cie_xyz_weights, spectral_cube_to_lux,
+                                spectral_cube_to_photocurrent)
 from raytracer.materials import MaterialDB, load_coatings  # noqa: E402
 from raytracer import thinfilm as tf                     # noqa: E402
 from raytracer import fresnel as fr                      # noqa: E402
@@ -54,7 +55,30 @@ def wavelength_rgb(lam_nm):
     return rgb
 
 
-def render_detector(h5path, outdir_img, outdir_spec, report):
+def detector_qe_curve_for_label(label, qe_bodies):
+    """Map a detector h5 label (a face id "<BodyName>.<Tip>.FaceN") to the
+    qe_curve of its owning body, if any. qe_bodies is {body_name:
+    qe_curve_name} for detector bodies that declared a qe_curve. Ownership
+    is a prefix match on the body Name (the face id always begins
+    "<BodyName>."), so the run's chosen detector face -- autodetected OR an
+    explicit --detector-face on some other FaceN of the same body -- still
+    resolves to the right body. Returns the curve name or None."""
+    exact = qe_bodies.get(label)
+    if exact is not None:
+        return exact
+    # longest matching body-name prefix wins (guards against one body name
+    # being a prefix of another)
+    best = None
+    for name, curve in qe_bodies.items():
+        if label == name or label.startswith(name + "."):
+            if best is None or len(name) > len(best[0]):
+                best = (name, curve)
+    return best[1] if best is not None else None
+
+
+def render_detector(h5path, outdir_img, outdir_spec, report,
+                    photometric=False, spectrometer=False,
+                    qe_bodies=None, detector_registry=None):
     with h5py.File(h5path) as h:
         cube = h["spectral_cube_mean"][...]
         mask = h["mask"][...]
@@ -154,6 +178,160 @@ def render_detector(h5path, outdir_img, outdir_spec, report):
     plt.close(fig)
     if std is not None:
         np.save(outdir_spec / ("std_cube_%s.npy" % safe), std)
+
+    if photometric:
+        _render_photometric(cube, mask, lam_lo, lam_hi, pixel_area,
+                            extent_mm, outdir_img, safe, label, report)
+    if spectrometer:
+        _render_spectrometer(cube, lam_lo, lam_hi, pixel_m, extent_mm,
+                             outdir_img, outdir_spec, safe, label, report)
+
+    # QE-weighted photocurrent -- data-driven (no CLI flag): a detector body
+    # tagged qe_curve=<name> gets its spectral cube weighted by the
+    # registry QE(lambda) curve. Purely a display-stage diagnostic.
+    curve = detector_qe_curve_for_label(label, qe_bodies or {})
+    if curve is not None:
+        entry = (detector_registry or {}).get(curve)
+        if entry is None:
+            print("[post] NOTE: unknown qe_curve %r — skipping" % curve)
+        else:
+            i_a, p_w, cov = spectral_cube_to_photocurrent(
+                cube, lam_lo, lam_hi, entry["lam_um"], entry["qe"])
+            report["detectors"][label]["qe"] = {
+                "curve": curve,
+                "photocurrent_A": float(i_a),
+                "qe_weighted_power_W": float(p_w),
+                "coverage_frac": float(cov),
+            }
+
+
+# =============================================================================
+# --photometric: CIE photopic (lux) render.
+# =============================================================================
+def _render_photometric(cube, mask, lam_lo, lam_hi, pixel_area, extent_mm,
+                        outdir_img, safe, label, report):
+    """--photometric: illuminance render of the same spectral cube the
+    sRGB/irradiance images use -- no tracer changes, purely a different
+    CIE weighting (y-bar instead of the full xyz -> sRGB matrix)."""
+    lux_map, luminous_flux_lm = spectral_cube_to_lux(
+        np.maximum(cube, 0.0), lam_lo, lam_hi, pixel_area)
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=max(
+        128, lux_map.shape[1] // 8))
+    im = ax.imshow(lux_map, origin="lower", cmap="magma", extent=extent_mm)
+    fig.colorbar(im, ax=ax, fraction=0.046, label="lux")
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("y [mm]")
+    ax.set_title("%s — illuminance" % label)
+    fig.savefig(outdir_img / ("det_%s_lux.png" % safe), bbox_inches="tight")
+    plt.close(fig)
+    report["detectors"][label]["photometric"] = {
+        "luminous_flux_lm": float(luminous_flux_lm),
+        "peak_illuminance_lux": float(lux_map.max()),
+        "mean_illuminance_lux": float(lux_map[mask].mean())
+                                if np.any(mask) else 0.0,
+    }
+
+
+# =============================================================================
+# --spectrometer: power-weighted lambda(x,y) centroid render + a lambda(x)
+# dispersion fit. The centroid/fit math is factored into pure functions
+# (spectral_centroid, lambda_centroid_map, linear_fit_r2) so it is
+# testable without a case directory or an h5 file.
+# =============================================================================
+def spectral_centroid(cube, lam_lo, lam_hi):
+    """(bins, ...) power cube -> (total_power (...), lambda_bar_nm (...)),
+    the power-weighted wavelength centroid collapsed along axis 0.
+    lam_lo/lam_hi are in metres (h5 attrs); lambda_bar is NaN wherever
+    total_power is exactly 0."""
+    bins = cube.shape[0]
+    lam_c_nm = (lam_lo + (np.arange(bins) + 0.5)
+               * (lam_hi - lam_lo) / bins) / 1e-9
+    total = cube.sum(axis=0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        lam_bar = np.tensordot(lam_c_nm, cube, axes=(0, 0)) / total
+    return total, lam_bar
+
+
+def lambda_centroid_map(cube, lam_lo, lam_hi, power_frac_threshold=1e-6):
+    """(bins, H, W) power cube -> (lambda_bar (H, W) [nm], valid (H, W)
+    bool). A pixel is valid if its total power is at least
+    power_frac_threshold of the brightest pixel's total power (matches
+    the spec's "total power < 1e-6*peak" masking rule); lambda_bar is NaN
+    outside the valid mask."""
+    total, lam_bar = spectral_centroid(cube, lam_lo, lam_hi)
+    peak = float(total.max()) if total.size else 0.0
+    valid = (total >= power_frac_threshold * peak) if peak > 0 \
+        else np.zeros_like(total, dtype=bool)
+    return np.where(valid, lam_bar, np.nan), valid
+
+
+def linear_fit_r2(x, y):
+    """Least-squares y = slope*x + intercept -> (slope, intercept, r2), or
+    (None, None, None) if fewer than 2 points (a constant y gives r2=1.0
+    rather than a division by zero)."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(x) < 2:
+        return None, None, None
+    slope, intercept = np.polyfit(x, y, 1)
+    resid = y - (slope * x + intercept)
+    ss_res = float(np.sum(resid ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    return float(slope), float(intercept), float(r2)
+
+
+def _render_spectrometer(cube, lam_lo, lam_hi, pixel_m, extent_mm,
+                         outdir_img, outdir_spec, safe, label, report):
+    cube = np.maximum(cube, 0.0)
+    lam_map, valid2d = lambda_centroid_map(cube, lam_lo, lam_hi)
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=max(
+        128, lam_map.shape[1] // 8))
+    im = ax.imshow(lam_map, origin="lower", cmap="viridis", extent=extent_mm)
+    fig.colorbar(im, ax=ax, fraction=0.046, label="wavelength [nm]")
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("y [mm]")
+    ax.set_title("%s — power-weighted wavelength centroid" % label)
+    fig.savefig(outdir_img / ("det_%s_lambda_map.png" % safe),
+                bbox_inches="tight")
+    plt.close(fig)
+
+    # collapse y (sum power over rows first, THEN take the centroid) --
+    # equivalent to a power-weighted mean over the whole column
+    col_total, col_lam = spectral_centroid(cube.sum(axis=1), lam_lo, lam_hi)
+    peak = float(col_total.max()) if col_total.size else 0.0
+    col_valid = (col_total >= 1e-6 * peak) if peak > 0 \
+        else np.zeros_like(col_total, dtype=bool)
+    xmm = (np.arange(cube.shape[2]) + 0.5) * pixel_m / 1e-3
+
+    spec = {"lambda_min_nm": None, "lambda_max_nm": None,
+           "dispersion_nm_per_mm": None, "fit_r2": None}
+    if np.any(valid2d):
+        spec["lambda_min_nm"] = float(np.nanmin(lam_map))
+        spec["lambda_max_nm"] = float(np.nanmax(lam_map))
+    slope, intercept, r2 = linear_fit_r2(xmm[col_valid], col_lam[col_valid])
+    if slope is None:
+        print("[post] NOTE: %s spectrometer dispersion fit skipped "
+              "(fewer than 2 valid detector columns)" % label)
+    else:
+        spec["dispersion_nm_per_mm"] = slope
+        spec["fit_r2"] = r2
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(xmm[col_valid], col_lam[col_valid], "o", ms=3, color="C0")
+    if slope is not None:
+        fit_y = slope * xmm[col_valid] + intercept
+        ax.plot(xmm[col_valid], fit_y, "-", color="C1",
+               label="fit: %.4g nm/mm, R^2=%.4f" % (slope, r2))
+        ax.legend(fontsize=8)
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("wavelength [nm]")
+    ax.set_title("%s — wavelength vs x" % label)
+    fig.savefig(outdir_spec / ("lambda_vs_x_%s.png" % safe),
+                bbox_inches="tight")
+    plt.close(fig)
+
+    report["detectors"][label]["spectrometer"] = spec
 
 
 # =============================================================================
@@ -492,7 +670,11 @@ def plot_materials(model, outdir):
         for cname in coats:
             cspec = coatings[cname]
             if cspec["kind"] == "tmm":
-                ln, ld = tf.resolve_coating_layers(cspec["layers"], db, lam)
+                try:
+                    ln, ld = tf.resolve_coating_layers(cspec["layers"], db,
+                                                       lam)
+                except ValueError:  # layer material tabulated range narrower
+                    continue        # than the plot span (same as above)
                 rs, rp, ts, tp, etas = tf.tmm_coeffs(lam, cos_i, n1, n_sub,
                                                      ln, ld)
                 R = 0.5 * (np.abs(rs) ** 2 + np.abs(rp) ** 2)
@@ -751,12 +933,32 @@ def main(argv=None):
         "elements": common.element_power_table(
             audit, {b["name"]: b.get("label", b["name"])
                     for b in model["bodies"]})}
+    # detector bodies tagged qe_curve -> {BodyName: curve_name}; the QE
+    # registry is loaded from the same default opticalproperties/ root
+    # plot_materials uses. Both are optional -- a library without a
+    # detector/ subtree just leaves photocurrent out of the report.
+    qe_bodies = {b["name"]: b["detector"]["qe_curve"]
+                 for b in model["bodies"]
+                 if isinstance(b.get("detector"), dict)
+                 and b["detector"].get("qe_curve")}
+    detector_registry = {}
+    if qe_bodies:
+        try:
+            detector_registry = load_optical_properties().detectors
+        except Exception as exc:
+            print("[post] NOTE: could not load detector QE registry (%s) — "
+                  "skipping photocurrent" % exc)
+
     h5paths = sorted((case_dir / "detectors").glob("*.h5"))
     for i, h5path in enumerate(h5paths):
         common.progress_emit("post", 0.8 * i / max(1, len(h5paths)),
                              "detector %s" % h5path.stem,
                              case_dir=case_dir)
-        render_detector(h5path, img, spec, report)
+        render_detector(h5path, img, spec, report,
+                        photometric=args.photometric,
+                        spectrometer=args.spectrometer,
+                        qe_bodies=qe_bodies,
+                        detector_registry=detector_registry)
         render_stokes_maps(h5path, img)
     common.progress_emit("post", 0.8, "diagnostic plots",
                          case_dir=case_dir)

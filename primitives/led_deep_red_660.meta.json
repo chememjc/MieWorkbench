@@ -1,0 +1,30 @@
+{
+ "category": "Sources",
+ "kind": "led_deep_red_660",
+ "label": "Deep-red LED (660 nm)",
+ "params": {
+  "diameter": {
+   "default": 10.0,
+   "help": "emit face diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 660.0,
+  "lambdamax": 668.49,
+  "lambdamin": 651.51,
+  "power": 5.0
+ },
+ "tooltip": "Deep-red monochromatic LED source (CWL 660 nm, FWHM 20 nm; Lumileds LUXEON Z DS105 Table 1a/2 (LXZ1-PA01); Cree XP-E2 CLD-DS56 Photo Red 650-670nm bins)."
+}

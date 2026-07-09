@@ -25,8 +25,11 @@ dock widgets, `widgets/` VTK, `tests/`) · `opticalproperties/` property
 library · `primitives/` parametric element library · `basemodels/` test
 scenes · `demos/` ten classic-system `.MieWB` galleries (built by
 `scripts/make_demos.py` through the fcclient op path; `demos/README.md`
-has prescriptions+citations, `demos/UXNOTES.md` the shakedown log) ·
-`env/` GUI venv (gitignored) · `var/` workspaces/caches (gitignored).
+has prescriptions+citations, `demos/UXNOTES.md` the shakedown log) · `demos/library_tests/`
+nine library-validation template scenes + automated sweep runner
+(`scripts/make_library_tests.py`, `scripts/run_library_tests.py`) ·
+`library_data/` sourced data for staged library entries · `env/` GUI venv
+(gitignored) · `var/` workspaces/caches (gitignored).
 
 ## Pinned interpreters — always use the right one (never cross-import)
 
@@ -55,6 +58,8 @@ python3 scripts/run_pipeline.py --models example.FCStd --preset quick
 #         --var dim_Lens1.ct — primitive groups are rebuilt per variant)
 # visual-only overlay rays: --viz-pattern 'rings:dr=1:nper=12[:nrings=K]'
 #                        or 'fan[:n=K]' (center + edge midpoints; GUI preview)
+# detector outputs: --photometric (lux maps) --spectrometer (λ-vs-x profiles);
+#   QE-weighted photocurrent has NO flag — set qe_curve on the detector body
 
 # GUI
 env/bin/python -m mieworkbench [model.FCStd|X.MieWB|X.MieSim]   # or bin/mieworkbench
@@ -121,12 +126,12 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   `run_trace` REFUSES a locked case (exit 4). The GUI opens live cases
   read-only in monitor mode (polls `progress.json`).
 - **Primitives** (`scripts/primitivelib.py` + `primitives/*.FCStd` +
-  `.meta.json`): 54 catalog elements (sources/detectors/fiber optics/
+  `.meta.json`): 62 catalog elements (sources/detectors/fiber optics/
   lenses/beamsplitters/filters/polarization/prisms & mirrors/apertures/
-  diffusers — incl. `fiber_optic` core+cladding analytic cylinders,
-  NA 0.22 via the `fiber_core_na22` material row, and `mirror_annular`
-  perforated SCT-style primary); geometry params live in a `dim`
-  spreadsheet; edits go through **rebuild-on-edit** (`rebuild_primitive`
+  diffusers — incl. 8 LED monochromatic sources, `fiber_optic` core+cladding
+  analytic cylinders, NA 0.22 via the `fiber_core_na22` material row, and
+  `mirror_annular` perforated SCT-style primary); geometry params live in a
+  `dim` spreadsheet; edits go through **rebuild-on-edit** (`rebuild_primitive`
   op re-runs the builder — constraint expressions can't change topology).
   Hand-authored primitives with real cell expressions use the normal
   `set_spreadsheet` path instead. Conventions: aperture params are
@@ -158,6 +163,8 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
 `App::Property` on each `PartDesign::Body`, group "Base":
 - `material` (string): materials registry row | uniaxial crystal name |
   `detector` | absent/`none` → ignored
+- detectors: `qe_curve` (string): detector-QE registry row → post reports
+  photocurrent_A/coverage_frac; absent → no QE block (power report unchanged)
 - sources: `power` (mW) + `lambdac` (nm) [+ `lambdamin`/`lambdamax` nm,
   `coherent` bool, `polarization` = `unpolarized` | `linear:<deg>` |
   `circular:left|right` | `elliptical:<psi>:<chi>`]
@@ -181,10 +188,11 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
 ## Optical component library
 
 `opticalproperties/` uses self-describing extensions (content is still CSV):
-`materials.miemat`, `nk/*.mienk`, `coating/coatings.miecoat`,
-`polarizer/polarizers.miepol`, `filter/filters.miefilt`,
-`grating/gratings.miegrat`, `birefringence/uniaxial.miebrf`, per-item
-tables `*/tables/*.mietab`. Loaders prefer the new names and **fall back to
+`materials.miemat` (168 rows), `nk/*.mienk` (18 tables), `coating/coatings.miecoat`
+(38), `polarizer/polarizers.miepol` (17), `filter/filters.miefilt` (56),
+`grating/gratings.miegrat` (8), `birefringence/uniaxial.miebrf` (13 uniaxial
+crystals), `detector/detectors.miedet` (detector QE curves, 1 entry: hamamatsu_s1223),
+per-item tables `*/tables/*.mietab`. Loaders prefer the new names and **fall back to
 legacy `.csv`** (external all-.csv libraries keep working). `reference`
 (citation) column is REQUIRED everywhere; loaders hard-validate
 (`raytracer/optprops.py`). Override root: `--optical-properties DIR`.

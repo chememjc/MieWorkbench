@@ -34,6 +34,7 @@ DEFAULT_BIREFRINGENCE_CSV = DEFAULT_OPTPROPS_DIR / "birefringence" / "uniaxial.m
 DEFAULT_POLARIZERS_CSV = DEFAULT_OPTPROPS_DIR / "polarizer" / "polarizers.miepol"
 DEFAULT_FILTERS_CSV = DEFAULT_OPTPROPS_DIR / "filter" / "filters.miefilt"
 DEFAULT_GRATINGS_CSV = DEFAULT_OPTPROPS_DIR / "grating" / "gratings.miegrat"
+DEFAULT_DETECTORS_CSV = DEFAULT_OPTPROPS_DIR / "detector" / "detectors.miedet"
 
 POLARIZER_TYPES = ("linear", "circular_left", "circular_right")
 GRATING_MODELS = ("lamellar", "bragg_kogelnik", "dammann", "table")
@@ -257,6 +258,40 @@ def load_filters(csv_path=None):
 
 
 # ---------------------------------------------------------------------------
+# detector/detectors.csv + tables/  (quantum-efficiency curves)
+# ---------------------------------------------------------------------------
+def load_detectors(csv_path=None):
+    """-> {name: {"lam_um": arr, "qe": arr, "reference": str, "notes": str}}.
+
+    Each row references a per-detector table wavelength_nm,qe giving the
+    fractional quantum efficiency QE(lambda) in (0, 1]. post_process weights
+    a detector body's spectral cube by QE(lambda) (via
+    detector.spectral_cube_to_photocurrent) to report a photocurrent -- a
+    display-stage diagnostic, never a tracer closure bucket."""
+    csv_path = Path(csv_path) if csv_path is not None \
+        else DEFAULT_DETECTORS_CSV
+    tables_dir = csv_path.parent / "tables"
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "table_csv", "reference"}, "detectors"):
+        table = _read_table(tables_dir / (row.get("table_csv") or "").strip(),
+                            ("qe",), ctx)
+        qe = table["qe"]
+        if np.any(qe <= 0):
+            raise MaterialError(
+                "%s: qe must be > 0 (a dead band is a data hole, not a "
+                "0 -- floor it or drop the point)" % ctx)
+        if np.any(qe > 1):
+            raise MaterialError(
+                "%s: qe must be <= 1 (fractional quantum efficiency, not a "
+                "percentage or a gain)" % ctx)
+        out[name] = {"lam_um": table["lam_um"], "qe": qe,
+                     "reference": (row.get("reference") or "").strip(),
+                     "notes": (row.get("notes") or "").strip()}
+    return out
+
+
+# ---------------------------------------------------------------------------
 # grating/gratings.csv + tables/
 # ---------------------------------------------------------------------------
 def load_gratings(csv_path=None):
@@ -424,10 +459,10 @@ class OpticalProperties:
     filters, gratings, uniaxial — shapes per the load_* docstrings."""
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
-                 "gratings", "uniaxial", "diffusers")
+                 "gratings", "uniaxial", "diffusers", "detectors")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
-                 uniaxial, diffusers=None):
+                 uniaxial, diffusers=None, detectors=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -436,6 +471,7 @@ class OpticalProperties:
         self.gratings = gratings
         self.uniaxial = uniaxial
         self.diffusers = diffusers if diffusers is not None else {}
+        self.detectors = detectors if detectors is not None else {}
 
 
 def load_optical_properties(root=None, db=None):
@@ -469,7 +505,9 @@ def load_optical_properties(root=None, db=None):
         gratings=optional(load_gratings, root / "grating" / "gratings.miegrat"),
         uniaxial=uniaxial,
         diffusers=optional(load_diffusers,
-                           root / "diffuser" / "diffusers.miedif"))
+                           root / "diffuser" / "diffusers.miedif"),
+        detectors=optional(load_detectors,
+                           root / "detector" / "detectors.miedet"))
 
 
 # ---------------------------------------------------------------------------
@@ -486,3 +524,4 @@ if __name__ == "__main__":
     print("  gratings  : %d" % len(props.gratings))
     print("  uniaxial  : %d" % len(props.uniaxial))
     print("  diffusers : %d" % len(props.diffusers))
+    print("  detectors : %d" % len(props.detectors))

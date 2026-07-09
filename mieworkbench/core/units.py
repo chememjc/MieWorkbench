@@ -28,6 +28,7 @@ PROPERTY_UNITS = {
     "surface_override": None,     # per-face analytic-surface spec
     "mirror": "0–1",         # reflected fraction
     "absorbance": "0–1",     # absorbed fraction
+    "qe_curve": None,             # detector QE-curve registry name
 }
 
 # Geometry/transform panels (values live in FreeCAD sheets / placements).

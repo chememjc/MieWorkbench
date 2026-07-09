@@ -105,6 +105,122 @@ PRIMITIVES = {
                   "lambdamin": 450.0, "lambdamax": 650.0,
                   "coherent": False},
     },
+    # -- LED presets (monochromatic-LED library_data/emission_led_monochromatic.csv;
+    #    lambdamin/lambdamax = cwl -+ FWHM/2.3548 so the existing Gaussian
+    #    source reproduces each LED's datasheet FWHM -- see sources.py:19-22) --
+    "led_deep_red_660": {
+        "category": "Sources", "label": "Deep-red LED (660 nm)",
+        "tooltip": "Deep-red monochromatic LED source (CWL 660 nm, FWHM "
+                   "20 nm; Lumileds LUXEON Z DS105 Table 1a/2 (LXZ1-PA01); "
+                   "Cree XP-E2 CLD-DS56 Photo Red 650-670nm bins).",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 5.0, "lambdac": 660.0,
+                  "lambdamin": 651.51, "lambdamax": 668.49,
+                  "coherent": False},
+    },
+    "led_red_630": {
+        "category": "Sources", "label": "Red LED (625 nm)",
+        "tooltip": "Red monochromatic LED source (CWL 625 nm, FWHM 20 nm; "
+                   "Cree XP-E2 CLD-DS56 R2-R3 (620-630nm); FWHM Lumileds "
+                   "DS105 (LXZ1-PD01)).",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 5.0, "lambdac": 625.0,
+                  "lambdamin": 616.51, "lambdamax": 633.49,
+                  "coherent": False},
+    },
+    "led_amber_590": {
+        "category": "Sources", "label": "Amber LED (590 nm)",
+        "tooltip": "Amber monochromatic LED source (CWL 590 nm, FWHM "
+                   "20 nm; Cree XP-E2 CLD-DS56 A2-A3 (585-595nm); FWHM "
+                   "Lumileds DS105 (LXZ1-PL03)).",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 5.0, "lambdac": 590.0,
+                  "lambdamin": 581.51, "lambdamax": 598.49,
+                  "coherent": False},
+    },
+    "led_green_525": {
+        "category": "Sources", "label": "Green LED (527 nm)",
+        "tooltip": "Green monochromatic LED source (CWL 527 nm, FWHM "
+                   "30 nm; Cree XP-E2 CLD-DS56 G2-G4 (520-535nm); FWHM "
+                   "Lumileds DS105 (LXZ1-PM01)).",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 5.0, "lambdac": 527.0,
+                  "lambdamin": 514.26, "lambdamax": 539.74,
+                  "coherent": False},
+    },
+    "led_blue_470": {
+        "category": "Sources", "label": "Blue LED (472 nm)",
+        "tooltip": "Blue monochromatic LED source (CWL 472 nm, FWHM "
+                   "20 nm; Cree XP-E2 CLD-DS56 B3-B6 (465-485nm); FWHM "
+                   "Lumileds DS105 (LXZ1-PB01)).",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 5.0, "lambdac": 472.0,
+                  "lambdamin": 463.51, "lambdamax": 480.49,
+                  "coherent": False},
+    },
+    "led_royal_blue_450": {
+        "category": "Sources", "label": "Royal-blue LED (452 nm)",
+        "tooltip": "Royal-blue monochromatic LED source (CWL 452 nm, "
+                   "FWHM 20 nm; Cree XP-E2 CLD-DS56 D3-D5 (450-465nm); "
+                   "FWHM Lumileds DS105 (LXZ1-PR01)).",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 5.0, "lambdac": 452.0,
+                  "lambdamin": 443.51, "lambdamax": 460.49,
+                  "coherent": False},
+    },
+    "led_uv_365": {
+        "category": "Sources", "label": "UV LED (365 nm)",
+        "tooltip": "365 nm UV monochromatic LED source (CWL 365 nm, "
+                   "FWHM 9.0 nm; Nichia NCSU276CT-E datasheet "
+                   "lambda_p=365nm dlambda=9.0nm, grep-verified PDF).",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 5.0, "lambdac": 365.0,
+                  "lambdamin": 361.18, "lambdamax": 368.82,
+                  "coherent": False},
+    },
+    "led_uv_385": {
+        "category": "Sources", "label": "UV LED (385 nm)",
+        "tooltip": "385 nm UV monochromatic LED source (CWL 385 nm, "
+                   "FWHM 11 nm; Nichia NVSU233A-D1-E U385 bin; "
+                   "UNVERIFIED-lite -- FWHM secondary-sourced, not "
+                   "PDF-verified).",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 5.0, "lambdac": 385.0,
+                  "lambdamin": 380.33, "lambdamax": 389.67,
+                  "coherent": False},
+    },
     # -- detectors ----------------------------------------------------------
     "detector_plane": {
         "category": "Detectors", "label": "Detector plane",
@@ -1650,6 +1766,14 @@ def builders():
             "laser_collimated": _build_laser_collimated,
             "laser_divergent": _build_laser_divergent,
             "source_broadband": _build_laser_collimated,
+            "led_deep_red_660": _build_laser_collimated,
+            "led_red_630": _build_laser_collimated,
+            "led_amber_590": _build_laser_collimated,
+            "led_green_525": _build_laser_collimated,
+            "led_blue_470": _build_laser_collimated,
+            "led_royal_blue_450": _build_laser_collimated,
+            "led_uv_365": _build_laser_collimated,
+            "led_uv_385": _build_laser_collimated,
             "detector_plane": _build_detector_plane,
             "lens_ball": _build_lens_ball,
             "lens_rod": _build_lens_rod,

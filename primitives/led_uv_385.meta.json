@@ -1,0 +1,30 @@
+{
+ "category": "Sources",
+ "kind": "led_uv_385",
+ "label": "UV LED (385 nm)",
+ "params": {
+  "diameter": {
+   "default": 10.0,
+   "help": "emit face diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 385.0,
+  "lambdamax": 389.67,
+  "lambdamin": 380.33,
+  "power": 5.0
+ },
+ "tooltip": "385 nm UV monochromatic LED source (CWL 385 nm, FWHM 11 nm; Nichia NVSU233A-D1-E U385 bin; UNVERIFIED-lite -- FWHM secondary-sourced, not PDF-verified)."
+}

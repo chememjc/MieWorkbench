@@ -1110,31 +1110,22 @@ reference`.
   way.
 - `reference` is **required** on every row (`MaterialError` if blank) —
   every material must cite where its optical constants came from.
-- `opticalproperties/nk/*.csv` tables (`wavelength_nm, n, k`, strictly
-  increasing wavelength) back the `tabulated` model: `aluminum.csv` (26
-  data rows, Rakic 1995), `gold.csv`/`silver.csv` (19 rows each, Johnson &
-  Christy 1972), `tio2.csv` (73 rows, DeVore 1951, k=0 assumed throughout),
-  `water.csv` (161 rows, Daimon & Masumura 2007 for n + Hale & Querry 1973
-  for k).
+- `opticalproperties/nk/*.mienk` tables (`wavelength_nm, n, k`, strictly
+  increasing wavelength, 18 total) back the `tabulated` model: metals
+  (aluminum, chromium, copper, gold, nickel, platinum, silver, titanium,
+  tungsten), semiconductors (gaas, germanium, silicon, sic), IR materials
+  (kbr, nacl), and water. **Birefringent crystal materials are not selected directly** —
+  a body sets `material=calcite` (the crystal name in `uniaxial.miebrf`, §7.6),
+  which resolves to the `calcite_o`/`calcite_e` pair internally.
 
-24 materials ship today: `vacuum`, `air`, `bk7`, `fused_silica`,
-`sapphire_o`, `water`, `glass` (generic soda-lime placeholder),
-`polystyrene`, `latex` (aliases polystyrene's optical constants), `pmma`,
-`polycarbonate`, `tio2`, `aluminum`, `gold`, `silver`, `mgf2`,
-`sio2_film`, `detector` (sentinel, n=1+0j, so detector faces never
-refract/absorb via Fresnel), plus six added for the birefringence/
-achromat feature set: **`calcite_o`/`calcite_e`**, **`quartz_o`/
-`quartz_e`**, **`sapphire_e`** (pairs with the pre-existing `sapphire_o`),
-and **`sf5`** (Schott dense flint, the achromat-doublet partner for
-`bk7`; `n_d(587.6nm)` calc 1.67270 vs Schott datasheet 1.67270, `V_d`
-calc 32.24 vs datasheet 32.21). The four new crystal-axis materials use a
-documented Ghosh 2-term-to-3-term-Sellmeier remapping trick (`B3=A,
-C3=1e-8 um^2`, since the loader requires every `Ci > 0`; the resulting
-`lam^2/(lam^2-1e-8) ~= 1` to `<1e-7` relative error over 0.2-2 um, i.e.
-numerically exact); `sapphire_e` and `sf5` use native 3-term Sellmeier
-directly. **Birefringent crystal materials are not selected directly** —
-a body sets `material=calcite` (the crystal name in `uniaxial.csv`, §7.7),
-which resolves to the `calcite_o`/`calcite_e` pair internally.
+168 materials ship today (expanded from 24): optical glasses (41 Schott/Ohara
+crowns/flints), metals/semiconductors/IR windows (17), polymers/liquids/gases/
+biological (35), coating-film materials (5), crystals with o/e pairs (46 uniaxial
+axis rows), plus foundational `vacuum`, `air`, `bk7`, `fused_silica`, `sapphire_o/e`,
+`water`, `glass`, `polystyrene`, `latex`, `pmma`, `polycarbonate`, `tio2`, `mgf2`,
+`sio2_film`, `detector`, `calcite`, `quartz`, `sf5`, and `fiber_core_na22`. All
+entries are spot-checked against authoritative sources (NIST, peer-reviewed
+publications, manufacturer datasheets) per §7.8 citation policy.
 
 **To add a material**: append a row with a unique `name`; pick `class`
 descriptively; pick `model` and supply the required parameters for it
@@ -1164,18 +1155,13 @@ design wavelength, resolved dispersively at trace time via `n(lambda0)` —
 thickness genuinely depends on which wavelength you design for). `table`
 names a measured `wavelength_nm,Rs,Rp,Ts,Tp` CSV in `coating/tables/`
 (hard-validated: strictly increasing wavelength, values in [0,1], and
-**`Rs+Ts<=1`, `Rp+Tp<=1` per row**). Ten coatings ship: five TMM stacks
-(`MgF2` quarter-wave AR at 550nm, `MgF2_133` literal 100nm, illustrative
-two-layer `BBAR_MgF2_SiO2`, bare `Al_mirror_bare`/`Au_mirror_bare`) and
-five measured 45°-AOI tables modeling common dichroic elements
-(`hot_mirror_45`, `cold_mirror_45`, `pbs_visible_45`, `dichroic_567lp_45`,
-`bs_5050_vis_45` — each anchored to a real vendor part's stated
-band-average specs, since none of the actual vendor curve graphs were
-machine-fetchable; every row's `reference` says exactly which vendor
-number is real and which shape is an engineering approximation). TMM
-stacks apply via `thinfilm.py`'s Macleod-formulation characteristic-
-matrix method (any number of layers, any angle, complex indices); zero
-layers reduces identically to bare Fresnel (tested to 1e-12). See §5.3
+**`Rs+Ts<=1`, `Rp+Tp<=1` per row**). 38 coatings ship (expanded from 10):
+TMM stacks (AR: MgF2 at 550/633/1064nm, quarter-quarter V-coats at 532/633/1064nm,
+3-layer QHQ W-coats at 550nm; HR: dielectric 11–15 layer stacks at 532/633/1064nm),
+measured table models (protected mirrors, dichroic/laser elements, standard
+45°-AOI elements). TMM stacks apply via `thinfilm.py`'s Macleod-formulation
+characteristic-matrix method (any number of layers, any angle, complex indices);
+zero layers reduces identically to bare Fresnel (tested to 1e-12). See §5.3
 for the phase caveat on measured tables.
 
 ### 7.3 `polarizer/polarizers.csv` (+ `polarizer/tables/*.csv`)
@@ -1186,54 +1172,61 @@ Columns `name, type, table_csv, retardance_waves, reference`, `type` ∈
 fractions), hard-validated to both lie in `(0,1]` and
 **`T_perpendicular < T_parallel` everywhere** ("otherwise the
 transmission axis is mislabeled"); `retardance_waves` defaults to `0.25`
-(quarter-wave) if blank. Five polarizers ship: `thorlabs_lpvise100a` and
-`edmund_wiregrid_vis` (linear film polarizers), `thorlabs_cp1l532`/
-`thorlabs_cp1r532` (circular, sharing one measured table, differing only
-in the `type` column's handedness), and `ideal_linear` (a synthetic
-near-perfect polarizer for validation tests). See §5.3 for how the
-diattenuator/retarder Jones stage is built from these tables.
+(quarter-wave) if blank. 17 polarizers ship (expanded from 5): linear sheet
+polarizers (Glan-Thompson, Glan-Taylor, Polaroid HN22/HN38, Moxtek visible,
+Moxtek KRS-5 IR wire-grids), circular polarizers at 488/633/780 nm, plus
+validation-test `ideal_linear` and `thorlabs_*` measured references.
+See §5.3 for how the diattenuator/retarder Jones stage is built from these
+tables.
 
-### 7.4 `filter/filters.csv` (+ `filter/tables/*.csv`)
+### 7.4 `filter/filters.miefilt` (+ `filter/tables/*.mietab`)
 
 Columns `name, table_csv, ref_thickness_mm, reference`. Tables are
 `wavelength_nm, transmittance_internal`, values must lie in `(0,1]` (a
-floor like `1e-6` is required instead of an exact `0` in stopbands). Three
-filters ship: `schott_kg3` (real datasheet heat-absorbing glass,
-Beer's-law-rescaled from its 2mm datasheet thickness to this repo's 3.0mm
-`ref_thickness_mm`), `bp_550_40` (a Gaussian-profile approximation of a
-Thorlabs FB550-40 bandpass), `longpass_600` (a sigmoid interpolated
-between the real FGL590/FGL610 colored-glass longpass parts — no
-FGL600 part actually exists). See §5.3 for the Beer-Lambert
+floor like `1e-6` is required instead of an exact `0` in stopbands). 56 filters
+ship (expanded from 3): Schott colored-glass series (OG/RG/BG/GG/KG/UG/NG families,
+31 entries verified against datasheets), interference bandpass filters (6 entries),
+and foundational heat-absorbing/bandpass examples. See §5.3 for the Beer-Lambert
 thickness-scaling math.
 
-### 7.5 `grating/gratings.csv` (+ `grating/tables/*.csv`)
+### 7.5 `grating/gratings.miegrat` (+ `grating/tables/*.mietab`)
 
 Columns `name, model, lines_per_mm, params, table_csv, reference`,
 `model` ∈ `{lamellar, bragg_kogelnik, dammann, table}`. `params` is a
 `;`-separated `key=value` field (e.g. `thickness_um=3000;dn=0.0005;
 slant_deg=0` for `bragg_kogelnik`, `transitions=0.03863,0.39084` for
-`dammann` — validated strictly increasing, each in `(0,1)`). Three
-gratings ship: `vbg_1800` (a `bragg_kogelnik` volume Bragg grating modeled
-on OptiGrate's reflecting-VBG catalog range), `dammann_1x5` (a real 1×5
-equal-intensity Dammann design from the published Dammann & Goertler /
-Krackhardt & Streibl transition-point tables), and `ruled_600_table` (a
-`table`-model 600 l/mm blazed ruled grating modeled on a Thorlabs part,
-`wavelength_nm, order, eta_s, eta_p` columns — validated so summed
-per-wavelength, per-polarization order efficiencies never exceed 1,
-"energy would not close" otherwise). See §5.5 for the model formulas.
+`dammann` — validated strictly increasing, each in `(0,1)`). 8 gratings ship
+(expanded from 3): lamellar ruled gratings (1200 l/mm first entry exercising
+the `lamellar` model), Bragg/VPH (volume Bragg grating, VPH Kogelnik, ESO)
+Dammann diffractive optics, transmission gratings, echelle, and ruled
+blazed gratings. Table-model entries are `wavelength_nm, order, eta_s, eta_p`
+columns, validated so summed per-wavelength, per-polarization order efficiencies
+never exceed 1. See §5.5 for the model formulas.
 
-### 7.6 `birefringence/uniaxial.csv`
+### 7.6 `birefringence/uniaxial.miebrf`
 
-Columns `name, n_o_material, n_e_material, reference, notes`. Three
-crystals ship, each pointing at a `materials.csv` o/e pair (§7.1):
-`calcite` (negative uniaxial, `n_o(590nm)=1.658 > n_e(590nm)=1.486`, max
-walk-off ~6.2° near 45° internal incidence — Ghosh 1999), `quartz`
-(positive uniaxial, `n_o(589nm)=1.5443 < n_e(589nm)=1.5534`, ~19x weaker
-birefringence than calcite — Ghosh 1999), `sapphire` (negative uniaxial,
-`n_o(589nm)=1.7682 > n_e(589nm)=1.7600` — Malitson & Dodge 1972, as
-tabulated by refractiveindex.info). See §5.6 for the physics model.
+Columns `name, n_o_material, n_e_material, reference, notes`. 13 uniaxial
+crystals ship (expanded from 3): calcite, quartz, sapphire, plus LiNbO3,
+LiTaO3, YVO4, β-BBO, α-BBO, KDP, ADP, rutile TiO2, TeO2, MgF2 (e-ray
+addition enabling waveplate/Rochon prism designs), each pointing at a
+`materials.miemat` o/e pair (§7.1) with spot-checked birefringence values.
+See §5.6 for the physics model.
 
-### 7.7 Citation policy
+### 7.7 `detector/detectors.miedet` (+ `detector/tables/*.mietab`)
+
+Columns `name, table_csv, reference, notes`. Tables are `wavelength_nm, qe`
+(quantum efficiency, values in (0,1]). One detector QE curve ships: `hamamatsu_s1223`
+(Si PIN photodiode, 4 datasheet points, 660–960 nm). When a detector body carries a
+`qe_curve` property naming a registered curve, `post_process.py` reports a
+`qe` block per detector: `photocurrent_A` (R(λ)=QE·qλ/hc weighting of the
+spectral cube), `qe_weighted_power_W`, and `coverage_frac` (the fraction of
+detected power whose bin centers lie inside the QE table's range — QE is
+zero-filled outside the table rather than extrapolated, and coverage_frac
+makes that truncation visible). No CLI flag; it is driven entirely by the
+body property. The separate `--photometric` flag produces lux maps using the
+CIE Ȳ=V(λ) table in `raytracer/detector.py`.
+
+### 7.8 Citation policy
 
 Every row in every registry above requires a non-empty `reference`
 column (`MaterialError` if blank, enforced identically in `materials.py`
@@ -1273,6 +1266,7 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--source-face SPEC]... [--detector-face SPEC]...
     [--grating SPEC]... [--rough SPEC]... [--particles SPEC]
     [--particle-threshold F] [--suppress-body NAME]...
+    [--photometric] [--spectrometer]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--keep-going] [--print-only]
 ```
@@ -1290,9 +1284,15 @@ Physics options are forwarded to the **trace** stage only, verbatim
 build estimates only (`case.json["status"]` stays `"estimated"`), which
 generically skips post/viz for that model with a NOTICE (gated on
 `case.json["status"] == "completed"`, so this also covers any other
-reason trace didn't finish, not just `--dry-run`). `--keep-going` turns a
-stage failure into a `FAILED: <tag>` notice and a skip to the next model
-(process still exits nonzero if anything failed). `--print-only` composes
+reason trace didn't finish, not just `--dry-run`). `--photometric`
+generates per-detector lux maps (CIE photometric, using the Ȳ=V(λ) luminosity
+function) and reports `photometric.{luminous_flux_lm, peak_illuminance_lux,
+mean_illuminance_lux}` in `report.json`. `--spectrometer` generates
+wavelength-centroid and λ-vs-position profile maps and reports
+`spectrometer.{lambda_min_nm, lambda_max_nm, dispersion_nm_per_mm, fit_r2}`
+(wavelength resolution quantized by `--spectral-bins`). `--keep-going`
+turns a stage failure into a `FAILED: <tag>` notice and a skip to the next
+model (process still exits nonzero if anything failed). `--print-only` composes
 and prints every stage command **without running anything**. Extract runs
 **once** for the whole model batch (one FreeCAD launch handles every
 model); trace/post/viz then loop **sequentially** per model (a single

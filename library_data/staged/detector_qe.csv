@@ -1,0 +1,13 @@
+# Detector quantum-efficiency curves for QE-weighted detectors [needs engine: qe_curve property + one
+# multiply in detector.py]. QE(%) = responsivity_S[A/W] * 1240/lambda[nm] * 100.
+# Hamamatsu S1223 = the one fully primary-sourced tabulated QE dataset; CMOS peaks are UNVERIFIED (peak-only).
+detector,wavelength_nm,qe_fraction,responsivity_A_per_W,reference
+hamamatsu_s1223,660,0.845,0.45,"Hamamatsu S1223 Si PIN photodiode datasheet KPIN1050E02 (Feb 2013), datasheet table point"
+hamamatsu_s1223,780,0.826,0.52,"Hamamatsu S1223 datasheet KPIN1050E02, datasheet table point"
+hamamatsu_s1223,830,0.807,0.54,"Hamamatsu S1223 datasheet KPIN1050E02, datasheet table point"
+hamamatsu_s1223,960,0.775,0.60,"Hamamatsu S1223 datasheet KPIN1050E02, peak sensitivity lambda_p=960nm"
+# CMOS/CCD peak QE (UNVERIFIED - peak values only from a third-party estimator that disclaims mfr sourcing;
+# do NOT use as a full curve; digitize a real e2v/Sony datasheet plot before shipping):
+cmos_sony_pregius_gen1,510,0.77,,"Scientific Imaging Inc QE-curves page (third-party estimate) UNVERIFIED peak-only"
+cmos_sony_pregius_gen3,530,0.77,,"Scientific Imaging Inc (third-party estimate) UNVERIFIED peak-only"
+cmos_sony_starvis_bsi,500,0.86,,"Scientific Imaging Inc (third-party estimate) UNVERIFIED peak-only"

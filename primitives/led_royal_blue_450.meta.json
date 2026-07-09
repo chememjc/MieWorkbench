@@ -1,0 +1,30 @@
+{
+ "category": "Sources",
+ "kind": "led_royal_blue_450",
+ "label": "Royal-blue LED (452 nm)",
+ "params": {
+  "diameter": {
+   "default": 10.0,
+   "help": "emit face diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 452.0,
+  "lambdamax": 460.49,
+  "lambdamin": 443.51,
+  "power": 5.0
+ },
+ "tooltip": "Royal-blue monochromatic LED source (CWL 452 nm, FWHM 20 nm; Cree XP-E2 CLD-DS56 D3-D5 (450-465nm); FWHM Lumileds DS105 (LXZ1-PR01))."
+}

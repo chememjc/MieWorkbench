@@ -143,6 +143,16 @@ def _build_pipeline_parser():
                    help="minimum segment opacity in percent (0-100) when "
                         "--dim-rays is on (default 0 = fade fully to "
                         "invisible at zero power)")
+    g.add_argument("--photometric", action="store_true",
+                   help="also render a CIE-photopic-weighted illuminance "
+                        "image per detector (det_<label>_lux.png) and a "
+                        "luminous_flux_lm/peak+mean_illuminance_lux "
+                        "report block (post stage only)")
+    g.add_argument("--spectrometer", action="store_true",
+                   help="also render a power-weighted wavelength-centroid "
+                        "map and a lambda(x) dispersion fit per detector "
+                        "(det_<label>_lambda_map.png, "
+                        "spectra/lambda_vs_x_<label>.png; post stage only)")
 
     g = p.add_argument_group("execution / orchestration")
     g.add_argument("--keep-going", action="store_true",
@@ -258,6 +268,14 @@ def _build_post_parser():
                    metavar="PCT",
                    help="minimum segment opacity in percent (0-100) when "
                         "--dim-rays is on")
+    p.add_argument("--photometric", action="store_true",
+                   help="also render det_<label>_lux.png (CIE-photopic "
+                        "illuminance) and a photometric report block per "
+                        "detector")
+    p.add_argument("--spectrometer", action="store_true",
+                   help="also render det_<label>_lambda_map.png (power-"
+                        "weighted wavelength centroid) and a lambda(x) "
+                        "dispersion fit per detector")
     return p
 
 

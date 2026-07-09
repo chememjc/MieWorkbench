@@ -100,10 +100,10 @@ CONTRACT_PROPERTIES = (
     "material", "power", "lambdac", "lambdamin", "lambdamax", "coherent",
     "polarization", "coating", "roughness", "diffuser", "filter",
     "polarizer", "polarizer_axis", "crystal_axis", "grating",
-    "surface_override", "mirror", "absorbance",
+    "surface_override", "mirror", "absorbance", "qe_curve",
 )
 REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating",
-                       "grating", "diffuser")
+                       "grating", "diffuser", "qe_curve")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
                       "absorbance")
 BOOL_PROPERTIES = ("coherent",)
@@ -137,6 +137,7 @@ _REGISTRY_PREFERRED = {
     "coating": ("MgF2", "mgf2"),
     "filter": ("bp_550_40",),
     "polarizer": ("ideal_linear",),
+    "qe_curve": ("hamamatsu_s1223",),
 }
 
 
@@ -180,6 +181,8 @@ TOOLTIPS = {
                         "'FaceN=asphere:R=..;k=..;A4=..;r_max=..'.",
     "mirror": "Specular reflectance fraction in [0, 1].",
     "absorbance": "Absorbed fraction in [0, 1].",
+    "qe_curve": "detector/detectors registry name (quantum-efficiency "
+               "curve; adds a photocurrent to the detector's report).",
 }
 
 
@@ -390,11 +393,12 @@ class ElementEditorPane(QWidget):
             "filters": list(props.filters),
             "gratings": list(props.gratings),
             "diffusers": list(getattr(props, "diffusers", {}) or {}),
+            "detectors": list(getattr(props, "detectors", {}) or {}),
         }
 
     _REGISTRY_CATEGORY = {"polarizer": "polarizers", "filter": "filters",
                           "coating": "coatings", "grating": "gratings",
-                          "diffuser": "diffusers"}
+                          "diffuser": "diffusers", "qe_curve": "detectors"}
 
     def _material_names(self):
         return list(self._library_categories().get("materials", []))

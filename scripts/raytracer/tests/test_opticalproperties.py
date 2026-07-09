@@ -28,7 +28,7 @@ MAT_HEADER = ("name,class,model,p1,p2,p3,p4,p5,p6,nk_file,density_kg_m3,"
 def optroot(tmp_path):
     root = tmp_path / "opticalproperties"
     for sub in ("nk", "birefringence", "polarizer/tables", "filter/tables",
-                "coating/tables", "grating/tables"):
+                "coating/tables", "grating/tables", "detector/tables"):
         (root / sub).mkdir(parents=True)
     (root / "materials.csv").write_text(
         MAT_HEADER
@@ -70,6 +70,13 @@ def optroot(tmp_path):
         "wavelength_nm,order,eta_s,eta_p\n"
         "400,0,0.10,0.20\n700,0,0.15,0.25\n"
         "400,-1,0.60,0.50\n700,-1,0.70,0.55\n")
+    (root / "detector" / "detectors.csv").write_text(
+        'name,table_csv,reference,notes\n'
+        'det_test,det_test.csv,"synthetic","Si test QE"\n')
+    (root / "detector" / "tables" / "det_test.csv").write_text(
+        "wavelength_nm,qe\n"
+        "400,0.60\n"
+        "700,0.85\n")
     return root
 
 
@@ -88,6 +95,7 @@ def test_full_tree_loads(props):
     assert set(props.filters) == {"f_test"}
     assert set(props.gratings) == {"vbg", "dmn", "tbl"}
     assert set(props.uniaxial) == {"calcite"}
+    assert set(props.detectors) == {"det_test"}
 
 
 def test_uniaxial_attached_to_db(props):
@@ -135,6 +143,39 @@ def test_grating_registry(props):
     tbl = props.gratings["tbl"]["table"]
     assert set(tbl) == {0, -1}
     assert tbl[-1]["eta_s"][0] == 0.60
+
+
+def test_detector_registry(props):
+    d = props.detectors["det_test"]
+    assert d["lam_um"].tolist() == pytest.approx([0.4, 0.7])   # nm -> um
+    assert d["qe"].tolist() == [0.60, 0.85]
+    assert d["reference"] == "synthetic"
+    assert d["notes"] == "Si test QE"
+    # inside-range interpolation is linear
+    qe_mid = optprops.interp_hard(0.55, d["lam_um"], d["qe"], "det")
+    assert float(qe_mid) == pytest.approx(0.725)
+
+
+def test_detector_qe_over_unity_rejected(optroot):
+    (optroot / "detector" / "tables" / "det_test.csv").write_text(
+        "wavelength_nm,qe\n400,0.6\n700,1.2\n")
+    with pytest.raises(MaterialError, match="qe must be <= 1"):
+        optprops.load_detectors(optroot / "detector" / "detectors.csv")
+
+
+def test_detector_qe_zero_rejected(optroot):
+    (optroot / "detector" / "tables" / "det_test.csv").write_text(
+        "wavelength_nm,qe\n400,0.0\n700,0.85\n")
+    with pytest.raises(MaterialError, match="qe must be > 0"):
+        optprops.load_detectors(optroot / "detector" / "detectors.csv")
+
+
+def test_detector_missing_reference_rejected(optroot):
+    (optroot / "detector" / "detectors.csv").write_text(
+        'name,table_csv,reference,notes\n'
+        'noref,det_test.csv,,"x"\n')
+    with pytest.raises(MaterialError, match="reference"):
+        optprops.load_detectors(optroot / "detector" / "detectors.csv")
 
 
 def test_optional_categories_absent(optroot):
@@ -255,6 +296,14 @@ def test_shipped_full_tree_loads(shipped_props):
         assert name in shipped_props.filters
 
 
+def test_shipped_hamamatsu_s1223_loads(shipped_props):
+    d = shipped_props.detectors["hamamatsu_s1223"]
+    assert d["lam_um"].tolist() == pytest.approx([0.660, 0.780, 0.830, 0.960])
+    assert d["qe"].tolist() == [0.845, 0.826, 0.807, 0.775]
+    assert np.all((d["qe"] > 0) & (d["qe"] <= 1))
+    assert "Hamamatsu S1223" in d["reference"]
+
+
 def test_nd_od10_filter_thickness_scaling(shipped_props):
     f = shipped_props.filters["nd_od10"]
     T_at_ref = np.exp(-f["alpha_per_m"] * f["ref_thickness_m"])
@@ -303,6 +352,25 @@ def test_pellicle_and_notch_rows_load(shipped_props):
 
     sp = shipped_props.filters["shortpass_600"]
     assert sp["lam_um"].min() >= 0.4
+
+
+def test_library_expansion_counts(shipped_props):
+    # Pins the shipped library's total row counts after
+    # scripts/tools/merge_library_data.py merged library_data/ into the
+    # live registries (library.md Sec.7 / library_data/README.md).
+    # UPDATE THESE NUMBERS when the library grows (new rows merged or a
+    # new gen_registry_rows.py-style generator adds more) -- don't just
+    # bump them to make a failure go away, verify the new count is right.
+    #
+    # materials is 168, not the library.md plan's 169: the BAK4 glass row
+    # was dropped as a duplicate of N-BAK4 (library_data/README.md), which
+    # the plan's total didn't subtract.
+    assert len(shipped_props.matdb) == 168
+    assert len(shipped_props.coatings) == 38
+    assert len(shipped_props.filters) == 56
+    assert len(shipped_props.polarizers) == 17
+    assert len(shipped_props.gratings) == 8
+    assert len(shipped_props.uniaxial) == 13
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +473,15 @@ def test_validate_model_v2_additions():
     model["bodies"][1]["grating"] = None
     # bad polarization kind rejected
     model["bodies"][0]["source"]["polarization"] = {"kind": "diagonal"}
+    with pytest.raises(common.ContractError):
+        common.validate_model(model)
+    model["bodies"][0]["source"]["polarization"] = {"kind": "linear",
+                                                     "angle_deg": 30.0}
+    # optional detector.qe_curve accepts a string ...
+    model["bodies"][2]["detector"]["qe_curve"] = "hamamatsu_s1223"
+    common.validate_model(model)
+    # ... and rejects a non-string
+    model["bodies"][2]["detector"]["qe_curve"] = 42
     with pytest.raises(common.ContractError):
         common.validate_model(model)
 

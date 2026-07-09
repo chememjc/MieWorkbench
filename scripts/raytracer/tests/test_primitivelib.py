@@ -502,3 +502,84 @@ def test_mirror_parabolic_geometric_focus(mirror_parabolic_model_json):
     radius = np.hypot(hit_y, hit_z)
     frac_concentrated = float(np.mean(radius < 2e-3))    # 2 mm
     assert frac_concentrated > 0.80, frac_concentrated
+
+
+# ---------------------------------------------------------------------------
+# Workstream D: monochromatic-LED source presets (library_data/
+# emission_led_monochromatic.csv). lambdamin/lambdamax = cwl -+ FWHM/2.3548
+# so the existing Gaussian source (sources.py:19-22, half-normal each side)
+# reproduces the LED's datasheet FWHM.
+# ---------------------------------------------------------------------------
+# cwl_nm, fwhm_nm straight from the CSV (led_type -> "led_" + led_type).
+LED_KINDS_CSV = {
+    "led_deep_red_660": (660, 20),
+    "led_red_630": (625, 20),
+    "led_amber_590": (590, 20),
+    "led_green_525": (527, 30),
+    "led_blue_470": (472, 20),
+    "led_royal_blue_450": (452, 20),
+    "led_uv_365": (365, 9.0),
+    "led_uv_385": (385, 11),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(LED_KINDS_CSV))
+def test_led_kind_registered_sources_category(kind):
+    spec = pl.PRIMITIVES[kind]
+    assert spec["category"] == "Sources"
+    assert spec["label"]
+    assert spec["tooltip"]
+    assert spec["params"]
+    assert kind in pl.builders() if pl._HAVE_FREECAD else True
+
+
+@pytest.mark.parametrize("kind", sorted(LED_KINDS_CSV))
+def test_led_kind_lambda_ordering(kind):
+    props = pl.PRIMITIVES[kind]["props"]
+    assert props["lambdamin"] < props["lambdac"] < props["lambdamax"]
+    assert props["coherent"] is False
+    assert props["power"] == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize("kind,cwl_fwhm", sorted(LED_KINDS_CSV.items()))
+def test_led_kind_lambdac_matches_csv_cwl(kind, cwl_fwhm):
+    cwl, _fwhm = cwl_fwhm
+    props = pl.PRIMITIVES[kind]["props"]
+    assert props["lambdac"] == pytest.approx(cwl)
+
+
+@pytest.mark.parametrize("kind,cwl_fwhm", sorted(LED_KINDS_CSV.items()))
+def test_led_kind_bounds_reproduce_csv_fwhm(kind, cwl_fwhm):
+    _cwl, fwhm = cwl_fwhm
+    props = pl.PRIMITIVES[kind]["props"]
+    recovered_fwhm = (props["lambdamax"] - props["lambdamin"]) * 2.3548 / 2.0
+    assert recovered_fwhm == pytest.approx(fwhm, rel=0.005)
+
+
+def test_led_kinds_share_source_broadband_params():
+    ref_params = pl.PRIMITIVES["source_broadband"]["params"]
+    for kind in LED_KINDS_CSV:
+        params = pl.PRIMITIVES[kind]["params"]
+        assert set(params) == set(ref_params)
+        for alias, spec in ref_params.items():
+            assert params[alias]["default"] == spec["default"], (kind, alias)
+            assert params[alias]["unit"] == spec["unit"], (kind, alias)
+
+
+def test_led_kinds_use_source_broadband_builder():
+    if not pl._HAVE_FREECAD:
+        pytest.skip("builders() needs FreeCAD")
+    b = pl.builders()
+    for kind in LED_KINDS_CSV:
+        assert b[kind] is b["source_broadband"], kind
+
+
+@pytest.mark.parametrize("kind", sorted(LED_KINDS_CSV))
+def test_led_kind_meta_json_matches_registry(kind):
+    meta_path = REPO_ROOT / "primitives" / (kind + ".meta.json")
+    assert meta_path.exists(), meta_path
+    with open(meta_path) as fh:
+        meta = json.load(fh)
+    assert meta["kind"] == kind
+    assert meta["category"] == "Sources"
+    assert meta["props"] == pl.PRIMITIVES[kind]["props"]
