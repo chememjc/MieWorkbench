@@ -4,153 +4,19 @@ miewb_train_ports JSON property so these tests are independent of
 primitivelib.port_frames formulas."""
 
 import copy
-import json
-import tempfile
 
 import numpy as np
 import pytest
 
-from mieworkbench.core.geomcache import GeomCache
-from mieworkbench.core.project import Project, ProjectError
-from mieworkbench.core.train import (
-    TRAIN_GROUP, TrainModel, variables_from_sheets,
-)
-from mieworkbench.core.transforms import BodyState, Operation
+from mieworkbench.core.project import ProjectError
+from mieworkbench.core.train import TRAIN_GROUP, variables_from_sheets
+from mieworkbench.core.transforms import Operation
 
-
-class TrainFakeWorker:
-    """FcClient stand-in: group-aware set_property, group-rigid
-    set_placement (fcops semantics: every miewb_group member gets the
-    SAME placement)."""
-
-    def __init__(self, structure):
-        self.structure = structure
-        self.ops = []
-
-    def request(self, op, params=None, timeout=None):
-        params = params or {}
-        self.ops.append((op, copy.deepcopy(params)))
-        if op == "get_structure":
-            return copy.deepcopy(self.structure)
-        if op == "set_property":
-            body = self._body(params["body"])
-            value = params["value"]
-            ptype = params.get("ptype") or (
-                "bool" if isinstance(value, bool)
-                else "float" if isinstance(value, (int, float))
-                else "string")
-            fc_type = {"string": "App::PropertyString",
-                       "float": "App::PropertyFloat",
-                       "bool": "App::PropertyBool"}[ptype]
-            body["properties"][params["name"]] = {
-                "type": fc_type, "group": params.get("group", "Base"),
-                "value": value}
-            return self._mut()
-        if op == "remove_property":
-            self._body(params["body"]).pop(params["name"], None)
-            self._body(params["body"])["properties"].pop(
-                params["name"], None)
-            return self._mut()
-        if op == "set_placement":
-            key = str(params["body"])
-            members = [b for b in self.structure["bodies"]
-                       if b["properties"].get("miewb_group", {})
-                       .get("value") == key]
-            if not members:
-                members = [self._body(key)]
-            pl = {"pos_mm": list(params["pos_mm"]),
-                  "quat": list(params["quat"])}
-            out = {}
-            for b in members:
-                b["placement"] = copy.deepcopy(pl)
-                out[b["name"]] = copy.deepcopy(pl)
-            return {"placements": out}
-        if op == "tessellate":
-            return {"bodies": {b: {"faces": [], "shape_key": "k1",
-                                   "placement": self._body(b)["placement"]}
-                               for b in (params.get("bodies") or [])}}
-        raise AssertionError("unexpected op %r" % op)
-
-    def _body(self, key):
-        for b in self.structure["bodies"]:
-            if b["name"] == key or b["label"] == key:
-                return b
-        raise KeyError(key)
-
-    def _mut(self):
-        return {"changed_bodies": [], "moved_bodies": [], "invalid": [],
-                "placements": {}}
-
-
-def _ports(entry, exit_, axis=(1, 0, 0), up=(0, 0, 1), reflect=None):
-    d = {"entry": list(entry), "exit": list(exit_), "axis": list(axis),
-         "up": list(up), "reflect_plane": reflect}
-    return json.dumps(d)
-
-
-def _body_dict(name, ports_json, pos=(0, 0, 0), extra_props=None):
-    props = {
-        "miewb_group": {"type": "App::PropertyString", "group": "Base",
-                        "value": name},
-        "miewb_train_ports": {"type": "App::PropertyString",
-                              "group": TRAIN_GROUP, "value": ports_json},
-    }
-    props.update(extra_props or {})
-    return {
-        "name": name, "label": name, "tip": "%s_pad" % name,
-        "face_count": 1, "solid_closed": True, "volume_mm3": 1.0,
-        "center_of_mass_mm": list(pos), "bbox_mm": [0, 0, 0, 1, 1, 1],
-        "placement": {"pos_mm": list(pos), "quat": [0.0, 0.0, 0.0, 1.0]},
-        "placement_bound": False, "shape_key": "k_%s" % name,
-        "properties": props,
-    }
-
-
-def make_scene():
-    """SRC (anchored source) -> L1 -> L2 (lenses) + FM (fold mirror) +
-    DET, all unchained initially."""
-    structure = {
-        "doc": "scene", "label": "scene", "file": "/nowhere/scene.FCStd",
-        "bodies": [
-            _body_dict("SRC", _ports([5, 0, 0], [5, 0, 0])),
-            _body_dict("L1", _ports([-2, 0, 0], [2, 0, 0]), pos=(30, 0, 0)),
-            _body_dict("L2", _ports([-1, 0, 0], [1, 0, 0]), pos=(60, 0, 0)),
-            _body_dict("FM", _ports([0, 0, 0], [0, 0, 0], reflect={
-                "point": [0.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0]}),
-                pos=(90, 0, 0)),
-            _body_dict("DET", _ports([0, 0, 0], [0, 0, 0]),
-                       pos=(120, 0, 0)),
-        ],
-        "sheets": [{"name": "Spreadsheet", "label": "miewb_vars",
-                    "aliases": {
-                        "gap": {"cell": "B1", "raw": "=25", "value": 25.0,
-                                "unit": ""},
-                        "gap__min": {"cell": "C1", "raw": "=10",
-                                     "value": 10.0, "unit": ""},
-                        "gap__max": {"cell": "D1", "raw": "=40",
-                                     "value": 40.0, "unit": ""},
-                        "gap__n": {"cell": "E1", "raw": "=3", "value": 3.0,
-                                   "unit": ""},
-                        "gap__on": {"cell": "F1", "raw": "=1", "value": 1.0,
-                                    "unit": ""},
-                    }}],
-    }
-    project = Project()
-    fake = TrainFakeWorker(structure)
-    project._fc = fake
-    project._cache = GeomCache(fake, cache_root=tempfile.mkdtemp(
-        prefix="miewb_train_test_"))
-    project.doc = "scene"
-    project.fcstd_path = "/nowhere/scene.FCStd"
-    project.structure = fake.request("get_structure", {"doc": "scene"})
-    for b in project.structure["bodies"]:
-        project.body_states[b["name"]] = BodyState.from_worker(b, [])
-    fake.ops.clear()
-    return project, fake
+from mieworkbench.tests.train_test_support import make_scene, pos_of as _pos_of
 
 
 def _pos(project, name):
-    return project.body_states[name].current.to_dict()["pos_mm"]
+    return _pos_of(project, name)
 
 
 # ---------------------------------------------------------------------------

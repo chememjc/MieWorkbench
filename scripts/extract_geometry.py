@@ -837,6 +837,11 @@ def mesh_and_write_stl(face, out_path, face_id, analytic_area_m2, surf_type, war
 # Body classification / tagging
 # ---------------------------------------------------------------------------
 def classify_body(body):
+    # miewb_exclude: set by the GUI on unfolded fold mirrors (and any
+    # user-excluded element) — the body stays in the document (ghosted in
+    # the GUI) but is invisible to the traced physics
+    if getattr(body, "miewb_exclude", False):
+        return "ignored"
     if hasattr(body, "power") and hasattr(body, "lambdac"):
         return "source"
     material = getattr(body, "material", None)

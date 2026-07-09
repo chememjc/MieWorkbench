@@ -145,6 +145,38 @@ def test_parity_swept_value_matches_gui_prediction(project, tmp_path):
     assert not np.allclose(got["L1"]["pos_mm"], gui_now["L1"]["pos_mm"])
 
 
+def extract_model_json(fcstd_path, out_dir):
+    """Run the real extract_geometry.py on one model, return model.json."""
+    import json
+    script = os.path.join(REPO, "scripts", "extract_geometry.py")
+    proc = subprocess.run(
+        [APPIMAGE, "-c", script, "--", "--models", str(fcstd_path),
+         "--outdir", str(out_dir)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-500:]
+    stem = os.path.splitext(os.path.basename(str(fcstd_path)))[0]
+    with open(os.path.join(str(out_dir), stem, "model.json")) as fh:
+        return json.load(fh)
+
+
+def test_unfolded_mirror_excluded_from_extraction(project, tmp_path):
+    """miewb_exclude (set by unfold) removes the fold mirror from the
+    physics contract entirely; refolding restores it."""
+    build_chained_scene(project, gap=18.0)
+    project.set_fold_state("FM", False)
+    project.save()
+    model = extract_model_json(project.fcstd_path, tmp_path / "ex_unfolded")
+    labels = {b.get("label") for b in model.get("bodies", [])}
+    assert "FM" not in labels
+    assert {"SRC", "L1", "DET"} <= labels
+
+    project.set_fold_state("FM", True)
+    project.save()
+    model = extract_model_json(project.fcstd_path, tmp_path / "ex_folded")
+    labels = {b.get("label") for b in model.get("bodies", [])}
+    assert "FM" in labels
+
+
 def test_parity_unfolded_state_survives_permute(project, tmp_path):
     """Unfold in the GUI, save; the permuted variant must keep the train
     unfolded (fold state is document state, not run state)."""
