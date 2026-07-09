@@ -254,9 +254,14 @@ def _dim_rays_args(args):
 
 def post_cmd(stem, case_dir, args):
     model_json = common.GEOMETRY_DIR / stem / "model.json"
-    return [common.OPTICS_PYTHON, str(common.SCRIPTS_DIR / "post_process.py"),
-           "--case-dir", str(case_dir), "--model-json", str(model_json)] \
+    cmd = [common.OPTICS_PYTHON, str(common.SCRIPTS_DIR / "post_process.py"),
+          "--case-dir", str(case_dir), "--model-json", str(model_json)] \
         + _dim_rays_args(args)
+    if args.photometric:
+        cmd += ["--photometric"]
+    if args.spectrometer:
+        cmd += ["--spectrometer"]
+    return cmd
 
 
 def viz_cmd(stem, case_dir, args):

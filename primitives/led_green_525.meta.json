@@ -1,0 +1,30 @@
+{
+ "category": "Sources",
+ "kind": "led_green_525",
+ "label": "Green LED (527 nm)",
+ "params": {
+  "diameter": {
+   "default": 10.0,
+   "help": "emit face diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 527.0,
+  "lambdamax": 539.74,
+  "lambdamin": 514.26,
+  "power": 5.0
+ },
+ "tooltip": "Green monochromatic LED source (CWL 527 nm, FWHM 30 nm; Cree XP-E2 CLD-DS56 G2-G4 (520-535nm); FWHM Lumileds DS105 (LXZ1-PM01))."
+}

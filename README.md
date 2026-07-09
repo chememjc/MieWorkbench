@@ -84,7 +84,12 @@ Czerny-Turner and prism spectrometers, and a ball-lens fiber coupler with
 75 mm of TIR-guided step-index fiber. Each is a self-contained `.MieWB`
 that completes on the quick preset; `demos/README.md` documents the
 prescriptions (with citations) and `scripts/make_demos.py` rebuilds them
-all through the GUI's own op path.
+all through the GUI's own op path. Also in `demos/library_tests/`: nine
+library-validation template scenes (`coated_plate_*`, `crystal_waveplate`,
+`filter_plate`, `grating_plate`, `led_source`, `mat_*`, `polarizer_plate`)
+with an automated sweep runner (`python3 scripts/run_library_tests.py`) for
+end-to-end validation of every newly-added optical property (materials,
+coatings, filters, polarizers, gratings, uniaxial crystals, detector QE curves).
 
 From the GUI: **File → Open…** and pick `example.FCStd` (a
 divergent+collimated two-laser bench with a BK7 lens, a glass sphere, and

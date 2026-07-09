@@ -231,3 +231,63 @@ def spectral_cube_to_srgb(cube, lam_lo, lam_hi, gamma=True,
         rgb = np.where(rgb <= 0.0031308, 12.92 * rgb,
                        1.055 * rgb ** (1 / 2.4) - 0.055)
     return np.moveaxis(rgb, 0, -1)
+
+
+_LUMINOUS_EFFICACY = 683.002    # lm/W, CIE photopic V(lambda) peak (555 nm)
+
+
+def spectral_cube_to_lux(cube, lam_lo, lam_hi, pixel_area_m2):
+    """(bins, H, W) power cube [W] -> (lux_map (H, W) [lx], luminous_flux
+    [lm]). Photometric weighting uses the y-bar (photopic V(lambda)) row
+    of cie_xyz_weights, which already handles the m-vs-nm lam_lo/lam_hi
+    heuristic the same way spectral_cube_to_srgb does."""
+    bins = cube.shape[0]
+    lam_c = lam_lo + (np.arange(bins) + 0.5) * (lam_hi - lam_lo) / bins
+    v = cie_xyz_weights(lam_c / 1e-9 if lam_c.max() < 1e-3 else lam_c)[:, 1]
+    weighted = np.tensordot(v, cube, axes=(0, 0))        # (H, W), watts
+    luminous_flux_lm = _LUMINOUS_EFFICACY * float(weighted.sum())
+    lux_map = _LUMINOUS_EFFICACY * weighted / pixel_area_m2
+    return lux_map, luminous_flux_lm
+
+
+# CODATA 2018 exact SI defining constants
+_Q_E = 1.602176634e-19          # elementary charge [C]
+_H_PLANCK = 6.62607015e-34      # Planck constant [J s]
+_C_LIGHT = 299792458.0          # speed of light [m/s]
+
+
+def spectral_cube_to_photocurrent(cube, lam_lo, lam_hi, qe_lam_um, qe_vals):
+    """(bins, ...) power cube [W] weighted by a detector quantum-efficiency
+    curve -> (photocurrent_A, qe_weighted_power_W, coverage_frac).
+
+    lam_lo/lam_hi are the cube's spectral extent in METRES (h5 attrs); the
+    QE curve is given as (qe_lam_um [um], qe_vals [fraction]) from
+    optprops.load_detectors. Per bin-center wavelength lambda_c:
+
+      QE(lambda_c)  via np.interp with left=0/right=0 -- a cube extending
+                    past the tabulated range simply contributes 0 there
+                    (NOT interp_hard: a display stage must never crash),
+      R(lambda)     = QE * q * lambda / (h*c)  responsivity [A/W],
+      photocurrent  = sum_bins R(lambda_c) * P_bin  [A],
+      qe_weighted_power = sum_bins QE(lambda_c) * P_bin  [W],
+      coverage_frac = (power in bins whose center is inside the QE table)
+                      / total power  (0 if total power is 0).
+
+    Power per bin is summed over all trailing (pixel) axes, so a (bins,H,W)
+    cube and a (bins,) spectrum give the same scalars."""
+    cube = np.asarray(cube, dtype=np.float64)
+    bins = cube.shape[0]
+    lam_c_m = lam_lo + (np.arange(bins) + 0.5) * (lam_hi - lam_lo) / bins
+    lam_c_um = lam_c_m * 1e6
+    qe_lam_um = np.asarray(qe_lam_um, dtype=np.float64)
+    qe_vals = np.asarray(qe_vals, dtype=np.float64)
+    qe_c = np.interp(lam_c_um, qe_lam_um, qe_vals, left=0.0, right=0.0)
+    resp = qe_c * _Q_E * lam_c_m / (_H_PLANCK * _C_LIGHT)     # [A/W] per bin
+    p_bin = cube.reshape(bins, -1).sum(axis=1)                # [W] per bin
+    photocurrent_A = float(np.dot(resp, p_bin))
+    qe_weighted_power_W = float(np.dot(qe_c, p_bin))
+    total_W = float(p_bin.sum())
+    inside = (lam_c_um >= qe_lam_um[0]) & (lam_c_um <= qe_lam_um[-1])
+    coverage_frac = float(p_bin[inside].sum() / total_W) if total_W != 0.0 \
+        else 0.0
+    return photocurrent_A, qe_weighted_power_W, coverage_frac

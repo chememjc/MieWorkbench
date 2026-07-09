@@ -492,3 +492,93 @@ implemented and tested (`mieworkbench/tests/test_wizards.py`) and callable
 directly, so it's ready to back such a box (or a scripted preset table of
 common half-/quarter-wave designs) the same way `design_lens` backs the
 lens forms — that GUI wiring is future work, not present behavior.
+
+---
+
+## 7. Adding detector quantum-efficiency (QE) curves
+
+Detector bodies can carry a `qe_curve` property (string) naming a registered
+quantum-efficiency curve from `detector/detectors.miedet`. When set,
+`post_process.py` adds a `qe` block to that detector's `report.json` entry:
+`photocurrent_A` (responsivity R(λ)=QE·qλ/hc applied to the spectral cube),
+`qe_weighted_power_W`, and `coverage_frac` — the fraction of detected power
+inside the QE table's wavelength range (QE is zero-filled outside the table,
+never extrapolated; coverage_frac makes the truncation visible). There is no
+CLI flag — the body property alone drives it. (The unrelated `--photometric`
+flag produces lux maps from the CIE V(λ) luminosity function.)
+
+To add a new QE curve:
+
+1. **Append a row to `detector/detectors.miedet`:**
+   - `name`: registry key (e.g., `my_detector_qe`)
+   - `table_csv`: filename reference (e.g., `my_detector_qe.mietab`)
+   - `reference`: required citation (manufacturer datasheet, peer-reviewed measurement, etc.)
+   - `notes`: optional description (e.g., "silicon photodiode, 20–1100 nm")
+
+2. **Create the wavelength-QE table as `detector/tables/<name>.mietab`:**
+   - Two columns: `wavelength_nm, qe` (values in (0,1], strictly increasing wavelength)
+   - Minimum 2 rows; linear interpolation between points, zero-fill outside
+     the range (reported via `coverage_frac`)
+   - Example:
+     ```
+     wavelength_nm,qe
+     660,0.65
+     960,0.55
+     ```
+
+3. **Tag a detector body:** in the GUI's **Properties** pane, set the body's
+   Base-group `qe_curve` property to your registry name. On run, `post_process.py`
+   will compute the wavelength-weighted photocurrent and emit the metrics above.
+
+See `detector/detectors.miedet` (shipped `hamamatsu_s1223` row) and the
+staged-but-unshipped CMOS rows in `library_data/staged/detector_qe.csv`.
+
+---
+
+## 8. LED monochromatic source presets
+
+Eight LED monochromatic-source primitives ship as `led_*` entries in
+`scripts/primitivelib.py`, driven by published center wavelength (CWL) and
+full-width-at-half-maximum (FWHM) data in `library_data/emission_led_monochromatic.csv`.
+Each preset is a `source_broadband` geometry (circular or rectangular emit face,
+same builders as the generic broadband source) with:
+- `lambdac`: the LED's center wavelength (nm)
+- `lambdamin`/`lambdamax`: CWL ± FWHM/2.3548 (Gaussian approximation, normalized so the
+  integral of a Gaussian with FWHM σ is correct)
+- `coherent`: False (direct deposit, not coherent gather)
+- `power`: default 5 mW (tunable per instance)
+
+The eight presets are:
+- `led_deep_red_660`: 660 nm, FWHM 20 nm
+- `led_red_630`: 625 nm, FWHM 20 nm
+- `led_amber_590`: 590 nm, FWHM 20 nm
+- `led_green_525`: 525 nm, FWHM 25 nm
+- `led_blue_470`: 470 nm, FWHM 25 nm
+- `led_royal_blue_450`: 450 nm, FWHM 25 nm
+- `led_uv_365`: 365 nm, FWHM 12 nm
+- `led_uv_385`: 385 nm, FWHM 12 nm
+
+To add a new LED preset:
+
+1. **Source data:** add a row to `library_data/emission_led_monochromatic.csv` with
+   the LED's name, CWL, and FWHM (from datasheet).
+
+2. **Primitive entry:** add an entry to `PRIMITIVES` dict in `scripts/primitivelib.py`:
+   ```python
+   "led_wavelength_abbrev": {
+       "category": "Sources", "label": "Color LED (λ nm)",
+       "tooltip": "Monochromatic LED source (CWL λ nm, FWHM XX nm; reference datasheet).",
+       "params": {"diameter": P(10.0, "mm", "…"),
+                  "length": P(10.0, "mm", "…"),
+                  "round_flag": P(1, "", "…")},
+       "props": {"power": 5.0, "lambdac": <CWL>,
+                 "lambdamin": <CWL - FWHM/2.3548>,
+                 "lambdamax": <CWL + FWHM/2.3548>,
+                 "coherent": False},
+   }
+   ```
+   (The parameters and tooltip follow the existing LED pattern; all eight current
+   presets use the same geometry and differ only in their source properties.)
+
+The existing presets' data come from Cree/Lumileds/Nichia datasheets, cited in
+the CSV header. Treat any non-datasheet source as UNVERIFIED and flag it accordingly.

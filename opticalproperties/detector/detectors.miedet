@@ -1,0 +1,2 @@
+name,table_csv,reference,notes
+hamamatsu_s1223,hamamatsu_s1223.mietab,"Hamamatsu S1223 Si PIN photodiode datasheet KPIN1050E02 (Feb 2013), datasheet table point",Si PIN photodiode QE curve (4 datasheet points 660-960 nm)

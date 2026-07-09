@@ -1173,10 +1173,14 @@ def extract_one(fcstd_path, outdir, strict):
                 body_dict["source"] = source_dict
             elif role == "detector":
                 n_detectors += 1
-                body_dict["detector"] = {
+                det_dict = {
                     "face": closest_face_id,
                     "autodetected": True,
                 }
+                qe_curve = str_prop_or_none(obj, "qe_curve")
+                if qe_curve is not None:
+                    det_dict["qe_curve"] = qe_curve
+                body_dict["detector"] = det_dict
             elif role == "optic":
                 body_dict["material"] = str(obj.material)
 

@@ -1,0 +1,34 @@
+# CIE 1931 2-deg photopic luminous efficiency V(lambda) for photometric detectors (lux/lm/cd).
+# Photometric flux = 683 lm/W * integral( V(lambda) * spectral_irradiance ). NOTE: this exact table
+# already exists in scripts/raytracer/detector.py as _CIE_Y (used for sRGB) - photometric output is
+# near-zero engine work (see lowhanging.md). Peak V=1.0000 at 555nm.
+wavelength_nm,V_lambda,reference
+380,0.000039,"CIE 018:2019 Table 1 / ISO-CIE 11664-1:2019 DOI 10.25039/CIE.DS.dktna2s3 (files.cie.co.at/CIE_sle_photopic.csv)"
+400,0.000396,CIE 018:2019 Table 1
+420,0.00400,CIE 018:2019 Table 1
+440,0.02300,CIE 018:2019 Table 1
+460,0.06000,CIE 018:2019 Table 1
+470,0.09098,CIE 018:2019 Table 1
+480,0.13902,CIE 018:2019 Table 1
+490,0.20802,CIE 018:2019 Table 1
+500,0.32300,CIE 018:2019 Table 1
+510,0.50300,CIE 018:2019 Table 1
+520,0.7100,CIE 018:2019 Table 1
+530,0.8620,CIE 018:2019 Table 1
+540,0.9540,CIE 018:2019 Table 1
+550,0.99495,CIE 018:2019 Table 1
+555,1.0000,CIE 018:2019 Table 1
+560,0.9950,CIE 018:2019 Table 1
+580,0.8700,CIE 018:2019 Table 1
+600,0.6310,CIE 018:2019 Table 1
+620,0.3810,CIE 018:2019 Table 1
+640,0.1750,CIE 018:2019 Table 1
+660,0.0610,CIE 018:2019 Table 1
+670,0.0320,CIE 018:2019 Table 1
+680,0.0170,CIE 018:2019 Table 1
+690,0.00821,CIE 018:2019 Table 1
+700,0.00410,CIE 018:2019 Table 1
+720,0.00105,CIE 018:2019 Table 1
+740,0.000249,CIE 018:2019 Table 1
+760,0.0000600,CIE 018:2019 Table 1
+780,0.0000150,CIE 018:2019 Table 1
