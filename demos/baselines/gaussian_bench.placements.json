@@ -1,0 +1,55 @@
+{
+ "bodies": {
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -2.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Screen": {
+   "group": "Screen",
+   "label": "Screen",
+   "placement": {
+    "pos_mm": [
+     60.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  }
+ },
+ "demo": "gaussian_bench",
+ "sheets": {
+  "dim": {},
+  "dim_Laser": {
+   "diameter": "=2 mm",
+   "length": "=4 mm",
+   "round_flag": "1"
+  },
+  "dim_Screen": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=5 mm"
+  }
+ }
+}

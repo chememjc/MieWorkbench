@@ -924,8 +924,118 @@ def demo_michelson_folded(d):
     return {"preset": "quick"}
 
 
+def demo_ktp_walkoff(d):
+    """Biaxial walk-off bench: 633 nm narrow unpolarized beam through a 15 mm
+    KTP plate whose X principal axis is at 45 deg in the layout plane (Y
+    principal = out-of-plane) — the maximum-walk-off geometry. The in-plane
+    sheet walks off ~0.85 mm in z while the out-of-plane (n_y) sheet goes
+    straight: two spots on the screen."""
+    d.add("laser_collimated", "Laser", pos=(-10, 0, 0),
+          params={"diameter": 0.3, "length": 4.0},
+          props={"lambdac": 633.0, "coherent": False,
+                 "polarization": "unpolarized"})
+    d.chain("window", "KTP", "Laser", 10.0,
+            params={"width": 12.0, "thickness": 15.0, "round_flag": 0},
+            props={"material": "ktp",
+                   "crystal_axis": "0.70711,0,0.70711",
+                   "crystal_axis2": "0,1,0"})
+    d.chain("detector_plane", "Screen", "KTP", 5.0,
+            params={"width": 8.0, "round_flag": 0})
+    d.expect("KTP", (0, 0, 0))
+    d.expect("Screen", (20, 0, 0))
+    d.note("ktp_walkoff: biaxial two-sheet walk-off (KTP), crystal frame set "
+           "with crystal_axis + crystal_axis2")
+    return {"preset": "quick"}
+
+
+def demo_gaussian_bench(d):
+    """Gaussian-beam propagation bench: a 50 um-waist (M2=1.0) 633 nm source
+    (beam_waist + m2 props, incoherent beam mode) expands ~5x over 62 mm (5
+    Rayleigh ranges) of empty air onto a screen."""
+    d.add("laser_collimated", "Laser", pos=(-2, 0, 0),
+          params={"diameter": 2.0, "length": 4.0},
+          props={"lambdac": 633.0, "coherent": False,
+                 "beam_waist": 0.05, "m2": 1.0})
+    d.chain("detector_plane", "Screen", "Laser", 62.0,
+            params={"width": 5.0, "round_flag": 1})
+    d.expect("Screen", (60, 0, 0))
+    d.note("gaussian_bench: Gaussian source beam mode (beam_waist=50um, "
+           "M2=1.0) expands 5x over 5 Rayleigh ranges")
+    return {"preset": "quick"}
+
+
+def demo_ghost_doublet(d):
+    """Fresnel-ghost bench: two uncoated N-BK7 windows (4 mm thick, 8 mm
+    vertex spacing) in a collimated 633 nm incoherent beam. The screen
+    records the direct beam plus the natural double-bounce Fresnel ghosts
+    (each ~R^2 of the direct beam). Run with --ghost-analysis to enumerate
+    the ghost paths."""
+    d.add("laser_collimated", "Laser", pos=(-20, 0, 0),
+          params={"diameter": 6.0, "length": 8.0},
+          props={"lambdac": 633.0, "coherent": False})
+    d.chain("window", "Glass1", "Laser", 20.0,
+            params={"width": 20.0, "thickness": 4.0, "round_flag": 0})
+    d.chain("window", "Glass2", "Glass1", 4.0,
+            params={"width": 20.0, "thickness": 4.0, "round_flag": 0})
+    d.chain("detector_plane", "Screen", "Glass2", 18.0,
+            params={"width": 20.0, "round_flag": 0})
+    d.expect("Glass1", (0, 0, 0))
+    d.expect("Glass2", (8, 0, 0))
+    d.expect("Screen", (30, 0, 0))
+    d.note("ghost_doublet: two uncoated BK7 windows -> natural Fresnel "
+           "ghosts (view with --ghost-analysis)")
+    return {"preset": "quick", "ghost_analysis": True}
+
+
+def demo_scatter_plate(d):
+    """Measured-scatter bench: a BK7 window at 45 deg with an ABg scatter
+    finish (scatter=polished_bk7_glass); the collimated 633 nm beam's Fresnel
+    reflection folds to +y where a screen catches the specular spot plus the
+    diffuse scatter lobe. (Anchored poses: the reflected arm is a hard 90 deg
+    turn off a plain window face.)"""
+    d.add("laser_collimated", "Laser", pos=(-30, 0, 0),
+          params={"diameter": 6.0, "length": 8.0},
+          props={"lambdac": 633.0, "coherent": False})
+    d.add("window", "Window", pos=(0, 0, 0), quat=rot_z(-45.0),
+          params={"width": 24.0, "thickness": 3.0, "round_flag": 0},
+          props={"material": "bk7", "scatter": "polished_bk7_glass"})
+    d.add("detector_plane", "DetRefl", pos=(0, 30, 0), quat=rot_z(90.0),
+          params={"width": 30.0, "round_flag": 0})
+    d.note("scatter_plate: ABg measured scatter (polished_bk7_glass) on a "
+           "45 deg window; the reflected arm catches specular + scatter")
+    return {"preset": "quick"}
+
+
+def demo_curved_focal(d):
+    """Curved-detector bench: a collimated 633 nm beam is focused by a BK7
+    plano-convex lens (f~48.5 mm) onto a CYLINDRICAL detector (a lens_cyl
+    body tagged material=detector, axis along z) whose curved face sits at
+    the focus — a curved focal-surface screen. coherent=False (geometric
+    focus)."""
+    d.add("laser_collimated", "Laser", pos=(-30, 0, 0),
+          params={"diameter": 10.0, "length": 8.0},
+          props={"lambdac": 633.0, "coherent": False})
+    d.chain("lens_pcx", "Lens", "Laser", 30.0,
+            params={"R_front": 25.0, "ct": 5.0, "aperture": 20.0})
+    # focus ~= back vertex (x=5) + BFL(45.24) = 50.24; a convex cylindrical
+    # screen (lens_cyl material=detector) anchored with its front vertex on
+    # the focus (lens_cyl can't chain — no port frame — so it is anchored).
+    d.add("lens_cyl", "CurvedDet", pos=(50.24, 0, 0),
+          params={"R": 20.0, "ct": 3.0, "aperture": 12.0, "height": 12.0},
+          props={"material": "detector"})
+    d.expect("Lens", (0, 0, 0))
+    d.note("curved_focal: PCX lens focuses onto a cylindrical (curved) "
+           "detector face at the focus")
+    return {"preset": "quick"}
+
+
 DEMOS = {
     "beam_expander": demo_beam_expander,
+    "ktp_walkoff": demo_ktp_walkoff,
+    "gaussian_bench": demo_gaussian_bench,
+    "ghost_doublet": demo_ghost_doublet,
+    "scatter_plate": demo_scatter_plate,
+    "curved_focal": demo_curved_focal,
     "newtonian": demo_newtonian,
     "dobsonian": demo_dobsonian,
     "michelson": demo_michelson,

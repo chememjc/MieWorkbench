@@ -803,6 +803,10 @@ def plot_materials(model, outdir, csv_emitter=None):
             mo, me = db.get_uniaxial(name)
             used.add(mo.name)
             used.add(me.name)
+        elif getattr(db, "is_biaxial", lambda _n: False)(name):
+            # biaxial crystal names map to their three principal-index rows
+            for m in db.get_biaxial(name):
+                used.add(m.name)
         else:
             used.add(name)
     used = sorted(used)

@@ -1,6 +1,7 @@
 # MieWorkbench demo gallery
 
-Eleven classic optical systems, each a self-contained `.MieWB` workbench
+Sixteen optical systems (eleven classic instruments plus five
+single-physics benches), each a self-contained `.MieWB` workbench
 archive (double-click-open in the GUI, or run headlessly) plus the bare
 `.FCStd` scene. All are assembled as **optical trains** by
 `scripts/make_demos.py` (the GUI's own Project/chain op path): every
@@ -37,6 +38,21 @@ through the interface (and the real bugs each exercise caught).
 | `microscope_objective` | Lister-type: two air-spaced achromats (f=25 + f=50, 10 mm apart), finite conjugates, white-light point source | Aberration-corrected imaging of a point source | **2.79 mW** |
 | `fiber_coupler` | 650 nm laser → 2 mm BK7 ball lens (BFL 0.47 mm) → 75 mm of 200 µm/0.22 NA fiber | TIR guiding down the fiber core (~60 bounces; `max_reflections` simparam) | **3.95 mW** at the exit face |
 | `schmidt_cassegrain` | C8-class 203 mm f/10: quartic Schmidt corrector (hand-authored asphere), perforated spherical primary R 812.8, spherical secondary R 231.07, white-light star | Catadioptric folding: corrector → primary → secondary → focus through the primary's hole; loss ≈ two Al bounces + 11 % obstruction | **3.42 mW** |
+
+### New-physics benches (Phase 12)
+
+Five deliberately minimal scenes, each isolating one physics feature that
+landed this round (biaxial crystals, Gaussian beams, Fresnel ghosts,
+measured ABg scatter, curved detectors). "As simple as possible but
+physically real": solids with real materials, one source, one screen.
+
+| Demo | System | What it shows | Detected (of 5 mW, quick preset) |
+|---|---|---|---|
+| `ktp_walkoff` | 15 mm biaxial KTP plate, X principal axis at 45° in the layout plane (`crystal_axis` + `crystal_axis2`), 633 nm narrow unpolarized beam | Biaxial double refraction: the in-plane sheet walks off ~0.85 mm in z while the out-of-plane (n_y) sheet goes straight → two spots | **4.25 mW** (both spots; ~4 uncoated KTP-face Fresnel losses) |
+| `gaussian_bench` | 50 µm-waist (M²=1.0) 633 nm Gaussian source (`beam_waist` + `m2`, incoherent beam mode), 62 mm of empty air | TEM₀₀ diffraction: the beam expands ~5× (5 Rayleigh ranges) per w(z)=w₀√(1+(z/z_R)²) | **5.00 mW** (lossless propagation) |
+| `ghost_doublet` | Two uncoated N-BK7 windows (4 mm thick, 8 mm spacing), collimated 633 nm, `--ghost-analysis` on | Natural double-bounce Fresnel ghosts: the strongest gen-2 path carries direct·R² (R≈4.2 %); enumerated by the ghost report | **4.25 mW** direct + ghosts |
+| `scatter_plate` | BK7 window at 45° with a measured ABg finish (`scatter=polished_bk7_glass`); the reflection folds to +y | Diffuse stray light: the reflected arm catches the specular spot plus the ABg scatter lobe (TIS ~2 %), reflected split conserving R | **0.48 mW** in the reflected arm |
+| `curved_focal` | 633 nm Ø10 beam → BK7 PCX lens (f≈48.5) → cylindrical detector (`material=detector`, axis ‖ z) at the focus | A curved focal-surface screen: the cylindrical (`CurvedDetectorGrid`) face catches >90 % of the focused cone | **4.59 mW** (92 % of the focus) |
 
 Every run closes the energy ledger (<1e-3). The five imaging demos use
 WHITE-LIGHT (450–650 nm) sources: their preview fans emit a red/green/
@@ -97,6 +113,35 @@ reflections cost 21% — set `ideal_folds` to 1 to see the difference).
   principle (Phil. Trans. R. Soc. 120) using the shipped BK7/SF5 achromat
   design scaled by `wizards.solve_achromat` — a teaching model, not a
   commercial prescription.
+- **KTP biaxial indices** (`ktp_walkoff`): the shipped `ktp_nx/ny/nz`
+  Sellmeier rows are an exact fold of Kato & Takaoka, "Sellmeier and
+  thermo-optic dispersion formulas for KTP," Appl. Opt. **41**, 5040
+  (2002) (the canonical biaxial oracle); the 45°-in-plane geometry is the
+  maximum-walk-off cut, where the in-plane sheet behaves as a uniaxial
+  e-wave with n_o=n_x, n_e=n_z and the out-of-plane sheet is n_y with zero
+  walk-off (Yariv & Yeh, *Optical Waves in Crystals*, §4).
+- **Gaussian beam** (`gaussian_bench`): standard TEM₀₀ propagation
+  w(z)=w₀√(1+(z/z_R)²), z_R=πw₀²/λ (Siegman, *Lasers*, ch. 17); the M²
+  factor scales the far-field divergence (ISO 11146). The waist sits at
+  the emitting face; the incoherent beam-mode deposits directly (no
+  coherent-gather dA subtlety).
+- **Fresnel ghosts** (`ghost_doublet`): each uncoated air/glass surface
+  reflects R=((n−1)/(n+1))² at normal incidence; a double bounce between
+  any two surfaces returns a forward ghost of the direct beam × R² (Fest,
+  *Stray Light Analysis and Control*, SPIE PM229; Peterson, "Analytic
+  expressions for in-field scattered light," SPIE proc.). `--ghost-analysis`
+  tags each detector ray with its reflection history and ranks the paths.
+- **ABg scatter** (`scatter_plate`): the `polished_bk7_glass` registry row
+  is a representative three-parameter ABg BSDF fit (Pfisterer,
+  "Approximated Scatter Models for Stray Light Analysis," Optics &
+  Photonics News 2011; Harvey et al., Opt. Eng. **51**, 013402, 2012); the
+  tracer splits the reflected power into a specular ray plus a scattered
+  lobe whose total integrated scatter is set by the ABg TIS.
+- **Curved detector** (`curved_focal`): the cylindrical screen is a
+  standard curved focal surface (as in a Rowland-circle spectrograph); the
+  `CurvedDetectorGrid` accumulates per-pixel power on the analytic
+  Sphere/Cylinder face with the exact area element (R·du·dv), so total
+  detected power is curvature-invariant.
 
 ## Physics caveats (honest limits)
 

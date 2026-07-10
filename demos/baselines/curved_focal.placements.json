@@ -1,0 +1,78 @@
+{
+ "bodies": {
+  "CurvedDet": {
+   "group": "CurvedDet",
+   "label": "CurvedDet",
+   "placement": {
+    "pos_mm": [
+     50.24,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_cyl"
+  },
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -30.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Lens": {
+   "group": "Lens",
+   "label": "Lens",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_pcx"
+  }
+ },
+ "demo": "curved_focal",
+ "sheets": {
+  "dim": {},
+  "dim_CurvedDet": {
+   "R": "=20 mm",
+   "aperture": "=12 mm",
+   "ct": "=3 mm",
+   "height": "=12 mm"
+  },
+  "dim_Laser": {
+   "diameter": "=10 mm",
+   "length": "=8 mm",
+   "round_flag": "1"
+  },
+  "dim_Lens": {
+   "R_front": "=25 mm",
+   "aperture": "=20 mm",
+   "ct": "=5 mm"
+  }
+ }
+}
