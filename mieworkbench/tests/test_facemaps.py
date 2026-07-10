@@ -14,9 +14,9 @@ import common  # noqa: E402  (stdlib-only shared contract hub)
 import pytest  # noqa: E402
 
 from mieworkbench.core.facemaps import (  # noqa: E402
-    Assignment, assignment_is_invalid, assignments_for_body, face_label,
-    filter_assignments, menu_model, merge_facemap, remove_faces,
-    sorted_face_ids, value_check_state,
+    FACEMAP_PROPERTIES, Assignment, assignment_is_invalid,
+    assignments_for_body, face_label, filter_assignments, menu_model,
+    merge_facemap, remove_faces, sorted_face_ids, value_check_state,
 )
 
 F1 = "Body.Pad.Face1"
@@ -148,6 +148,42 @@ def test_assignments_follow_facemap_property_order():
 
 
 # ---------------------------------------------------------------------------
+# scatter (ABg/BSDF registry) -- a facemap property alongside coating/
+# roughness/diffuser, added for the biaxial/apodization/scatter round
+# ---------------------------------------------------------------------------
+def test_scatter_is_a_facemap_property():
+    assert "scatter" in FACEMAP_PROPERTIES
+    # grouped with the other alternative-surface-model properties, ahead
+    # of grating/surface_override
+    assert FACEMAP_PROPERTIES.index("scatter") \
+        > FACEMAP_PROPERTIES.index("diffuser")
+    assert FACEMAP_PROPERTIES.index("scatter") \
+        < FACEMAP_PROPERTIES.index("grating")
+
+
+def test_scatter_assignment_grouping_and_merge():
+    props = _props(scatter="Face1=polished_bk7_glass;"
+                          "Face2=polished_bk7_glass;Face3=diamond_turned")
+    out = assignments_for_body(props, "Body", "Pad", [F1, F2, F3])
+    assert out == [
+        Assignment("scatter", "diamond_turned", frozenset({F3}), False),
+        Assignment("scatter", "polished_bk7_glass",
+                   frozenset({F1, F2}), False),
+    ]
+    raw = merge_facemap("Face1=polished_bk7_glass", "Body", "Pad",
+                        [F1, F5], {F5}, "polished_bk7_glass")
+    assert raw == "polished_bk7_glass"   # collapses like any other facemap
+
+
+def test_scatter_whole_body_form():
+    out = assignments_for_body(_props(scatter="polished_bk7_glass"),
+                               "Body", "Pad", [F1, F2])
+    (a,) = out
+    assert a.prop == "scatter" and a.whole_body
+    assert a.face_ids == frozenset({F1, F2})
+
+
+# ---------------------------------------------------------------------------
 # filter_assignments / value_check_state
 # ---------------------------------------------------------------------------
 def _canned_assignments():
@@ -212,7 +248,8 @@ def test_menu_model_partial_state_and_every_property_present():
     a = _canned_assignments()
     model = menu_model(a, {F1, F3}, {}, [F1, F2, F3])
     assert [m["prop"] for m in model] == [
-        "coating", "roughness", "diffuser", "grating", "surface_override"]
+        "coating", "roughness", "diffuser", "scatter", "grating",
+        "surface_override"]
     coating = model[0]
     by_value = {i["value"]: i for i in coating["items"]}
     assert by_value["MgF2"]["partial"] is True      # F1 yes, F3 no

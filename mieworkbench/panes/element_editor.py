@@ -55,11 +55,23 @@ Contract property semantics (cribbed from scripts/extract_geometry.py's
   polarization      source-only; common.parse_polarization_spec grammar
                     ('unpolarized' | 'linear:<deg>' | 'circular:left|
                     right' | 'elliptical:<psi>:<chi>').
+  beam_waist (mm), m2
+                    source-only; Gaussian beam waist w0 at the emitting
+                    face (m2 = beam quality factor, default 1.0, only
+                    meaningful with beam_waist set).
+  apodization       source-only; common.parse_apodization_spec grammar
+                    ('gaussian:w0=<mm>[:order=<n>]').
   polarizer         registry name (polarizer/polarizers.csv);
                     polarizer_axis - body-local 'x,y,z' axis (default
                     local +z).
   crystal_axis      body-local 'x,y,z' axis (default local +x); any optic.
+  crystal_axis2     body-local 'x,y,z' Y principal axis; REQUIRED when
+                    material names a biaxial crystal (birefringence/
+                    biaxial.mibiax): crystal_axis is then the X axis.
   filter            registry name (filter/filters.csv), bulk absorber.
+  scatter           per-face registry name (scatter/bsdf.miebsdf, ABg/BSDF
+                    measured surface) or a whole-body value; mutually
+                    exclusive with roughness/diffuser on the same face.
   grating           per-face map 'FaceN=600:v;...' or '@registryname';
                     must name specific faces (no whole-body form).
   surface_override  per-face map declaring an analytic surface (e.g. an
@@ -98,14 +110,15 @@ DEFAULT_OPTPROPS_ROOT = "/home3/raytracegui/opticalproperties"
 
 CONTRACT_PROPERTIES = (
     "material", "power", "lambdac", "lambdamin", "lambdamax", "coherent",
-    "polarization", "coating", "roughness", "diffuser", "filter",
-    "polarizer", "polarizer_axis", "crystal_axis", "grating",
+    "polarization", "beam_waist", "m2", "apodization", "coating",
+    "roughness", "diffuser", "scatter", "filter", "polarizer",
+    "polarizer_axis", "crystal_axis", "crystal_axis2", "grating",
     "surface_override", "mirror", "absorbance", "qe_curve",
 )
 REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating",
-                       "grating", "diffuser", "qe_curve")
+                       "grating", "diffuser", "scatter", "qe_curve")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
-                      "absorbance")
+                      "absorbance", "beam_waist", "m2")
 BOOL_PROPERTIES = ("coherent",)
 
 # offered in the Active Properties value dropdowns alongside registry rows
@@ -127,8 +140,12 @@ PROPERTY_DEFAULTS = {
     "polarization": "unpolarized",
     "polarizer_axis": "0,0,1",
     "crystal_axis": "1,0,0",
+    "crystal_axis2": "0,1,0",
     "coherent": False,
     "surface_override": "",   # exotic, no universal default
+    "beam_waist": 1.0,
+    "m2": 1.0,
+    "apodization": "gaussian:w0=1",
 }
 # Registry-valued properties default to a well-known entry when the
 # library has it, else the first name alphabetically.
@@ -163,18 +180,34 @@ TOOLTIPS = {
     "coherent": "Whether this source's rays interfere coherently.",
     "polarization": "Source polarization: 'unpolarized' | 'linear:<deg>' | "
                     "'circular:left|right' | 'elliptical:<psi>:<chi>'.",
+    "beam_waist": "Gaussian beam waist w0 in mm at the emitting face "
+                 "(source-only; omit for plane/uniform emission).",
+    "m2": "Beam quality factor M^2 (>=1.0); only meaningful with "
+         "beam_waist set (source-only).",
+    "apodization": "Transverse field-amplitude apodization across the "
+                   "emitting face: 'gaussian:w0=<mm>[:order=<n>]' "
+                   "(source-only).",
     "coating": "coating/coatings.csv registry name, or a per-face map "
               "'FaceN=name;...'.",
     "roughness": "RMS roughness in nm (whole body), or a per-face map "
                 "'FaceN=sigma_nm[:lcorr=um];...'.",
     "diffuser": "Ground-glass diffuser: 'grit:120' | 'slope:0.08' | "
                 "'@dg_600' (whole body or per-face map 'FaceN=...'); "
-                "mutually exclusive with roughness on the same face.",
+                "mutually exclusive with roughness/scatter on the same "
+                "face.",
+    "scatter": "opticalproperties/scatter registry entry (measured ABg/"
+              "BSDF surface), whole body or a per-face map "
+              "'FaceN=name;...'; mutually exclusive with roughness/"
+              "diffuser on the same face.",
     "filter": "filter/filters.csv registry name (bulk spectral absorber).",
     "polarizer": "polarizer/polarizers.csv registry name.",
     "polarizer_axis": "Body-local 'x,y,z' transmission axis (default "
                       "local +z).",
     "crystal_axis": "Body-local 'x,y,z' crystal axis (default local +x).",
+    "crystal_axis2": "Body-local 'x,y,z' Y principal axis for BIAXIAL "
+                     "crystals (crystal_axis is the X axis; Z is derived). "
+                     "Required when material is a biaxial crystal "
+                     "(birefringence/biaxial.mibiax).",
     "grating": "Per-face map 'FaceN=lines_per_mm:groove;...' or "
               "'FaceN=@registryname'; must name specific faces.",
     "surface_override": "Per-face analytic surface override, e.g. "
@@ -404,6 +437,8 @@ class ElementEditorPane(QWidget):
         return list(self._library_categories().get("materials", []))
 
     def _registry_names(self, prop_name):
+        if prop_name == "scatter":
+            return self._scatter_names()
         cats = self._library_categories()
         names = list(cats.get(self._REGISTRY_CATEGORY.get(prop_name, ""), []))
         if prop_name == "diffuser":
@@ -411,6 +446,19 @@ class ElementEditorPane(QWidget):
             # template entries cover the direct grit/slope grammar
             return ["@%s" % n for n in names] + list(DIFFUSER_TEMPLATES)
         return names
+
+    def _scatter_names(self):
+        """opticalproperties/scatter/bsdf.miebsdf row names, read straight
+        off the loaded (project-or-fallback) optical-property library --
+        NOT routed through core.proplib's categories() (that summary
+        doesn't carry the scatter registry yet), and tolerant of a missing
+        registry file (load_optical_properties's own optional() loader
+        already degrades that to an empty dict; free-text entry still
+        works either way)."""
+        props = self._get_optprops()
+        if props is None:
+            return []
+        return sorted(getattr(props, "scatter", {}) or {})
 
     def _facemap_value_options(self, prop_name):
         """Dropdown options for a per-face property VALUE (stored form)."""
@@ -421,6 +469,8 @@ class ElementEditorPane(QWidget):
                     self._library_categories().get("gratings", [])]
         if prop_name == "diffuser":
             return self._registry_names("diffuser")
+        if prop_name == "scatter":
+            return self._registry_names("scatter")
         if prop_name == "roughness":
             return list(ROUGHNESS_PRESETS)
         return []   # surface_override: exotic, typed by design

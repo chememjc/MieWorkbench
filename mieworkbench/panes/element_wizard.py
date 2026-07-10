@@ -4,11 +4,15 @@ ParamTableWidget       geometry parameters (Name | Value | Unit), with the
                        `round_flag` convention rendered as a "Circular
                        shape" checkbox instead of a bare 0/1 number.
 PropertiesFormWidget   the DEVICE properties a primitive exposes (source
-                       power/wavelength/polarization, detector
-                       reflectivity, optic material/coating/filter/OD...)
-                       so the wizard configures the whole element, not
-                       just its dimensions - full re-editing remains in
-                       the Element Properties pane afterwards.
+                       power/wavelength/polarization/Gaussian beam waist+
+                       M^2+apodization, detector reflectivity, optic
+                       material/coating/filter/OD...) so the wizard
+                       configures the whole element, not just its
+                       dimensions - full re-editing remains in the Element
+                       Properties pane afterwards.
+ApodizationEditor      composite row widget for a source's `apodization`
+                       property (none/gaussian + w0 + order); a plain
+                       string in every other row kind.
 TypeChooserDialog      the type-first entry point ("what do you want to
                        add?"): role -> filtered primitive list; returns
                        the primitive info for the normal wizard.
@@ -30,8 +34,8 @@ if _SCRIPTS not in sys.path:
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QRadioButton, QTableWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QRadioButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -53,6 +57,20 @@ _SOURCE_PROPS = (
 _BROADBAND_PROPS = (
     ("lambdamin", "float", 450.0, "Spectral lower bound"),
     ("lambdamax", "float", 650.0, "Spectral upper bound"),
+)
+# Gaussian-beam source extras -- always offered on a source (unlike the
+# broadband pair above, which only appears when the primitive already
+# bakes lambdamin/lambdamax): beam_waist blank means "off" (plane/uniform
+# emission), so its kind is the optional-float variant, not "float".
+_BEAM_PROPS = (
+    ("beam_waist", "float_optional", None,
+     "Gaussian beam waist w0 in mm at the emitting face (blank = off, "
+     "i.e. plane/uniform emission)"),
+    ("m2", "float", 1.0,
+     "Beam quality factor M² (>=1.0); only meaningful with a beam "
+     "waist set"),
+    ("apodization", "apod", None,
+     "Transverse field-amplitude apodization across the emitting face"),
 )
 _DETECTOR_PROPS = (
     ("mirror", "float", 0.0,
@@ -80,6 +98,8 @@ def property_rows_for(info):
         if "lambdamin" in props or "lambdamax" in props:
             for name, kind, default, tip in _BROADBAND_PROPS:
                 rows.append((name, kind, props.get(name, default), tip))
+        for name, kind, default, tip in _BEAM_PROPS:
+            rows.append((name, kind, props.get(name, default), tip))
     elif props.get("material") == "detector":
         for name, kind, default, tip in _DETECTOR_PROPS:
             rows.append((name, kind, props.get(name, default), tip))
@@ -168,6 +188,95 @@ class ParamTableWidget(QTableWidget):
                 or abs(v - float(defaults[a])) > 1e-12}
 
 
+class ApodizationEditor(QWidget):
+    """Composite editor for a source's `apodization` property: a kind
+    combo ('none'/'gaussian') plus w0 [mm] and order fields, shown/enabled
+    only for 'gaussian'. Produces the canonical
+    'gaussian:w0=<mm>[:order=<n>]' string (order omitted when 1), or None
+    for 'off'.
+
+    Mirrors scripts/common.py's parse_apodization_spec grammar loosely
+    for live editing convenience only -- deliberately does NOT import
+    scripts/common (this pane stays script-free); the pipeline's own
+    parser at extraction time is the actual authority and will reject
+    anything this widget can't already represent."""
+
+    def __init__(self, spec=None, parent=None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.kind_combo = QComboBox()
+        self.kind_combo.addItems(["none", "gaussian"])
+        lay.addWidget(self.kind_combo)
+        lay.addWidget(QLabel("w0 [mm]:"))
+        self.w0_edit = QLineEdit()
+        self.w0_edit.setValidator(QDoubleValidator(0.0, 1e6, 6))
+        self.w0_edit.setFixedWidth(70)
+        lay.addWidget(self.w0_edit)
+        lay.addWidget(QLabel("order:"))
+        self.order_edit = QLineEdit("1")
+        self.order_edit.setFixedWidth(40)
+        lay.addWidget(self.order_edit)
+        lay.addStretch(1)
+        self.kind_combo.currentTextChanged.connect(self._update_enabled)
+        self.set_spec(spec)
+
+    def _update_enabled(self, _text=None):
+        on = self.kind_combo.currentText() == "gaussian"
+        self.w0_edit.setEnabled(on)
+        self.order_edit.setEnabled(on)
+
+    def set_spec(self, spec):
+        text = str(spec).strip() if spec else ""
+        if not text or text.lower() == "none":
+            self.kind_combo.setCurrentText("none")
+            self.w0_edit.clear()
+            self.order_edit.setText("1")
+            self._update_enabled()
+            return
+        parts = text.split(":")
+        kind = parts[0].strip().lower()
+        self.kind_combo.setCurrentText("gaussian" if kind == "gaussian"
+                                       else "none")
+        w0, order = "", "1"
+        for part in parts[1:]:
+            if "=" not in part:
+                continue
+            key, _, val = part.partition("=")
+            key = key.strip().lower()
+            if key == "w0":
+                w0 = val.strip()
+            elif key == "order":
+                order = val.strip()
+        self.w0_edit.setText(w0)
+        self.order_edit.setText(order or "1")
+        self._update_enabled()
+
+    def spec(self):
+        """The canonical spec string, or None when 'off'/incomplete."""
+        if self.kind_combo.currentText() != "gaussian":
+            return None
+        w0_text = self.w0_edit.text().strip()
+        if not w0_text:
+            return None
+        try:
+            w0 = float(w0_text)
+        except ValueError:
+            return None
+        if w0 <= 0:
+            return None
+        order_text = self.order_edit.text().strip()
+        try:
+            order = int(order_text) if order_text else 1
+        except ValueError:
+            order = 1
+        if order < 1:
+            order = 1
+        if order == 1:
+            return "gaussian:w0=%g" % w0
+        return "gaussian:w0=%g:order=%d" % (w0, order)
+
+
 class PropertiesFormWidget(QTableWidget):
     """Device properties: Name [unit] | Value, one editor per row."""
 
@@ -191,6 +300,16 @@ class PropertiesFormWidget(QTableWidget):
             self.setCellWidget(row, 1, editor)
             self._editors[name] = (kind, editor, default)
         self.resizeColumnToContents(0)
+        # beam_waist gates m2 (M^2 "only meaningful with a beam waist
+        # set"): wire the cross-row enable state once both rows exist,
+        # then sync to whatever the initial/prefilled values are.
+        if "beam_waist" in self._editors and "m2" in self._editors:
+            _bw_kind, bw_editor, _bw_default = self._editors["beam_waist"]
+            _m2_kind, m2_editor, _m2_default = self._editors["m2"]
+            def _sync_m2_enabled(_text=None, bw=bw_editor, m2=m2_editor):
+                m2.setEnabled(bool(bw.text().strip()))
+            bw_editor.textChanged.connect(_sync_m2_enabled)
+            _sync_m2_enabled()
 
     def _make_editor(self, name, kind, default, registry_names):
         if kind == "bool":
@@ -216,6 +335,13 @@ class PropertiesFormWidget(QTableWidget):
             combo.addItems(names)
             combo.setCurrentText(str(default))
             return combo
+        if kind == "float_optional":
+            edit = QLineEdit("" if default in (None, "")
+                             else "%g" % float(default))
+            edit.setValidator(QDoubleValidator())
+            return edit
+        if kind == "apod":
+            return ApodizationEditor(default)
         edit = QLineEdit(str(default) if default is not None else "")
         if kind == "float":
             edit.setValidator(QDoubleValidator())
@@ -231,6 +357,11 @@ class PropertiesFormWidget(QTableWidget):
             editor.setChecked(bool(value))
         elif kind in ("choice", "registry"):
             editor.setCurrentText(str(value))
+        elif kind == "float_optional":
+            editor.setText("" if value in (None, "")
+                           else "%g" % float(value))
+        elif kind == "apod":
+            editor.set_spec(value)
         else:
             editor.setText("%g" % float(value) if kind == "float"
                            else str(value))
@@ -247,6 +378,19 @@ class PropertiesFormWidget(QTableWidget):
                     out[name] = float(editor.text())
                 except (TypeError, ValueError):
                     pass
+            elif kind == "float_optional":
+                text = editor.text().strip()
+                if text:
+                    try:
+                        out[name] = float(text)
+                    except ValueError:
+                        pass
+                # blank -> "off": omit the key entirely (no value to write)
+            elif kind == "apod":
+                spec = editor.spec()
+                if spec is not None:
+                    out[name] = spec
+                # 'none'/incomplete -> omit the key entirely
             else:
                 out[name] = editor.text().strip()
         return out

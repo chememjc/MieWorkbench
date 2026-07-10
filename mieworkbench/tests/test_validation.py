@@ -73,6 +73,99 @@ def test_uniaxial_material_is_known():
     assert not validation.has_errors(run(s))
 
 
+def test_biaxial_material_without_crystal_axis2_is_an_error():
+    s = good_structure()
+    s["bodies"][1] = body("Xtal", {"material": "ktp",
+                                   "crystal_axis": "1,0,0"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("biaxial" in m and "crystal_axis2" in m for m in errs)
+
+
+def test_biaxial_material_with_crystal_axis2_is_clean():
+    s = good_structure()
+    s["bodies"][1] = body("Xtal", {"material": "ktp",
+                                   "crystal_axis": "1,0,0",
+                                   "crystal_axis2": "0,1,0"})
+    assert not validation.has_errors(run(s))
+
+
+def test_scatter_and_roughness_same_face_clash():
+    s = good_structure()
+    s["bodies"][1] = body("Lens", {"material": "bk7",
+                                   "scatter": "polished_bk7_glass",
+                                   "roughness": "50"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("scatter and roughness" in m for m in errs)
+
+
+def test_scatter_and_diffuser_same_face_clash():
+    s = good_structure()
+    s["bodies"][1] = body("Lens", {"material": "bk7",
+                                   "scatter": "polished_bk7_glass",
+                                   "diffuser": "grit:120"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("scatter and diffuser" in m for m in errs)
+
+
+def test_scatter_on_different_faces_from_roughness_is_clean():
+    s = good_structure()
+    s["bodies"][1] = body("Lens", {
+        "material": "bk7",
+        "scatter": "Face1=polished_bk7_glass",
+        "roughness": "Face2=50"})
+    assert not validation.has_errors(run(s))
+
+
+def test_unknown_scatter_entry():
+    s = good_structure()
+    s["bodies"][1] = body("Lens", {"material": "bk7",
+                                   "scatter": "NoSuchScatter"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("unknown scatter entry 'NoSuchScatter'" in m for m in errs)
+
+
+def test_bad_apodization_spec_is_an_error():
+    s = good_structure()
+    s["bodies"][0]["properties"]["apodization"] = {
+        "type": "t", "group": "Base", "value": "gaussian:order=1"}   # no w0
+    errs = messages(run(s), validation.ERROR)
+    assert any("bad apodization spec" in m for m in errs)
+
+
+def test_good_apodization_spec_is_clean():
+    s = good_structure()
+    s["bodies"][0]["properties"]["apodization"] = {
+        "type": "t", "group": "Base", "value": "gaussian:w0=2:order=2"}
+    assert not validation.has_errors(run(s))
+
+
+@pytest.mark.parametrize("value", [-1.0, 0.0, "wide"])
+def test_bad_beam_waist_is_an_error(value):
+    s = good_structure()
+    s["bodies"][0]["properties"]["beam_waist"] = {
+        "type": "t", "group": "Base", "value": value}
+    errs = messages(run(s), validation.ERROR)
+    assert any("beam_waist must be a number > 0" in m for m in errs)
+
+
+@pytest.mark.parametrize("value", [0.5, "blurry"])
+def test_bad_m2_is_an_error(value):
+    s = good_structure()
+    s["bodies"][0]["properties"]["m2"] = {
+        "type": "t", "group": "Base", "value": value}
+    errs = messages(run(s), validation.ERROR)
+    assert any("m2 must be a number >= 1.0" in m for m in errs)
+
+
+def test_good_beam_waist_and_m2_are_clean():
+    s = good_structure()
+    s["bodies"][0]["properties"]["beam_waist"] = {
+        "type": "t", "group": "Base", "value": 1.5}
+    s["bodies"][0]["properties"]["m2"] = {
+        "type": "t", "group": "Base", "value": 1.2}
+    assert not validation.has_errors(run(s))
+
+
 def test_unknown_coating_and_bad_facemap():
     s = good_structure()
     s["bodies"][1]["properties"]["coating"] = {
@@ -99,10 +192,16 @@ TYPO_CORPUS = [
     ("polarizer_axis", "1,2"),
     ("polarizer_axis", "a,b,c"),
     ("crystal_axis", "0,0,0"),
+    ("crystal_axis2", "0,0,0"),
     ("mirror", "1.5"),
     ("mirror", "shiny"),
     ("absorbance", "-0.2"),
     ("roughness", "Face3="),
+    ("scatter", "Face3="),
+    ("apodization", "gaussian:w0=-1"),
+    ("apodization", "square:w0=1"),
+    ("beam_waist", "wide"),
+    ("m2", "blurry"),
     ("surface_override", "Face1=a;Face1=b"),
     ("grating", "Face2=0:v"),            # lines/mm must be > 0
     ("grating", "Face2=@"),
