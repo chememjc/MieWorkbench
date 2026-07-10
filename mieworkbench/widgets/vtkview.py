@@ -78,6 +78,28 @@ _ROLE_STYLE = {
 _SELECTED_COLOR = (1.00, 0.55, 0.00)
 _SELECTED_EDGE_COLOR = (0.10, 0.10, 0.10)
 
+# -- ghosted (train-excluded) style, see set_excluded_bodies ---------------
+_GHOST_OPACITY = 0.25
+_GHOST_GRAY = (0.55, 0.55, 0.55)
+
+# -- chain-link overlay, see set_chain_links --------------------------------
+_CHAIN_LINK_COLOR = (0.35, 0.65, 0.95)    # cool blue
+_FOLD_LINK_COLOR = (0.95, 0.60, 0.20)     # orange
+_LINK_OPACITY = 0.55
+_LINK_LINE_WIDTH = 1.5
+# VTK 9.6's OpenGL2 backend still honors classic per-actor line stippling
+# through vtkProperty (verified on this build: SetLineStipplePattern /
+# SetLineStippleRepeatFactor are both present) -- no need for a geometric
+# dash-segment fallback.
+_LINK_STIPPLE_PATTERN = 0xF0F0            # 4-on/4-off, doubled by the factor
+_LINK_STIPPLE_REPEAT = 2
+
+
+def _ghost_color(color):
+    """Blend a role color halfway toward neutral grey -- the "ghosted"
+    look applied to train-excluded elements (set_excluded_bodies)."""
+    return tuple(0.5 * c + 0.5 * g for c, g in zip(color, _GHOST_GRAY))
+
 _AXIS_DIRECTIONS = {
     "+x": (1.0, 0.0, 0.0), "-x": (-1.0, 0.0, 0.0),
     "+y": (0.0, 1.0, 0.0), "-y": (0.0, -1.0, 0.0),
@@ -364,6 +386,10 @@ class VtkSceneView(QWidget):
         self._actor_base_style = {}    # actor -> (color, opacity)
         self._face_actor_map = {}      # face_id -> actor
         self._selection = set()
+        self._excluded_bodies = set()  # body_name set -> ghosted (see
+                                       # set_excluded_bodies)
+        self._chain_links_actor = None       # set_chain_links overlay actor
+        self._chain_links_polydata = None
         self._rays_actor = None
         self._rays_polydata = None
         self._overlay_stale = False
@@ -570,8 +596,14 @@ class VtkSceneView(QWidget):
 
         self._body_actors[name] = actors
         self._indicators.rebuild_body(body, face_entries, transform, role)
-        if self._selection:
-            self.set_selection(self._selection)
+        # Re-apply per-actor style (selection highlight AND/OR ghosting)
+        # unconditionally -- freshly (re)built actors (bodiesReshaped ->
+        # reload_bodies -> _build_body_actors) must pick up whatever
+        # exclusion/selection state is already live, not just the base
+        # role color set above.
+        for actor in actors:
+            _, face_id = self._actor_face_map[actor]
+            self._apply_face_style(actor, face_id in self._selection)
 
     def _remove_body_actors(self, body_name):
         for actor in self._body_actors.pop(body_name, []):
@@ -594,6 +626,11 @@ class VtkSceneView(QWidget):
         for name in list(self._body_actors):
             self._remove_body_actors(name)
         self._selection = set()
+        # a full reload means all-new world geometry: stale chain-link
+        # endpoints from the previous document would be meaningless (and
+        # possibly reference a since-vanished element), so drop them too
+        # -- the caller re-supplies fresh links after the new scene loads.
+        self.set_chain_links([])
 
     # -- selection / highlighting -----------------------------------------
     def set_selection(self, face_ids):
@@ -606,19 +643,105 @@ class VtkSceneView(QWidget):
         self.set_selection(set())
 
     def _apply_face_style(self, actor, selected):
+        """Compose the three independent style layers for one face actor:
+        base role color -> ghosted (train-excluded) dim/grey -> selection
+        highlight. A ghosted body stays ghosted even when selected (dim +
+        grey), just gains the selection outline, so the two states never
+        fight over which color wins."""
+        body_name, _ = self._actor_face_map.get(actor, (None, None))
+        ghosted = body_name in self._excluded_bodies
         prop = actor.GetProperty()
+        color, opacity = self._actor_base_style.get(
+            actor, (_SELECTED_COLOR, 1.0))
+        if ghosted:
+            color, opacity = _ghost_color(color), _GHOST_OPACITY
+            prop.SetSpecular(0.0)
         if selected:
-            prop.SetColor(*_SELECTED_COLOR)
-            prop.SetOpacity(1.0)
+            if not ghosted:
+                color, opacity = _SELECTED_COLOR, 1.0
+            prop.SetColor(*color)
+            prop.SetOpacity(opacity)
             prop.EdgeVisibilityOn()
             prop.SetEdgeColor(*_SELECTED_EDGE_COLOR)
             prop.SetLineWidth(2.0)
         else:
-            color, opacity = self._actor_base_style.get(
-                actor, (_SELECTED_COLOR, 1.0))
             prop.SetColor(*color)
             prop.SetOpacity(opacity)
             prop.EdgeVisibilityOff()
+
+    # -- train indicators: ghosted exclusion + chain-link overlay ---------
+    def set_excluded_bodies(self, names):
+        """Ghost every body in `names` (dim opacity ~0.25, grey tint, no
+        specular pop) and restore normal role styling to any body that
+        left the set. Composes with selection highlighting (see
+        _apply_face_style) and is stored as instance state so it survives
+        a bodiesReshaped rebuild -- _build_body_actors re-applies it to
+        every freshly built actor."""
+        self._excluded_bodies = set(names or [])
+        for actor, (_, face_id) in self._actor_face_map.items():
+            self._apply_face_style(actor, face_id in self._selection)
+        self._render()
+
+    def set_chain_links(self, links):
+        """Dotted polyline overlay for the optical-train chain/fold
+        linkage: links = [{"from": [x,y,z], "to": [x,y,z], "kind":
+        "chain"|"fold"}] in mm world coordinates (scaled to the scene's
+        metre convention here). "chain" links render cool blue, "fold"
+        links orange; set_chain_links([]) clears the overlay. Lives in
+        its own PickableOff() actor so FacePicker's vtkCellPicker never
+        resolves a click onto a linkage line (see widgets/facepicker.py --
+        a miss there is only guaranteed for actors the picker can't even
+        select). The caller passes fresh geometry after every move; there
+        is no per-body bookkeeping to maintain here."""
+        if self._chain_links_actor is not None:
+            self.renderer.RemoveActor(self._chain_links_actor)
+            self._chain_links_actor = None
+            self._chain_links_polydata = None
+        if not links:
+            self._render()
+            return
+
+        points = vtkPoints()
+        cells = vtkCellArray()
+        colors = vtkUnsignedCharArray()
+        colors.SetNumberOfComponents(3)
+        colors.SetName("rgb")
+        for link in links:
+            a = np.asarray(link["from"], dtype=float) * 1e-3
+            b = np.asarray(link["to"], dtype=float) * 1e-3
+            i0 = points.InsertNextPoint(*(float(c) for c in a))
+            i1 = points.InsertNextPoint(*(float(c) for c in b))
+            cells.InsertNextCell(2)
+            cells.InsertCellPoint(i0)
+            cells.InsertCellPoint(i1)
+            kind = link.get("kind", "chain")
+            rgb = _FOLD_LINK_COLOR if kind == "fold" else _CHAIN_LINK_COLOR
+            colors.InsertNextTuple3(*(int(round(255 * c)) for c in rgb))
+
+        polydata = vtkPolyData()
+        polydata.SetPoints(points)
+        polydata.SetLines(cells)
+        polydata.GetCellData().SetScalars(colors)
+
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputData(polydata)
+        mapper.SetScalarModeToUseCellData()
+        mapper.ScalarVisibilityOn()
+
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+        prop = actor.GetProperty()
+        prop.SetLineWidth(_LINK_LINE_WIDTH)
+        prop.SetOpacity(_LINK_OPACITY)
+        prop.SetLighting(False)
+        prop.SetLineStipplePattern(_LINK_STIPPLE_PATTERN)
+        prop.SetLineStippleRepeatFactor(_LINK_STIPPLE_REPEAT)
+        actor.PickableOff()
+
+        self._chain_links_actor = actor
+        self._chain_links_polydata = polydata
+        self.renderer.AddActor(actor)
+        self._render()
 
     # -- camera -------------------------------------------------------------
     def fit_camera(self):

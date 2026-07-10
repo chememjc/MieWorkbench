@@ -28,7 +28,7 @@ def test_docks_and_hosts_exist(qtbot):
     # outliner, inspector, element editor, transform, library, console,
     # results, problems
     docks = window.findChildren(QDockWidget)
-    assert len(docks) == 8
+    assert len(docks) == 11   # +3: train editor, variables, compare
 
 
 def test_menu_actions_exist(qtbot):

@@ -32,7 +32,15 @@ class FakeWorkerFc:
         if op == "get_structure":
             return copy.deepcopy(self.structure)
         if op == "set_placement":
-            group = self._group_of(params["body"])
+            # real op_set_placement semantics: the key may be a GROUP
+            # value directly (tried FIRST), else a body name/label whose
+            # group is then resolved
+            key = str(params["body"])
+            if any(b["properties"].get("miewb_group", {}).get("value")
+                   == key for b in self.structure["bodies"]):
+                group = key
+            else:
+                group = self._group_of(key)
             pl = {"pos_mm": list(params["pos_mm"]), "quat": list(params["quat"])}
             out = {}
             for b in self.structure["bodies"]:

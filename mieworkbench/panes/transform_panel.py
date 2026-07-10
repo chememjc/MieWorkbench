@@ -16,9 +16,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..core import train as _trainmod  # noqa: F401  (puts scripts/ on sys.path)
 from ..core.transforms import (
     Operation, euler_from_quat, quat_from_euler, snap_to_axis_ops,
 )
+
+import train_solver  # noqa: E402
 
 _REF_KINDS = [
     ("Origin", "origin"),
@@ -162,6 +165,9 @@ class TransformPanel(QWidget):
         self.target.setStyleSheet("font-weight: bold;")
         lay.addWidget(self.target)
 
+        # -- train positioning (compact; the Train Editor is the full UI) ---
+        lay.addWidget(self._build_positioning_group())
+
         # -- absolute pose + reference readout ------------------------------
         lay.addWidget(self._build_absolute_group())
 
@@ -249,6 +255,118 @@ class TransformPanel(QWidget):
         self.history.setMaximumHeight(110)
         lay.addWidget(self.history)
         lay.addStretch(1)
+
+    # -- train positioning -----------------------------------------------------
+    def _build_positioning_group(self):
+        g = QGroupBox("Positioning")
+        gl = QVBoxLayout(g)
+        self.pos_status = QLabel("—")
+        self.pos_status.setStyleSheet("color: gray;")
+        self.pos_status.setWordWrap(True)
+        gl.addWidget(self.pos_status)
+        row = QHBoxLayout()
+        self.btn_chain = QPushButton("Chain…")
+        self.btn_chain.setToolTip("Chain this element to the nearest upstream "
+                                  "train element so it follows the train")
+        self.btn_chain.clicked.connect(self._on_chain_clicked)
+        row.addWidget(self.btn_chain)
+        self.btn_anchor_here = QPushButton("Anchor here")
+        self.btn_anchor_here.setToolTip("Freeze this element at its current "
+                                        "pose (stops following the train)")
+        self.btn_anchor_here.clicked.connect(self._on_anchor_here_clicked)
+        row.addWidget(self.btn_anchor_here)
+        gl.addLayout(row)
+        return g
+
+    def _refresh_positioning(self):
+        if not hasattr(self, "pos_status"):
+            return
+        if self.project is None or not self.body_name:
+            self.pos_status.setText("—")
+            self.btn_chain.setEnabled(False)
+            self.btn_anchor_here.setEnabled(False)
+            return
+        try:
+            element = self.project.element_group(self.body_name)
+            rec = self.project.train().records().get(element)
+        except Exception:
+            rec = None
+        if rec is None:
+            self.pos_status.setText("—")
+            self.btn_chain.setEnabled(False)
+            self.btn_anchor_here.setEnabled(False)
+            return
+        if rec.get("mode") == "chained":
+            ref = rec.get("ref", "?")
+            port = rec.get("port") or ""
+            dist_raw = rec.get("distance")
+            dtxt = ""
+            if dist_raw not in (None, ""):
+                try:
+                    dtxt = ", %g mm" % train_solver.eval_expr(
+                        dist_raw, self.project.train_variables())
+                except train_solver.TrainError:
+                    dtxt = ", %s mm" % dist_raw
+            self.pos_status.setText("Chained to %s (%s)%s" % (ref, port, dtxt))
+            self.btn_chain.setEnabled(False)
+            self.btn_anchor_here.setEnabled(True)
+        else:
+            self.pos_status.setText("Anchored")
+            self.btn_chain.setEnabled(bool(self._default_chain_ref()))
+            self.btn_anchor_here.setEnabled(False)
+
+    def _default_chain_ref(self):
+        """The last upstream train element the selection can chain to (the
+        deepest element that is neither the selection nor its descendant)."""
+        if self.project is None or not self.body_name:
+            return None
+        try:
+            element = self.project.element_group(self.body_name)
+            tm = self.project.train()
+        except Exception:
+            return None
+        try:
+            order = train_solver.sort_chain(tm.records())
+        except train_solver.TrainError:
+            order = tm.element_labels()
+        skip = set(tm.downstream_of(element)) | {element}
+        for el in reversed(order):
+            if el not in skip:
+                return el
+        return None
+
+    def chain_to(self, ref_element):
+        """Dialog-free: chain the selected element to `ref_element`."""
+        if self.project is None or not self.body_name:
+            return False
+        element = self.project.element_group(self.body_name)
+        try:
+            self.project.set_chain(element, {"ref": ref_element},
+                                   text="Chain %s to %s"
+                                   % (element, ref_element))
+        except Exception as exc:
+            self.pos_status.setText(str(exc))
+            return False
+        self._refresh_positioning()
+        return True
+
+    def _on_chain_clicked(self):
+        ref = self._default_chain_ref()
+        if not ref:
+            self.pos_status.setText("No upstream element to chain to.")
+            return
+        self.chain_to(ref)
+
+    def _on_anchor_here_clicked(self):
+        if self.project is None or not self.body_name:
+            return
+        element = self.project.element_group(self.body_name)
+        try:
+            self.project.set_anchored(element)
+        except Exception as exc:
+            self.pos_status.setText(str(exc))
+            return
+        self._refresh_positioning()
 
     # -- absolute pose ---------------------------------------------------------
     def _build_absolute_group(self):
@@ -447,8 +565,13 @@ class TransformPanel(QWidget):
             self._snap_axis = (list(point), list(axis))
             self.project.snap_to_axis(self.body_name, point, axis)
         except Exception as exc:
-            self.snap_status.setText("")
-            QMessageBox.warning(self, "MieWorkbench", str(exc))
+            # isVisible() guard (UI_TESTING doctrine): a modal in this
+            # path hangs offscreen test runs when the snap raises
+            if self.isVisible():
+                self.snap_status.setText("")
+                QMessageBox.warning(self, "MieWorkbench", str(exc))
+            else:
+                self.snap_status.setText("Snap failed: %s" % exc)
             return
         self.snap_offset_btn.setEnabled(True)
         self.history.addItem("%s: snap to axis" % self.body_name)
@@ -521,11 +644,15 @@ class TransformPanel(QWidget):
         project.sceneLoaded.connect(self.toward.notify_scene_changed)
         project.sceneLoaded.connect(self.about.notify_scene_changed)
         project.sceneLoaded.connect(
-            lambda: (self._refresh_ref_combo(), self._refresh_absolute()))
+            lambda: (self._refresh_ref_combo(), self._refresh_absolute(),
+                     self._refresh_positioning()))
+        project.propertiesChanged.connect(
+            lambda _n: self._refresh_positioning())
         project.bodiesMoved.connect(
             lambda _d: (self.toward._emit(), self.about._emit(),
-                        self._refresh_absolute()))
+                        self._refresh_absolute(), self._refresh_positioning()))
         self._refresh_ref_combo()
+        self._refresh_positioning()
 
     def set_body(self, body_name):
         self.body_name = body_name
@@ -543,6 +670,7 @@ class TransformPanel(QWidget):
         self.snap_offset_btn.setEnabled(False)
         self.snap_status.setText("")
         self._refresh_absolute()
+        self._refresh_positioning()
 
     # -- operations ---------------------------------------------------------------
     def _axis_spec(self):
@@ -560,7 +688,10 @@ class TransformPanel(QWidget):
                                     "Select an element first.")
             return
         try:
-            self.project.apply_operation(self.body_name, op)
+            # move_element keeps the optical train consistent (a chained
+            # element re-derives its edge, downstream follows); it falls
+            # back to the raw apply_operation for untrained elements.
+            self.project.move_element(self.body_name, op)
         except Exception as exc:
             QMessageBox.warning(self, "MieWorkbench", str(exc))
             return

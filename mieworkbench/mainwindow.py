@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.normpath(
 import common  # noqa: E402  (stdlib-only shared contract hub)
 import miewb_tool  # noqa: E402  (stdlib-only archive engine)
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
@@ -49,6 +49,8 @@ from .core.runner import RunController
 from .core.selection import SelectionModel
 from .core.settings import Settings, SettingsDialog
 from .core.transforms import Operation, element_bounds
+from .core.train import EXCLUDE_PROP
+from .panes.compare_pane import ComparePane
 from .panes.config_matrix import ConfigMatrix
 from .panes.console import ConsolePane
 from .panes.element_editor import ElementEditorPane
@@ -59,9 +61,22 @@ from .panes.problems import ProblemsPane
 from .panes.prop_editor import PropEditorPane
 from .panes.results import ResultsPane
 from .panes.scene3d import Scene3DPane
+from .panes.train_editor import TrainEditorPane
 from .panes.transform_panel import TransformPanel
 from .panes.element_wizard import TypeChooserDialog
 from .panes.wizard_dialog import ElementWizardDialog
+
+try:
+    # a parallel round authors this pane; the optical-train wiring degrades
+    # gracefully (no Variables dock, config-matrix sweep fields still work)
+    # until it lands.
+    from .panes.variables_pane import VariablesPane
+except Exception:   # pragma: no cover - only while the pane is unwritten
+    VariablesPane = None
+
+import train_solver  # noqa: E402  (stdlib-only; shared chain math)
+
+TrainError = train_solver.TrainError
 
 STAGE_ORDER = ["extract", "trace", "post", "viz"]
 
@@ -97,6 +112,8 @@ class MainWindow(QMainWindow):
         self.miesim_out = None          # .MieSim to update after a rerun
         self._has_validation_errors = False
         self._clipboard_element = None  # element label copied for paste
+        self._pending_manifest = None   # sweep manifest awaiting a Compare
+        self._train_refresh_pending = False   # 0-ms coalescing guard
 
         self.settings = Settings()
         self.project = Project(self.settings)
@@ -190,6 +207,41 @@ class MainWindow(QMainWindow):
         self.resizeDocks([self.console_dock], [230],
                          Qt.Orientation.Vertical)
 
+        self._build_train_docks()
+
+    def _build_train_docks(self):
+        """Optical-train feature docks: an LDE-style train editor tabbed
+        with the outliner, the sweep-Variables pane tabbed near the
+        library, and the sweep-Compare pane tabbed at the bottom (hidden
+        until a sweep completes or the user adds cases)."""
+        self.train_editor = TrainEditorPane(self.project, self.selection)
+        self.train_editor.setObjectName("train_editor_host")
+        self.train_editor_dock = self._add_dock(
+            "Optical Train", "train_editor_dock", self.train_editor,
+            Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.tabifyDockWidget(self.outliner_dock, self.train_editor_dock)
+        self.outliner_dock.raise_()
+
+        if VariablesPane is not None:
+            self.variables_pane = VariablesPane(self.project)
+            self.variables_pane.setObjectName("variables_host")
+            self.variables_dock = self._add_dock(
+                "Variables", "variables_dock", self.variables_pane,
+                Qt.DockWidgetArea.RightDockWidgetArea)
+            self.tabifyDockWidget(self.library_dock, self.variables_dock)
+        else:
+            self.variables_pane = None
+            self.variables_dock = None
+
+        self.compare_pane = ComparePane(settings=self.settings)
+        self.compare_pane.setObjectName("compare_host")
+        self.compare_dock = self._add_dock(
+            "Compare", "compare_dock", self.compare_pane,
+            Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.tabifyDockWidget(self.console_dock, self.compare_dock)
+        self.compare_dock.hide()        # revealed on first sweep/compare
+        self.console_dock.raise_()
+
     def _add_dock(self, title, object_name, widget, area):
         dock = QDockWidget(title, self)
         dock.setObjectName(object_name)
@@ -281,6 +333,14 @@ class MainWindow(QMainWindow):
             "changes)")
         self.close_action.triggered.connect(self._on_close_model)
         self.close_action.setEnabled(False)
+
+        self.export_fcstd_action = file_menu.addAction("Export &FCStd…")
+        self.export_fcstd_action.setToolTip(
+            "Write a standalone .FCStd copy of the current document "
+            "(fold states, placements and train metadata as they stand); "
+            "the live document is untouched")
+        self.export_fcstd_action.triggered.connect(self._on_export_fcstd)
+        self.export_fcstd_action.setEnabled(False)
 
         act = file_menu.addAction("&Export Run Script…")
         act.setToolTip("Pack a .MieWB and write a standalone shell script "
@@ -376,10 +436,14 @@ class MainWindow(QMainWindow):
         act.triggered.connect(self.results._open_paraview)
 
         view_menu = menubar.addMenu("&View")
-        for dock in (self.outliner_dock, self.inspector_dock,
-                     self.element_editor_dock, self.transform_dock,
-                     self.library_dock, self.console_dock,
-                     self.results_dock, self.problems_dock):
+        dock_toggles = [self.outliner_dock, self.train_editor_dock,
+                        self.inspector_dock, self.element_editor_dock,
+                        self.transform_dock, self.library_dock,
+                        self.console_dock, self.results_dock,
+                        self.problems_dock, self.compare_dock]
+        if self.variables_dock is not None:
+            dock_toggles.insert(6, self.variables_dock)
+        for dock in dock_toggles:
             view_menu.addAction(dock.toggleViewAction())
 
         view_menu.addSeparator()
@@ -1029,6 +1093,23 @@ class MainWindow(QMainWindow):
         self.project.dirtyChanged.connect(
             lambda dirty: self._update_window_title())
 
+        # optical-train editor: arming "pick reference in 3D" routes the
+        # scene view's one-shot pick back into the pane (mirrors the
+        # transform panel's snap-to-face pick path).
+        self.train_editor.pickReferenceRequested.connect(
+            self._on_train_pick_reference)
+        # train indicators (excluded bodies, chain links, outliner badges)
+        # recompute after any load/property/move, coalesced to one pass.
+        self.project.sceneLoaded.connect(self._schedule_train_refresh)
+        self.project.propertiesChanged.connect(self._schedule_train_refresh)
+        self.project.bodiesMoved.connect(self._schedule_train_refresh)
+        if self.variables_pane is not None:
+            self.project.sceneLoaded.connect(
+                lambda: self.variables_pane.refresh())
+
+        # a finished sweep hands its manifest to the Compare pane
+        self.runner.finished.connect(self._maybe_run_compare)
+
         # ray displays: previews land in the requesting view; geometry
         # edits mark any loaded overlay stale
         self.raypreview.finished.connect(self._on_preview_finished)
@@ -1054,6 +1135,7 @@ class MainWindow(QMainWindow):
         has_doc = self.project.is_open()
         self.save_action.setEnabled(has_doc)
         self.save_as_action.setEnabled(has_doc)
+        self.export_fcstd_action.setEnabled(has_doc)
         self.revert_action.setEnabled(has_doc)
         self.close_action.setEnabled(has_doc)
         self._update_window_title()
@@ -1088,6 +1170,109 @@ class MainWindow(QMainWindow):
     def _on_validate(self):
         self.problems_dock.raise_()
         self.problems.run_checks()
+
+    # -- optical-train indicators ---------------------------------------------
+    def _on_train_pick_reference(self, _element):
+        """Arm the scene view's one-shot pick and route the result back
+        into the train editor (mirrors transform_panel's snap-face pick)."""
+        self.scene3d.view.pick_face_once(
+            self.train_editor.on_reference_picked)
+
+    def _schedule_train_refresh(self, *_args):
+        """Coalesce a burst of project signals into one indicator pass."""
+        if self._train_refresh_pending:
+            return
+        self._train_refresh_pending = True
+        QTimer.singleShot(0, self._refresh_train_indicators)
+
+    def _refresh_train_indicators(self):
+        """Push exclusion ghosting + chain-link overlay to the 3D view and
+        train badges to the outliner from the current TrainModel."""
+        self._train_refresh_pending = False
+        view = self.scene3d.view
+        if not self.project.is_open():
+            view.set_excluded_bodies(set())
+            view.set_chain_links([])
+            self.outliner.set_train_info({})
+            return
+        structure = self.project.structure or {}
+
+        # excluded bodies: an element is excluded if ANY of its bodies
+        # carries a truthy miewb_exclude (unfolded fold mirrors); ghost the
+        # whole element.
+        excl_elements = set()
+        for b in structure.get("bodies", []):
+            entry = (b.get("properties") or {}).get(EXCLUDE_PROP)
+            if entry and entry.get("value"):
+                try:
+                    excl_elements.add(self.project.element_group(b["name"]))
+                except ProjectError:
+                    pass
+        excluded = set()
+        for el in excl_elements:
+            try:
+                excluded.update(self.project.element_bodies(el))
+            except ProjectError:
+                pass
+        view.set_excluded_bodies(excluded)
+
+        tm = self.project.train()
+        records = tm.records()
+        view.set_chain_links(self._chain_links(tm, records))
+
+        # outliner badges: chained/fold/folded/excluded + a validation
+        # problem string matched to an element by substring of its label.
+        try:
+            problems = tm.validate()
+        except Exception:
+            problems = []
+        info = {}
+        for el in tm.element_labels():
+            rec = records[el]
+            problem = next((msg for _sev, msg in problems if el in msg),
+                           None)
+            info[el] = {
+                "chained": rec.get("mode") == "chained",
+                "fold": bool(rec.get("fold")),
+                "folded": bool(rec.get("folded", True)),
+                "excluded": el in excl_elements,
+                "problem": problem,
+            }
+        self.outliner.set_train_info(info)
+
+    def _chain_links(self, tm, records):
+        """[{from, to, kind}] mm-world links from each chained element's
+        parent exit-port frame origin to the element's entry point."""
+        if not tm.has_train():
+            return []
+        try:
+            solved = tm.solve(self.project.train_variables())
+        except TrainError:
+            return []
+        frames = solved.get("frames", {})
+        links = []
+        for el in tm.chained_elements():
+            rec = records[el]
+            ref = rec.get("ref")
+            if not ref or ref not in frames:
+                continue
+            port = rec.get("port") or train_solver._default_port(
+                records.get(ref, {}))
+            frame = frames.get(ref, {}).get(port)
+            if not frame:
+                continue
+            state = self.project.body_states.get(tm.primary_body_name(el))
+            entry_local = (rec.get("local") or {}).get("entry")
+            if state is None or entry_local is None:
+                continue
+            entry_world = train_solver.transform_point(
+                state.current.to_dict(), entry_local)
+            links.append({
+                "from": [float(v) for v in frame["origin"]],
+                "to": [float(v) for v in entry_world],
+                "kind": "fold" if rec.get("fold") else "chain",
+            })
+        return links
 
     # -- element addition (library + wizard) ------------------------------------------
     def _load_matdb(self):
@@ -1188,6 +1373,41 @@ class MainWindow(QMainWindow):
             return
         self.project.end_macro()
         self.statusBar().showMessage("Added %s" % label, 5000)
+        self._maybe_chain_new_element(label)
+
+    def _maybe_chain_new_element(self, label):
+        """User decision: a newly added element chains to the currently
+        selected element, or (if nothing is selected but a train exists) to
+        the last element in solve order, at a default 10 mm gap. A SEPARATE
+        undo step from the import (import_primitive pushes its own macro).
+        No dialog/checkbox: this always fires when a chain target exists —
+        the user can Undo it independently, or Anchor the element in the
+        train editor."""
+        try:
+            tm = self.project.train()
+            if label not in tm.element_labels():
+                return
+            ref = self._selected_element()
+            if ref == label:
+                ref = None
+            if not ref:
+                if not tm.has_train():
+                    return          # first element / no train: leave anchored
+                try:
+                    order = train_solver.sort_chain(tm.records())
+                except TrainError:
+                    order = tm.element_labels()
+                ref = next((el for el in reversed(order) if el != label),
+                           None)
+            if not ref or ref == label:
+                return
+            self.project.set_chain(
+                label, {"ref": ref, "distance": 10.0},
+                text="Chain %s to %s" % (label, ref))
+            self.statusBar().showMessage(
+                "Chained %s to %s (Ctrl+Z to unchain)" % (label, ref), 5000)
+        except (ProjectError, TrainError) as exc:
+            self.statusBar().showMessage("Auto-chain skipped: %s" % exc, 5000)
 
     def _on_add_element_action(self):
         """Toolbar/menu 'Add element': start the add flow for the library's
@@ -1528,6 +1748,9 @@ class MainWindow(QMainWindow):
         self._reset_run_indicators()
         self.console.clear()
         self.config_matrix.reset_to_defaults()
+        self._pending_manifest = None
+        self.compare_pane.clear()
+        self.compare_dock.hide()
 
     def _clear_session_paths(self):
         self.model_path = None
@@ -1844,6 +2067,28 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Wrote %s (+ %s)" % (path, os.path.basename(wb_path)), 8000)
 
+    def _export_fcstd(self, path):
+        """Dialog-free core (tests call this directly): write a standalone
+        .FCStd copy of the current document via the worker. Returns the
+        written path."""
+        return self.project.export_fcstd(path)
+
+    def _on_export_fcstd(self):
+        if not self.project.is_open():
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export FCStd", "", "FreeCAD model (*.FCStd)")
+        if not path:
+            return
+        if not path.lower().endswith(".fcstd"):
+            path += ".FCStd"
+        try:
+            self._export_fcstd(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        self.statusBar().showMessage("Exported %s" % path, 6000)
+
     def _on_settings(self):
         dialog = SettingsDialog(self.settings, self)
         dialog.exec()
@@ -1907,6 +2152,123 @@ class MainWindow(QMainWindow):
                 "MIEWB_RESULTS_DIR": os.path.join(self.workspace,
                                                   "results")}
 
+    def _merged_run_config(self):
+        """config_matrix.values() with the Variables pane's enabled sweep
+        superseding the raw config-matrix var/min/max/n fields."""
+        config = self.config_matrix.values()
+        vp = self.variables_pane
+        if vp is not None and vp.has_enabled_sweep():
+            varnames, mins, maxs, ns = vp.sweep_spec()
+            config["var"] = list(varnames)
+            config["min"] = list(mins)
+            config["max"] = list(maxs)
+            config["n"] = list(ns)
+            config["sweep_mode"] = vp.sweep_mode
+        return config
+
+    def _single_run_estimate_s(self):
+        p = self.config_matrix.estimate_params()
+        result = common.estimate(
+            p["rays"], p["resolution"], p["nlambda"],
+            p["n_coherent_sources"], p["backend"],
+            n_detectors=p["n_detectors"], save_fields=p["save_fields"],
+            n_pol_strata=p["n_pol_strata"])
+        return result["total_s"]
+
+    @staticmethod
+    def _config_run_count(config):
+        varnames = config.get("var") or []
+        if not varnames:
+            return 1
+        mins = config.get("min") or []
+        maxs = config.get("max") or []
+        ns = config.get("n") or []
+        if len({len(varnames), len(mins), len(maxs), len(ns)}) != 1:
+            return 1     # malformed; write_sweep_manifest will raise
+        try:
+            value_lists = [common.sweep_values(float(a), float(b), int(c))
+                           for a, b, c in zip(mins, maxs, ns)]
+            combos = common.sweep_combos(
+                value_lists, config.get("sweep_mode") or "product")
+        except Exception:
+            return 1
+        return len(combos)
+
+    def _sweep_summary(self, config):
+        runs = self._config_run_count(config)
+        per_run_s = self._single_run_estimate_s()
+        total_s = runs * per_run_s
+        return {
+            "runs": runs,
+            "per_run_s": per_run_s,
+            "total_s": total_s,
+            "text": "%d run%s x %s = %s" % (
+                runs, "" if runs == 1 else "s",
+                common.fmt_duration(per_run_s),
+                common.fmt_duration(total_s)),
+        }
+
+    def _confirm_sweep(self, summary):
+        """Dialog-free (tests call directly): confirm a multi-variant
+        launch. Hidden windows default to True so offscreen tests never
+        block on the modal."""
+        if not self.isVisible():
+            return True
+        answer = QMessageBox.question(
+            self, "Confirm sweep",
+            "This launches %d simulation runs.\n\n%s\n\nProceed?"
+            % (summary["runs"], summary["text"]))
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _run_pipeline(self, dry_run=False):
+        """Save + validate + merge the sweep, confirm a multi-variant run,
+        write its manifest, then launch. Dialog-free except the sweep
+        confirmation (isVisible-guarded). Returns True on launch."""
+        if self._preflight() is None:     # save + validate (warns on error)
+            return False
+        config = self._merged_run_config()
+        args = RunController.build_args(config)
+        if self.workspace:
+            args += ["--optical-properties", self._workspace_optprops()]
+        if dry_run and "--dry-run" not in args:
+            args += ["--dry-run"]
+
+        env = self._run_env()
+        results_root = env.get("MIEWB_RESULTS_DIR") if env else None
+        self._pending_manifest = None
+        if self._config_run_count(config) > 1:
+            if not self._confirm_sweep(self._sweep_summary(config)):
+                return False
+            # a dry run produces no post/viz, so there is nothing to
+            # Compare — confirm the launch but skip the manifest/handoff.
+            if not dry_run:
+                try:
+                    manifest = RunController.write_sweep_manifest(
+                        self.model_path, config, results_root=results_root)
+                    self._pending_manifest = (
+                        str(manifest) if manifest else None)
+                except Exception as exc:
+                    self.console.append_line(
+                        "[sweep] manifest write failed: %s" % exc)
+
+        if not self.runner.start(self.model_path, args, extra_env=env):
+            QMessageBox.warning(
+                self, "Pipeline already running",
+                "A pipeline run is already in progress.")
+            return False
+        return True
+
+    def _maybe_run_compare(self, exit_code):
+        """After a successful multi-variant run, hand the stashed sweep
+        manifest to the Compare pane and reveal its dock."""
+        manifest = self._pending_manifest
+        self._pending_manifest = None
+        if exit_code != 0 or not manifest:
+            return
+        if self.compare_pane.run_compare(manifest_path=manifest):
+            self.compare_dock.show()
+            self.compare_dock.raise_()
+
     def _on_run_pipeline_dialog(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Run Pipeline")
@@ -1919,16 +2281,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(buttons)
 
         def on_run():
-            args = self._preflight()
-            if args is None:
-                return
-            if self.runner.start(self.model_path, args,
-                                 extra_env=self._run_env()):
+            if self._run_pipeline():
                 dialog.accept()
-            else:
-                QMessageBox.warning(
-                    self, "Pipeline already running",
-                    "A pipeline run is already in progress.")
 
         buttons.accepted.connect(on_run)
         buttons.rejected.connect(dialog.reject)
@@ -1957,16 +2311,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Runtime Estimate", message)
 
     def _on_dry_run(self):
-        args = self._preflight()
-        if args is None:
-            return
-        if "--dry-run" not in args:
-            args = args + ["--dry-run"]
-        if not self.runner.start(self.model_path, args,
-                                 extra_env=self._run_env()):
-            QMessageBox.warning(
-                self, "Pipeline already running",
-                "A pipeline run is already in progress.")
+        self._run_pipeline(dry_run=True)
 
     # -- shutdown -------------------------------------------------------------------
     def closeEvent(self, event):
