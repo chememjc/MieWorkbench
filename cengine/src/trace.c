@@ -158,7 +158,7 @@ static void screen_children(const SceneC *s, const FaceC *face,
         push_child(s, cx, &tr);
     }
     if (r_m > 0.0) {
-        kvec3 n_out = v3_scale(surf_normal(&face->surf, r->pos),
+        kvec3 n_out = v3_scale(face_normal_canonical(face, r->pos),
                                face->outward_sign);
         double dt = v3_dot(n_out, r->dir);
         double sgn = (dt < 0.0) ? 1.0 : ((dt > 0.0) ? -1.0 : 0.0);
@@ -242,7 +242,7 @@ static void apply_polarizer(const SceneC *s, const BodyC *body, Ray *trans,
  * feature routing keeps scenes that use them on the Python engine. */
 static void optic_children(const SceneC *s, const FaceC *face,
                            const BodyC *body, const Ray *r, ThreadCtx *cx) {
-    kvec3 n_out = v3_scale(surf_normal(&face->surf, r->pos),
+    kvec3 n_out = v3_scale(face_normal_canonical(face, r->pos),
                            face->outward_sign);
     double cos_with_out = v3_dot(r->dir, n_out);
     int entering = cos_with_out < 0.0;

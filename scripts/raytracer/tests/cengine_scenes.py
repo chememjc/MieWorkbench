@@ -184,6 +184,7 @@ REAL_SCENES = {
     "pol_crossed": "statistical",          # crossed polarizers ~zero T (B)
     "lens_achromat": "statistical",        # two glasses + 5um air gap (B)
     "ghost_doublet": "statistical",        # multi-bounce ghosts (B)
+    "mesh_freeform": "statistical",        # tessellated face -> BLAS (C)
 }
 
 

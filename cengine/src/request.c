@@ -282,6 +282,12 @@ static SurfC parse_surface(yyjson_val *sobj, const char *ctx) {
                                need_vec3(sobj, "axis", ctx),
                                need_num(sobj, "major_r", ctx),
                                need_num(sobj, "minor_r", ctx));
+    if (strcmp(type, "mesh") == 0) {
+        /* handled by the caller (needs the FaceC, not just SurfC) */
+        SurfC s = {0};
+        s.kind = SURF_MESH;
+        return s;
+    }
     if (strcmp(type, "asphere") == 0) {
         double *coeffs = need_dbl_array(sobj, "coeffs", ctx, 0);
         yyjson_val *cv = yyjson_obj_get(sobj, "coeffs");
@@ -304,14 +310,44 @@ static SurfC parse_surface(yyjson_val *sobj, const char *ctx) {
         "have sent this scene to the Python engine", type, ctx);
 }
 
-static void parse_face_into(FaceC *f, yyjson_val *fobj, const char *ctx) {
+static void parse_face_into(FaceC *f, yyjson_val *fobj, const char *ctx,
+                            int mesh_flat_normals) {
     need_str_into(fobj, "id", ctx, f->id, sizeof f->id);
     f->body = (int32_t)need_int(fobj, "body", ctx);
-    f->surf = parse_surface(need(fobj, "surface", ctx), ctx);
+    yyjson_val *sobj = need(fobj, "surface", ctx);
+    f->surf = parse_surface(sobj, ctx);
     f->outward_sign = need_bool(fobj, "orientation_outward", ctx)
                       ? 1.0 : -1.0;
     f->area_m2 = need_num(fobj, "area_m2", ctx);
-    trim_build(&f->trim, &f->surf, need(fobj, "trim", ctx), f->area_m2, ctx);
+    f->mesh = NULL;
+    if (f->surf.kind == SURF_MESH) {
+        char stl[1024];
+        need_str_into(sobj, "stl", ctx, stl, sizeof stl);
+        f->mesh = mesh_load(stl, mesh_flat_normals, f->id);
+        /* trim is baked into the tessellation — no containment test */
+        f->trim.mode = TRIM_UNTRIMMED;
+        f->trim.n_loops = 0;
+        f->trim.loop_off = NULL;
+        f->trim.pts_u = f->trim.pts_v = NULL;
+    } else {
+        trim_build(&f->trim, &f->surf, need(fobj, "trim", ctx),
+                   f->area_m2, ctx);
+    }
+    /* conservative world AABB (glue-computed); absent -> never culled */
+    yyjson_val *ab = yyjson_obj_get(fobj, "aabb");
+    if (ab && yyjson_is_arr(ab) && yyjson_arr_size(ab) == 2) {
+        yyjson_val *loa = yyjson_arr_get(ab, 0);
+        yyjson_val *hia = yyjson_arr_get(ab, 1);
+        f->aabb_lo = v3(yyjson_get_num(yyjson_arr_get(loa, 0)),
+                        yyjson_get_num(yyjson_arr_get(loa, 1)),
+                        yyjson_get_num(yyjson_arr_get(loa, 2)));
+        f->aabb_hi = v3(yyjson_get_num(yyjson_arr_get(hia, 0)),
+                        yyjson_get_num(yyjson_arr_get(hia, 1)),
+                        yyjson_get_num(yyjson_arr_get(hia, 2)));
+    } else {
+        f->aabb_lo = v3(-INFINITY, -INFINITY, -INFINITY);
+        f->aabb_hi = v3(INFINITY, INFINITY, INFINITY);
+    }
     yyjson_val *det = yyjson_obj_get(fobj, "detector");
     f->detector = det && yyjson_is_int(det)
                   ? (int32_t)yyjson_get_sint(det) : -1;
@@ -384,6 +420,14 @@ SceneC *request_load(const char *path) {
     s->seed = (uint64_t)need_int(par, "seed", "params");
     s->batch_size = need_int(par, "batch_size", "params");
     s->threads = (int)need_int(par, "threads", "params");
+    {
+        yyjson_val *v = yyjson_obj_get(par, "linear_scan");
+        s->linear_scan = (uint8_t)(v && yyjson_is_bool(v)
+                                   && yyjson_get_bool(v));
+        v = yyjson_obj_get(par, "mesh_flat_normals");
+        s->mesh_flat_normals = (uint8_t)(v && yyjson_is_bool(v)
+                                         && yyjson_get_bool(v));
+    }
 
     /* wavelengths + ambient tables */
     yyjson_val *lams = need(root, "lams_m", "root");
@@ -495,7 +539,8 @@ SceneC *request_load(const char *path) {
     yyjson_arr_foreach(faces, fi, fmax, fobj) {
         char ctx[160];
         snprintf(ctx, sizeof ctx, "face[%zu]", fi);
-        parse_face_into(&s->faces[fi], fobj, ctx);
+        parse_face_into(&s->faces[fi], fobj, ctx,
+                        s->mesh_flat_normals);
         if (s->faces[fi].body < 0 || s->faces[fi].body >= s->n_bodies)
             die(EXIT_INPUT, "request: face '%s' references body %d (have "
                 "%d bodies)", s->faces[fi].id, s->faces[fi].body,
@@ -563,7 +608,8 @@ SceneC *request_load(const char *path) {
                                  yyjson_get_num(yyjson_arr_get(row, 3)));
         }
         src->viz_cap = need_int(sobj, "viz_cap", ctx);
-        parse_face_into(&src->emit_face, need(sobj, "emit_face", ctx), ctx);
+        parse_face_into(&src->emit_face, need(sobj, "emit_face", ctx),
+                        ctx, 0);
         source_uv_bounds(src, ctx);
         if (src->n_strata > s->max_strata) s->max_strata = src->n_strata;
         if (src->n_pol > s->max_pol) s->max_pol = src->n_pol;
@@ -621,6 +667,26 @@ SceneC *request_load(const char *path) {
     if (s->n_dets == 0)
         die(EXIT_INPUT, "request: no detectors (mirrors scene.py:271)");
 
+    /* scene-level TLAS over face AABBs (leaf 2: face tests are the
+     * expensive unit — asphere Newton etc.) */
+    if (s->n_faces > 0) {
+        kvec3 *lo = (kvec3 *)malloc((size_t)s->n_faces * sizeof(kvec3));
+        kvec3 *hi = (kvec3 *)malloc((size_t)s->n_faces * sizeof(kvec3));
+        if (!lo || !hi) die(EXIT_INPUT, "request: OOM (tlas)");
+        int unbounded = 0;
+        for (int i = 0; i < s->n_faces; i++) {
+            lo[i] = s->faces[i].aabb_lo;
+            hi[i] = s->faces[i].aabb_hi;
+            if (!isfinite(lo[i].x) || !isfinite(hi[i].x)) unbounded++;
+        }
+        bvh_build(&s->tlas, lo, hi, s->n_faces, 2);
+        free(lo);
+        free(hi);
+        if (unbounded)
+            LOGW("tlas: %d face(s) have unbounded AABBs (no culling for "
+                 "them)", unbounded);
+    }
+
     /* basic cross-validation echo */
     LOGI("scene: %d bodies, %d faces, %d sources, %d detectors, %d lams",
          s->n_bodies, s->n_faces, s->n_sources, s->n_dets, s->n_lams);
@@ -651,7 +717,9 @@ void scene_free(SceneC *s) {
         free((void *)s->faces[i].trim.loop_off);
         free((void *)s->faces[i].trim.pts_u);
         free((void *)s->faces[i].trim.pts_v);
+        mesh_free(s->faces[i].mesh);
     }
+    bvh_free(&s->tlas);
     for (int i = 0; i < s->n_sources; i++) {
         free((void *)s->sources[i].emit_face.trim.loop_off);
         free((void *)s->sources[i].emit_face.trim.pts_u);

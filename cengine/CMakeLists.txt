@@ -44,6 +44,8 @@ add_executable(miewb-trace
   src/npyio.c
   src/raybuf.c
   src/request.c
+  src/bvh.c
+  src/mesh.c
   src/ledger.c
   src/detector.c
   src/trace.c

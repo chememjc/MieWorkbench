@@ -19,6 +19,8 @@
 #include "kernels/surf.h"
 #include "kernels/trim.h"
 #include "raybuf.h"
+#include "bvh.h"
+#include "mesh.h"
 
 #define MIEWB_MAX_NAME 96
 
@@ -81,10 +83,14 @@ typedef struct {
     int32_t body;               /* owning body index */
     SurfC surf;
     TrimC trim;
+    MeshC *mesh;                /* SURF_MESH faces only, else NULL */
     double outward_sign;        /* +1 if orientation_outward else -1 */
     double area_m2;
     int32_t detector;           /* index into SceneC.dets, or -1 */
     int32_t coating;            /* index into SceneC.coatings, or -1 */
+    /* conservative world AABB (Python glue: STL-union-trim padded, or
+     * analytic full-primitive bounds; +-INF when unknown = never culled) */
+    kvec3 aabb_lo, aabb_hi;
 } FaceC;
 
 /* Planar detector grid — geometry computed by the Python glue with the
@@ -160,6 +166,14 @@ typedef struct {
     int n_coatings;
     CoatC *coatings;
 
+    /* scene-level TLAS over face AABBs — the algorithmic win the Python
+     * engine lacks (its Scene.intersect is a brute-force all-faces loop,
+     * scene.py:492-508). linear_scan=1 (request params.linear_scan)
+     * disables it for A/B validation. */
+    BvhC tlas;
+    uint8_t linear_scan;
+    uint8_t mesh_flat_normals;  /* --mesh-flat-normals passthrough */
+
     int max_strata;             /* max n_strata over sources (tally dims) */
     int max_pol;                /* max n_pol over sources */
 
@@ -189,12 +203,24 @@ static inline double scene_filter_alpha(const SceneC *s, int body_index,
     return fa ? fa[lam_idx] : 0.0;
 }
 
+/* Canonical geometric normal of a face at a surface point (analytic
+ * primitive normal, or the mesh's relocated winding-aligned normal).
+ * Multiply by outward_sign for normal_out_of_solid. */
+static inline kvec3 face_normal_canonical(const FaceC *f, kvec3 p) {
+    if (f->surf.kind == SURF_MESH)
+        return mesh_normal(f->mesh, p);
+    return surf_normal(&f->surf, p);
+}
+
 /* Nearest contained hit of one face — port of AnalyticFace.intersect
  * (surfaces.py:821-845): candidates filtered by t > t_eps (100 nm
  * self-intersection guard, see the comment there), sorted ascending,
- * first trim-contained root wins. Returns +INF on miss. */
+ * first trim-contained root wins. Mesh faces go straight to the triangle
+ * BLAS (MeshFace.intersect). Returns +INF on miss. */
 static inline double face_intersect(const FaceC *f, kvec3 o, kvec3 d) {
     const double t_eps = 1e-7;
+    if (f->surf.kind == SURF_MESH)
+        return mesh_intersect(f->mesh, o, d);
     double t[SURF_K_MAX];
     int K = surf_roots(&f->surf, o, d, t);
     for (int i = 0; i < K; i++)
@@ -216,15 +242,50 @@ static inline double face_intersect(const FaceC *f, kvec3 o, kvec3 d) {
     return INFINITY;
 }
 
-/* Nearest hit across all faces — port of Scene.intersect (scene.py:492-508).
- * Linear scan in phase A; the phase-C TLAS replaces the loop body. */
+/* Nearest hit across all faces — the semantics of Scene.intersect
+ * (scene.py:492-508), accelerated by the face-level TLAS. The linear
+ * fallback stays as the A/B validation path (request params.linear_scan;
+ * parity test asserts identical results). */
 static inline double scene_intersect(const SceneC *s, kvec3 o, kvec3 d,
                                      int32_t *fid_out) {
     double best_t = INFINITY;
     int32_t best_f = -1;
-    for (int32_t fid = 0; fid < s->n_faces; fid++) {
-        double t = face_intersect(&s->faces[fid], o, d);
-        if (t < best_t) { best_t = t; best_f = fid; }
+    if (s->linear_scan || !s->tlas.nodes) {
+        for (int32_t fid = 0; fid < s->n_faces; fid++) {
+            double t = face_intersect(&s->faces[fid], o, d);
+            if (t < best_t) { best_t = t; best_f = fid; }
+        }
+        *fid_out = best_f;
+        return best_t;
+    }
+    kvec3 inv = v3(1.0 / d.x, 1.0 / d.y, 1.0 / d.z);
+    int32_t stack[BVH_STACK_MAX];
+    int sp = 0;
+    stack[sp++] = 0;
+    while (sp > 0) {
+        const BvhNode *nd = &s->tlas.nodes[stack[--sp]];
+        if (!bvh_ray_box(o, inv, best_t, nd->bbmin, nd->bbmax, 1e-7))
+            continue;
+        if (nd->left < 0) {
+            for (int32_t i = 0; i < nd->count; i++) {
+                int32_t fid = s->tlas.order[nd->start + i];
+                double t = face_intersect(&s->faces[fid], o, d);
+                if (t < best_t) { best_t = t; best_f = fid; }
+            }
+        } else {
+            /* depth bound: a median-split tree over n faces is ~log2(n)
+             * deep; 128 slots cover any sane scene (guarded regardless) */
+            if (sp + 2 > BVH_STACK_MAX) {
+                for (int32_t fid = 0; fid < s->n_faces; fid++) {
+                    double t = face_intersect(&s->faces[fid], o, d);
+                    if (t < best_t) { best_t = t; best_f = fid; }
+                }
+                *fid_out = best_f;
+                return best_t;
+            }
+            stack[sp++] = nd->left;
+            stack[sp++] = nd->right;
+        }
     }
     *fid_out = best_f;
     return best_t;

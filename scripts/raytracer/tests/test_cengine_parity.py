@@ -291,6 +291,34 @@ def test_thread_count_invariance(tmp_path):
             assert abs(st[k] - v) <= max(1e-9 * abs(v), 1e-12), k
 
 
+def test_tlas_matches_linear_scan(tmp_path, monkeypatch):
+    """The scene TLAS must be a pure accelerator: identical detector cube
+    and ledger vs the brute-force linear scan (the phase-C analogue of
+    test_mesh_bvh's BVH == brute force gate), on a real multi-face
+    geometry."""
+    model_json = REPO / "geometry" / "lens_pcx" / "model.json"
+    if not model_json.exists():
+        pytest.skip("geometry/lens_pcx not extracted")
+    r_tlas = run_engine(model_json, tmp_path / "case_tlas", "c")
+    monkeypatch.setenv("MIEWB_CENGINE_LINEAR", "1")
+    r_lin = run_engine(model_json, tmp_path / "case_linear", "c")
+    import h5py
+    with h5py.File(next((tmp_path / "case_tlas" / "detectors").glob(
+            "*.h5")), "r") as h:
+        cube_t = h["spectral_cube_mean"][...]
+    with h5py.File(next((tmp_path / "case_linear" / "detectors").glob(
+            "*.h5")), "r") as h:
+        cube_l = h["spectral_cube_mean"][...]
+    assert np.array_equal(cube_t, cube_l), \
+        "TLAS changed results vs linear scan"
+    s_t = r_tlas["audit"]["per_seed"][0]["sources"]
+    s_l = r_lin["audit"]["per_seed"][0]["sources"]
+    for sname in s_t:
+        for k, v in s_t[sname].items():
+            assert abs(s_l[sname][k] - v) <= max(1e-12 * abs(v), 1e-15), \
+                "%s.%s" % (sname, k)
+
+
 def test_routing_reasons(tmp_path):
     """--engine auto routes deterministically and records the reason."""
     model_json = cengine_scenes.write_scene("c_plate", tmp_path / "g")

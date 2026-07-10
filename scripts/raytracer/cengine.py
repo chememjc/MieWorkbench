@@ -44,6 +44,7 @@ PORTED = frozenset({
     "surface:asphere",          # phase B
     "coating",                  # phase B (TMM per-ray; tables per-lam)
     "polarizer",                # phase B
+    "surface:mesh",             # phase C (triangle BLAS)
 })
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -148,22 +149,82 @@ def choose_engine(args, scene):
 # ---------------------------------------------------------------------------
 # request building
 # ---------------------------------------------------------------------------
-def _surface_spec(rec_surface):
-    """Pass the contract's analytic surface dict through (already SI
-    metres); the C engine validates the type itself."""
-    return rec_surface
+def _surface_spec(face_rec, geometry_dir):
+    """The contract's analytic surface dict (already SI metres); mesh
+    faces become {"type": "mesh", "stl": <abs path>} — the C engine reads
+    the binary STL directly."""
+    surf = face_rec["surface"]
+    if surf["type"] == "mesh":
+        stl = face_rec.get("mesh_stl") or ""
+        path = Path(geometry_dir) / stl if geometry_dir else None
+        if path is None or not path.exists():
+            raise SystemExit(
+                "cengine: mesh face %s: STL %r not found under %s"
+                % (face_rec["id"], stl, geometry_dir))
+        return {"type": "mesh", "stl": str(path)}
+    return surf
 
 
-def _face_entry(fid, face_rec, body_index, det_index, coat_index=-1):
+def _face_aabb(face_rec, geometry_dir):
+    """Conservative world AABB [[lo],[hi]] for the scene TLAS (plan D5):
+    union of the trim-polyline bbox and the face's own STL bbox (the STL
+    tracks the true surface to chord tolerance), padded; analytic
+    full-primitive bounds when no STL exists (synthetic test scenes).
+    Returns None for 'unknown' — the C engine then never culls the face
+    (always correct, just unaccelerated)."""
+    pts = [np.asarray(lp, dtype=float)
+           for lp in face_rec.get("trim_polylines_xyz") or [] if len(lp)]
+    lo = np.full(3, np.inf)
+    hi = np.full(3, -np.inf)
+    if pts:
+        allp = np.concatenate(pts)
+        lo = np.minimum(lo, allp.min(axis=0))
+        hi = np.maximum(hi, allp.max(axis=0))
+    stl = face_rec.get("mesh_stl") or ""
+    stl_path = Path(geometry_dir) / stl if (geometry_dir and stl) else None
+    if stl_path is not None and stl_path.exists():
+        from .mesh import read_stl
+        tris, _ = read_stl(stl_path)
+        if len(tris):
+            v = tris.reshape(-1, 3)
+            lo = np.minimum(lo, v.min(axis=0))
+            hi = np.maximum(hi, v.max(axis=0))
+    else:
+        surf = face_rec["surface"]
+        t = surf["type"]
+        if t == "sphere":
+            c = np.asarray(surf["center"], dtype=float)
+            lo = np.minimum(lo, c - surf["radius"])
+            hi = np.maximum(hi, c + surf["radius"])
+        elif t == "torus":
+            c = np.asarray(surf["center"], dtype=float)
+            rr = surf["major_r"] + surf["minor_r"]
+            lo = np.minimum(lo, c - rr)
+            hi = np.maximum(hi, c + rr)
+        elif t != "plane":
+            # cylinder/cone/asphere without an STL: rim polylines do not
+            # bound the surface bulge in general — no culling
+            return None
+    if not (np.all(np.isfinite(lo)) and np.all(np.isfinite(hi))):
+        return None
+    diag = float(np.linalg.norm(hi - lo))
+    pad = 1e-3 * diag + 1e-6      # chord-error + epsilon margin
+    return [(lo - pad).tolist(), (hi + pad).tolist()]
+
+
+def _face_entry(fid, face_rec, body_index, det_index, coat_index=-1,
+                geometry_dir=None):
     return {
         "id": face_rec["id"],
         "body": int(body_index),
-        "surface": _surface_spec(face_rec["surface"]),
+        "surface": _surface_spec(face_rec, geometry_dir),
         "orientation_outward": bool(face_rec["orientation_outward"]),
         "area_m2": float(face_rec["area_m2"] or 0.0),
-        "trim": face_rec["trim_polylines_xyz"],
+        "trim": face_rec["trim_polylines_xyz"]
+                if face_rec["surface"]["type"] != "mesh" else [],
         "detector": int(det_index),
         "coating": int(coat_index),
+        "aabb": _face_aabb(face_rec, geometry_dir),
     }
 
 
@@ -306,10 +367,12 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
             }
         bodies.append(entry)
 
+    geometry_dir = Path(args.model_json).parent
     faces = [
         _face_entry(fid, scene.face_records[fid], scene.face_body[fid],
                     det_index.get(fid, -1),
-                    coat_index.get(scene.face_coatings.get(fid), -1))
+                    coat_index.get(scene.face_coatings.get(fid), -1),
+                    geometry_dir=geometry_dir)
         for fid in range(len(scene.faces))
     ]
 
@@ -380,6 +443,9 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
             "batch_size": 1 << 20,
             "threads": 0 if args.workers == "auto"
                        else resolve_workers(args.workers),
+            "mesh_flat_normals": bool(args.mesh_flat_normals),
+            "linear_scan": bool(os.environ.get("MIEWB_CENGINE_LINEAR")
+                                == "1"),
         },
         "lams_m": [float(x) for x in lams],
         "ambient_n_re": [float(x) for x in np.real(amb)],
