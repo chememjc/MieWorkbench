@@ -228,19 +228,24 @@ def test_real_geometry_parity(name, tmp_path):
         rel_close(py_rep["detected_W"][label], c_rep["detected_W"][label],
                   0.03, "%s detected_W %s" % (name, label))
 
-    # spatial: irradiance-weighted centroid within ~2 px (catches e.g. a
-    # wrong calcite walk-off displacement that power totals would miss)
-    py_cube, _, _ = load_cube(py["case_dir"])
-    c_cube, _, _ = load_cube(cc["case_dir"])
-    py_img = py_cube.sum(axis=0)
-    c_img = c_cube.sum(axis=0)
-    if py_img.sum() > 0 and c_img.sum() > 0:
+    # spatial: irradiance-weighted centroid within ~2 px per detector
+    # (catches e.g. a wrong calcite walk-off displacement that power
+    # totals would miss); scenes may have several detectors (hot_mirror)
+    import h5py
+    for h5p in sorted((py["case_dir"] / "detectors").glob("*.h5")):
+        with h5py.File(h5p, "r") as h:
+            py_img = h["spectral_cube_mean"][...].sum(axis=0)
+        with h5py.File(cc["case_dir"] / "detectors" / h5p.name, "r") as h:
+            c_img = h["spectral_cube_mean"][...].sum(axis=0)
+        if py_img.sum() <= 0 or c_img.sum() <= 0:
+            continue                    # empty arm at these test params
         yy, xx = np.mgrid[0:py_img.shape[0], 0:py_img.shape[1]]
         for ax, gr in (("x", xx), ("y", yy)):
             pc = (py_img * gr).sum() / py_img.sum()
             ccn = (c_img * gr).sum() / c_img.sum()
             assert abs(pc - ccn) < 2.0, \
-                "%s centroid_%s %.2f vs %.2f px" % (name, ax, pc, ccn)
+                "%s %s centroid_%s %.2f vs %.2f px" % (
+                    name, h5p.name, ax, pc, ccn)
 
 
 _SURF_SPECS = {
