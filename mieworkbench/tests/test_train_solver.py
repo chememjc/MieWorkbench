@@ -462,6 +462,52 @@ def test_exit_frames_deviate_port():
     assert abs(d[1]) < 1e-12
 
 
+def test_flip_faces_element_backward_with_exit_toward_beam():
+    # flipped lens: the (former) exit surface faces the beam; distance
+    # measures to that surface; the body extends AWAY from the parent
+    rec = dict(LENS, flip=True)
+    pl = ts.place_chained(X_FRAME, rec, {})
+    # local exit (2,0,0) is now the beam-side vertex, landing at x=10;
+    # the body is rotated 180 about up, so local +x maps to world -x
+    exit_w = ts.transform_point(pl, [2.0, 0.0, 0.0])
+    entry_w = ts.transform_point(pl, [-2.0, 0.0, 0.0])
+    assert np.allclose(exit_w, [10.0, 0.0, 0.0], atol=1e-12)
+    assert np.allclose(entry_w, [14.0, 0.0, 0.0], atol=1e-12)
+    axis_w = ts.transform_vector(pl, [1.0, 0.0, 0.0])
+    assert np.allclose(axis_w, [-1.0, 0.0, 0.0], atol=1e-12)
+
+
+def test_flip_passthrough_frame_continues_past_far_surface():
+    rec = dict(LENS, flip=True)
+    pl = ts.place_chained(X_FRAME, rec, {})
+    frames = ts.exit_frames(rec, pl, X_FRAME)
+    # downstream continues from the far (former entry) vertex at x=14
+    assert np.allclose(frames["out"]["origin"], [14.0, 0.0, 0.0],
+                       atol=1e-12)
+    assert np.allclose(frames["out"]["dir"], [1, 0, 0], atol=1e-12)
+
+
+def test_explicit_deviation_beats_specular_reflect_for_default_port():
+    # a grating: has a reflect plane AND an explicit diffraction deviation
+    rec = {"label": "G", "mode": "chained", "ref": "S", "fold": True,
+           "folded": True, "fold_deviation": "150", "fold_azimuth": "0",
+           "local": {"entry": [0, 0, 0], "exit": [0, 0, 0],
+                     "axis": [1, 0, 0], "up": [0, 0, 1],
+                     "reflect_plane": {"point": [0, 0, 0],
+                                       "normal": [-1, 0, 0]}}}
+    assert ts._default_port(rec) == "deviate"
+    pl = ts.place_chained(X_FRAME, dict(rec, distance="10",
+                                        tilt_ry="-15"), {})
+    frames = ts.exit_frames(rec, pl, X_FRAME, {})
+    assert "reflect" in frames and "deviate" in frames
+    # deviate origin anchors on the reflect-plane hit, not the entry vertex
+    assert np.allclose(frames["deviate"]["origin"],
+                       frames["reflect"]["origin"], atol=1e-9)
+    d = frames["deviate"]["dir"]
+    assert np.isclose(ts.vdot(d, [1, 0, 0]), math.cos(math.radians(150)),
+                      atol=1e-12)
+
+
 # ---------------------------------------------------------------------------
 # sort_chain / downstream_of / solve_chain
 # ---------------------------------------------------------------------------

@@ -35,12 +35,13 @@ TRAIN_PROPS = {
     "miewb_train_rot_order": "rot_order",
     "miewb_train_pos_rot_order": "pos_rot_order",
     "miewb_train_pivot": "pivot",
+    "miewb_train_flip": "flip",
     "miewb_train_fold": "fold",
     "miewb_train_folded": "folded",
     "miewb_train_fold_deviation": "fold_deviation",
     "miewb_train_fold_azimuth": "fold_azimuth",
 }
-BOOL_FIELDS = ("fold", "folded")
+BOOL_FIELDS = ("fold", "folded", "flip")
 PORTS_PROP = "miewb_train_ports"
 EXPR_PREFIX = "miewb_expr_"
 

@@ -556,6 +556,7 @@ def fold_rotation(incoming_dir, mirror_point, mirror_normal):
 #     "distance": expr, "decenter_x": expr, "decenter_y": expr,
 #     "tilt_rx": expr, "tilt_ry": expr, "tilt_rz": expr,
 #     "rot_order": "xyz", "pos_rot_order": "pos_first"|"rot_first",
+#     "flip": bool,                     beam-side surface = local exit
 #     "pivot": "entrance"|"center"|"exit"|"x,y,z",
 #     "fold": bool, "folded": bool,
 #     "fold_deviation": expr, "fold_azimuth": expr,   fold/deviate ports
@@ -580,6 +581,13 @@ def _local(rec):
     if "exit" not in (rec.get("local") or {}) and "entry" in (
             rec.get("local") or {}):
         loc["exit"] = loc["entry"]
+    if rec.get("flip"):
+        # flipped element: its (former) exit surface faces the beam. Swap
+        # the port vertices and reverse the local axis; _beam_R then
+        # orients the body 180 deg about `up` (deterministic), and the
+        # chain distance still measures to the actual beam-side vertex.
+        loc = dict(loc, entry=list(loc["exit"]), exit=list(loc["entry"]),
+                   axis=[-c for c in loc["axis"]])
     return loc
 
 
@@ -838,24 +846,40 @@ def exit_frames(rec, placement, incoming_frame, variables=None):
             up_out = reflect_dir(up_in, n_w)
             frames["reflect"] = make_frame(hit, d_out, up_out)
 
-    if rec.get("fold") and not rp:
+    # a "deviate" port exists for any element with an explicit
+    # fold_deviation (non-specular redirects: gratings, prisms) and for
+    # plane-less folds. An explicit deviation coexists with (and, for
+    # chaining defaults, beats) the specular reflect port — a grating's
+    # diffracted beam is NOT the mirror reflection.
+    has_dev = rec.get("fold_deviation") not in (None, "")
+    if has_dev or (rec.get("fold") and not rp):
+        origin = frames["reflect"]["origin"] if rp else entry_w
         dev = _edge_value(rec, "fold_deviation", variables or {}, 90.0)
         az = _edge_value(rec, "fold_azimuth", variables or {}, 0.0)
         if unfolded or abs(dev) < EPS:
-            frames["deviate"] = make_frame(entry_w, d_in, up_in)
+            frames["deviate"] = make_frame(origin, d_in, up_in)
         else:
             u, v, d = frame_basis(incoming_frame)
             axis = mat3_vec(axis_angle_matrix3(d, az), u)
             R = axis_angle_matrix3(axis, dev)
             frames["deviate"] = make_frame(
-                entry_w, mat3_vec(R, d), mat3_vec(R, v))
+                origin, mat3_vec(R, d), mat3_vec(R, v))
     return frames
 
 
 def _default_port(rec):
     loc = _local(rec)
+    if rec.get("fold_deviation") not in (None, ""):
+        return "deviate"
+    rp = loc.get("reflect_plane")
     if rec.get("fold"):
-        return "reflect" if loc.get("reflect_plane") else "deviate"
+        return "reflect" if rp else "deviate"
+    if rp and list(loc["entry"]) == list(loc["exit"]):
+        # a pure mirror (coincident ports + a reflective surface):
+        # chaining "downstream" of it means the reflected beam — the
+        # pass-through port of an opaque mirror is physically meaningless
+        # as a default (beamsplitters have entry != exit and keep "out")
+        return "reflect"
     return "out"
 
 

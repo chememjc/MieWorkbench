@@ -236,8 +236,11 @@ def test_fold_about_surface_marks_and_reflects():
     # chain the mirror as a plain element first (not yet a fold), tilted
     project.set_chain("FM", {"ref": "L1", "distance": "20",
                              "tilt_ry": "-45"})
-    project.set_chain("DET", {"ref": "FM", "distance": "15"})
-    # DET currently continues straight through (transmit port)
+    # DET explicitly on the pass-through port (a mirror's DEFAULT port is
+    # now reflect; "out" models the legacy straight-bench layout that
+    # fold_about_surface exists to convert)
+    project.set_chain("DET", {"ref": "FM", "port": "out",
+                              "distance": "15"})
     assert np.allclose(pos_of(project, "DET"), [54, 0, 0], atol=1e-9)
 
     project.fold_about_surface("FM")

@@ -2,16 +2,19 @@
 # =============================================================================
 # make_demos.py — build the demos/ gallery THROUGH THE GUI'S OWN OP PATH.
 #
-# Interpreter: system python3 (stdlib only). Every scene is assembled with
-# the exact op sequence the GUI issues (mieworkbench.core.fcclient against
-# the persistent fc_server worker): new_document -> import_primitive ->
-# set_spreadsheet -> rebuild_primitive -> set_placement -> set_property ->
-# save. That is deliberate: building the gallery this way exercises the
-# same code path as interactive editing (and doubles as the UX shakedown
-# documented in demos/UXNOTES.md).
+# Interpreter: the GUI venv (env/bin/python) — each scene is assembled by
+# a real mieworkbench.core.project.Project session over the persistent
+# fc_server worker, positioned through the OPTICAL-TRAIN chain API
+# (set_chain / fold_mirror / global variables in the miewb_vars sheet)
+# exactly as interactive editing would. Every demo self-checks its built
+# placements (Demo.expect) and validates its train before save; the
+# committed demos/baselines/ + scripts/run_demo_equivalence.py gate the
+# rebuild against the pre-train gallery. The UX shakedowns live in
+# demos/UXNOTES.md (absolute-pose era) and demos/UXNOTES_ROUND2.md
+# (train era).
 #
-#   python3 scripts/make_demos.py [--demo NAME|all] [--outdir demos]
-#                                 [--no-pack] [--list]
+#   env/bin/python scripts/make_demos.py [--demo NAME|all] [--outdir demos]
+#                                        [--no-pack] [--list]
 #
 # Each demo produces demos/<name>.FCStd plus (default) a packed
 # demos/<name>.MieWB embedding the property library and a quick-preset
@@ -64,6 +67,14 @@ def rot_z(deg):
     return [0.0, 0.0, math.sin(half), math.cos(half)]
 
 
+def _expr(value):
+    """Chain-field value -> stored string (numbers canonicalized,
+    variable expressions verbatim)."""
+    if isinstance(value, str):
+        return value
+    return "%.17g" % float(value)
+
+
 def unit(deg):
     """Unit vector in the x-y plane at `deg` from +x."""
     return (math.cos(math.radians(deg)), math.sin(math.radians(deg)))
@@ -71,6 +82,35 @@ def unit(deg):
 
 def ang(vec):
     return math.degrees(math.atan2(vec[1], vec[0]))
+
+
+def deviate_params(d_in, d_out):
+    """(deviation_deg, deviate_azimuth_deg, mirror_azimuth_deg) for a
+    planar beam turn from direction `d_in` (x-y tuple) into `d_out`.
+
+    Two azimuth conventions coexist in the chain model (both validated
+    by the solver tests):
+      * deviate ports rotate the frame about the incoming u axis spun by
+        `fold_azimuth` about the beam — in-plane turns need axis +/-z,
+        i.e. deviate azimuth +/-90 (sign from the turn handedness);
+      * fold MIRRORS take azimuth = the transverse direction the beam
+        folds TOWARD (0 = +u, 90 = +v, 180 = -u), from which
+        Demo.fold_mirror derives the plate tilt.
+    """
+    di = (d_in[0], d_in[1])
+    do = (d_out[0], d_out[1])
+    ni = math.hypot(*di)
+    no = math.hypot(*do)
+    di = (di[0] / ni, di[1] / ni)
+    do = (do[0] / no, do[1] / no)
+    dot = max(-1.0, min(1.0, di[0] * do[0] + di[1] * do[1]))
+    deviation = math.degrees(math.acos(dot))
+    cross_z = di[0] * do[1] - di[1] * do[0]
+    # for planar scenes (up = +z): u = z x d = left of travel; a
+    # counterclockwise turn (+cross) folds toward +u
+    deviate_az = 90.0 if cross_z >= 0.0 else -90.0
+    mirror_az = 0.0 if cross_z >= 0.0 else 180.0
+    return deviation, deviate_az, mirror_az
 
 
 def _sellmeier_cache():
@@ -129,59 +169,143 @@ def paraxial_image_x(surfaces, x_obj, lam_nm):
 # Demo assembly wrapper around the GUI op set
 # ---------------------------------------------------------------------------
 class Demo:
+    """Assembles a demo scene through the SAME session object the GUI
+    uses (mieworkbench.core.project.Project over the persistent worker):
+    import_primitive -> set_element_parameters -> set_chain/set_property
+    -> save. Elements are positioned through the OPTICAL-TRAIN chain API
+    wherever a beam relationship exists (`chain`/`fold_mirror`), with
+    `add` kept for anchored elements (and for make_library_tests.py,
+    which reuses this class unchanged)."""
+
     def __init__(self, fc, fcstd_path):
+        from mieworkbench.core.project import Project
         self.fc = fc
         self.path = str(fcstd_path)
-        st = fc.request("new_document", {"path": self.path})
-        self.doc = st["doc"]
+        self.project = Project()
+        self.project._fc = fc              # share the persistent worker
+        self.project.new_document(self.path)
+        self.doc = self.project.doc
         self.notes = []
+        self._var_row = 0
         self.detector_pins = []   # [(body_label, beam_dir)] see pin_detector
         self.grating_pins = []    # [(body_label, beam_dir, value)]
 
     def note(self, text):
         self.notes.append(text)
 
-    def add(self, kind, label, pos=(0.0, 0.0, 0.0), rot_deg=None, quat=None,
-            params=None, props=None):
-        """Import a primitive and configure it exactly as the GUI would.
-        rot_deg: rotation about world z (the demos are planar); quat wins
-        if given. params: {alias: value} in the kind's spec units.
-        props: {prop: value} applied to the element's PRIMARY body, or
-        {(body_label, prop): value} for multi-body elements."""
-        self.fc.request("import_primitive",
-                        {"doc": self.doc,
-                         "path": str(PRIMDIR / (kind + ".FCStd")),
-                         "label": label})
+    # -- global variables ----------------------------------------------------
+    def variable(self, name, value, vmin=None, vmax=None, nstep=None,
+                 enabled=False, comment=""):
+        """Add a row to the miewb_vars sheet: value cell aliased `name`
+        (unitless), sweep metadata in the __min/__max/__n/__on columns.
+        `value` may be an expression over other variables ("gap*2")."""
+        if self._var_row == 0:
+            self.fc.request("create_sheet",
+                            {"doc": self.doc, "label": "miewb_vars"})
+        self._var_row += 1
+        r = self._var_row
+        cells = [("A%d" % r, str(comment or name), None),
+                 ("B%d" % r, "=%s" % value, name)]
+        if vmin is not None:
+            cells.append(("C%d" % r, "=%.10g" % vmin, "%s__min" % name))
+        if vmax is not None:
+            cells.append(("D%d" % r, "=%.10g" % vmax, "%s__max" % name))
+        if nstep is not None:
+            cells.append(("E%d" % r, "=%d" % nstep, "%s__n" % name))
+        cells.append(("F%d" % r, "=%d" % (1 if enabled else 0),
+                      "%s__on" % name))
+        for cell, raw, alias in cells:
+            req = {"doc": self.doc, "sheet": "miewb_vars",
+                   "cell": cell, "raw": raw}
+            if alias:
+                req["alias"] = alias
+            self.fc.request("set_cell", req)
+        self.project._refetch_structure()
+        return name
+
+    # -- element creation ------------------------------------------------------
+    def _import(self, kind, label, params=None, props=None):
+        self.project.import_primitive(
+            str(PRIMDIR / (kind + ".FCStd")), label)
         if params:
             spec = primitivelib.PRIMITIVES[kind]["params"]
+            values = {}
             for alias, value in params.items():
-                raw = primitivelib.sheet_raw(float(value),
-                                             spec[alias]["unit"])
-                self.fc.request("set_spreadsheet",
-                                {"doc": self.doc,
-                                 "sheet": "dim_%s" % label,
-                                 "alias": alias, "raw": raw})
-            self.fc.request("rebuild_primitive",
-                            {"doc": self.doc, "group": label})
-        q = quat if quat is not None else rot_z(rot_deg or 0.0)
-        if list(pos) != [0.0, 0.0, 0.0] or q != [0.0, 0.0, 0.0, 1.0]:
-            # body=label matches single-body elements; miewb_group matches
-            # every member of multi-body ones (rigid move)
-            self.fc.request("set_placement",
-                            {"doc": self.doc, "body": label,
-                             "pos_mm": list(pos), "quat": q})
+                if isinstance(value, str):
+                    # variable-driven dim: FreeCAD expression over the
+                    # globals sheet, e.g. "<<miewb_vars>>.stop_d"
+                    values[alias] = "=%s" % value
+                else:
+                    values[alias] = primitivelib.sheet_raw(
+                        float(value), spec[alias]["unit"])
+            self.project.set_element_parameters(
+                "dim_%s" % label, values, rebuild_group=label)
         for key, value in (props or {}).items():
             body, prop = key if isinstance(key, tuple) else (label, key)
-            self.fc.request("set_property",
-                            {"doc": self.doc, "body": body,
-                             "name": prop, "value": value})
+            self.project.set_property(body, prop, value)
         return label
+
+    def add(self, kind, label, pos=(0.0, 0.0, 0.0), rot_deg=None, quat=None,
+            params=None, props=None):
+        """Import a primitive ANCHORED at an absolute pose (the pre-train
+        idiom; still right for sources and one-off placements).
+        rot_deg: rotation about world z; quat wins if given."""
+        from mieworkbench.core.transforms import Operation
+        self._import(kind, label, params, props)
+        q = quat if quat is not None else rot_z(rot_deg or 0.0)
+        if list(pos) != [0.0, 0.0, 0.0] or q != [0.0, 0.0, 0.0, 1.0]:
+            body = self.project.body(label)["name"]
+            self.project.apply_operation(body, Operation(
+                "set_placement", {"pos_mm": list(pos), "quat": list(q)}))
+        return label
+
+    def chain(self, kind, label, ref, distance, port=None, params=None,
+              props=None, **edge):
+        """Import a primitive and CHAIN it `distance` mm down-beam of
+        `ref` (vertex-to-vertex along the beam; expressions over the
+        miewb_vars globals welcome). Extra edge fields pass through:
+        decenter_x/y, tilt_rx/ry/rz, flip, fold, folded, fold_deviation,
+        fold_azimuth, rot_order, pivot..."""
+        self._import(kind, label, params, props)
+        full = {"ref": ref, "distance": _expr(distance)}
+        if port:
+            full["port"] = port
+        for k, v in edge.items():
+            full[k] = _expr(v) if not isinstance(v, bool) else v
+        self.project.set_chain(label, full, text="Chain %s" % label)
+        return label
+
+    def fold_mirror(self, label, ref, distance, deviation=90.0,
+                    azimuth=0.0, kind="mirror_flat", port=None,
+                    params=None, props=None):
+        """A chained FOLD mirror: deviation/azimuth-driven orientation
+        (rot_order zyx, tilt_ry = -(180-deviation)/2 — the same math as
+        Project.insert_fold_mirror), unfoldable from the GUI."""
+        tilt = "-(180 - (%s)) / 2" % _expr(deviation) \
+            if isinstance(deviation, str) \
+            else "%.10g" % (-(180.0 - float(deviation)) / 2.0)
+        return self.chain(kind, label, ref, distance, port=port,
+                          params=params, props=props,
+                          fold=True, folded=True, rot_order="zyx",
+                          tilt_rz=azimuth, tilt_ry=tilt)
 
     def body_labels(self, group):
         st = self.fc.request("get_structure", {"doc": self.doc})
         return [b["label"] for b in st["bodies"]
                 if (b.get("properties", {}).get("miewb_group", {})
                     .get("value")) == group]
+
+    def expect(self, label, pos, tol=1e-6):
+        """Self-check: assert the element's primary body sits at `pos`
+        (mm). Catches chain-arithmetic slips at BUILD time instead of at
+        the equivalence gate."""
+        body = self.project.train().primary_body_name(label)
+        cur = self.project.body_states[body].current.to_dict()["pos_mm"]
+        err = max(abs(c - p) for c, p in zip(cur, pos))
+        if err > tol:
+            raise AssertionError(
+                "%s: expected %s, built %s (err %.3g mm)"
+                % (label, list(pos), cur, err))
 
     def pin_detector(self, label, beam_dir):
         """Record that `label`'s recording face must be pinned in
@@ -202,7 +326,14 @@ class Demo:
         self.grating_pins.append((label, tuple(beam_dir), value))
 
     def save(self):
-        self.fc.request("save", {"doc": self.doc})
+        # run the chain validator first: a demo must never ship with a
+        # cycle, dangling ref or unresolvable expression
+        problems = self.project.train().validate()
+        errors = [msg for sev, msg in problems if sev == "error"]
+        if errors:
+            raise AssertionError("train validation failed:\n  %s"
+                                 % "\n  ".join(errors))
+        self.project.save()
 
 
 # ---------------------------------------------------------------------------
@@ -210,96 +341,139 @@ class Demo:
 # ---------------------------------------------------------------------------
 def demo_beam_expander(d):
     """3x Keplerian beam expander: two BK7 plano-convex lenses (f=50 +
-    f=150 at 650 nm), spacing f1+f2, convex sides outward."""
+    f=150 at 650 nm), spacing f1+f2, convex sides outward. Train-built:
+    everything chains down the beam; `sep` and `screen_dist` are live
+    variables."""
     lam = 650.0
     n = n_glass("bk7", lam)
     f1, f2 = 50.0, 150.0
     r1, r2 = (n - 1.0) * f1, (n - 1.0) * f2
+    ct1, ct2 = 3.0, 5.0
+    d.variable("sep", f1 + f2, 150.0, 300.0, 6,
+               comment="lens separation, outer vertex to outer vertex "
+                       "(f1+f2 for a collimated output), mm")
+    d.variable("screen_dist", 40.0, 10.0, 150.0, 6,
+               comment="L2 outer vertex to screen, mm")
     d.add("laser_collimated", "Laser", pos=(-30, 0, 0),
           params={"diameter": 3.0},
           props={"lambdac": lam, "coherent": False})
-    d.add("lens_pcx", "L1", pos=(0, 0, 0),
-          params={"R_front": r1, "aperture": 12.0, "ct": 3.0})
-    # convex side toward the expanded output: flip 180 deg
-    d.add("lens_pcx", "L2", pos=(f1 + f2, 0, 0), rot_deg=180.0,
-          params={"R_front": r2, "aperture": 30.0, "ct": 5.0})
-    d.add("detector_plane", "Screen", pos=(f1 + f2 + 40.0, 0, 0),
-          params={"width": 40.0})
-    d.note("beam_expander: all dropdown/params; flipping L2 needed a "
-           "180-deg rotation with no 'flip element' affordance")
+    d.chain("lens_pcx", "L1", "Laser", 30.0,
+            params={"R_front": r1, "aperture": 12.0, "ct": ct1})
+    # convex side toward the expanded output: the flip edge field (the
+    # old build hand-rolled a 180-deg rotation). Vertex-to-vertex gap =
+    # sep minus both center thicknesses.
+    d.chain("lens_pcx", "L2", "L1", "sep - %.10g" % (ct1 + ct2),
+            flip=True,
+            params={"R_front": r2, "aperture": 30.0, "ct": ct2})
+    d.chain("detector_plane", "Screen", "L2", "screen_dist",
+            params={"width": 40.0})
+    d.expect("L1", (0, 0, 0))
+    d.expect("L2", (f1 + f2, 0, 0))
+    d.expect("Screen", (f1 + f2 + 40.0, 0, 0))
+    d.note("beam_expander: linear chain; 'flip' replaced the hand-rolled "
+           "180-deg rotation of the old build")
     return {"preset": "quick"}
 
 
-def demo_newtonian(d):
-    """150 mm f/6 Newtonian: parabolic primary (rfl=900), D-shaped 45-deg
-    diagonal 210 mm before focus, detector at the folded focal plane."""
-    rfl, ap = 900.0, 150.0
-    L = 210.0                       # diagonal center -> focal plane
-    xd = -(rfl - L)                 # diagonal position on axis
+def _newtonian_like(d, rfl, ap, L, mirror_t, diag_w, eye_w):
+    """Shared Newtonian topology: star -> parabolic primary (retro
+    reflect) -> flat diagonal (unfoldable 90-deg fold) -> eyepiece."""
+    d.variable("eye_dist", L, 150.0, 300.0, 5,
+               comment="diagonal center to eyepiece plane, mm")
     d.add("laser_collimated", "Star", pos=(-rfl - 60.0, 0, 0),
           params={"diameter": ap * 0.98},
           props={"lambdac": 550.0, "lambdamin": 450.0,
                  "lambdamax": 650.0, "coherent": False})
-    d.add("mirror_parabolic", "Primary",
-          params={"rfl": rfl, "aperture": ap, "thickness": 15.0})
-    # fold the converging cone (traveling -x) into +y: normal (1,1)/sqrt2.
-    # Round flat (not mirror_d_shaped): at 45 deg a circle presents a
-    # foreshortened cone_diam/cos45 aperture, so 52 mm covers the 35 mm
-    # cone; the D-shape's chord would clip half the on-axis cone.
-    d.add("mirror_flat", "Diagonal", pos=(xd, 0, 0), rot_deg=-135.0,
-          params={"width": 52.0, "thickness": 5.0, "round_flag": 1})
-    d.add("detector_plane", "Eyepiece", pos=(xd, L, 0), rot_deg=90.0,
-          params={"width": 20.0})
-    d.note("newtonian: diagonal quaternion (-135 deg about z) had to be "
-           "computed by hand; an 'aim at element' helper would remove it")
+    d.chain("mirror_parabolic", "Primary", "Star", rfl + 60.0,
+            params={"rfl": rfl, "aperture": ap, "thickness": mirror_t})
+    # the converging cone travels -x after the primary; fold into +y.
+    # Round flat: at 45 deg a circle presents a foreshortened
+    # cone_diam/cos45 aperture (the D-shape's chord would clip the cone).
+    # Beam frame after the retro: u = -y, so 'toward +y' = azimuth 180.
+    d.fold_mirror("Diagonal", "Primary", "%.10g - eye_dist" % rfl,
+                  azimuth=180.0,
+                  params={"width": diag_w, "thickness": 5.0,
+                          "round_flag": 1})
+    d.chain("detector_plane", "Eyepiece", "Diagonal", "eye_dist",
+            params={"width": eye_w})
+    xd = -(rfl - L)
+    d.expect("Primary", (0, 0, 0))
+    d.expect("Diagonal", (xd, 0, 0))
+    d.expect("Eyepiece", (xd, L, 0))
     d.pin_detector("Eyepiece", (0.0, 1.0, 0.0))
+
+
+def demo_newtonian(d):
+    """150 mm f/6 Newtonian: parabolic primary (rfl=900), 45-deg diagonal
+    210 mm before focus, detector at the folded focal plane. The diagonal
+    is a proper FOLD element: unfold it from the train editor and the
+    eyepiece re-collinearizes onto the straight-through axis."""
+    _newtonian_like(d, rfl=900.0, ap=150.0, L=210.0, mirror_t=15.0,
+                    diag_w=52.0, eye_w=20.0)
+    d.note("newtonian: the diagonal chains as a fold (deviation 90, "
+           "azimuth 180) — no more hand-computed -135 deg quaternion")
     return {"preset": "quick"}
 
 
 def demo_dobsonian(d):
     """200 mm f/5 Dobsonian: optically a Newtonian (the mount is not an
     optical element); bigger, faster prescription than the newtonian demo."""
-    rfl, ap = 1000.0, 200.0
-    L = 250.0
-    xd = -(rfl - L)
-    d.add("laser_collimated", "Star", pos=(-rfl - 60.0, 0, 0),
-          params={"diameter": ap * 0.98},
-          props={"lambdac": 550.0, "lambdamin": 450.0,
-                 "lambdamax": 650.0, "coherent": False})
-    d.add("mirror_parabolic", "Primary",
-          params={"rfl": rfl, "aperture": ap, "thickness": 18.0})
-    d.add("mirror_flat", "Diagonal", pos=(xd, 0, 0), rot_deg=-135.0,
-          params={"width": 72.0, "thickness": 5.0, "round_flag": 1})
-    d.add("detector_plane", "Eyepiece", pos=(xd, L, 0), rot_deg=90.0,
-          params={"width": 25.0})
-    d.pin_detector("Eyepiece", (0.0, 1.0, 0.0))
+    _newtonian_like(d, rfl=1000.0, ap=200.0, L=250.0, mirror_t=18.0,
+                    diag_w=72.0, eye_w=25.0)
     return {"preset": "quick"}
 
 
 def demo_michelson(d):
-    """Michelson interferometer: 25 mm 50:50 cube, two 50-60 mm arms, one
-    mirror tilted 0.158 mrad -> ~5 straight fringes across the 10 mm
-    detector at 633 nm (pitch = lambda / (2*theta))."""
-    tilt_deg = math.degrees(633e-9 / (2.0 * 0.002) )   # 5 fringes / 10 mm
+    """Michelson interferometer on the train model: laser -> 50:50 plate
+    BS (both arms chained off its transmit/reflect ports) -> retro
+    mirrors -> screen chained down the recombined return. M1 carries the
+    fringe tilt as the live variable `m1_tilt` (lambda/(2 theta) sets the
+    pitch); arm lengths are variables too."""
+    tilt_deg = math.degrees(633e-9 / (2.0 * 0.002))   # 5 fringes / 10 mm
+    # the transmit-port origin sits where the beam exits the tilted
+    # plate's BACK face: thickness/cos(45) = 3*sqrt(2) past the center
+    bs_exit = 3.0 * math.sqrt(2.0)
+    d.variable("arm1", 60.0, 40.0, 100.0, 6,
+               comment="BS center to M1 (transmit arm), mm")
+    d.variable("arm2", 60.0, 40.0, 100.0, 6,
+               comment="BS center to M2 (reflect arm), mm")
+    d.variable("m1_tilt", "%.10g" % tilt_deg, 0.0, 0.05, 10,
+               comment="M1 fringe tilt, deg (0.00907 deg ~ 5 fringes "
+                       "across the 10 mm screen at 633 nm)")
+    d.variable("screen_arm", 60.0,
+               comment="BS center to screen (output arm), mm")
     d.add("laser_collimated", "Laser", pos=(-60, 0, 0),
           params={"diameter": 8.0},
           props={"lambdac": 633.0})          # coherent=True (default)
     # PLATE beamsplitter, not the cube: the cube's cemented 5 um gap sits
     # at 45 deg to the internal beams and bleeds ~37% of the power into
     # seam loss; the plate's coated front face splits cleanly (wedge 0 so
-    # the two arms stay parallel). Normal at 225 deg -> +x input reflects
-    # to -y, the recombined output leaves toward +y.
-    d.add("bs_plate", "BS", rot_deg=45.0,
-          params={"width": 30.0, "thickness": 3.0, "round_flag": 1,
-                  "wedge_deg": 0.0})
-    d.add("mirror_flat", "M1", pos=(60, 0, 0),
-          params={"width": 15.0, "round_flag": 1})
-    d.add("mirror_flat", "M2", pos=(0, -60, 0), rot_deg=-90.0 + tilt_deg,
-          params={"width": 15.0, "round_flag": 1})
-    d.add("detector_plane", "Screen", pos=(0, 60, 0), rot_deg=90.0,
-          params={"width": 12.0, "round_flag": 0})
-    d.note("michelson: the 0.158 mrad fringe tilt is invisible in the 3D "
-           "view; a numeric rotation readout in the transform panel helps")
+    # the two arms stay parallel). tilt_ry=45 puts the coated-face normal
+    # at 225 deg: +x input reflects to -y.
+    d.chain("bs_plate", "BS", "Laser", 60.0, tilt_ry=45.0,
+            params={"width": 30.0, "thickness": 3.0, "round_flag": 1,
+                    "wedge_deg": 0.0})
+    # fringe tilt lives on M1 (end of the transmit arm — nothing chains
+    # off its return, so the tilt perturbs no downstream frame; the OLD
+    # build tilted M2 instead, which is optically equivalent)
+    d.chain("mirror_flat", "M1", "BS", "arm1 - %.10g" % bs_exit,
+            port="transmit", tilt_ry="m1_tilt",
+            params={"width": 15.0, "round_flag": 1})
+    d.chain("mirror_flat", "M2", "BS", "arm2", port="reflect",
+            params={"width": 15.0, "round_flag": 1})
+    # the recombined output: M2's retro return passes back through the
+    # BS and lands on the screen at +y — chained straight down M2's
+    # reflect port, total path arm2 + screen_arm from the M2 surface
+    d.chain("detector_plane", "Screen", "M2", "arm2 + screen_arm",
+            port="reflect",
+            params={"width": 12.0, "round_flag": 0})
+    d.expect("BS", (0, 0, 0))
+    d.expect("M1", (60, 0, 0))
+    d.expect("M2", (0, -60, 0))
+    d.expect("Screen", (0, 60, 0))
+    d.note("michelson: both interferometer arms hang off the BS ports; "
+           "the fringe tilt is a plain variable (m1_tilt) instead of a "
+           "hand-computed quaternion")
     d.pin_detector("Screen", (0.0, 1.0, 0.0))
     return {"preset": "quick"}
 
@@ -368,22 +542,53 @@ def demo_prism_spectrometer(d):
     p_exit = _hit(p_ent, d_in, verts[2], verts[0])
     lens_c = (p_exit[0] + 40.0 * dev_dir[0], p_exit[1] + 40.0 * dev_dir[1])
     det_c = (p_exit[0] + 141.0 * dev_dir[0], p_exit[1] + 141.0 * dev_dir[1])
+
+    d.variable("cam_dist", 40.0, 20.0, 80.0, 6,
+               comment="prism exit point to camera lens, mm (along the "
+                       "deviated 550 nm beam)")
+    d.variable("det_dist", 97.0, 50.0, 150.0, 6,
+               comment="camera back vertex to detector, mm")
     d.add("source_broadband", "Source", pos=(-60, y0, 0),
           params={"diameter": 8.0},
           props={"lambdac": 550.0, "lambdamin": 450.0, "lambdamax": 650.0})
-    d.add("prism", "Prism", params={"side": 25.0, "height": 25.0,
-                                    "rotation": rotation},
-          props={"material": glass})
+    # the prism chains as a 'deviate' element: its port turns the train
+    # by -dmin in the layout plane (deviate azimuth 90 = in-plane fold
+    # axis +z, negative deviation = clockwise/toward -y). decenter_x
+    # drops the prism centroid 6 mm below the beam line (the source is
+    # lifted so the bundle lands on the entrance face).
+    d.chain("prism", "Prism", "Source", 60.0, decenter_x=-y0,
+            fold_deviation="%.10g" % (-dmin), fold_azimuth=90.0,
+            params={"side": 25.0, "height": 25.0, "rotation": rotation},
+            props={"material": glass})
+    # the deviate port anchors at the prism CENTROID (the catalog prism's
+    # documented port approximation), but the real 550 nm beam exits the
+    # glass at p_exit after walking down the exit face — the offsets
+    # below re-anchor the camera arm onto the traced beam (same trace the
+    # old build used to aim the camera).
+    dev = deviate_params((1.0, 0.0), dev_dir)
+    u_dev = (-dev_dir[1], dev_dir[0])           # z x d = left of travel
+    delta = (lens_c[0] - 0.0, lens_c[1] - 0.0)  # from the centroid origin
+    along = delta[0] * dev_dir[0] + delta[1] * dev_dir[1]
+    across = delta[0] * u_dev[0] + delta[1] * u_dev[1]
     n_lens = n_glass("bk7", 550.0)
-    d.add("lens_pcx", "Camera", pos=(lens_c[0], lens_c[1], 0),
-          rot_deg=-dmin,
-          params={"R_front": (n_lens - 1.0) * 100.0, "aperture": 22.0,
-                  "ct": 4.0})
-    d.add("detector_plane", "Screen", pos=(det_c[0], det_c[1], 0),
-          rot_deg=-dmin, params={"width": 25.0})
-    d.note("prism_spectrometer: min-deviation incidence angle needed "
-           "offline trig; wizard support for 'rotate prism for min "
-           "deviation at lambda' would be a one-click win")
+    d.chain("lens_pcx", "Camera", "Prism", "%.10g + cam_dist" % (along
+                                                                 - 40.0),
+            decenter_x="%.10g" % across,
+            params={"R_front": (n_lens - 1.0) * 100.0, "aperture": 22.0,
+                    "ct": 4.0})
+    # the camera's pass-through port continues the PORT line (centroid-
+    # anchored), not the decentered true beam — carry the same offset
+    d.chain("detector_plane", "Screen", "Camera", "det_dist",
+            decenter_x="%.10g" % across,
+            params={"width": 25.0})
+    del dev
+    d.expect("Prism", (0, 0, 0))
+    d.expect("Camera", (lens_c[0], lens_c[1], 0))
+    d.expect("Screen", (det_c[0], det_c[1], 0))
+    d.note("prism_spectrometer: the prism is a deviate-port chain element "
+           "(deviation = -Dmin); the camera arm still needed the offline "
+           "central-ray trace to correct the centroid-port approximation "
+           "for the beam's walk down the exit face")
     d.pin_detector("Screen", (dev_dir[0], dev_dir[1], 0.0))
     return {"preset": "quick"}
 
@@ -407,40 +612,59 @@ def demo_czerny_turner(d):
     n_cam = (m[0] - v[0], m[1] - v[1])
     D = (M2[0] + 100.0 * m[0], M2[1] + 100.0 * m[1])
 
+    d.variable("arm_coll", 100.0, 80.0, 150.0, 5,
+               comment="slit to collimator mirror, mm (its focal length)")
+    d.variable("arm_cam", 100.0, 80.0, 150.0, 5,
+               comment="grating to camera mirror, mm")
+    d.variable("det_arm", 100.0, 80.0, 150.0, 5,
+               comment="camera mirror to detector, mm (its focal length)")
     d.add("laser_divergent", "SlitSource",
           pos=(S[0] + 8.0 * w[0], S[1] + 8.0 * w[1], 0),
           rot_deg=ang((-w[0], -w[1])),
           params={"diameter": 2.0, "roc": 8.0, "length": 8.0},
           props={"lambdac": 550.0, "lambdamin": 400.0, "lambdamax": 700.0,
                  "coherent": False})
-    d.add("slit", "Slit", pos=(S[0], S[1], 0),
-          rot_deg=ang(w) - 180.0,
-          params={"width": 20.0, "height": 20.0, "slit_width": 0.3,
-                  "slit_height": 8.0})
-    d.add("mirror_concave", "Collimator", pos=(C[0], C[1], 0),
-          rot_deg=ang(n_coll) - 180.0,
-          params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
+    # the whole spectrometer chains off the slit: every fold below is
+    # deviation/azimuth data instead of the old hand-computed bisector
+    # normals ('point this element at that one', finally)
+    d.chain("slit", "Slit", "SlitSource", 8.0,
+            params={"width": 20.0, "height": 20.0, "slit_width": 0.3,
+                    "slit_height": 8.0})
+    dev_c, _, az_c = deviate_params((-w[0], -w[1]), (-u[0], -u[1]))
+    d.fold_mirror("Collimator", "Slit", "arm_coll", kind="mirror_concave",
+                  deviation=dev_c, azimuth=az_c,
+                  params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
     # mirror=1.0 makes the diffraction REFLECTIVE (grating.apply_to_batch
     # switches on the body's mirror property >= 0.5, not the material) --
     # the catalog plate is a bk7 TRANSMISSION grating by default. The
     # grating face is pinned post-save via a --grating CLI override
-    # (FaceN numbering is unstable across save/reload, so the shipped
-    # 'Face1=600:v' property cannot be trusted to sit on the front face);
-    # the explicit 0,1,0 periodicity vector keeps the orders in the x-y
-    # layout plane ('v' = face-frame t2 = world z here, which disperses
-    # out of plane).
-    d.add("grating_plate", "Grating",
-          props={"material": "aluminum", "mirror": 1.0})
+    # (FaceN numbering is unstable across save/reload); the explicit
+    # 0,1,0 periodicity vector keeps the orders in the x-y layout plane.
+    # As a chain element the grating is a DEVIATE port (diffraction is
+    # not specular: theta_i != theta_d), tilted so the plate normal sits
+    # theta_i off the incoming beam.
+    dev_g, gaz_g, _ = deviate_params((-u[0], -u[1]), (v[0], v[1]))
+    d.chain("grating_plate", "Grating", "Collimator", "arm_coll",
+            fold=True, folded=True,
+            fold_deviation="%.10g" % dev_g, fold_azimuth=gaz_g,
+            tilt_ry="%.10g" % (-ang((-u[0], -u[1]))),
+            props={"material": "aluminum", "mirror": 1.0})
     d.pin_grating("Grating", (-u[0], -u[1], 0.0),
                   "600:0,1,0:orders=-1..1")
-    d.add("mirror_concave", "CameraMirror", pos=(M2[0], M2[1], 0),
-          rot_deg=ang(n_cam) - 180.0,
-          params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
-    d.add("detector_plane", "Screen", pos=(D[0], D[1], 0),
-          rot_deg=ang(m), params={"width": 30.0})
-    d.note("czerny_turner: four bodies needed hand trig for aim angles; "
-           "the single most wanted tool while building the gallery was "
-           "'point this element at that one'")
+    dev_m, _, az_m = deviate_params((v[0], v[1]), (m[0], m[1]))
+    d.fold_mirror("CameraMirror", "Grating", "arm_cam",
+                  kind="mirror_concave", deviation=dev_m, azimuth=az_m,
+                  params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
+    d.chain("detector_plane", "Screen", "CameraMirror", "det_arm",
+            params={"width": 30.0})
+    d.expect("Slit", (S[0], S[1], 0))
+    d.expect("Collimator", (C[0], C[1], 0))
+    d.expect("Grating", (0, 0, 0))
+    d.expect("CameraMirror", (M2[0], M2[1], 0))
+    d.expect("Screen", (D[0], D[1], 0))
+    d.note("czerny_turner: the four aim angles are now deviation/azimuth "
+           "chain data (deviate_params) — zero hand-placed quaternions; "
+           "the arms are live variables")
     d.pin_detector("Screen", (m[0], m[1], 0.0))
     return {"preset": "quick"}
 
@@ -466,31 +690,46 @@ def demo_camera_triplet(d):
     ]
     x_img = paraxial_image_x(surfaces, float("-inf"), lam)
 
+    d.variable("air12", air12, 3.0, 8.0, 5,
+               comment="L1 back vertex to L2 front vertex, mm")
+    d.variable("air23", air23, 3.0, 8.0, 5,
+               comment="L2 back vertex to L3 front vertex, mm")
+    d.variable("stop_d", 6.94, 3.0, 12.0, 6,
+               comment="iris opening diameter, mm (~f/5.6 at 6.94)")
     d.add("laser_collimated", "Scene", pos=(-40, 0, 0),
           params={"diameter": 14.0},
           props={"lambdac": lam, "lambdamin": 450.0, "lambdamax": 650.0,
                  "coherent": False})
-    d.add("lens_dcx", "L1", pos=(x1, 0, 0),
-          params={"R_front": L1["R_front"], "R_back": L1["R_back"],
-                  "ct": L1["ct"], "aperture": L1["ap"]})
-    d.add("lens_dcv", "L2", pos=(x2, 0, 0),
-          params={"R_front": L2["R_front"], "R_back": L2["R_back"],
-                  "ct": L2["ct"], "aperture": L2["ap"]},
-          props={"material": "sf5"})
+    d.chain("lens_dcx", "L1", "Scene", 40.0,
+            params={"R_front": L1["R_front"], "R_back": L1["R_back"],
+                    "ct": L1["ct"], "aperture": L1["ap"]})
+    d.chain("lens_dcv", "L2", "L1", "air12",
+            params={"R_front": L2["R_front"], "R_back": L2["R_back"],
+                    "ct": L2["ct"], "aperture": L2["ap"]},
+            props={"material": "sf5"})
     # the stop sits just behind the flint element; its concave back
     # surface bulges 0.64 mm past the vertex at this aperture, so leave
-    # ~1 mm of axial clearance or the solids overlap
-    d.add("iris", "Stop", pos=(x2 + L2["ct"] + 0.95, 0, 0),
-          params={"outer_diameter": 18.0, "thickness": 0.4,
-                  "hole_diameter": 6.94})
-    d.add("lens_dcx", "L3", pos=(x3, 0, 0),
-          params={"R_front": L3["R_front"], "R_back": L3["R_back"],
-                  "ct": L3["ct"], "aperture": L3["ap"]})
-    d.add("detector_plane", "Sensor", pos=(x_img, 0, 0),
-          params={"width": 36.0, "height": 24.0, "round_flag": 0})
-    d.note("camera_triplet: paraxial focus had to be computed outside the "
-           "GUI (%.2f mm); an on-canvas 'where does this system focus' "
-           "readout would remove the round-trip" % x_img)
+    # ~1 mm of axial clearance or the solids overlap. The opening is
+    # variable-driven THROUGH the dim sheet (a FreeCAD expression over
+    # the miewb_vars global), so sweeping stop_d rebuilds the iris.
+    d.chain("iris", "Stop", "L2", 0.95,
+            params={"outer_diameter": 18.0, "thickness": 0.4,
+                    "hole_diameter": "<<miewb_vars>>.stop_d * 1mm"})
+    d.chain("lens_dcx", "L3", "Stop", "air23 - 0.95",
+            params={"R_front": L3["R_front"], "R_back": L3["R_back"],
+                    "ct": L3["ct"], "aperture": L3["ap"]})
+    d.chain("detector_plane", "Sensor", "L3",
+            "%.10g" % (x_img - (x3 + L3["ct"])),
+            params={"width": 36.0, "height": 24.0, "round_flag": 0})
+    d.expect("L1", (x1, 0, 0))
+    d.expect("L2", (x2, 0, 0))
+    d.expect("Stop", (x2 + L2["ct"] + 0.95, 0, 0))
+    d.expect("L3", (x3, 0, 0))
+    d.expect("Sensor", (x_img, 0, 0))
+    d.note("camera_triplet: air gaps and the iris opening are live "
+           "variables (the stop drives its dim sheet through a FreeCAD "
+           "expression); the paraxial focus still came from the offline "
+           "solve (%.2f mm)" % x_img)
     return {"preset": "quick"}
 
 
@@ -527,15 +766,27 @@ def demo_microscope_objective(d):
                                  "ct_crown", "ct_flint")}
         out["aperture"] = aperture
         return out
-    d.add("lens_achromat", "Front", pos=(x1, 0, 0),
-          params=ach_params(a1, 10.0))
-    d.add("lens_achromat", "Rear", pos=(x2, 0, 0),
-          params=ach_params(a2, 12.0))
-    d.add("detector_plane", "Image", pos=(x_img, 0, 0),
-          params={"width": 30.0})
-    d.note("microscope_objective: solve_achromat covered the lens design; "
-           "still needed the offline paraxial solve for the image plane "
-           "(%.1f mm)" % x_img)
+    # exit vertices come from the same port formulas the solver uses
+    exit1 = primitivelib.port_frames("lens_achromat",
+                                     ach_params(a1, 10.0))["exit"][0]
+    exit2 = primitivelib.port_frames("lens_achromat",
+                                     ach_params(a2, 12.0))["exit"][0]
+    d.variable("obj_dist", -x_obj, 15.0, 35.0, 5,
+               comment="object plane to front achromat vertex, mm")
+    d.variable("ach_gap", x2 - x1, 5.0, 20.0, 5,
+               comment="achromat front-vertex spacing, mm")
+    d.chain("lens_achromat", "Front", "Object", "obj_dist",
+            params=ach_params(a1, 10.0))
+    d.chain("lens_achromat", "Rear", "Front",
+            "ach_gap - %.10g" % exit1, params=ach_params(a2, 12.0))
+    d.chain("detector_plane", "Image", "Rear",
+            "%.10g" % (x_img - (x2 + exit2)), params={"width": 30.0})
+    d.expect("Front", (x1, 0, 0))
+    d.expect("Rear", (x2, 0, 0))
+    d.expect("Image", (x_img, 0, 0))
+    d.note("microscope_objective: solve_achromat covered the lens design "
+           "and the chain uses its exact exit vertices; the image plane "
+           "still came from the offline paraxial solve (%.1f mm)" % x_img)
     return {"preset": "quick"}
 
 
@@ -548,16 +799,22 @@ def demo_fiber_coupler(d):
     R = 1.0
     bfl = R * (2.0 - n) / (2.0 * (n - 1.0))
     x_fiber = 2.0 * R + bfl
+    d.variable("exit_gap", 0.6, 0.1, 3.0, 6,
+               comment="fiber exit face to detector, mm")
     d.add("laser_collimated", "Laser", pos=(-6, 0, 0),
           params={"diameter": 0.6, "length": 5.0},
           props={"lambdac": lam, "coherent": False})
-    d.add("lens_ball", "Ball", params={"diameter": 2.0 * R})
-    d.add("fiber_optic", "Fiber", pos=(x_fiber, 0, 0),
-          params={"length": 75.0})
-    d.add("detector_plane", "Exit", pos=(x_fiber + 75.0 + 0.6, 0, 0),
-          params={"width": 2.0, "round_flag": 0})
-    d.note("fiber_coupler: BFL math done offline; the fiber primitive + "
-           "max_reflections simparam made the rest trivial")
+    d.chain("lens_ball", "Ball", "Laser", 6.0,
+            params={"diameter": 2.0 * R})
+    d.chain("fiber_optic", "Fiber", "Ball", "%.10g" % bfl,
+            params={"length": 75.0})
+    d.chain("detector_plane", "Exit", "Fiber", "exit_gap",
+            params={"width": 2.0, "round_flag": 0})
+    d.expect("Ball", (0, 0, 0))
+    d.expect("Fiber", (x_fiber, 0, 0))
+    d.expect("Exit", (x_fiber + 75.0 + 0.6, 0, 0))
+    d.note("fiber_coupler: the ball-to-fiber gap IS the BFL, now visible "
+           "as a chain distance instead of a baked coordinate")
     return {"preset": "quick", "max_reflections": 200}
 
 
@@ -571,24 +828,100 @@ def demo_schmidt_cassegrain(d):
     x_primary = 5.0 + 320.0
     x_secondary = x_primary - 312.62
     x_focus = x_primary + 150.0
+    d.variable("sct_sep", 312.62, 280.0, 340.0, 6,
+               comment="primary vertex to secondary vertex, mm")
+    d.variable("back_focus", 150.0, 100.0, 200.0, 5,
+               comment="primary vertex plane to focal plane, mm")
     d.add("laser_collimated", "Star", pos=(-60, 0, 0),
           params={"diameter": 198.0},
           props={"lambdac": 550.0, "lambdamin": 450.0,
                  "lambdamax": 650.0, "coherent": False})
-    d.add("mirror_annular", "Primary", pos=(x_primary, 0, 0),
-          params={"R": 812.8, "aperture": 203.2, "hole_diameter": 60.0,
-                  "ct": 18.0})
-    # the cone reflected off the primary travels -x and must hit the
-    # secondary's convex face: flip it (ct=6 keeps its back clear of the
-    # corrector plate it physically mounts on)
-    d.add("mirror_convex", "Secondary", pos=(x_secondary, 0, 0),
-          rot_deg=180.0,
-          params={"R": 231.07, "aperture": 66.0, "ct": 6.0})
-    d.add("detector_plane", "Focus", pos=(x_focus, 0, 0),
-          params={"width": 15.0})
-    d.note("schmidt_cassegrain: the corrector needed a hand-authored "
-           "FreeCAD pass (quartic asphere; catalog asphere is conic-only)")
+    d.chain("mirror_annular", "Primary", "Star", x_primary + 60.0,
+            params={"R": 812.8, "aperture": 203.2, "hole_diameter": 60.0,
+                    "ct": 18.0})
+    # the cone reflected off the primary travels -x; the chained
+    # secondary auto-faces the returning beam (the old build needed an
+    # explicit 180-deg flip), and the beam bounces back +x through the
+    # primary's perforation to the focal plane behind it
+    d.chain("mirror_convex", "Secondary", "Primary", "sct_sep",
+            port="reflect",
+            params={"R": 231.07, "aperture": 66.0, "ct": 6.0})
+    d.chain("detector_plane", "Focus", "Secondary",
+            "sct_sep + back_focus", port="reflect",
+            params={"width": 15.0})
+    d.expect("Primary", (x_primary, 0, 0))
+    d.expect("Secondary", (x_secondary, 0, 0))
+    d.expect("Focus", (x_focus, 0, 0))
+    d.note("schmidt_cassegrain: the Cassegrain return path chains off "
+           "reflect ports (back focus is a live variable); the corrector "
+           "still needs the hand-authored FreeCAD pass (quartic asphere)")
     return {"preset": "quick", "corrector": True}
+
+
+def demo_michelson_folded(d):
+    """Michelson with a Z-FOLDED transmit arm: two extra 45-deg fold
+    mirrors compact the 60 mm arm into a 45 x 15 mm dogleg with the SAME
+    optical path length. Both folds are proper fold elements — unfold
+    them in the train editor and the arm re-collinearizes into the plain
+    michelson layout exactly. The fold mirrors are bare aluminum (real
+    Fresnel losses, ~0.9 reflectance x 4 extra bounces round-trip); the
+    `ideal_folds` variable switches them to perfect mirrors (mirror=1)
+    for an efficiency A/B."""
+    tilt_deg = math.degrees(633e-9 / (2.0 * 0.002))
+    bs_exit = 3.0 * math.sqrt(2.0)
+    d.variable("arm1", 60.0, 40.0, 100.0, 6,
+               comment="BS center to M1, TOTAL optical path (matches the "
+                       "unfolded michelson), mm")
+    d.variable("fold_in", 20.0, 10.0, 30.0, 4,
+               comment="BS center to first fold mirror, mm")
+    d.variable("fold_up", 15.0, 8.0, 25.0, 4,
+               comment="dogleg height (FoldA to FoldB), mm")
+    d.variable("arm2", 60.0, 40.0, 100.0, 6,
+               comment="BS center to M2 (reflect arm), mm")
+    d.variable("m1_tilt", "%.10g" % tilt_deg, 0.0, 0.05, 10,
+               comment="M1 fringe tilt, deg")
+    d.variable("screen_arm", 60.0,
+               comment="BS center to screen (output arm), mm")
+    d.variable("ideal_folds", 0.0, 0.0, 1.0, 1,
+               comment="0 = bare-aluminum fold mirrors (honest ~10% loss "
+                       "per bounce), 1 = perfect fold mirrors")
+    d.add("laser_collimated", "Laser", pos=(-60, 0, 0),
+          params={"diameter": 8.0},
+          props={"lambdac": 633.0})
+    d.chain("bs_plate", "BS", "Laser", 60.0, tilt_ry=45.0,
+            params={"width": 30.0, "thickness": 3.0, "round_flag": 1,
+                    "wedge_deg": 0.0})
+    # the Z-fold: +x -> +y (azimuth 0 = toward +u = +y here) -> back to
+    # +x (incoming +y has u = -x, so azimuth 180). Bare aluminum, with
+    # the perfect-mirror switch expression-driven off ideal_folds.
+    fold_props = {"material": "aluminum", "mirror": 0.0,
+                  "miewb_expr_mirror": "ideal_folds"}
+    d.fold_mirror("FoldA", "BS", "fold_in - %.10g" % bs_exit,
+                  port="transmit", azimuth=0.0,
+                  params={"width": 15.0, "round_flag": 1},
+                  props=fold_props)
+    d.fold_mirror("FoldB", "FoldA", "fold_up", azimuth=180.0,
+                  params={"width": 15.0, "round_flag": 1},
+                  props=fold_props)
+    d.chain("mirror_flat", "M1", "FoldB", "arm1 - fold_in - fold_up",
+            tilt_ry="m1_tilt",
+            params={"width": 15.0, "round_flag": 1})
+    d.chain("mirror_flat", "M2", "BS", "arm2", port="reflect",
+            params={"width": 15.0, "round_flag": 1})
+    d.chain("detector_plane", "Screen", "M2", "arm2 + screen_arm",
+            port="reflect",
+            params={"width": 12.0, "round_flag": 0})
+    d.expect("BS", (0, 0, 0))
+    d.expect("FoldA", (20, 0, 0))
+    d.expect("FoldB", (20, 15, 0))
+    d.expect("M1", (45, 15, 0))
+    d.expect("M2", (0, -60, 0))
+    d.expect("Screen", (0, 60, 0))
+    d.note("michelson_folded: unfolding BOTH folds reproduces the plain "
+           "michelson layout (M1 back at x=60) — the folded arm keeps "
+           "the optical path by construction")
+    d.pin_detector("Screen", (0.0, 1.0, 0.0))
+    return {"preset": "quick"}
 
 
 DEMOS = {
@@ -596,6 +929,7 @@ DEMOS = {
     "newtonian": demo_newtonian,
     "dobsonian": demo_dobsonian,
     "michelson": demo_michelson,
+    "michelson_folded": demo_michelson_folded,
     "prism_spectrometer": demo_prism_spectrometer,
     "czerny_turner": demo_czerny_turner,
     "camera_triplet": demo_camera_triplet,

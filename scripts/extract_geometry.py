@@ -814,22 +814,46 @@ def mesh_and_write_stl(face, out_path, face_id, analytic_area_m2, surf_type, war
     mat.scale(0.001, 0.001, 0.001)
     face_copy = face_copy.transformGeometry(mat)
 
-    mesh = MeshPart.meshFromShape(
-        Shape=face_copy,
-        LinearDeflection=MESH_LINEAR_DEFLECTION_MM / 1000.0,   # 0.03 mm, in metres
-        AngularDeflection=math.radians(MESH_ANGULAR_DEFLECTION_DEG))
+    # Small-radius faces (a fiber's 0.1 mm bore) are MARGINAL against the
+    # area tripwire at the default deflections, and OCC's mesher is
+    # chaotically sensitive — an epsilon placement change can flip a face
+    # from 0.3% to 2.7% deficit. Retrying at progressively finer
+    # deflection is honest (the tripwire still gates the FINAL mesh) and
+    # removes the placement-noise lottery. Analytic faces trace
+    # analytically regardless; the mesh feeds viz + the BVH fallback.
+    mesh = None
+    mesh_area_m2 = None
+    first_err = None
+    check = (surf_type != "mesh" and analytic_area_m2 is not None
+             and analytic_area_m2 > 0)
+    for attempt, scale in enumerate((1.0, 0.25, 0.0625)):
+        mesh = MeshPart.meshFromShape(
+            Shape=face_copy,
+            LinearDeflection=MESH_LINEAR_DEFLECTION_MM * scale / 1000.0,
+            AngularDeflection=math.radians(
+                MESH_ANGULAR_DEFLECTION_DEG * max(scale, 0.25)))
+        mesh_area_m2 = mesh.Area
+        if not check:
+            break
+        rel_err = abs(mesh_area_m2 - analytic_area_m2) / analytic_area_m2
+        if first_err is None:
+            first_err = rel_err
+        if rel_err < AREA_TOL_REL:
+            if attempt:
+                warn("%s: met the area tripwire only at %gx deflection "
+                     "(%.2f%% at default, %.2f%% final)"
+                     % (face_id, scale, first_err * 100.0,
+                        rel_err * 100.0), warnings)
+            break
+    else:
+        die("%s: mesh_area_m2=%.9g deviates %.2f%% from analytic "
+            "area_m2=%.9g (tripwire is %.0f%%, even at 1/16 deflection)"
+            % (face_id, mesh_area_m2,
+               abs(mesh_area_m2 - analytic_area_m2) / analytic_area_m2
+               * 100.0, analytic_area_m2, AREA_TOL_REL * 100.0))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_binary_stl(str(out_path), mesh)
-
-    mesh_area_m2 = mesh.Area
-    if surf_type != "mesh" and analytic_area_m2 is not None and analytic_area_m2 > 0:
-        rel_err = abs(mesh_area_m2 - analytic_area_m2) / analytic_area_m2
-        if rel_err >= AREA_TOL_REL:
-            die("%s: mesh_area_m2=%.9g deviates %.2f%% from analytic "
-                "area_m2=%.9g (tripwire is %.0f%%)"
-                % (face_id, mesh_area_m2, rel_err * 100.0, analytic_area_m2,
-                   AREA_TOL_REL * 100.0))
     return mesh_area_m2
 
 

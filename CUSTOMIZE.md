@@ -257,6 +257,37 @@ geometry), list it here.
 
 ---
 
+## 3b. Port frames — make a new primitive chain-able
+
+The optical-train chain model positions elements by vertex-to-vertex
+distances along the beam, using each primitive's ELEMENT-LOCAL port
+geometry from `primitivelib.port_frames(kind, params)`. When you add a
+primitive (either route), give it a `port_frames` entry or chained
+placement falls back to a thin-element approximation at the optical
+center (distances become center-to-center):
+
+```python
+# in port_frames()'s kind table — pure math over the dim params,
+# NO FreeCAD, NEVER FaceN indices (they renumber on rebuild):
+#   {"entry": [x,y,z], "exit": [x,y,z],  # axis-pierce points of the
+#                                        # first/last optical surfaces
+#    "axis": [1,0,0], "up": [0,0,1],     # library convention: beam +x
+#    "reflect_plane": {"point": ..., "normal": ...} or None}
+```
+
+Conventions (every shipped builder follows them): body-local beam along
++x with the FRONT vertex at x=0; `up` = +z; mirrors have entry == exit
+== the axis/surface intersection and a `reflect_plane` whose normal
+points back INTO the incoming beam; sources emit from local x=0 (the
+body extends toward -x); reflective gratings carry the reflect plane of
+the grating face. Derive the formulas from the builder's own sketch
+math and cross-check against the shipped `.FCStd` bbox (see the
+verification notes in `port_frames`'s docstring). Hand-authored bodies
+can instead carry a `miewb_train_ports` JSON property with the same
+dict.
+
+---
+
 ## 4. Body-tagging contract — quick reference
 
 Every optic/source/detector body carries some subset of these

@@ -46,7 +46,7 @@ def _num_or_expr(value):
     """Chain-field value -> stored string (floats canonicalized,
     expressions verbatim)."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return "%.10g" % float(value)
+        return "%.17g" % float(value)
     return str(value)
 
 
@@ -54,7 +54,7 @@ def _subtract_expr(a, b):
     """a - b for chain-distance fields; stays symbolic when either side
     is a variable expression."""
     try:
-        return "%.10g" % (float(a) - float(b))
+        return "%.17g" % (float(a) - float(b))
     except (TypeError, ValueError):
         return "(%s) - (%s)" % (_num_or_expr(a), _num_or_expr(b))
 
@@ -526,10 +526,24 @@ class Project(QObject):
                 "vector_mm": [float(offset_mm) * float(a) for a in axis]}))
         if not ops:
             return []
+        element = self.element_group(body_name)
+        tm = self.train()
         self.begin_macro("Snap %s to axis" % self._body_label(body_name))
         try:
             for op in ops:
                 self.apply_operation(body_name, op)
+            # keep the optical train consistent, exactly like move_element
+            if element in tm.records():
+                if tm.is_chained(element):
+                    edge = {k: float(v) for k, v in self.train().derive_edge(
+                        element, self.train_variables()).items()
+                            if k in EDGE_FIELDS}
+                    body = tm.primary_body_name(element)
+                    for name, value in sorted(edge_props(edge).items()):
+                        self.set_property(body, name, value, ptype="string",
+                                          group=TRAIN_GROUP)
+                if tm.is_chained(element) or tm.downstream_of(element):
+                    self._push_ripple_moves()
         except Exception:
             self.abort_macro()
             raise
@@ -616,6 +630,90 @@ class Project(QObject):
         edge = {k: float(v) for k, v in edge.items() if k in EDGE_FIELDS}
         self.set_chain(element, edge,
                        text=text or "Reposition %s" % element)
+
+    # -- global variables (miewb_vars sheet) ---------------------------------------
+    def variables_sheet(self):
+        """The miewb_vars sheet echo dict, or None."""
+        for sheet in self.sheets():
+            if sheet.get("label") == "miewb_vars" \
+                    or sheet.get("name") == "miewb_vars":
+                return sheet
+        return None
+
+    def ensure_variables_sheet(self):
+        """Create the miewb_vars sheet if absent (idempotent worker op;
+        an empty sheet is not undoable state worth tracking)."""
+        if self.variables_sheet() is None:
+            self.fc.request("create_sheet",
+                            {"doc": self.doc, "label": "miewb_vars"})
+            self._refetch_structure()
+            self.propertiesChanged.emit("")
+        return self.variables_sheet()
+
+    def _do_set_cell(self, cell, raw, alias=None):
+        params = {"doc": self.doc, "sheet": "miewb_vars",
+                  "cell": cell, "raw": raw}
+        if alias:
+            params["alias"] = alias
+        return self._route_mutation(self.fc.request("set_cell", params))
+
+    def _cell_preimage(self, cell):
+        """(raw, alias) currently in a miewb_vars cell ("" when empty —
+        the echo only lists aliased cells, so un-aliased comment cells
+        restore to empty on undo)."""
+        sheet = self.variables_sheet() or {}
+        for alias, entry in (sheet.get("aliases") or {}).items():
+            if entry.get("cell") == cell:
+                return (entry.get("raw") or "", alias)
+        return ("", None)
+
+    def _vars_referencing_groups(self):
+        """Primitive groups whose dim_* sheet has any raw cell content
+        mentioning miewb_vars — these must REBUILD when a variable
+        changes (the GUI-side twin of permute_model's
+        extend_touched_for_miewb_vars)."""
+        groups = []
+        for sheet in self.sheets():
+            label = sheet.get("label") or ""
+            if not label.startswith("dim_"):
+                continue
+            for entry in (sheet.get("aliases") or {}).values():
+                if "miewb_vars" in str(entry.get("raw") or ""):
+                    groups.append(label[len("dim_"):])
+                    break
+        return groups
+
+    def apply_variable_cells(self, cells, text="Edit variables"):
+        """Write miewb_vars cells (a core.variables.cell_plan list of
+        {cell, raw, alias?}), rebuild any variable-referencing primitive
+        groups, and ripple the train — ONE undo step."""
+        self.ensure_variables_sheet()
+        pre = {c["cell"]: self._cell_preimage(c["cell"]) for c in cells}
+        self.begin_macro(text)
+        try:
+            for c in cells:
+                old_raw, old_alias = pre[c["cell"]]
+                cell, raw = c["cell"], c["raw"]
+                alias = c.get("alias")
+                self.undo_stack.push_and_do(Command(
+                    "%s %s" % (text, cell),
+                    lambda cl=cell, r=raw, a=alias:
+                        self._do_set_cell(cl, r, a),
+                    lambda cl=cell, r=old_raw, a=old_alias:
+                        self._do_set_cell(cl, r, a)))
+            for group in self._vars_referencing_groups():
+                # rebuild is derived (not authored) state: replay on both
+                # undo and redo so geometry re-derives either way
+                self.undo_stack.push_and_do(Command(
+                    "Rebuild %s" % group,
+                    lambda g=group: self._do_rebuild_primitive(g),
+                    lambda g=group: self._do_rebuild_primitive(g)))
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        self.opticsChanged.emit()
 
     # -- folds -------------------------------------------------------------------
     def _fold_record(self, element):
@@ -842,9 +940,24 @@ class Project(QObject):
         return placement
 
     def _flush_placement(self, body_name, placement):
+        # address the worker by the element GROUP whenever the body has
+        # one: op_set_placement's group-first match then moves EVERY
+        # member rigidly. Passing a member's internal name would fall to
+        # the single-body path and tear multi-body elements apart (found
+        # by the achromat: no member carries the element label, so the
+        # flint stayed behind while the crown moved).
+        target = body_name
+        try:
+            b = self.body(body_name)
+            group = (b.get("properties", {}).get("miewb_group") or {}) \
+                .get("value")
+            if group:
+                target = group
+        except ProjectError:
+            pass
         result = self.fc.request(
             "set_placement",
-            {"doc": self.doc, "body": body_name,
+            {"doc": self.doc, "body": target,
              "pos_mm": placement["pos_mm"], "quat": placement["quat"]})
         # set_placement moves the WHOLE miewb_group rigidly and returns
         # every member's new placement; consume them so sibling BodyStates

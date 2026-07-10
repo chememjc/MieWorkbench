@@ -46,13 +46,14 @@ PROP_FIELDS = {
     "miewb_train_rot_order": "rot_order",
     "miewb_train_pos_rot_order": "pos_rot_order",
     "miewb_train_pivot": "pivot",
+    "miewb_train_flip": "flip",              # bool
     "miewb_train_fold": "fold",              # bool
     "miewb_train_folded": "folded",          # bool
     "miewb_train_fold_deviation": "fold_deviation",
     "miewb_train_fold_azimuth": "fold_azimuth",
 }
 FIELD_PROPS = {v: k for k, v in PROP_FIELDS.items()}
-BOOL_FIELDS = ("fold", "folded")
+BOOL_FIELDS = ("fold", "folded", "flip")
 
 # edge fields the user edits / derive_edge returns
 EDGE_FIELDS = ("distance", "decenter_x", "decenter_y",
@@ -342,7 +343,7 @@ def edge_props(edge):
         if field in BOOL_FIELDS:
             out[prop] = bool(value)
         elif isinstance(value, float):
-            out[prop] = "%.10g" % value
+            out[prop] = "%.17g" % value
         else:
             out[prop] = str(value)
     return out
