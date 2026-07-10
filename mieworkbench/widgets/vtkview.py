@@ -123,6 +123,17 @@ def is_offscreen():
     return False
 
 
+def force_vtk_init():
+    """MIEWB_FORCE_VTK_INIT=1 forces interactor.Initialize() even offscreen
+    -- solely so a headless test can reproduce the real Initialize()-then-
+    teardown path the exit-hang fix targets (an Initialize()d-but-never-
+    Finalize()d QVTKRenderWindowInteractor hangs the interpreter after
+    app.exec() returns). It gates ONLY the Initialize() call, not the
+    GPU/text-renderer work (axes widget, scale bar) that genuinely crashes
+    or spams under the offscreen platform plugin."""
+    return os.environ.get("MIEWB_FORCE_VTK_INIT") == "1"
+
+
 def placement_to_vtk_transform(placement):
     """{"pos_mm": [x,y,z], "quat": [x,y,z,w]} -> vtkTransform mapping
     body-local metres to world-frame metres: rotation from the quaternion
@@ -360,13 +371,15 @@ class VtkSceneView(QWidget):
         self._scalebar_points = None
         self._scalebar_line_actor = None
         self._scalebar_text_actor = None
+        self._render_start_obs = None    # renderer StartEvent observer id
         if not is_offscreen():
             self._build_scale_bar()
             # Recompute on every render -- covers interactive camera moves
             # (dolly/pan/rotate all end in a Render()) as well as the
             # explicit fit_camera()/view_along()/load_bodies() call sites,
             # with no need to hook each of those separately.
-            self.renderer.AddObserver("StartEvent", self._on_render_start)
+            self._render_start_obs = self.renderer.AddObserver(
+                "StartEvent", self._on_render_start)
             self._update_scale_bar()
 
         # face-orientation indicator glyphs (see widgets/faceindicators.py);
@@ -404,8 +417,83 @@ class VtkSceneView(QWidget):
         self._once_pick_cb = None
         self._axis_drag = None
 
-        if not is_offscreen():
+        self._shutdown_done = False
+        if not is_offscreen() or force_vtk_init():
             self.interactor.Initialize()
+
+    # -- teardown --------------------------------------------------------
+    def shutdown(self):
+        """Idempotent teardown of the native VTK resources this view owns,
+        so the interpreter can exit cleanly to the shell. An
+        Initialize()d-but-never-Finalize()d QVTKRenderWindowInteractor
+        hangs the process at teardown after app.exec() returns; this
+        detaches the orientation-marker widget, drops every observer the
+        view (and its picker) registered, then Finalize()s the render
+        window and closes the interactor. Every step is guarded: offscreen
+        the GPU-touching resources were never created, and shutdown() may
+        be called twice (closeEvent + an explicit host call)."""
+        if getattr(self, "_shutdown_done", False):
+            return
+        self._shutdown_done = True
+
+        # end any in-progress modal axis drag (removes its interactor
+        # observers and restores trackball control)
+        try:
+            self._end_axis_drag()
+        except Exception:
+            pass
+
+        # disable + detach the orientation-marker widget while it still has
+        # a live interactor (EnabledOff first, then drop the back-reference
+        # so the widget no longer pins the interactor/render window)
+        widget = getattr(self, "_axes_widget", None)
+        if widget is not None:
+            try:
+                widget.EnabledOff()
+            except Exception:
+                pass
+            try:
+                widget.SetInteractor(None)
+            except Exception:
+                pass
+            self._axes_widget = None
+
+        # remove the per-render scale-bar observer registered on the renderer
+        obs = getattr(self, "_render_start_obs", None)
+        renderer = getattr(self, "renderer", None)
+        if obs is not None and renderer is not None:
+            try:
+                renderer.RemoveObserver(obs)
+            except Exception:
+                pass
+            self._render_start_obs = None
+
+        # drop the face picker's interactor observers (left/right button)
+        picker = getattr(self, "picker", None)
+        if picker is not None:
+            try:
+                picker.detach()
+            except Exception:
+                pass
+
+        # the actual fix: Finalize() the render window (releases the GL
+        # context / event loop hook) then close the interactor
+        interactor = getattr(self, "interactor", None)
+        if interactor is not None:
+            try:
+                render_window = interactor.GetRenderWindow()
+                if render_window is not None:
+                    render_window.Finalize()
+            except Exception:
+                pass
+            try:
+                interactor.close()
+            except Exception:
+                pass
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
 
     # -- picking --------------------------------------------------------
     def _on_picked(self, body_name, face_id, mode):

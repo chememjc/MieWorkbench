@@ -44,6 +44,17 @@ def main(argv=None):
         window.open_model(args.model)
     window.show()
 
+    # quit paths that bypass MainWindow.closeEvent (app.quit(), SMOKE)
+    # still must release VTK interactors/timers AND the FreeCAD worker or
+    # the interpreter hangs after exec() returns; both are idempotent
+    def _teardown():
+        window.shutdown_resources()
+        try:
+            window.project.shutdown()
+        except Exception:
+            pass
+    app.aboutToQuit.connect(_teardown)
+
     if os.environ.get("MIEWB_SMOKE") == "1":
         QTimer.singleShot(SMOKE_QUIT_MS, app.quit)
 

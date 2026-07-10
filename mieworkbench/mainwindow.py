@@ -24,6 +24,7 @@ import os
 import shlex
 import shutil
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "scripts")))
@@ -2068,11 +2069,20 @@ class MainWindow(QMainWindow):
                     self.model_path, path,
                     optprops_dir=self._workspace_optprops(),
                     simparams=self.config_matrix.values())
+                # retarget the session: the existing workspace stays the
+                # live unpacked session; File->Save now repacks into the
+                # new archive
+                self.miewb_path = path
+                self.opened_path = path
+                self.miesim_out = None
             else:
                 self.project.save_as(path)
                 self.model_path = path
+                self.opened_path = path
                 self.workspace = None
                 self.miewb_path = None
+                self.miesim_out = None
+                self.library_manager.set_project_root(None)
             self.statusBar().showMessage("Saved %s" % path, 5000)
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
@@ -2097,16 +2107,26 @@ class MainWindow(QMainWindow):
             return
         wb_path = os.path.splitext(path)[0] + ".MieWB"
         sim_path = os.path.splitext(path)[0] + ".MieSim"
+        tmpdir = None
         try:
+            src = self.model_path
             if self.project.is_open():
-                self.project.save()
+                # pack the CURRENT state without silently saving the
+                # original: export a copy and pack that
+                tmpdir = tempfile.mkdtemp(prefix="miewb-export-")
+                src = os.path.join(tmpdir,
+                                   os.path.basename(self.model_path))
+                self.project.export_fcstd(src)
             miewb_tool.pack_miewb(
-                self.model_path, wb_path,
+                src, wb_path,
                 optprops_dir=self._workspace_optprops(),
                 simparams=self.config_matrix.values())
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
             return
+        finally:
+            if tmpdir:
+                shutil.rmtree(tmpdir, ignore_errors=True)
         tool = os.path.join(REPO, "scripts", "miewb_tool.py")
         lines = [
             "#!/bin/sh",
@@ -2173,16 +2193,40 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    # class-level default for the dialog-free test seam: hidden windows
+    # (offscreen tests) resolve the Save&Run prompt to this instead of a
+    # modal; tests flip it to False to exercise the cancel path.
+    _save_before_run_hook = True
+
+    def _confirm_save_before_run(self):
+        """Run gate: the pipeline traces the on-disk model, so unsaved
+        changes must be saved first. Never saves silently — a visible
+        window prompts Save&Run/Cancel. Returns True to proceed."""
+        if not (self.project.is_open() and self.project.is_dirty()):
+            return True
+        if self.isVisible():
+            answer = QMessageBox.question(
+                self, "Unsaved changes",
+                "The model has unsaved changes, and the simulation runs "
+                "on the last saved file.\n\nSave and run?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save)
+            if answer != QMessageBox.StandardButton.Save:
+                return False
+        elif not self._save_before_run_hook:
+            return False
+        self._on_save()   # reports its own failures; dirty stays set then
+        return not self.project.is_dirty()
+
     def _preflight(self):
-        """Save + validate before launching; errors block, warnings ask."""
+        """Validate before launching; errors block, warnings ask. Unsaved
+        changes gate through _confirm_save_before_run (never a silent
+        save)."""
         if not self._require_model():
             return None
-        if self.project.is_open() and self.project.is_dirty():
-            try:
-                self.project.save()
-            except Exception as exc:
-                QMessageBox.critical(self, "Save failed", str(exc))
-                return None
+        if not self._confirm_save_before_run():
+            return None
         findings = self.problems.run_checks()
         from .core import validation as _v
         n_err = sum(1 for f in findings if f.severity == _v.ERROR)
@@ -2392,8 +2436,47 @@ class MainWindow(QMainWindow):
                 return
             if answer == QMessageBox.StandardButton.Save:
                 self._on_save()
+        self.shutdown_resources()
         try:
             self.project.shutdown()
         except Exception:
             pass
         super().closeEvent(event)
+
+    def shutdown_resources(self):
+        """Idempotent native-resource teardown: every QTimer, secondary
+        top-level window and VTK interactor must be released here or the
+        interpreter hangs after app.exec() returns (also reached via
+        aboutToQuit for quit paths that bypass closeEvent)."""
+        if getattr(self, "_resources_shut_down", False):
+            return
+        self._resources_shut_down = True
+        try:
+            if self.raypreview.is_running():
+                self.raypreview.cancel()
+        except Exception:
+            pass
+        try:
+            self.preview_scheduler.reset()
+        except Exception:
+            pass
+        try:
+            self.anim_controller.stop()
+        except Exception:
+            pass
+        try:
+            self.results.stop_monitoring()
+        except Exception:
+            pass
+        if self._prop_editor_window is not None:
+            try:
+                self._prop_editor_window.close()
+                self._prop_editor_window.deleteLater()
+            except Exception:
+                pass
+            self._prop_editor_window = None
+        for pane in (self.scene3d, self.inspector):
+            try:
+                pane.shutdown()
+            except Exception:
+                pass
