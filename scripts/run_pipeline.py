@@ -265,6 +265,8 @@ def post_cmd(stem, case_dir, args):
         cmd += ["--photometric"]
     if args.spectrometer:
         cmd += ["--spectrometer"]
+    if args.emit_csv:
+        cmd += ["--emit-csv"]
     return cmd
 
 

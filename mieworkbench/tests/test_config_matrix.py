@@ -156,3 +156,35 @@ def test_reset_to_defaults_round_trip(qtbot):
     assert matrix.values() == {}
     assert matrix.to_args() == []
     assert matrix.preset_combo.currentText() == "quick"
+
+
+def test_save_fields_top_row_checkbox(qtbot):
+    """--save-fields gets a dedicated, always-visible top-row checkbox next
+    to Preset (not the generic physics-options group it would otherwise
+    fall into) but must still round-trip through the standard widgets/
+    values()/set_values()/reset_to_defaults()/estimate_params() machinery
+    exactly like every other flag."""
+    matrix = ConfigMatrix()
+    qtbot.addWidget(matrix)
+
+    assert isinstance(matrix.save_fields_check, QCheckBox)
+    assert matrix.widgets["save_fields"] is matrix.save_fields_check
+    assert not matrix.save_fields_check.isChecked()
+    assert "save_fields" not in matrix.values()
+    assert matrix.estimate_params()["save_fields"] is False
+
+    matrix.save_fields_check.setChecked(True)
+    assert matrix.values()["save_fields"] is True
+    assert matrix.estimate_params()["save_fields"] is True
+    args = matrix.to_args()
+    assert "--save-fields" in args
+
+    text = matrix.to_json()
+    matrix2 = ConfigMatrix()
+    qtbot.addWidget(matrix2)
+    matrix2.from_json(text)
+    assert matrix2.save_fields_check.isChecked()
+
+    matrix.reset_to_defaults()
+    assert not matrix.save_fields_check.isChecked()
+    assert "save_fields" not in matrix.values()

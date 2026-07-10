@@ -74,6 +74,12 @@ class DetectorGrid:
         # gather samples per (source_id, lam_stratum): lists of arrays
         self.samples = {}
         self.detected_geometric = {}       # (source_id) -> W
+        # incoherent per-(source_id, lam_stratum, pol_stratum) detected
+        # power tally, kept in lockstep with detected_geometric above (same
+        # key shape) so post-processing can merge the two without special
+        # casing which population a key came from.
+        self.detected_incoherent = {}
+        self.detected_incoherent_n = {}     # (source_id, lam, pol) -> ray count
 
         # trim mask in pixel space
         xs = self.x_lo + (np.arange(self.W) + 0.5) * self.pixel_m
@@ -106,8 +112,14 @@ class DetectorGrid:
              * self.spectral_bins).astype(int)
         return np.clip(b, 0, self.spectral_bins - 1)
 
-    def deposit_incoherent(self, points, power, lam):
-        """Bilinear splat of ray power [W] at plane points."""
+    def deposit_incoherent(self, points, power, lam,
+                          source_id=None, lam_stratum=None, pol_stratum=None):
+        """Bilinear splat of ray power [W] at plane points (self.inc splat
+        math is UNCHANGED). source_id/lam_stratum/pol_stratum are optional
+        (None preserves the pre-existing call signature) per-ray keys used
+        only to accumulate detected_incoherent[(s, l, p)] += power_sum,
+        mirroring add_gather_samples' detected_geometric tally so the two
+        populations combine under the same key shape."""
         fx, fy = self.to_grid(points)
         fx = fx - 0.5
         fy = fy - 0.5
@@ -125,6 +137,22 @@ class DetectorGrid:
             ok = (xi >= 0) & (xi < self.W) & (yi >= 0) & (yi < self.H)
             np.add.at(self.inc, (b[ok], yi[ok], xi[ok]),
                       power[ok] * w[ok])
+        if source_id is None or len(power) == 0:
+            return
+        keys = np.stack([np.asarray(source_id), np.asarray(lam_stratum),
+                         np.asarray(pol_stratum)], axis=1)
+        uniq, inv = np.unique(keys, axis=0, return_inverse=True)
+        inv = inv.reshape(-1)
+        sums = np.zeros(len(uniq))
+        np.add.at(sums, inv, power)
+        counts = np.zeros(len(uniq), dtype=np.int64)
+        np.add.at(counts, inv, 1)
+        for row, p, n in zip(uniq, sums, counts):
+            key = (int(row[0]), int(row[1]), int(row[2]))
+            self.detected_incoherent[key] = (
+                self.detected_incoherent.get(key, 0.0) + float(p))
+            self.detected_incoherent_n[key] = (
+                self.detected_incoherent_n.get(key, 0) + int(n))
 
     def add_gather_samples(self, source_id, lam_stratum, pol_stratum,
                            pos, direction, Es, Ep, s_hat, lam, opl, power,

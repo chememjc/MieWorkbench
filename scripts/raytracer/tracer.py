@@ -331,7 +331,10 @@ class Tracer:
                     dA=grp_dA[sel] if grp_dA is not None else None)
         if np.any(~coh):
             i = np.where(~coh)[0]
-            det.deposit_incoherent(grp.pos[i], grp.power[i], grp.lam[i])
+            det.deposit_incoherent(grp.pos[i], grp.power[i], grp.lam[i],
+                                   source_id=grp.source_id[i],
+                                   lam_stratum=grp.lam_stratum[i],
+                                   pol_stratum=grp.pol_stratum[i])
         # diagnostic ledger (not a closure bucket)
         self.ledger.by_surface[det.label] = (
             self.ledger.by_surface.get(det.label, 0.0)

@@ -14,6 +14,7 @@
 # outlines, per-material n/k dispersion curves, coating R(lambda), energy
 # audit bars. Everything is regenerable without re-tracing.
 # =============================================================================
+import csv
 import json
 import sys
 from pathlib import Path
@@ -37,6 +38,102 @@ from raytracer import thinfilm as tf                     # noqa: E402
 from raytracer import fresnel as fr                      # noqa: E402
 from raytracer import grating as gr                      # noqa: E402
 from raytracer.optprops import load_optical_properties   # noqa: E402
+from raytracer.sources import (wavelength_strata,        # noqa: E402
+                               jones_for, n_pol_strata)
+from raytracer.audit import BUCKETS                      # noqa: E402
+
+
+# =============================================================================
+# --emit-csv: unified data export (results/<case>/data/*.csv + index.csv).
+# Every renderer above stays PNG-only when args.emit_csv is False (byte-
+# identical to pre-CSV behavior); CsvEmitter is threaded in as an optional
+# argument everywhere a chart's underlying data is already sitting in a
+# numpy array, so no rendering math is duplicated or perturbed.
+# =============================================================================
+class CsvEmitter:
+    """Writes results/<case>/data/<filename>.csv and accumulates a row per
+    file for the final data/index.csv (file, entity, chart, units,
+    provenance, image). Convention: a chart's CSV shares its PNG's
+    basename; `image` records the PNG path (relative to the case dir) so
+    index.csv can join file <-> chart."""
+
+    def __init__(self, data_dir):
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.index_rows = []
+
+    def emit(self, filename, header_cols, rows, entity="", chart="",
+             units="", provenance="", image=None):
+        with open(self.data_dir / filename, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(header_cols)
+            w.writerows(rows)
+        self.index_rows.append((filename, entity, chart, units,
+                                provenance or "", image or ""))
+
+    def write_index(self):
+        with open(self.data_dir / "index.csv", "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["file", "entity", "chart", "units", "provenance",
+                       "image"])
+            w.writerows(self.index_rows)
+
+
+def _flatten_scalars(d, prefix=""):
+    """dict -> [(dotted.key, value)] for every int/float/bool leaf (recurses
+    into nested dicts; skips lists/strings/None). Used to dump a report.json
+    detector sub-dict into a flat metrics CSV without re-deriving anything."""
+    out = []
+    for k, v in d.items():
+        key = "%s.%s" % (prefix, k) if prefix else k
+        if isinstance(v, dict):
+            out.extend(_flatten_scalars(v, key))
+        elif isinstance(v, bool):
+            out.append((key, int(v)))
+        elif isinstance(v, (int, float)):
+            out.append((key, v))
+    return out
+
+
+# =============================================================================
+# Per-(source, detector) detected power -- surfaces case.json["detected"]
+# (run_trace.py's per-seed coherent+incoherent tally, see detector.py's
+# detected_geometric/detected_incoherent) into report.json + a CSV. Values
+# are averaged across seeds (coherent_W/incoherent_W are powers; n_samples
+# is a total ray count summed across seeds, not averaged, matching how the
+# gather diagnostics themselves report n_samples per seed).
+# =============================================================================
+def add_per_source_detected(case, report):
+    """Populate report['detectors'][label]['per_source'] from case.json's
+    per-seed 'detected' block. Returns the flat list of rows (one per
+    (source, detector, lam_stratum, pol_stratum)) for the CSV writer."""
+    sources = case.get("sources", [])
+    detected_all = case.get("detected", {})
+    n = float(len(detected_all)) or 1.0
+    acc = {}
+    for seed_block in detected_all.values():
+        for label, rows in seed_block.items():
+            for skey, vals in rows.items():
+                a = acc.setdefault((label, skey), {"coherent_W": 0.0,
+                                                    "incoherent_W": 0.0,
+                                                    "n_samples": 0})
+                a["coherent_W"] += vals.get("coherent_W", 0.0) / n
+                a["incoherent_W"] += vals.get("incoherent_W", 0.0) / n
+                a["n_samples"] += vals.get("n_samples", 0)
+    flat = []
+    for (label, skey), vals in sorted(acc.items()):
+        if label not in report["detectors"]:
+            continue
+        s, l, p = (int(x) for x in skey.split("/"))
+        src_name = sources[s] if s < len(sources) else str(s)
+        report["detectors"][label].setdefault("per_source", []).append({
+            "source": src_name, "lam_stratum": l, "pol_stratum": p,
+            "coherent_W": vals["coherent_W"],
+            "incoherent_W": vals["incoherent_W"],
+        })
+        flat.append((src_name, label, l, p, vals["coherent_W"],
+                    vals["incoherent_W"], vals["n_samples"]))
+    return flat
 
 
 E_RAY_COLOR = "black"       # fixed distinct color for extraordinary (o/e
@@ -78,7 +175,8 @@ def detector_qe_curve_for_label(label, qe_bodies):
 
 def render_detector(h5path, outdir_img, outdir_spec, report,
                     photometric=False, spectrometer=False,
-                    qe_bodies=None, detector_registry=None):
+                    qe_bodies=None, detector_registry=None,
+                    csv_emitter=None):
     with h5py.File(h5path) as h:
         cube = h["spectral_cube_mean"][...]
         mask = h["mask"][...]
@@ -161,6 +259,16 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
         if len(seg) > 16:
             V = (seg.max() - seg.min()) / (seg.max() + seg.min())
             report["detectors"][label]["profile_visibility"] = float(V)
+        if csv_emitter is not None:
+            img = "images/det_%s_profiles.png" % safe
+            csv_emitter.emit(
+                "profile_h_%s.csv" % safe, ["position_m", "irradiance_W_m2"],
+                zip(xmm * 1e-3, irr[iy]), entity=label,
+                chart="profile_horizontal", units="W/m^2", image=img)
+            csv_emitter.emit(
+                "profile_v_%s.csv" % safe, ["position_m", "irradiance_W_m2"],
+                zip(ymm * 1e-3, irr[:, ix]), entity=label,
+                chart="profile_vertical", units="W/m^2", image=img)
 
     # spectrum
     bins = cube.shape[0]
@@ -178,6 +286,11 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
     plt.close(fig)
     if std is not None:
         np.save(outdir_spec / ("std_cube_%s.npy" % safe), std)
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "spectrum_%s.csv" % safe, ["wavelength_nm", "power_W"],
+            zip(lam_c, pw * 1e-3), entity=label, chart="detected_spectrum",
+            units="W", image="spectra/spectrum_%s.png" % safe)
 
     if photometric:
         _render_photometric(cube, mask, lam_lo, lam_hi, pixel_area,
@@ -203,6 +316,17 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
                 "qe_weighted_power_W": float(p_w),
                 "coverage_frac": float(cov),
             }
+
+    if csv_emitter is not None:
+        # scalar metrics: dump every already-computed number in this
+        # detector's report block (total/peak/visibility/photometric/
+        # spectrometer/qe) -- no re-derivation, just a flat metric,value
+        # table so nothing here can drift from report.json.
+        metrics = _flatten_scalars(
+            {k: v for k, v in report["detectors"][label].items()
+             if k != "per_source"})
+        csv_emitter.emit("metrics_%s.csv" % safe, ["metric", "value"],
+                         metrics, entity=label, chart="scalar_metrics")
 
 
 # =============================================================================
@@ -623,7 +747,7 @@ def _coating_names(b):
     return [c]
 
 
-def plot_materials(model, outdir):
+def plot_materials(model, outdir, csv_emitter=None):
     props = load_optical_properties()
     db = props.matdb
     used = set()
@@ -651,6 +775,15 @@ def plot_materials(model, outdir):
         axes[0].plot(lam / 1e-9, np.real(n), label=name)
         axes[1].semilogy(lam / 1e-9,
                          np.maximum(np.imag(n), 1e-12), label=name)
+        if csv_emitter is not None:
+            ref = db.get(name).reference
+            csv_emitter.emit(
+                "nk_%s.csv" % _safe_name(name),
+                ["wavelength_nm", "n", "k", "reference"],
+                zip(lam / 1e-9, np.real(n), np.imag(n),
+                   [ref] * len(lam)),
+                entity=name, chart="material_dispersion", provenance=ref,
+                image="plots/materials_nk.png")
     axes[0].set_ylabel("n")
     axes[1].set_ylabel("k")
     for a in axes:
@@ -678,6 +811,16 @@ def plot_materials(model, outdir):
                 rs, rp, ts, tp, etas = tf.tmm_coeffs(lam, cos_i, n1, n_sub,
                                                      ln, ld)
                 R = 0.5 * (np.abs(rs) ** 2 + np.abs(rp) ** 2)
+                if csv_emitter is not None:
+                    Rs, Rp, Ts, Tp = tf.tmm_power(rs, rp, ts, tp, etas)
+                    ref = cspec.get("reference", "")
+                    csv_emitter.emit(
+                        "coating_%s.csv" % _safe_name(cname),
+                        ["wavelength_nm", "Rs", "Rp", "Ts", "Tp",
+                         "reference"],
+                        zip(lam / 1e-9, Rs, Rp, Ts, Tp, [ref] * len(lam)),
+                        entity=cname, chart="coating_RT", provenance=ref,
+                        image="plots/coating_reflectance.png")
             else:
                 lam_um = lam * 1e6
                 R = 0.5 * (np.interp(lam_um, cspec["lam_um"], cspec["Rs"])
@@ -705,6 +848,17 @@ def plot_materials(model, outdir):
                     ax.plot(tab_lam_nm, 100 * cspec[key], linestyle=ls,
                            lw=1.0,
                            label="%s %s (AOI=%.0f°)" % (cname, key, aoi))
+            if csv_emitter is not None:
+                ref = cspec.get("reference", "")
+                nan = np.full(len(tab_lam_nm), np.nan)
+                csv_emitter.emit(
+                    "coating_%s.csv" % _safe_name(cname),
+                    ["wavelength_nm", "Rs", "Rp", "Ts", "Tp", "reference"],
+                    zip(tab_lam_nm, cspec.get("Rs", nan),
+                       cspec.get("Rp", nan), cspec.get("Ts", nan),
+                       cspec.get("Tp", nan), [ref] * len(tab_lam_nm)),
+                    entity=cname, chart="coating_RT", provenance=ref,
+                    image="plots/coating_reflectance.png")
 
         ax.set_xlabel("wavelength [nm]")
         ax.set_ylabel("R or T [%]")
@@ -909,6 +1063,175 @@ def plot_audit(audit, outdir):
     plt.close(fig)
 
 
+# =============================================================================
+# --emit-csv: per-source (spectrum/Stokes/ledger) + per-element + system CSVs.
+# Everything here reads data the trace/audit stages already produced (model
+# source props, audit.json buckets, report['elements'] from
+# common.element_power_table) -- no new physics, just a CSV projection.
+# =============================================================================
+def _avg_source_ledger(audit):
+    """{source_name: {emitted_W, closure_error, <bucket>: W, ...}} averaged
+    across seeds, same averaging convention as common.element_power_table."""
+    per_seed = audit.get("per_seed", [])
+    if not per_seed:
+        return {}
+    n = float(len(per_seed))
+    names = list(per_seed[0]["sources"])
+    out = {}
+    for name in names:
+        row = {"emitted_W": 0.0, "closure_error": 0.0}
+        row.update({b: 0.0 for b in BUCKETS})
+        for rep in per_seed:
+            s = rep["sources"][name]
+            row["emitted_W"] += s["emitted_W"] / n
+            row["closure_error"] += s["closure_error"] / n
+            for b in BUCKETS:
+                row[b] += s.get(b, 0.0) / n
+        out[name] = row
+    return out
+
+
+def _source_spectrum_rows(src, n_lambda):
+    """[(wavelength_nm, rel_power, power_W)] -- the n_lambda deterministic
+    equal-probability strata sample_source draws from (wavelength_strata),
+    each carrying 1/n_lambda of the source's total power."""
+    lam_m = wavelength_strata(src, n_lambda)
+    power_w = src["power_mW"] * 1e-3
+    rel = 1.0 / len(lam_m)
+    return [(float(l / 1e-9), rel, power_w * rel) for l in lam_m]
+
+
+def _source_stokes_row(src):
+    """Source polarization spec -> (S0,S1,S2,S3,DOP), power-normalized to
+    S0=1. Unpolarized sources average the two orthogonal pol_strata Jones
+    vectors jones_for() returns for pol_stratum 0/1 (equal power each) --
+    the same populations sample_source draws rays from -- which correctly
+    collapses to DOP=0."""
+    pol = src.get("polarization")
+    n_pol = n_pol_strata({"polarization": pol})
+    S = np.zeros(4)
+    for ps in range(n_pol):
+        Es, Ep = jones_for(pol, ps)
+        S += np.array(stokes_from_jones(np.array(Es), np.array(Ep))) / n_pol
+    dop = float(np.sqrt(S[1] ** 2 + S[2] ** 2 + S[3] ** 2) / S[0]) \
+        if S[0] > 0 else 0.0
+    return {"S0": float(S[0]), "S1": float(S[1]), "S2": float(S[2]),
+            "S3": float(S[3]), "DOP": dop}
+
+
+def emit_source_csvs(csv_emitter, model, case, audit):
+    """Per-source emitted spectrum, Stokes state, and averaged ledger
+    buckets/closure -- one CSV per chart kind, all sources concatenated
+    (a 'source' column distinguishes rows) since there is no per-source
+    chart today to share a basename with."""
+    n_lambda = int(case.get("options", {}).get("nlambda", 1) or 1)
+    src_bodies = [b for b in model["bodies"] if b.get("role") == "source"]
+
+    spec_rows = []
+    stokes_rows = []
+    for b in src_bodies:
+        name = b.get("label", b["name"])
+        src = b["source"]
+        for lam_nm, rel, p_w in _source_spectrum_rows(src, n_lambda):
+            spec_rows.append((name, lam_nm, rel, p_w))
+        st = _source_stokes_row(src)
+        stokes_rows.append((name, st["S0"], st["S1"], st["S2"], st["S3"],
+                            st["DOP"]))
+    if spec_rows:
+        csv_emitter.emit(
+            "source_spectrum.csv",
+            ["source", "wavelength_nm", "rel_power", "power_W"], spec_rows,
+            entity="sources", chart="emitted_spectrum", units="W")
+    if stokes_rows:
+        csv_emitter.emit(
+            "source_polarization.csv",
+            ["source", "S0", "S1", "S2", "S3", "DOP"], stokes_rows,
+            entity="sources", chart="polarization_state")
+
+    ledger = _avg_source_ledger(audit)
+    if ledger:
+        ledger_rows = [(name, bucket, row[bucket])
+                       for name, row in ledger.items() for bucket in BUCKETS]
+        csv_emitter.emit(
+            "source_ledger.csv", ["source", "bucket", "power_W"],
+            ledger_rows, entity="sources", chart="energy_ledger", units="W")
+        closure_rows = [(name, row["emitted_W"], row["closure_error"])
+                        for name, row in ledger.items()]
+        csv_emitter.emit(
+            "source_closure.csv",
+            ["source", "emitted_W", "closure_error"], closure_rows,
+            entity="sources", chart="closure_summary", units="W")
+
+
+def emit_element_csvs(csv_emitter, report, audit):
+    """Per-element power table (report['elements'], already the seed-
+    averaged common.element_power_table) + audit.json's per-seed-0
+    boundary-flux and per-face tallies (diagnostic side-tables, not
+    seed-averaged upstream -- reported as-is from seed 0, matching
+    plot_audit's existing seed-0 convention)."""
+    rows = [(label, r["power_in_W"], r["power_out_W"], r["absorbed_W"],
+            r["detected_W"]) for label, r in report["elements"].items()]
+    if rows:
+        csv_emitter.emit(
+            "element_power.csv",
+            ["element", "power_in_W", "power_out_W", "absorbed_W",
+             "detected_W"], rows, entity="elements",
+            chart="element_power_table", units="W")
+
+    rep0 = audit["per_seed"][0]
+    flux_rows = [(label, fx.get("in_W", 0.0), fx.get("out_W", 0.0))
+                for label, fx in sorted(rep0.get("element_flux_W", {}).items())]
+    if flux_rows:
+        csv_emitter.emit(
+            "element_boundary_flux.csv", ["element", "in_W", "out_W"],
+            flux_rows, entity="elements", chart="boundary_flux", units="W")
+
+    face_rows = [(face_id, w)
+                for face_id, w in sorted(rep0.get("by_surface_W", {}).items())]
+    if face_rows:
+        csv_emitter.emit(
+            "element_per_face_power.csv", ["face", "power_W"], face_rows,
+            entity="elements", chart="per_face_power", units="W")
+
+
+def emit_system_csvs(csv_emitter, report, audit):
+    """System-level data/energy_ledger.csv (source, bucket, power_W) +
+    data/power_flow.csv (from_node, to_node, power_W): a simple two-tier
+    flow graph SOURCES -> element (in) -> {ABSORBED, DETECTED,
+    SURROUNDINGS} plus SOURCES -> <loss bucket> for buckets that are not
+    tied to a specific element (escaped/truncated/etc — the ledger does
+    not attribute those to an element)."""
+    ledger = _avg_source_ledger(audit)
+    ledger_rows = [(name, bucket, row[bucket])
+                   for name, row in ledger.items() for bucket in BUCKETS]
+    if ledger_rows:
+        csv_emitter.emit(
+            "energy_ledger.csv", ["source", "bucket", "power_W"],
+            ledger_rows, entity="system", chart="energy_ledger", units="W")
+
+    flow_rows = []
+    for label, r in report["elements"].items():
+        if r["power_in_W"] > 0:
+            flow_rows.append(("SOURCES", label, r["power_in_W"]))
+        if r["absorbed_W"] > 0:
+            flow_rows.append((label, "ABSORBED", r["absorbed_W"]))
+        if r["detected_W"] > 0:
+            flow_rows.append((label, "DETECTED", r["detected_W"]))
+        if r["power_out_W"] > 0:
+            flow_rows.append((label, "SURROUNDINGS", r["power_out_W"]))
+    bucket_totals = {}
+    for row in ledger.values():
+        for b in BUCKETS:
+            bucket_totals[b] = bucket_totals.get(b, 0.0) + row[b]
+    for b, w in bucket_totals.items():
+        if w > 0:
+            flow_rows.append(("SOURCES", b.upper(), w))
+    if flow_rows:
+        csv_emitter.emit(
+            "power_flow.csv", ["from_node", "to_node", "power_W"],
+            flow_rows, entity="system", chart="power_flow", units="W")
+
+
 def main(argv=None):
     p = cli_specs.build_parser("post")
     args = p.parse_args(argv)
@@ -927,6 +1250,9 @@ def main(argv=None):
     plots = case_dir / "plots"
     for d in (img, spec, plots):
         d.mkdir(exist_ok=True)
+    # --emit-csv off (the default): no data/ dir is created at all, and
+    # every renderer below runs exactly as it did before this flag existed.
+    csv_emitter = CsvEmitter(case_dir / "data") if args.emit_csv else None
 
     report = {"detectors": {}, "closure_ok": all(
         a["closure_ok"] for a in audit["per_seed"]),
@@ -958,17 +1284,35 @@ def main(argv=None):
                         photometric=args.photometric,
                         spectrometer=args.spectrometer,
                         qe_bodies=qe_bodies,
-                        detector_registry=detector_registry)
+                        detector_registry=detector_registry,
+                        csv_emitter=csv_emitter)
         render_stokes_maps(h5path, img)
+
+    # per-(source, detector) detected power: promotes case.json["detected"]
+    # into report.json regardless of --emit-csv (deliverable independent of
+    # the CSV flag); the CSV export of the same rows IS gated on the flag.
+    per_source_flat = add_per_source_detected(case, report)
+    if csv_emitter is not None and per_source_flat:
+        csv_emitter.emit(
+            "source_detector.csv",
+            ["source", "detector", "lam_stratum", "pol_stratum",
+             "coherent_W", "incoherent_W", "n_samples"], per_source_flat,
+            entity="sources", chart="source_detector_power", units="W")
+
     common.progress_emit("post", 0.8, "diagnostic plots",
                          case_dir=case_dir)
     rays = np.load(case_dir / "rays.npy")
     plot_rays_2d(rays, model, plots / "rays_xy.png",
                 max_generation=args.viz_generations,
                 dim_mode=args.dim_rays, dim_floor=args.dim_rays_floor)
-    plot_materials(model, plots)
+    plot_materials(model, plots, csv_emitter=csv_emitter)
     plot_optical_elements(model, plots)
     plot_audit(audit, plots)
+    if csv_emitter is not None:
+        emit_source_csvs(csv_emitter, model, case, audit)
+        emit_element_csvs(csv_emitter, report, audit)
+        emit_system_csvs(csv_emitter, report, audit)
+        csv_emitter.write_index()
     common.write_json(case_dir / "report.json", report)
     print("[post] wrote images/spectra/plots + report.json in %s"
           % case_dir, flush=True)

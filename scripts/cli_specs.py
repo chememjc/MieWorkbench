@@ -163,6 +163,12 @@ def _build_pipeline_parser():
                         "(det_<label>_lambda_map.png, "
                         "spectra/lambda_vs_x_<label>.png; post stage only)")
 
+    g = p.add_argument_group("analysis / export options")
+    g.add_argument("--emit-csv", action="store_true",
+                   help="also write results/<case>/data/*.csv alongside "
+                        "every chart (plus data/index.csv mapping file -> "
+                        "entity/chart/units/provenance); post stage only")
+
     g = p.add_argument_group("execution / orchestration")
     g.add_argument("--keep-going", action="store_true",
                    help="on a stage failure, print FAILED and continue "
@@ -285,6 +291,12 @@ def _build_post_parser():
                    help="also render det_<label>_lambda_map.png (power-"
                         "weighted wavelength centroid) and a lambda(x) "
                         "dispersion fit per detector")
+
+    g = p.add_argument_group("analysis / export options")
+    g.add_argument("--emit-csv", action="store_true",
+                   help="also write results/<case>/data/*.csv alongside "
+                        "every chart (plus data/index.csv mapping file -> "
+                        "entity/chart/units/provenance)")
     return p
 
 

@@ -203,6 +203,36 @@ def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag):
                                          "gather_s": gather_s}
 
 
+def build_detected_block(grids, gather_diags):
+    """Per-seed case.json["detected"] block: {detector label: {"s/l/p":
+    {"coherent_W", "incoherent_W", "n_samples"}}}. Merges the coherent
+    per-key tally (DetectorGrid.detected_geometric, already surfaced via
+    gather_diags' "detected_geometric_W"/"n_samples") with the incoherent
+    per-key tally added alongside it (detected_incoherent/_n) — same key
+    shape (source_id, lam_stratum, pol_stratum), so a key present in only
+    one population simply omits the other's *_W field."""
+    out = {}
+    for det in grids.values():
+        keys = set(det.detected_geometric) | set(det.detected_incoherent)
+        if not keys:
+            continue
+        diag_for_label = gather_diags.get(det.label, {})
+        rows = {}
+        for key in keys:
+            skey = "/".join(str(x) for x in key)
+            entry = {}
+            if key in det.detected_geometric:
+                entry["coherent_W"] = float(det.detected_geometric[key])
+            if key in det.detected_incoherent:
+                entry["incoherent_W"] = float(det.detected_incoherent[key])
+            d = diag_for_label.get(skey)
+            entry["n_samples"] = int(d["n_samples"]) if d is not None \
+                else int(det.detected_incoherent_n.get(key, 0))
+            rows[skey] = entry
+        out[det.label] = rows
+    return out
+
+
 def save_detectors(case_dir, grids_list, seeds):
     """grids_list: one dict per seed. Writes mean/std cubes per label."""
     import h5py
@@ -313,6 +343,7 @@ def _main_locked(args, case_dir):
     audits = []
     all_viz = []
     gather_diags_all = {}
+    detected_all = {}
     for s in range(args.seeds):
         seed = args.seed0 + s
         print("[trace] seed %d/%d (seed=%d)"
@@ -327,6 +358,7 @@ def _main_locked(args, case_dir):
         rep = result.ledger.report(result.source_names)
         audits.append(rep)
         gather_diags_all["seed%d" % seed] = gdiags
+        detected_all["seed%d" % seed] = build_detected_block(grids, gdiags)
         if s == 0:
             all_viz = result.viz.as_array()
         if not rep["closure_ok"]:
@@ -343,6 +375,7 @@ def _main_locked(args, case_dir):
     case["status"] = "completed"
     case["diagnostics"] = case_diag
     case["gather"] = gather_diags_all
+    case["detected"] = detected_all
     case["timing"] = times
     common.write_json(case_dir / "case.json", case)
     closure_ok = all(a["closure_ok"] for a in audits)
