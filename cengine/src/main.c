@@ -22,10 +22,12 @@
 #include "scene.h"
 #include "trace.h"
 #include "detector.h"
+#include "gather.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MIEWB_CENGINE_VERSION "0.1.0-phaseA"
 
@@ -83,21 +85,24 @@ int main(int argc, char **argv) {
 
     if (threads_override > 0) scene->threads = threads_override;
 
-    /* phase-A guard: the coherent gather is not ported; a coherent source
-     * would silently lose its interference physics. The Python router
-     * enforces this too — this is defense in depth. */
-    for (int i = 0; i < scene->n_sources; i++)
-        if (scene->sources[i].coherent)
-            die(EXIT_INPUT, "source '%s' is coherent — the coherent gather "
-                "is not ported yet (phase D); scenes with coherent sources "
-                "must run on the Python engine",
-                scene->sources[i].label);
-
     for (int i = 0; i < scene->n_dets; i++)
         det_compute_mask(&scene->dets[i], scene);
 
     TraceResultC result;
     trace_run(scene, &result);
+
+    /* coherent Huygens gather over the collected detector samples
+     * (no-op for purely incoherent scenes) */
+    struct timespec g0, g1;
+    clock_gettime(CLOCK_MONOTONIC, &g0);
+    int64_t gather_pairs = gather_run(scene);
+    clock_gettime(CLOCK_MONOTONIC, &g1);
+    double gather_seconds = (double)(g1.tv_sec - g0.tv_sec)
+                            + 1e-9 * (double)(g1.tv_nsec - g0.tv_nsec);
+    if (gather_pairs > 0)
+        LOGI("gather: %.3g (sample x point) pairs in %.2f s (%.3g "
+             "pairs/s)", (double)gather_pairs, gather_seconds,
+             (double)gather_pairs / gather_seconds);
 
     /* ---- outputs ---- */
     snprintf(path, sizeof path, "%s/rays_viz.npy", scene->out_dir);
@@ -114,11 +119,14 @@ int main(int argc, char **argv) {
             "{\n"
             "  \"engine\": \"miewb-trace %s\",\n"
             "  \"trace_seconds\": %.6f,\n"
+            "  \"gather_seconds\": %.6f,\n"
+            "  \"gather_pairs\": %lld,\n"
             "  \"ray_interactions\": %lld,\n"
             "  \"viz_segments\": %lld,\n"
             "  \"closure_err_max\": %.6g\n"
             "}\n",
-            MIEWB_CENGINE_VERSION, result.trace_seconds,
+            MIEWB_CENGINE_VERSION, result.trace_seconds, gather_seconds,
+            (long long)gather_pairs,
             (long long)result.rays_traced, (long long)result.viz.n,
             ledger_closure_max(&result.ledger));
     fclose(f);
@@ -129,6 +137,8 @@ int main(int argc, char **argv) {
              "wrapper will fail this case", closure);
 
     trace_result_free(&result);
+    for (int i = 0; i < scene->n_dets; i++)
+        det_free_gkeys(&scene->dets[i]);
     scene_free(scene);
     log_close_file();
     return 0;

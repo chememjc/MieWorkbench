@@ -25,6 +25,33 @@ typedef struct {
     int16_t source_id, lam_stratum, pol_stratum;
 } DetHit;
 
+/* one coherent detector arrival: the full Huygens sample record
+ * (tracer._detector_event -> add_gather_samples, segment-START state) */
+typedef struct {
+    int32_t det;
+    int16_t source_id, lam_stratum, pol_stratum;
+    kvec3 pos, dir, s_hat;
+    kcplx Es, Ep;
+    double lam, opl, power;
+    uint8_t scattered;
+    uint64_t ray_key;
+} GatherHit;
+
+typedef struct {
+    GatherHit *v;
+    int64_t n, cap;
+} GatherHitVec;
+
+void gathhits_init(GatherHitVec *h);
+void gathhits_free(GatherHitVec *h);
+void gathhits_push(GatherHitVec *h, const GatherHit *hit);
+void gathhits_clear(GatherHitVec *h);
+
+/* Serially file recorded coherent hits into the per-(source,stratum,pol)
+ * GKey sample sets on their detectors + the detected_geometric tallies. */
+void det_apply_gather_hits(SceneC *s, const GatherHitVec *hits);
+void det_free_gkeys(DetC *d);
+
 typedef struct {
     DetHit *v;
     int64_t n, cap;

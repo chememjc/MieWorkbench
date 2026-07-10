@@ -93,6 +93,19 @@ typedef struct {
     kvec3 aabb_lo, aabb_hi;
 } FaceC;
 
+/* One (source, lam_stratum, pol_stratum) coherent sample set on a
+ * detector — the C analogue of DetectorGrid.samples[key]
+ * (detector.py:173-201). SoA: the gather kernels stream these. */
+typedef struct {
+    int16_t source_id, lam_stratum, pol_stratum;
+    int64_t n, cap;
+    double *pos, *dir, *s_hat;      /* n * 3 */
+    kcplx *Es, *Ep;                 /* complex128 Jones */
+    double *lam, *opl, *power;
+    uint8_t *scattered;
+    uint64_t *ray_key;              /* cross-estimator grouping (D2) */
+} GKey;
+
 /* Planar detector grid — geometry computed by the Python glue with the
  * exact DetectorGrid.__init__ math (detector.py:88-164) and passed in, so
  * the two engines share pixel mapping bit-for-bit. The mask is recomputed
@@ -111,6 +124,11 @@ typedef struct {
      * the scene maxima. */
     double *det_inc_W;
     int64_t *det_inc_n;
+    /* coherent side: per-key Huygens sample sets + geometric tallies
+     * (detected_geometric, detector.py:190-191) */
+    GKey *gkeys;
+    int32_t n_gkeys, cap_gkeys;
+    double *det_geom_W;             /* same flat key layout as det_inc_W */
 } DetC;
 
 /* Emission policy (sources.py:240-266 "toward-origin sign policy"):
@@ -140,6 +158,9 @@ typedef struct {
      * computed at load time in request.c) */
     double u_lo, u_hi, v_lo, v_hi;
     int64_t viz_cap;            /* viz_rays cap for this source */
+    /* per-(stratum, pol) gather normalization areas [m^2]
+     * (run_trace.compute_sample_area) — [n_strata * n_pol] */
+    double *sample_area;
 } SourceC;
 
 typedef struct {
@@ -173,6 +194,14 @@ typedef struct {
     BvhC tlas;
     uint8_t linear_scan;
     uint8_t mesh_flat_normals;  /* --mesh-flat-normals passthrough */
+
+    /* coherent-gather parameters (render_coherent, gather.py:443-458) */
+    uint8_t gather_backend;     /* 0 auto, 1 cuda, 2 cpu */
+    double min_eff_samples;     /* M_eff gate (default 1000) */
+    uint8_t enforce_gate;
+    uint8_t save_fields;
+    uint8_t occlusion;          /* --gather-occlusion */
+    int occ_tile;               /* shadow tile size (default 16) */
 
     int max_strata;             /* max n_strata over sources (tally dims) */
     int max_pol;                /* max n_pol over sources */

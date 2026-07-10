@@ -428,6 +428,40 @@ SceneC *request_load(const char *path) {
         s->mesh_flat_normals = (uint8_t)(v && yyjson_is_bool(v)
                                          && yyjson_get_bool(v));
     }
+    {
+        /* coherent-gather parameters (optional block; defaults mirror
+         * cli_specs/gather.py) */
+        yyjson_val *g = yyjson_obj_get(root, "gather");
+        s->gather_backend = 0;
+        s->min_eff_samples = 1000.0;
+        s->enforce_gate = 1;
+        s->save_fields = 0;
+        s->occlusion = 0;
+        s->occ_tile = 16;
+        if (g && !yyjson_is_null(g)) {
+            char bk[16] = "auto";
+            yyjson_val *v = yyjson_obj_get(g, "backend");
+            if (v && yyjson_is_str(v))
+                snprintf(bk, sizeof bk, "%s", yyjson_get_str(v));
+            if (strcmp(bk, "cuda") == 0) s->gather_backend = 1;
+            else if (strcmp(bk, "cpu") == 0) s->gather_backend = 2;
+            v = yyjson_obj_get(g, "min_eff_samples");
+            if (v && yyjson_is_num(v))
+                s->min_eff_samples = yyjson_get_num(v);
+            v = yyjson_obj_get(g, "enforce_gate");
+            if (v && yyjson_is_bool(v))
+                s->enforce_gate = (uint8_t)yyjson_get_bool(v);
+            v = yyjson_obj_get(g, "save_fields");
+            if (v && yyjson_is_bool(v))
+                s->save_fields = (uint8_t)yyjson_get_bool(v);
+            v = yyjson_obj_get(g, "occlusion");
+            if (v && yyjson_is_bool(v))
+                s->occlusion = (uint8_t)yyjson_get_bool(v);
+            v = yyjson_obj_get(g, "occlusion_tile");
+            if (v && yyjson_is_int(v))
+                s->occ_tile = (int)yyjson_get_sint(v);
+        }
+    }
 
     /* wavelengths + ambient tables */
     yyjson_val *lams = need(root, "lams_m", "root");
@@ -608,6 +642,13 @@ SceneC *request_load(const char *path) {
                                  yyjson_get_num(yyjson_arr_get(row, 3)));
         }
         src->viz_cap = need_int(sobj, "viz_cap", ctx);
+        /* per-(stratum, pol) gather sample areas (optional: only coherent
+         * scenes carry them) */
+        yyjson_val *sa = yyjson_obj_get(sobj, "sample_area");
+        src->sample_area = (sa && !yyjson_is_null(sa))
+            ? need_dbl_array(sobj, "sample_area", ctx,
+                             (size_t)(src->n_strata * src->n_pol))
+            : NULL;
         parse_face_into(&src->emit_face, need(sobj, "emit_face", ctx),
                         ctx, 0);
         source_uv_bounds(src, ctx);
@@ -660,7 +701,11 @@ SceneC *request_load(const char *path) {
         d->det_inc_n = (int64_t *)calloc(
             (size_t)s->n_sources * s->max_strata * s->max_pol,
             sizeof(int64_t));
-        if (!d->inc || !d->mask || !d->det_inc_W || !d->det_inc_n)
+        d->det_geom_W = (double *)calloc(
+            (size_t)s->n_sources * s->max_strata * s->max_pol,
+            sizeof(double));
+        if (!d->inc || !d->mask || !d->det_inc_W || !d->det_inc_n
+                || !d->det_geom_W)
             die(EXIT_INPUT, "request: %s cube allocation failed "
                 "(%zu pixels)", ctx, cube);
     }
@@ -724,12 +769,14 @@ void scene_free(SceneC *s) {
         free((void *)s->sources[i].emit_face.trim.loop_off);
         free((void *)s->sources[i].emit_face.trim.pts_u);
         free((void *)s->sources[i].emit_face.trim.pts_v);
+        free(s->sources[i].sample_area);
     }
     for (int i = 0; i < s->n_dets; i++) {
         free(s->dets[i].inc);
         free(s->dets[i].mask);
         free(s->dets[i].det_inc_W);
         free(s->dets[i].det_inc_n);
+        free(s->dets[i].det_geom_W);
     }
     free(s->bodies);
     free(s->faces);

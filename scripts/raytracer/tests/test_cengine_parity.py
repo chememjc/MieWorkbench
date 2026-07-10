@@ -163,6 +163,42 @@ def test_scene_parity(name, tmp_path):
 REPO = SCRIPTS.parent
 
 
+def test_coherent_doubleslit_parity(tmp_path):
+    """Phase D gate: the C engine's Huygens gather vs the Python engine on
+    the REAL doubleslit geometry — Young fringes must agree in placement
+    and contrast. C-vs-Python differ by RNG realization only, so the bar
+    is the Python seed-to-seed level (measured: 2D corr ~0.86 at 5e4
+    rays; peak-row correlation is far tighter)."""
+    import h5py
+    model_json = REPO / "geometry" / "doubleslit" / "model.json"
+    if not model_json.exists():
+        pytest.skip("geometry/doubleslit not extracted")
+
+    def run(engine, case):
+        import run_trace
+        rc = run_trace.main([
+            "--model-json", str(model_json), "--case-dir", str(case),
+            "--rays", "100000", "--resolution", "256", "--nlambda", "1",
+            "--engine", engine, "--workers", "1"])
+        assert rc == 0
+        with h5py.File(next((case / "detectors").glob("*.h5")), "r") as h:
+            return h["spectral_cube_mean"][...].sum(axis=0)
+
+    a = run("python", tmp_path / "py")
+    b = run("c", tmp_path / "c")
+    case = json.loads((tmp_path / "c" / "case.json").read_text())
+    assert case["engine"] == "c", case.get("engine_reason")
+    # energy: integrals agree within MC bounds
+    ra = float(a.sum())
+    rb = float(b.sum())
+    assert abs(ra - rb) / max(ra, rb) < 0.05, (ra, rb)
+    # fringe structure: peak-row profiles strongly correlated
+    pa = a[a.sum(axis=1).argmax()]
+    pb = b[b.sum(axis=1).argmax()]
+    corr = float(np.corrcoef(pa, pb)[0, 1])
+    assert corr > 0.9, "fringe profile correlation %.3f" % corr
+
+
 @pytest.mark.parametrize("name", sorted(cengine_scenes.REAL_SCENES))
 def test_real_geometry_parity(name, tmp_path):
     """Side-by-side on REAL extracted geometries (repo geometry/ dirs) —

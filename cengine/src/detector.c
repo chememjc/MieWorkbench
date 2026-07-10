@@ -32,6 +32,133 @@ void dethits_push(DetHitVec *h, const DetHit *hit) {
 
 void dethits_clear(DetHitVec *h) { h->n = 0; }
 
+void gathhits_init(GatherHitVec *h) {
+    h->cap = 1024;
+    h->n = 0;
+    h->v = (GatherHit *)malloc((size_t)h->cap * sizeof(GatherHit));
+    if (!h->v) die(EXIT_PHYSICS, "gathhits: allocation failed");
+}
+
+void gathhits_free(GatherHitVec *h) {
+    free(h->v);
+    memset(h, 0, sizeof *h);
+}
+
+void gathhits_push(GatherHitVec *h, const GatherHit *hit) {
+    if (h->n == h->cap) {
+        h->cap *= 2;
+        GatherHit *p = (GatherHit *)realloc(
+            h->v, (size_t)h->cap * sizeof(GatherHit));
+        if (!p) die(EXIT_PHYSICS, "gathhits: growth to %lld failed",
+                    (long long)h->cap);
+        h->v = p;
+    }
+    h->v[h->n++] = *hit;
+}
+
+void gathhits_clear(GatherHitVec *h) { h->n = 0; }
+
+/* find-or-create the GKey sample set for a (source, stratum, pol) triple */
+static GKey *det_gkey(DetC *d, int16_t src, int16_t ls, int16_t ps) {
+    for (int32_t i = 0; i < d->n_gkeys; i++) {
+        GKey *g = &d->gkeys[i];
+        if (g->source_id == src && g->lam_stratum == ls
+                && g->pol_stratum == ps)
+            return g;
+    }
+    if (d->n_gkeys == d->cap_gkeys) {
+        d->cap_gkeys = d->cap_gkeys ? d->cap_gkeys * 2 : 8;
+        GKey *p = (GKey *)realloc(d->gkeys,
+                                  (size_t)d->cap_gkeys * sizeof(GKey));
+        if (!p) die(EXIT_PHYSICS, "detector: gkey growth failed");
+        d->gkeys = p;
+    }
+    GKey *g = &d->gkeys[d->n_gkeys++];
+    memset(g, 0, sizeof *g);
+    g->source_id = src;
+    g->lam_stratum = ls;
+    g->pol_stratum = ps;
+    g->cap = 4096;
+    g->pos = (double *)malloc((size_t)g->cap * 3 * sizeof(double));
+    g->dir = (double *)malloc((size_t)g->cap * 3 * sizeof(double));
+    g->s_hat = (double *)malloc((size_t)g->cap * 3 * sizeof(double));
+    g->Es = (kcplx *)malloc((size_t)g->cap * sizeof(kcplx));
+    g->Ep = (kcplx *)malloc((size_t)g->cap * sizeof(kcplx));
+    g->lam = (double *)malloc((size_t)g->cap * sizeof(double));
+    g->opl = (double *)malloc((size_t)g->cap * sizeof(double));
+    g->power = (double *)malloc((size_t)g->cap * sizeof(double));
+    g->scattered = (uint8_t *)malloc((size_t)g->cap);
+    g->ray_key = (uint64_t *)malloc((size_t)g->cap * sizeof(uint64_t));
+    if (!g->pos || !g->dir || !g->s_hat || !g->Es || !g->Ep || !g->lam
+            || !g->opl || !g->power || !g->scattered || !g->ray_key)
+        die(EXIT_PHYSICS, "detector: gkey sample allocation failed");
+    return g;
+}
+
+static void gkey_grow(GKey *g) {
+    int64_t cap = g->cap * 2;
+    g->pos = (double *)realloc(g->pos, (size_t)cap * 3 * sizeof(double));
+    g->dir = (double *)realloc(g->dir, (size_t)cap * 3 * sizeof(double));
+    g->s_hat = (double *)realloc(g->s_hat,
+                                 (size_t)cap * 3 * sizeof(double));
+    g->Es = (kcplx *)realloc(g->Es, (size_t)cap * sizeof(kcplx));
+    g->Ep = (kcplx *)realloc(g->Ep, (size_t)cap * sizeof(kcplx));
+    g->lam = (double *)realloc(g->lam, (size_t)cap * sizeof(double));
+    g->opl = (double *)realloc(g->opl, (size_t)cap * sizeof(double));
+    g->power = (double *)realloc(g->power, (size_t)cap * sizeof(double));
+    g->scattered = (uint8_t *)realloc(g->scattered, (size_t)cap);
+    g->ray_key = (uint64_t *)realloc(g->ray_key,
+                                     (size_t)cap * sizeof(uint64_t));
+    if (!g->pos || !g->dir || !g->s_hat || !g->Es || !g->Ep || !g->lam
+            || !g->opl || !g->power || !g->scattered || !g->ray_key)
+        die(EXIT_PHYSICS, "detector: gather sample growth to %lld failed "
+            "— out of memory; reduce --rays", (long long)cap);
+    g->cap = cap;
+}
+
+void det_apply_gather_hits(SceneC *s, const GatherHitVec *hits) {
+    for (int64_t i = 0; i < hits->n; i++) {
+        const GatherHit *h = &hits->v[i];
+        DetC *d = &s->dets[h->det];
+        GKey *g = det_gkey(d, h->source_id, h->lam_stratum,
+                           h->pol_stratum);
+        if (g->n == g->cap) gkey_grow(g);
+        int64_t j = g->n++;
+        g->pos[j * 3] = h->pos.x;
+        g->pos[j * 3 + 1] = h->pos.y;
+        g->pos[j * 3 + 2] = h->pos.z;
+        g->dir[j * 3] = h->dir.x;
+        g->dir[j * 3 + 1] = h->dir.y;
+        g->dir[j * 3 + 2] = h->dir.z;
+        g->s_hat[j * 3] = h->s_hat.x;
+        g->s_hat[j * 3 + 1] = h->s_hat.y;
+        g->s_hat[j * 3 + 2] = h->s_hat.z;
+        g->Es[j] = h->Es;
+        g->Ep[j] = h->Ep;
+        g->lam[j] = h->lam;
+        g->opl[j] = h->opl;
+        g->power[j] = h->power;
+        g->scattered[j] = h->scattered;
+        g->ray_key[j] = h->ray_key;
+        size_t key = ((size_t)h->source_id * s->max_strata
+                      + h->lam_stratum) * s->max_pol + h->pol_stratum;
+        d->det_geom_W[key] += h->power;
+    }
+}
+
+void det_free_gkeys(DetC *d) {
+    for (int32_t i = 0; i < d->n_gkeys; i++) {
+        GKey *g = &d->gkeys[i];
+        free(g->pos); free(g->dir); free(g->s_hat);
+        free(g->Es); free(g->Ep);
+        free(g->lam); free(g->opl); free(g->power);
+        free(g->scattered); free(g->ray_key);
+    }
+    free(d->gkeys);
+    d->gkeys = NULL;
+    d->n_gkeys = d->cap_gkeys = 0;
+}
+
 /* ---------------------------------------------------------------- mask */
 void det_compute_mask(DetC *d, const SceneC *s) {
     const FaceC *face = &s->faces[d->face_id];
@@ -118,11 +245,20 @@ void det_write_outputs(const SceneC *s) {
                 for (int ps = 0; ps < s->max_pol; ps++) {
                     size_t key = ((size_t)src * s->max_strata + ls)
                                  * s->max_pol + ps;
-                    if (d->det_inc_n[key] == 0) continue;
-                    fprintf(f, "%s\n    \"%d/%d/%d\": {\"incoherent_W\": "
-                            "%.17g, \"n\": %lld}", first ? "" : ",",
-                            src, ls, ps, d->det_inc_W[key],
-                            (long long)d->det_inc_n[key]);
+                    int has_inc = d->det_inc_n[key] != 0;
+                    int has_coh = d->det_geom_W[key] != 0.0;
+                    if (!has_inc && !has_coh) continue;
+                    fprintf(f, "%s\n    \"%d/%d/%d\": {", first ? "" : ",",
+                            src, ls, ps);
+                    if (has_inc)
+                        fprintf(f, "\"incoherent_W\": %.17g, \"n\": %lld%s",
+                                d->det_inc_W[key],
+                                (long long)d->det_inc_n[key],
+                                has_coh ? ", " : "");
+                    if (has_coh)
+                        fprintf(f, "\"coherent_W\": %.17g",
+                                d->det_geom_W[key]);
+                    fprintf(f, "}");
                     first = 0;
                 }
         fprintf(f, "\n  }%s\n", i + 1 < s->n_dets ? "," : "");

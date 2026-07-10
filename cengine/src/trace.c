@@ -82,6 +82,7 @@ typedef struct {
     RayVec children;
     LedgerC ledger;
     DetHitVec hits;
+    GatherHitVec ghits;
     VizVec viz;
     int64_t interactions;
 } ThreadCtx;
@@ -413,12 +414,34 @@ static void optic_children(const SceneC *s, const FaceC *face,
  * (the coherent gather is phase D; request_load rejects coherent sources
  * until then). */
 static void detector_event(const SceneC *s, const FaceC *face, const Ray *r,
+                           kvec3 start_pos, double start_opl,
                            ThreadCtx *cx) {
     const DetC *d = &s->dets[face->detector];
-    if (r->coherent)
-        die(EXIT_PHYSICS, "coherent ray reached detector '%s' — the "
-            "coherent gather is not ported yet; the feature router should "
-            "have kept this scene on the Python engine", d->label);
+    if (r->coherent) {
+        /* Huygens wavelet sample at the segment START (the kernel adds
+         * the final k*n*r leg itself — tracer.py:229-233 double-count
+         * warning; add_gather_samples, detector.py:173-191) */
+        GatherHit gh;
+        gh.det = face->detector;
+        gh.source_id = r->source_id;
+        gh.lam_stratum = r->lam_stratum;
+        gh.pol_stratum = r->pol_stratum;
+        gh.pos = start_pos;
+        gh.dir = r->dir;
+        gh.s_hat = r->s_hat;
+        gh.Es = r->Es;
+        gh.Ep = r->Ep;
+        gh.lam = r->lam;
+        gh.opl = start_opl;
+        gh.power = ray_power(r);
+        gh.scattered = r->scattered;
+        gh.ray_key = r->ray_key;
+        gathhits_push(&cx->ghits, &gh);
+        /* diagnostic tallies (mirror the incoherent path below) */
+        cx->ledger.surf_by_det[face->detector] += gh.power;
+        cx->ledger.detected[face->detector] += gh.power;
+        return;
+    }
     DetHit h;
     h.det = face->detector;
     double fx, fy;
@@ -463,6 +486,7 @@ static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
         ledger_credit(&cx->ledger, BK_ABSORBED_BULK, r->source_id, absorbed);
         cx->ledger.by_body[med + 1] += absorbed;   /* slot 0 = ambient */
     }
+    kvec3 start_pos = r->pos;
     double start_opl = r->opl;
     double n_phase = (r->n_eff > 0.0) ? r->n_eff : n_med.re;
     r->opl += n_phase * seg;
@@ -490,7 +514,7 @@ static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
     const BodyC *body = &s->bodies[face->body];
 
     if (face->detector >= 0) {
-        detector_event(s, face, r, cx);
+        detector_event(s, face, r, start_pos, start_opl, cx);
         screen_children(s, face, body, r, cx);
     } else if (body->role == ROLE_DETECTOR) {
         /* non-screen face of a detector solid: strict no-op pass-through
@@ -666,6 +690,7 @@ void trace_run(SceneC *s, TraceResultC *out) {
         rayvec_init(&ctxs[i].children, 4096);
         ledger_init(&ctxs[i].ledger, s);
         dethits_init(&ctxs[i].hits);
+        gathhits_init(&ctxs[i].ghits);
         vizvec_init(&ctxs[i].viz);
     }
 
@@ -746,6 +771,8 @@ void trace_run(SceneC *s, TraceResultC *out) {
         for (int i = 0; i < n_threads; i++) {
             det_apply_hits(s, &ctxs[i].hits);
             dethits_clear(&ctxs[i].hits);
+            det_apply_gather_hits(s, &ctxs[i].ghits);
+            gathhits_clear(&ctxs[i].ghits);
             ledger_merge(&out->ledger, &ctxs[i].ledger);
             /* zero the thread ledger for the next batch */
             ledger_free(&ctxs[i].ledger);
@@ -779,6 +806,7 @@ void trace_run(SceneC *s, TraceResultC *out) {
         rayvec_free(&ctxs[i].children);
         ledger_free(&ctxs[i].ledger);
         dethits_free(&ctxs[i].hits);
+        gathhits_free(&ctxs[i].ghits);
         free(ctxs[i].viz.v);
     }
     free(ctxs);

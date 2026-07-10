@@ -45,6 +45,8 @@ PORTED = frozenset({
     "coating",                  # phase B (TMM per-ray; tables per-lam)
     "polarizer",                # phase B
     "surface:mesh",             # phase C (triangle BLAS)
+    "coherent",                 # phase D (Huygens gather, CPU/CUDA)
+    "save_fields",              # phase D (complex Ex/Ey field maps)
 })
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -413,6 +415,12 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
             "emit_face": _face_entry(-1, emit_rec, bidx, -1),
         }
         entry.update(_emit_dir_policy(face))
+        # per-(stratum, pol) gather normalization areas (compute_sample_area)
+        from run_trace import compute_sample_area
+        sa = compute_sample_area(scene, args)
+        entry["sample_area"] = [
+            float(sa[(sid, st, ps)])
+            for st in range(n_strata) for ps in range(n_pol)]
         sources.append(entry)
 
     detectors = []
@@ -455,6 +463,17 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
         "sources": sources,
         "detectors": detectors,
         "coatings": coatings,
+        "gather": {
+            # map the Python gather's --backend to the C engine's kernels
+            "backend": {"auto": "auto", "torch": "cuda",
+                        "numpy": "cpu"}.get(args.backend or "auto",
+                                            "auto"),
+            "min_eff_samples": float(args.min_eff_samples),
+            "enforce_gate": not args.no_gather_gate,
+            "save_fields": bool(args.save_fields),
+            "occlusion": bool(args.gather_occlusion),
+            "occlusion_tile": 16,
+        },
     }
 
 
@@ -488,7 +507,9 @@ def run_c_case(args, case_dir, scene, lam_range, case):
     audits = []
     all_viz = None
     detected_all = {}
+    gather_diags_all = {}
     trace_s_total = 0.0
+    gather_s_total = 0.0
 
     for s in range(args.seeds):
         seed = args.seed0 + s
@@ -515,6 +536,10 @@ def run_c_case(args, case_dir, scene, lam_range, case):
         # ---- convert outputs ----
         det_order = list(grids.keys())
         detected = json.loads((out_dir / "detected.json").read_text())
+        gather_json = out_dir / "gather.json"
+        gdiags = json.loads(gather_json.read_text()) \
+            if gather_json.exists() else {}
+        gather_diags_all["seed%d" % seed] = gdiags
         for i, fid in enumerate(det_order):
             g = grids[fid]
             cube = np.load(out_dir / ("det_%d_inc.npy" % i))
@@ -524,16 +549,36 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                                            g.label), flush=True)
                 return None
             g.inc = cube
-            # per-key incoherent tallies -> the detected block shape
+            # per-key tallies -> the detected block shape
             for skey, entry in detected.get(g.label, {}).items():
                 key = tuple(int(x) for x in skey.split("/"))
-                g.detected_incoherent[key] = float(entry["incoherent_W"])
-                g.detected_incoherent_n[key] = int(entry["n"])
+                if "incoherent_W" in entry:
+                    g.detected_incoherent[key] = \
+                        float(entry["incoherent_W"])
+                    g.detected_incoherent_n[key] = int(entry["n"])
+                if "coherent_W" in entry:
+                    g.detected_geometric[key] = float(entry["coherent_W"])
+            # --save-fields: complex Ex/Ey maps (seed0 only, matching the
+            # Python engine's save_detectors contract)
+            if args.save_fields and s == 0:
+                fields = {}
+                for skey in gdiags.get(g.label, {}):
+                    key = tuple(int(x) for x in skey.split("/"))
+                    ex_p = out_dir / ("det_%d_field_%d_%d_%d_Ex.npy"
+                                      % ((i,) + key))
+                    ey_p = out_dir / ("det_%d_field_%d_%d_%d_Ey.npy"
+                                      % ((i,) + key))
+                    if ex_p.exists() and ey_p.exists():
+                        fields[key] = (np.load(ex_p), np.load(ey_p))
+                if fields:
+                    g.fields = fields
         grids_list.append(grids)
         audits.append(json.loads((out_dir / "ledger.json").read_text()))
-        detected_all["seed%d" % seed] = build_detected_block(grids, {})
+        detected_all["seed%d" % seed] = build_detected_block(
+            grids, gdiags)
         summary = json.loads((out_dir / "summary.json").read_text())
         trace_s_total += float(summary["trace_seconds"])
+        gather_s_total += float(summary.get("gather_seconds") or 0.0)
         if s == 0:
             all_viz = np.load(out_dir / "rays_viz.npy")
         if not audits[-1]["closure_ok"]:
@@ -551,9 +596,10 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                       {"per_seed": audits, "gate": 1e-3})
     case["status"] = "completed"
     case["diagnostics"] = {}
-    case["gather"] = {}
+    case["gather"] = gather_diags_all
     case["detected"] = detected_all
-    case["timing"] = {"trace_s": trace_s_total, "gather_s": 0.0}
+    case["timing"] = {"trace_s": trace_s_total,
+                      "gather_s": gather_s_total}
     common.write_json(case_dir / "case.json", case)
     closure_ok = all(a["closure_ok"] for a in audits)
     if trace_s_total > 0:
