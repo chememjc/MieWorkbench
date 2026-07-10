@@ -440,6 +440,43 @@ class ResultsPane(QWidget):
         self.tabs.addTab(self.power, "Power")
 
         self.galleries = {}
+
+        # per-detector analysis metrics (Strehl/RMS/MTF50/EE/spot RMS --
+        # flattened from report.json's optional 'analysis' block) above
+        # a thumbnail gallery of results/<case>/analysis/*.png
+        self.analysis_metrics = QTableWidget(0, 3)
+        self.analysis_metrics.setHorizontalHeaderLabels(
+            ["Detector", "Metric", "Value"])
+        self.analysis_metrics.horizontalHeader().setStretchLastSection(True)
+        self.analysis_metrics.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.analysis_metrics.setMaximumHeight(160)
+        self.analysis_metrics.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.analysis_metrics.customContextMenuRequested.connect(
+            self._on_analysis_context_menu)
+
+        analysis_tab = QWidget()
+        analysis_lay = QVBoxLayout(analysis_tab)
+        analysis_lay.setContentsMargins(0, 0, 0, 0)
+        analysis_lay.addWidget(self.analysis_metrics)
+        analysis_gallery = _Gallery()
+        analysis_gallery.set_status_callback(self.statusChanged.emit)
+        self.galleries["analysis"] = analysis_gallery
+        analysis_lay.addWidget(analysis_gallery, 1)
+        self.tabs.addTab(analysis_tab, "Analysis")
+
+        # per-source power breakdown (report.json's optional 'per_source'
+        # list on each detector block)
+        self.sources = QTableWidget(0, 7)
+        self.sources.setHorizontalHeaderLabels(
+            ["Detector", "Source", "λ stratum", "Pol stratum",
+             "Coherent [mW]", "Incoherent [mW]", "Total [mW]"])
+        self.sources.horizontalHeader().setStretchLastSection(True)
+        self.sources.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.sources.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sources.customContextMenuRequested.connect(
+            self._on_sources_context_menu)
+        self.tabs.addTab(self.sources, "Sources")
+
         for name in ("images", "spectra", "plots", "viz"):
             g = _Gallery()
             g.set_status_callback(self.statusChanged.emit)
@@ -474,6 +511,15 @@ class ResultsPane(QWidget):
         menu = self._build_table_export_menu(self.power, "power.csv")
         menu.exec(self.power.viewport().mapToGlobal(pos))
 
+    def _on_analysis_context_menu(self, pos):
+        menu = self._build_table_export_menu(
+            self.analysis_metrics, "analysis_metrics.csv")
+        menu.exec(self.analysis_metrics.viewport().mapToGlobal(pos))
+
+    def _on_sources_context_menu(self, pos):
+        menu = self._build_table_export_menu(self.sources, "sources.csv")
+        menu.exec(self.sources.viewport().mapToGlobal(pos))
+
     # -- loading -------------------------------------------------------------
     def load_case(self, case_dir, monitor=False):
         self.case_dir = str(case_dir)
@@ -496,6 +542,8 @@ class ResultsPane(QWidget):
         self.title.setText("No results loaded")
         self.summary.setRowCount(0)
         self.power.setRowCount(0)
+        self.analysis_metrics.setRowCount(0)
+        self.sources.setRowCount(0)
         for gallery in self.galleries.values():
             gallery.clear()
         self.audit.setText("")
@@ -526,6 +574,8 @@ class ResultsPane(QWidget):
 
         report_path = os.path.join(self.case_dir, "report.json")
         self.summary.setRowCount(0)
+        self.analysis_metrics.setRowCount(0)
+        self.sources.setRowCount(0)
         if os.path.exists(report_path):
             try:
                 with open(report_path) as fh:
@@ -551,6 +601,8 @@ class ResultsPane(QWidget):
                    ("FAILED ✗" if closure is not None else "n/a")))
             self._populate_power(report.get("elements")
                                  or self._elements_from_audit())
+            self._populate_analysis_metrics(dets)
+            self._populate_sources(dets)
 
         from glob import glob
         for name, gallery in self.galleries.items():
@@ -570,6 +622,79 @@ class ResultsPane(QWidget):
                     "%.4g" % (e.get("detected_W", 0.0) * 1e3)]
             for col, val in enumerate(vals):
                 self.power.setItem(row, col, QTableWidgetItem(val))
+
+    @staticmethod
+    def _flatten_scalars(prefix, obj):
+        """Yield (dotted.path, value) for every scalar leaf under obj
+        (dicts recurse with dotted keys, lists index with [i]) -- the
+        report.json 'analysis' block's exact shape (PSF/MTF/EE/spot per
+        detector, keyed however the analysis stage groups by
+        source/lambda) isn't pinned by contract here, so this stays
+        schema-agnostic: only scalar (str/bool/int/float) leaves become
+        rows, containers are walked, None is skipped."""
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                key = "%s.%s" % (prefix, k) if prefix else str(k)
+                for pair in ResultsPane._flatten_scalars(key, v):
+                    yield pair
+        elif isinstance(obj, (list, tuple)):
+            for i, v in enumerate(obj):
+                key = "%s[%d]" % (prefix, i) if prefix else "[%d]" % i
+                for pair in ResultsPane._flatten_scalars(key, v):
+                    yield pair
+        elif isinstance(obj, bool) or isinstance(obj, (int, float, str)):
+            yield prefix, obj
+        # None / anything else: not a displayable scalar, skip
+
+    def _populate_analysis_metrics(self, dets):
+        """Flatten each detector's optional 'analysis' block (Strehl,
+        RMS waves, MTF50 tan/sag, EE r50/r80/r90, per-(source,lambda)
+        spot RMS, ...) into (Detector, Metric, Value) rows. A detector
+        with no 'analysis' block (or an old case with none at all)
+        contributes zero rows -- old cases load unchanged."""
+        rows = []
+        for label, d in sorted((dets or {}).items()):
+            analysis = d.get("analysis")
+            if not isinstance(analysis, dict):
+                continue
+            for metric, value in self._flatten_scalars("", analysis):
+                if isinstance(value, float):
+                    value = "%.4g" % value
+                rows.append((label, metric, value))
+        self.analysis_metrics.setRowCount(len(rows))
+        for row, (det, metric, value) in enumerate(rows):
+            for col, val in enumerate((det, metric, value)):
+                self.analysis_metrics.setItem(
+                    row, col, QTableWidgetItem(str(val)))
+
+    def _populate_sources(self, dets):
+        """Flatten each detector's optional 'per_source' list (rows of
+        {source, lam_stratum, pol_stratum, coherent_W, incoherent_W})
+        into the Sources tab; absent/malformed -> zero rows (old cases
+        load unchanged)."""
+        rows = []
+        for label, d in sorted((dets or {}).items()):
+            per_source = d.get("per_source")
+            if not isinstance(per_source, list):
+                continue
+            for entry in per_source:
+                if not isinstance(entry, dict):
+                    continue
+                coherent_w = entry.get("coherent_W", 0.0) or 0.0
+                incoherent_w = entry.get("incoherent_W", 0.0) or 0.0
+                rows.append((
+                    label,
+                    entry.get("source", ""),
+                    entry.get("lam_stratum", ""),
+                    entry.get("pol_stratum", ""),
+                    "%.4g" % (coherent_w * 1e3),
+                    "%.4g" % (incoherent_w * 1e3),
+                    "%.4g" % ((coherent_w + incoherent_w) * 1e3),
+                ))
+        self.sources.setRowCount(len(rows))
+        for row, vals in enumerate(rows):
+            for col, val in enumerate(vals):
+                self.sources.setItem(row, col, QTableWidgetItem(str(val)))
 
     def _elements_from_audit(self):
         """Cases post-processed before report.json carried 'elements':

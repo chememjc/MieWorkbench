@@ -142,18 +142,24 @@ def test_results_clear_case_resets_state(qtbot, tmp_path):
     # survived File > Open and showed the previous model's simulation)
     results.summary.setRowCount(2)
     results.power.setRowCount(3)
+    results.analysis_metrics.setRowCount(4)
+    results.sources.setRowCount(5)
     results.audit.setText("energy closure: OK")
     results.pv_btn.setEnabled(True)
     img = tmp_path / "det.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\n")   # unloadable pixmap is fine
     results.galleries["images"].show_images([str(img)])
     assert results.galleries["images"]._grid.count() == 1
+    results.galleries["analysis"].show_images([str(img)])
+    assert results.galleries["analysis"]._grid.count() == 1
 
     results.clear_case()
     assert results.case_dir is None
     assert results.title.text() == "No results loaded"
     assert results.summary.rowCount() == 0
     assert results.power.rowCount() == 0
+    assert results.analysis_metrics.rowCount() == 0
+    assert results.sources.rowCount() == 0
     assert results.audit.text() == ""
     assert not results.pv_btn.isEnabled()
     for gallery in results.galleries.values():
