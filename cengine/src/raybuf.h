@@ -29,6 +29,7 @@
 
 #define MEDIUM_STACK_DEPTH 4    /* rays.py:17 */
 #define AMBIENT (-1)            /* rays.py:18 */
+#define HIST_DEPTH 8            /* rays.py:22 (ghost refl_hist slots) */
 
 typedef struct {
     kvec3 pos, dir, s_hat;
@@ -49,6 +50,10 @@ typedef struct {
     uint8_t coherent, viz_flag, scattered;
     uint64_t ray_key;
     uint32_t event_ctr;
+    /* diagnostics (populated when the matching request flags are on;
+     * inherited unchanged by children like the Python optional slots) */
+    kvec3 birth_pos;            /* emission point (--export-rays) */
+    int32_t refl_hist[HIST_DEPTH];   /* face ids (--ghost-analysis) */
 } Ray;
 
 /* power = |Es|^2 + |Ep|^2 (rays.py:127) */

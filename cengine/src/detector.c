@@ -58,6 +58,127 @@ void gathhits_push(GatherHitVec *h, const GatherHit *hit) {
 
 void gathhits_clear(GatherHitVec *h) { h->n = 0; }
 
+void exportvec_init(ExportVec *e) {
+    e->cap = 1024;
+    e->n = 0;
+    e->v = (ExportRec *)malloc((size_t)e->cap * sizeof(ExportRec));
+    if (!e->v) die(EXIT_PHYSICS, "exports: allocation failed");
+}
+
+void exportvec_free(ExportVec *e) {
+    free(e->v);
+    memset(e, 0, sizeof *e);
+}
+
+void exportvec_push(ExportVec *e, const ExportRec *r) {
+    if (e->n == e->cap) {
+        e->cap *= 2;
+        ExportRec *p = (ExportRec *)realloc(
+            e->v, (size_t)e->cap * sizeof(ExportRec));
+        if (!p) die(EXIT_PHYSICS, "exports: growth failed");
+        e->v = p;
+    }
+    e->v[e->n++] = *r;
+}
+
+void exportvec_clear(ExportVec *e) { e->n = 0; }
+
+void det_collect_exports(SceneC *s, const ExportVec *e) {
+    for (int64_t i = 0; i < e->n; i++) {
+        DetC *d = &s->dets[e->v[i].det];
+        if (d->n_exports == d->cap_exports) {
+            d->cap_exports = d->cap_exports ? d->cap_exports * 2 : 4096;
+            void *p = realloc(d->exports, (size_t)d->cap_exports
+                              * sizeof(ExportRec));
+            if (!p) die(EXIT_PHYSICS, "exports: detector growth failed");
+            d->exports = p;
+        }
+        ((ExportRec *)d->exports)[d->n_exports++] = e->v[i];
+    }
+}
+
+void det_write_exports(const SceneC *s) {
+    if (!s->export_rays) return;
+    char path[1200];
+    for (int di = 0; di < s->n_dets; di++) {
+        const DetC *d = &s->dets[di];
+        int64_t n = d->n_exports;
+        const ExportRec *recs = (const ExportRec *)d->exports;
+        /* SoA staging buffers */
+        double *v3buf = (double *)malloc((size_t)(n > 0 ? n : 1) * 3
+                                         * sizeof(double));
+        double *sc = (double *)malloc((size_t)(n > 0 ? n : 1)
+                                      * sizeof(double));
+        int32_t *hist = (int32_t *)malloc(
+            (size_t)(n > 0 ? n : 1) * HIST_DEPTH * sizeof(int32_t));
+        if (!v3buf || !sc || !hist)
+            die(EXIT_PHYSICS, "exports: staging allocation failed");
+        struct { const char *name; int kind; } fields[] = {
+            {"pos", 0}, {"dir", 1}, {"birth_pos", 2},
+            {"opl", 3}, {"lam", 4}, {"power", 5}, {"source_id", 6},
+            {"lam_stratum", 7}, {"pol_stratum", 8}, {"generation", 9},
+            {"pol_mode", 10}, {"scattered", 11}, {"coherent", 12},
+        };
+        for (size_t f = 0; f < sizeof(fields) / sizeof(fields[0]); f++) {
+            int kind = fields[f].kind;
+            if (kind <= 2) {
+                for (int64_t i = 0; i < n; i++) {
+                    kvec3 v = kind == 0 ? recs[i].pos
+                            : kind == 1 ? recs[i].dir
+                                        : recs[i].birth_pos;
+                    v3buf[i * 3] = v.x;
+                    v3buf[i * 3 + 1] = v.y;
+                    v3buf[i * 3 + 2] = v.z;
+                }
+                snprintf(path, sizeof path, "%s/exp_%d_%s.npy",
+                         s->out_dir, di, fields[f].name);
+                npy_write_f64_2d(path, v3buf, (size_t)n, 3);
+            } else {
+                for (int64_t i = 0; i < n; i++) {
+                    const ExportRec *r = &recs[i];
+                    double x = 0.0;
+                    switch (kind) {
+                    case 3: x = r->opl; break;
+                    case 4: x = r->lam; break;
+                    case 5: x = r->power; break;
+                    case 6: x = r->source_id; break;
+                    case 7: x = r->lam_stratum; break;
+                    case 8: x = r->pol_stratum; break;
+                    case 9: x = r->generation; break;
+                    case 10: x = r->pol_mode; break;
+                    case 11: x = r->scattered; break;
+                    case 12: x = r->coherent; break;
+                    }
+                    sc[i] = x;
+                }
+                snprintf(path, sizeof path, "%s/exp_%d_%s.npy",
+                         s->out_dir, di, fields[f].name);
+                npy_write_f64_1d(path, sc, (size_t)n);
+            }
+        }
+        if (s->track_history) {
+            for (int64_t i = 0; i < n; i++)
+                for (int k = 0; k < HIST_DEPTH; k++)
+                    hist[i * HIST_DEPTH + k] = recs[i].refl_hist[k];
+            snprintf(path, sizeof path, "%s/exp_%d_refl_hist.npy",
+                     s->out_dir, di);
+            size_t shape[2] = {(size_t)n, HIST_DEPTH};
+            npy_write(path, hist, "<i4", 2, shape);
+        }
+        free(v3buf);
+        free(sc);
+        free(hist);
+    }
+}
+
+void det_free_exports(SceneC *s) {
+    for (int i = 0; i < s->n_dets; i++) {
+        free(s->dets[i].exports);
+        s->dets[i].exports = NULL;
+        s->dets[i].n_exports = s->dets[i].cap_exports = 0;
+    }
+}
+
 /* find-or-create the GKey sample set for a (source, stratum, pol) triple */
 static GKey *det_gkey(DetC *d, int16_t src, int16_t ls, int16_t ps) {
     for (int32_t i = 0; i < d->n_gkeys; i++) {

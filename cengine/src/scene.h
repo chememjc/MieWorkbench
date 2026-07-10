@@ -168,6 +168,9 @@ typedef struct {
     GKey *gkeys;
     int32_t n_gkeys, cap_gkeys;
     double *det_geom_W;             /* same flat key layout as det_inc_W */
+    /* --export-rays landing records (opaque here; detector.c owns) */
+    void *exports;
+    int64_t n_exports, cap_exports;
 } DetC;
 
 /* Emission policy (sources.py:240-266 "toward-origin sign policy"):
@@ -262,6 +265,8 @@ typedef struct {
     uint8_t save_fields;
     uint8_t occlusion;          /* --gather-occlusion */
     int occ_tile;               /* shadow tile size (default 16) */
+    uint8_t export_rays;        /* --export-rays (this seed) */
+    uint8_t track_history;      /* --ghost-analysis (this seed) */
 
     int max_strata;             /* max n_strata over sources (tally dims) */
     int max_pol;                /* max n_pol over sources */

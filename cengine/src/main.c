@@ -109,6 +109,7 @@ int main(int argc, char **argv) {
     npy_write_f64_2d(path, (const double *)result.viz.v,
                      (size_t)result.viz.n, 13);
     det_write_outputs(scene);
+    det_write_exports(scene);
     snprintf(path, sizeof path, "%s/ledger.json", scene->out_dir);
     ledger_write_json(&result.ledger, scene, path, 1e-3);
 
@@ -139,6 +140,7 @@ int main(int argc, char **argv) {
     trace_result_free(&result);
     for (int i = 0; i < scene->n_dets; i++)
         det_free_gkeys(&scene->dets[i]);
+    det_free_exports(scene);
     scene_free(scene);
     log_close_file();
     return 0;

@@ -54,6 +54,10 @@ PORTED = frozenset({
                                 #   Python-routed via its own feature)
     "particles",                # phase G (continuum mode; the explicit
                                 #   realization keeps its own feature)
+    "export_rays",              # phase H (per-detector landing records)
+    "ghost_analysis",           # phase H (refl_hist face-id history)
+    "viz_pattern",              # phase H (glue-level: Python viz-only
+                                #   pass supplies the overlay rays)
 })
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -293,7 +297,8 @@ def _emit_dir_policy(face):
             "flip_all": flip_all}
 
 
-def build_request(args, scene, seed, lam_range, grids, out_dir):
+def build_request(args, scene, seed, lam_range, grids, out_dir,
+                  export_this_seed=False, track_this_seed=False):
     """Serialize one seed's trace request. grids: {fid: DetectorGrid} from
     run_trace.build_detectors — the SAME objects later filled with the C
     cubes, so grid geometry is shared by construction."""
@@ -562,6 +567,8 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
             "threads": 0 if args.workers == "auto"
                        else resolve_workers(args.workers),
             "mesh_flat_normals": bool(args.mesh_flat_normals),
+            "export_rays": bool(export_this_seed),
+            "track_history": bool(track_this_seed),
             "linear_scan": bool(os.environ.get("MIEWB_CENGINE_LINEAR")
                                 == "1"),
         },
@@ -683,7 +690,11 @@ def run_c_case(args, case_dir, scene, lam_range, case):
         # fresh grids per seed — the same constructor the Python engine
         # uses, so geometry/mask are shared by construction
         grids = build_detectors(scene, args, lam_range)
-        req = build_request(args, scene, seed, lam_range, grids, out_dir)
+        export_on = args.export_rays or args.ghost_analysis
+        req = build_request(args, scene, seed, lam_range, grids, out_dir,
+                            export_this_seed=(export_on and s == 0),
+                            track_this_seed=(args.ghost_analysis
+                                             and s == 0))
         req_path = cdir / ("request_seed%d.json" % seed)
         req_path.write_text(json.dumps(req))
 
@@ -732,6 +743,50 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                         fields[key] = (np.load(ex_p), np.load(ey_p))
                 if fields:
                     g.fields = fields
+        # --export-rays / --ghost-analysis: reconstruct the per-detector
+        # ray_records so run_trace.write_rays_full (the SAME writer) packs
+        # rays_full.npz
+        if export_on and s == 0:
+            for i, fid in enumerate(det_order):
+                g = grids[fid]
+                pos_p = out_dir / ("exp_%d_pos.npy" % i)
+                if not pos_p.exists():
+                    continue
+                rec = {
+                    "pos": np.load(pos_p),
+                    "dir": np.load(out_dir / ("exp_%d_dir.npy" % i)),
+                    "birth_pos": np.load(
+                        out_dir / ("exp_%d_birth_pos.npy" % i)),
+                    "opl": np.load(out_dir / ("exp_%d_opl.npy" % i)),
+                    "lam": np.load(out_dir / ("exp_%d_lam.npy" % i)),
+                    "power": np.load(out_dir / ("exp_%d_power.npy" % i)),
+                    "source_id": np.load(
+                        out_dir / ("exp_%d_source_id.npy" % i)).astype(
+                            np.int16),
+                    "lam_stratum": np.load(
+                        out_dir / ("exp_%d_lam_stratum.npy" % i)).astype(
+                            np.int16),
+                    "pol_stratum": np.load(
+                        out_dir / ("exp_%d_pol_stratum.npy" % i)).astype(
+                            np.int16),
+                    "generation": np.load(
+                        out_dir / ("exp_%d_generation.npy" % i)).astype(
+                            np.int16),
+                    "pol_mode": np.load(
+                        out_dir / ("exp_%d_pol_mode.npy" % i)).astype(
+                            np.int8),
+                    "scattered": np.load(
+                        out_dir / ("exp_%d_scattered.npy" % i)).astype(
+                            bool),
+                    "coherent": np.load(
+                        out_dir / ("exp_%d_coherent.npy" % i)).astype(
+                            bool),
+                }
+                hist_p = out_dir / ("exp_%d_refl_hist.npy" % i)
+                if hist_p.exists():
+                    rec["refl_hist"] = np.load(hist_p)
+                if len(rec["pos"]):
+                    g.ray_records.append(rec)
         grids_list.append(grids)
         audits.append(json.loads((out_dir / "ledger.json").read_text()))
         detected_all["seed%d" % seed] = build_detected_block(
@@ -749,8 +804,34 @@ def run_c_case(args, case_dir, scene, lam_range, case):
 
     common.progress_emit("trace", 0.95, "writing detectors",
                          case_dir=case_dir)
+    # --viz-pattern: deterministic overlay rays from a SEPARATE Python
+    # viz-only pass (exactly run_trace._viz_pattern_pass — pattern rays
+    # are few, so the Python tracer is fine here); physics outputs above
+    # are untouched, preserving the bit-identical-with/without invariant
+    if args.viz_pattern:
+        from raytracer.tracer import Tracer, TraceConfig
+        from raytracer.sources import sample_viz_pattern
+        pattern = common.parse_viz_pattern_spec(args.viz_pattern)
+        viz_cfg = TraceConfig(max_reflections=args.max_reflections,
+                              power_floor=args.power_floor,
+                              n_lambda=args.nlambda, rays=1,
+                              seed=int(args.seed0), viz_rays=1 << 30,
+                              rough_fresnel=args.rough_fresnel)
+        viz_tracer = Tracer(scene, viz_cfg, {})
+        viz_batches = []
+        for sid, (bidx, src) in enumerate(scene.sources):
+            vb = sample_viz_pattern(scene, scene.bodies[bidx], src, sid,
+                                    pattern, args.nlambda)
+            if vb is not None:
+                viz_batches.append(vb)
+        if viz_batches:
+            all_viz = viz_tracer.run(viz_batches).viz.as_array()
     np.save(case_dir / "rays.npy",
             all_viz if all_viz is not None else np.zeros((0, 13)))
+    if (args.export_rays or args.ghost_analysis) and grids_list:
+        from run_trace import write_rays_full
+        write_rays_full(case_dir, grids_list[0], args,
+                        Path(args.model_json).parent.name, scene=scene)
     save_detectors(case_dir, grids_list, args.seeds)
     common.write_json(case_dir / "audit.json",
                       {"per_seed": audits, "gate": 1e-3})

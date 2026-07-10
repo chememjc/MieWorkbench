@@ -86,6 +86,7 @@ typedef struct {
     LedgerC ledger;
     DetHitVec hits;
     GatherHitVec ghits;
+    ExportVec exports;
     VizVec viz;
     int64_t interactions;
 } ThreadCtx;
@@ -131,6 +132,16 @@ static void pop_medium(Ray *r, int16_t expect_body, const SceneC *s,
     r->medium[--r->depth] = AMBIENT;
 }
 
+/* ghost-analysis bookkeeping (tracer._record_reflection): stamp the face
+ * id at slot min(pre-increment generation, HIST_DEPTH-1). Call with the
+ * PARENT's generation (children here are built with generation+1). */
+static void record_reflection(const SceneC *s, Ray *child,
+                              int16_t parent_gen, int32_t fid) {
+    if (!s->track_history) return;
+    int slot = parent_gen < HIST_DEPTH - 1 ? parent_gen : HIST_DEPTH - 1;
+    child->refl_hist[slot] = fid;
+}
+
 /* flux_out helper (tracer.py _flux_out_children): a child leaving this
  * interface OUTSIDE the body counts as power flowing out of the element */
 static void flux_out_child(LedgerC *l, const BodyC *body, const Ray *child) {
@@ -174,6 +185,7 @@ static void screen_children(const SceneC *s, const FaceC *face,
          * (tracer.py:444-445) */
         rf.Es = kc_scale(rf.Es, -sq);
         rf.Ep = kc_scale(rf.Ep, -sq);
+        record_reflection(s, &rf, r->generation, face - s->faces);
         rf.generation += 1;   /* screen reflection is NOT cap-checked here —
                                * tracer.py:447 has no can_reflect guard;
                                * the cap catches it at the next optic */
@@ -375,6 +387,8 @@ static void biref_children(const SceneC *s, const FaceC *face,
                          kc_mul(kc_scale(Ee_i, sn_o), ars_e));
         refl.Ep = kc_add(kc_mul(kc_scale(Eo_i, sn_o), arp_o),
                          kc_mul(kc_scale(Ee_i, cs_o), arp_e));
+        record_reflection(s, &refl, r->generation,
+                          (int32_t)(face - s->faces));
         refl.generation = (int16_t)(r->generation + 1);
         refl.ray_key = rng_child_key(r->ray_key, r->event_ctr,
                                      CHILD_SLOT_REFLECT);
@@ -510,6 +524,8 @@ static void biref_children(const SceneC *s, const FaceC *face,
                                       sqrt(r_m + phys * kc_abs2(F.rs))));
         rf.Ep = kc_mul(Ep_i, kc_scale(kc_cis(kc_arg(F.rp)),
                                       sqrt(r_m + phys * kc_abs2(F.rp))));
+        record_reflection(s, &rf, r->generation,
+                          (int32_t)(face - s->faces));
         rf.generation = (int16_t)(r->generation + 1);
         rf.ray_key = rng_child_key(r->ray_key, r->event_ctr,
                                    CHILD_SLOT_REFLECT);
@@ -661,6 +677,8 @@ static void optic_children(const SceneC *s, const FaceC *face,
     refl.s_hat = s_new;
     refl.Es = kc_mul(Es, amp_rs);
     refl.Ep = kc_mul(Ep, amp_rp);
+    record_reflection(s, &refl, r->generation,
+                      (int32_t)(face - s->faces));
     refl.generation = (int16_t)(r->generation + 1);
     refl.ray_key = rng_child_key(r->ray_key, r->event_ctr,
                                  CHILD_SLOT_REFLECT);
@@ -755,6 +773,8 @@ static void optic_children(const SceneC *s, const FaceC *face,
             sc.Ep = kc_mul(Ep_j, kc_scale(
                 kc_cis(kc_arg(lc.rp)),
                 sqrt(frac * (r_m + phys * kc_abs2(lc.rp)))));
+            record_reflection(s, &sc, r->generation,
+                              (int32_t)(face - s->faces));
             sc.generation = (int16_t)(r->generation + 1);
             sc.scattered = 1;
             sc.ray_key = rng_child_key(r->ray_key, r->event_ctr,
@@ -822,6 +842,8 @@ static void optic_children(const SceneC *s, const FaceC *face,
             sc.s_hat = s_new;
             sc.Es = kc_scale(kc_mul(Es, full_amp_rs), amp_lobe);
             sc.Ep = kc_scale(kc_mul(Ep, full_amp_rp), amp_lobe);
+            record_reflection(s, &sc, r->generation,
+                              (int32_t)(face - s->faces));
             sc.generation = (int16_t)(r->generation + 1);
             sc.scattered = 1;
             sc.ray_key = rng_child_key(r->ray_key, r->event_ctr,
@@ -937,6 +959,8 @@ static void grating_children(const SceneC *s, const FaceC *face,
                                       + (uint32_t)(m + 8));
         child.event_ctr = 0;
         if (reflective) {
+            record_reflection(s, &child, r->generation,
+                              (int32_t)(face - s->faces));
             child.generation = (int16_t)(r->generation + 1);
             if (child.generation > s->max_reflections) {
                 ledger_credit(&cx->ledger, BK_TRUNCATED_GENERATION,
@@ -990,6 +1014,11 @@ static void detector_event(const SceneC *s, const FaceC *face, const Ray *r,
         gh.scattered = r->scattered;
         gh.ray_key = r->ray_key;
         gathhits_push(&cx->ghits, &gh);
+        if (s->export_rays) {
+            ExportRec er;
+            export_fill(&er, face->detector, r);
+            exportvec_push(&cx->exports, &er);
+        }
         /* diagnostic tallies (mirror the incoherent path below) */
         cx->ledger.surf_by_det[face->detector] += gh.power;
         cx->ledger.detected[face->detector] += gh.power;
@@ -1007,6 +1036,11 @@ static void detector_event(const SceneC *s, const FaceC *face, const Ray *r,
     h.lam_stratum = r->lam_stratum;
     h.pol_stratum = r->pol_stratum;
     dethits_push(&cx->hits, &h);
+    if (s->export_rays) {
+        ExportRec er;
+        export_fill(&er, face->detector, r);
+        exportvec_push(&cx->exports, &er);
+    }
     /* diagnostic tallies (NOT closure buckets — tracer.py:366-372) */
     cx->ledger.surf_by_det[face->detector] += h.power;
     cx->ledger.detected[face->detector] += h.power;
@@ -1277,6 +1311,8 @@ static void sample_source_c(const SceneC *s, int source_index, RayVec *batch,
         Ray r;
         memset(&r, 0, sizeof r);
         r.pos = pos;
+        r.birth_pos = pos;          /* --export-rays pupil coordinate */
+        for (int hh = 0; hh < HIST_DEPTH; hh++) r.refl_hist[hh] = -1;
         r.dir = dir;
         int16_t stratum = (int16_t)(i % src->n_strata);
         r.lam_stratum = stratum;
@@ -1347,6 +1383,7 @@ void trace_run(SceneC *s, TraceResultC *out) {
         ledger_init(&ctxs[i].ledger, s);
         dethits_init(&ctxs[i].hits);
         gathhits_init(&ctxs[i].ghits);
+        exportvec_init(&ctxs[i].exports);
         vizvec_init(&ctxs[i].viz);
     }
 
@@ -1429,6 +1466,8 @@ void trace_run(SceneC *s, TraceResultC *out) {
             dethits_clear(&ctxs[i].hits);
             det_apply_gather_hits(s, &ctxs[i].ghits);
             gathhits_clear(&ctxs[i].ghits);
+            det_collect_exports((SceneC *)s, &ctxs[i].exports);
+            exportvec_clear(&ctxs[i].exports);
             ledger_merge(&out->ledger, &ctxs[i].ledger);
             /* zero the thread ledger for the next batch */
             ledger_free(&ctxs[i].ledger);
@@ -1463,6 +1502,7 @@ void trace_run(SceneC *s, TraceResultC *out) {
         ledger_free(&ctxs[i].ledger);
         dethits_free(&ctxs[i].hits);
         gathhits_free(&ctxs[i].ghits);
+        exportvec_free(&ctxs[i].exports);
         free(ctxs[i].viz.v);
     }
     free(ctxs);

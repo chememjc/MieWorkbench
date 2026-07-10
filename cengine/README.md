@@ -140,7 +140,7 @@ Python engine on synthetic feature scenes) plus the C unit tests.
 | E | gratings (lamellar/dammann/table pre-resolved, Kogelnik per-ray), Beckmann roughness + diffusers, ABg scatter (g=2) | **done** |
 | F | uniaxial birefringence (o/e split, walk-off, mode-preserving internal reflections); biaxial stays Python-routed | **done** |
 | G | continuum-mode particle clouds (Mie ensemble tables pre-resolved); explicit realizations stay Python-routed | **done** |
-| H | ray differentials, ghost analysis, export-rays, viz-pattern | pending |
+| H | export-rays, ghost analysis (refl_hist), viz-pattern (glue-level Python overlay pass; C physics bit-identical with/without) | **done** — `--ray-differentials` deliberately stays Python-routed (auto fallback) |
 | I | importance aiming (opt-in), perf polish | pending |
 
 ## Sunset roadmap (documented per project decision)

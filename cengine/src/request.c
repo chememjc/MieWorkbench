@@ -433,6 +433,12 @@ SceneC *request_load(const char *path) {
         v = yyjson_obj_get(par, "mesh_flat_normals");
         s->mesh_flat_normals = (uint8_t)(v && yyjson_is_bool(v)
                                          && yyjson_get_bool(v));
+        v = yyjson_obj_get(par, "export_rays");
+        s->export_rays = (uint8_t)(v && yyjson_is_bool(v)
+                                   && yyjson_get_bool(v));
+        v = yyjson_obj_get(par, "track_history");
+        s->track_history = (uint8_t)(v && yyjson_is_bool(v)
+                                     && yyjson_get_bool(v));
     }
     {
         /* coherent-gather parameters (optional block; defaults mirror

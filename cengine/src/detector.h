@@ -52,6 +52,53 @@ void gathhits_clear(GatherHitVec *h);
 void det_apply_gather_hits(SceneC *s, const GatherHitVec *hits);
 void det_free_gkeys(DetC *d);
 
+/* --export-rays: one per-detector-event landing record (the ray state AT
+ * the hit — pos/opl already advanced; tracer._export_records) */
+typedef struct {
+    int32_t det;
+    kvec3 pos, dir, birth_pos;
+    double opl, lam, power;
+    int16_t source_id, lam_stratum, pol_stratum, generation;
+    int8_t pol_mode;
+    uint8_t scattered, coherent;
+    int32_t refl_hist[HIST_DEPTH];
+} ExportRec;
+
+typedef struct {
+    ExportRec *v;
+    int64_t n, cap;
+} ExportVec;
+
+void exportvec_init(ExportVec *e);
+void exportvec_free(ExportVec *e);
+void exportvec_push(ExportVec *e, const ExportRec *r);
+void exportvec_clear(ExportVec *e);
+
+static inline void export_fill(ExportRec *er, int32_t det, const Ray *r) {
+    er->det = det;
+    er->pos = r->pos;
+    er->dir = r->dir;
+    er->birth_pos = r->birth_pos;
+    er->opl = r->opl;
+    er->lam = r->lam;
+    er->power = ray_power(r);
+    er->source_id = r->source_id;
+    er->lam_stratum = r->lam_stratum;
+    er->pol_stratum = r->pol_stratum;
+    er->generation = r->generation;
+    er->pol_mode = r->pol_mode;
+    er->scattered = r->scattered;
+    er->coherent = r->coherent;
+    for (int i = 0; i < HIST_DEPTH; i++)
+        er->refl_hist[i] = r->refl_hist[i];
+}
+
+/* merge thread export buffers into per-detector arrays and write
+ * exp_<i>_*.npy outputs */
+void det_collect_exports(SceneC *s, const ExportVec *e);
+void det_write_exports(const SceneC *s);
+void det_free_exports(SceneC *s);
+
 typedef struct {
     DetHit *v;
     int64_t n, cap;

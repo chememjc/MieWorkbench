@@ -28,6 +28,7 @@ void npy_write(const char *path, const void *data, const char *dtype,
     if (strcmp(dtype, "<f8") == 0) esize = 8;
     else if (strcmp(dtype, "|u1") == 0) esize = 1;
     else if (strcmp(dtype, "<c16") == 0) esize = 16;   /* complex128 */
+    else if (strcmp(dtype, "<i4") == 0) esize = 4;     /* int32 */
     else die(EXIT_PHYSICS, "npy_write: unsupported dtype %s", dtype);
 
     char header[256];
