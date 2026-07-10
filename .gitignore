@@ -16,3 +16,6 @@ __pycache__/
 # MieWorkbench local state (venv, workspaces, caches, logs)
 env/
 var/
+
+# C engine build output (cengine/README.md; rebuild with cengine/build.sh)
+cengine/build/

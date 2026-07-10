@@ -141,6 +141,14 @@ def _build_pipeline_parser():
                         "(visualization only — physics unaffected)")
     g.add_argument("--backend", default=None,
                    choices=["auto", "torch", "numpy"])
+    g.add_argument("--engine", default=None,
+                   choices=["auto", "python", "c"],
+                   help="trace engine: 'c' = the compiled OpenMP/CUDA "
+                        "engine (cengine/build/miewb-trace), 'python' = "
+                        "the reference numpy engine, 'auto' (default) = C "
+                        "when the binary exists and every feature the "
+                        "scene uses is ported, else Python (choice + "
+                        "reason logged and recorded in case.json)")
     g.add_argument("--rough-fresnel", default=None,
                    choices=["micro", "macro"],
                    help="roughness-lobe Fresnel model (default micro)")
@@ -259,6 +267,16 @@ def _build_trace_parser():
     p.add_argument("--seed0", type=int, default=42)
     p.add_argument("--backend", default="auto",
                    choices=["auto", "torch", "numpy"])
+    p.add_argument("--engine", default="auto",
+                   choices=["auto", "python", "c"],
+                   help="trace engine: 'c' = the compiled OpenMP/CUDA "
+                        "engine (cengine/build/miewb-trace), 'python' = "
+                        "the reference numpy engine, 'auto' (default) = C "
+                        "when the binary exists and every feature the "
+                        "scene uses is ported, else Python (choice + "
+                        "reason logged and recorded in case.json). "
+                        "--workers applies to the Python engine only; the "
+                        "C engine threads internally (OpenMP).")
     p.add_argument("--workers", type=_workers_arg, default="auto",
                    metavar="N",
                    help="parallel trace shards (spawned processes) for the "

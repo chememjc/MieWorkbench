@@ -210,6 +210,8 @@ def trace_cmd(stem, case_dir, args):
                            else common.DEFAULTS["seeds"])]
     cmd += ["--backend", args.backend if args.backend is not None
            else common.DEFAULTS["backend"]]
+    if args.engine is not None:
+        cmd += ["--engine", args.engine]
     cmd += ["--workers", str(args.workers)]
     for f in args.source_face:
         cmd += ["--source-face", f]
