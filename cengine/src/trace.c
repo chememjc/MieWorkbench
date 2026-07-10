@@ -1014,11 +1014,112 @@ static void detector_event(const SceneC *s, const FaceC *face, const Ray *r,
 
 /* ------------------------------------------------------------ process_ray */
 /* Port of one ray's share of Tracer.step (tracer.py:183-322). */
+/* continuum particle-medium interception (particles.py:155-209): the
+ * ballistic parent decays coherently by exp(-tau/2); one incoherent
+ * scattered child per crossing carries P (1-e^-tau) albedo from a
+ * truncated-exponential scatter point; the absorbed remainder books to
+ * 'particle_absorbed'. Runs BEFORE the surface interaction of the step,
+ * exactly like tracer.step's intercept hook. */
+static void particle_intercept(const SceneC *s, Ray *r, int hit, double t,
+                               ThreadCtx *cx) {
+    const ParticleC *p = s->particles;
+    double seg_max = hit ? t : 1.0;    /* escapers still traverse */
+    /* slab overlap (particles._slab_overlap), scalar */
+    double t0 = 0.0, t1 = seg_max;
+    const double *lo = &p->box_lo.x, *hi = &p->box_hi.x;
+    const double *o = &r->pos.x, *d = &r->dir.x;
+    for (int ax = 0; ax < 3; ax++) {
+        if (fabs(d[ax]) < 1e-300) {
+            if (o[ax] < lo[ax] || o[ax] > hi[ax]) return;   /* miss */
+            continue;
+        }
+        double a = (lo[ax] - o[ax]) / d[ax];
+        double b = (hi[ax] - o[ax]) / d[ax];
+        double mn = a < b ? a : b, mx = a < b ? b : a;
+        if (mn > t0) t0 = mn;
+        if (mx < t1) t1 = mx;
+    }
+    if (!(t1 > t0)) return;
+
+    double mu = p->mu_ext[r->lam_idx];
+    double alb = p->albedo[r->lam_idx];
+    double tau = mu * (t1 - t0);
+    double p_col = 1.0 - exp(-tau);
+    double p_in = ray_power(r);
+    double p_scat = p_in * p_col * alb;
+    double p_abs = p_in * p_col * (1.0 - alb);
+    if (p_abs > 0.0) {
+        ledger_credit(&cx->ledger, BK_PARTICLE_ABSORBED, r->source_id,
+                      p_abs);
+        cx->ledger.by_particles += p_abs;
+    }
+    if (p_scat > 0.0) {
+        /* draws live in a reserved index range of THIS event */
+        uint32_t ev = r->event_ctr;
+        double u = rng_uniform(r->ray_key, ev, 1024);
+        double sdist = -log(1.0 - u * (1.0 - exp(-tau))) / mu;
+        Ray child = *r;
+        child.pos = v3_fma(r->pos, t0 + sdist, r->dir);
+        /* radius node from the per-lam radius CDF */
+        double ur = rng_uniform(r->ray_key, ev, 1025);
+        const double *rcdf = p->radius_cdf
+                             + (size_t)r->lam_idx * p->n_quad;
+        int node = 0;
+        while (node < p->n_quad - 1 && rcdf[node] < ur) node++;
+        /* scatter cosine from the (lam, node) inverse phase CDF */
+        double uu = rng_uniform(r->ray_key, ev, 1026);
+        const double *inv = p->inv_phase
+            + ((size_t)r->lam_idx * p->n_quad + node) * p->n_u;
+        double x = uu * (p->n_u - 1);
+        int i0 = (int)x;
+        if (i0 > p->n_u - 2) i0 = p->n_u - 2;
+        double mu_s = inv[i0] + (x - i0) * (inv[i0 + 1] - inv[i0]);
+        double phi = K_TWO_PI * rng_uniform(r->ray_key, ev, 1027);
+        /* frame around d_in (mie.sample_direction:216-225) */
+        double axv = fabs(r->dir.x), ayv = fabs(r->dir.y),
+               azv = fabs(r->dir.z);
+        kvec3 a = v3(0.0, 0.0, 0.0);
+        if (axv <= ayv && axv <= azv)      a.x = 1.0;
+        else if (ayv <= azv)               a.y = 1.0;
+        else                               a.z = 1.0;
+        kvec3 t1v = v3_unit(v3_cross(r->dir, a));
+        kvec3 t2v = v3_cross(r->dir, t1v);
+        double st = sqrt(1.0 - mu_s * mu_s > 0.0
+                         ? 1.0 - mu_s * mu_s : 0.0);
+        child.dir = v3_scale(r->dir, mu_s);
+        child.dir = v3_fma(child.dir, st * cos(phi), t1v);
+        child.dir = v3_fma(child.dir, st * sin(phi), t2v);
+        /* s_hat rebuilt like particles.py:194-196 (pol_basis against the
+         * component-rolled direction) */
+        kvec3 rolled = v3(child.dir.z, child.dir.x, child.dir.y);
+        kvec3 s_new, p_new;
+        fresnel_pol_basis(child.dir, rolled, &s_new, &p_new);
+        child.s_hat = s_new;
+        double amp = sqrt(p_scat / 2.0);
+        kcplx ph = kc_cis(K_TWO_PI * rng_uniform(r->ray_key, ev, 1028));
+        child.Es = kc_scale(ph, amp);
+        child.Ep = kc_scale(ph, amp);
+        child.coherent = 0;
+        child.ray_key = rng_child_key(r->ray_key, ev,
+                                      CHILD_SLOT_PARTICLE);
+        child.event_ctr = 0;
+        push_child(s, cx, &child);
+    }
+    /* ballistic parent: coherent Beer-Lambert amplitude decay */
+    double att = exp(-tau / 2.0);
+    r->Es = kc_scale(r->Es, att);
+    r->Ep = kc_scale(r->Ep, att);
+}
+
 static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
     cx->interactions++;
     int32_t fid;
     double t = scene_intersect(s, r->pos, r->dir, &fid);
     int hit = fid >= 0;
+
+    /* ---- particle-medium interception (tracer.py:188-198 hook) ---- */
+    if (s->particles)
+        particle_intercept(s, r, hit, t, cx);
 
     /* ---- bulk absorption + phase over the segment (tracer.py:202-240) */
     int med = ray_current_medium(r);

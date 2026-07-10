@@ -52,6 +52,8 @@ PORTED = frozenset({
     "scatter",                  # phase E (ABg lobes, g == 2)
     "birefringence",            # phase F (uniaxial o/e; biaxial stays
                                 #   Python-routed via its own feature)
+    "particles",                # phase G (continuum mode; the explicit
+                                #   realization keeps its own feature)
 })
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -119,6 +121,23 @@ def detect_features(args, scene):
     # like --photometric never gate the engine)
     if args.particles:
         feats.add("particles")
+        # continuum mode is ported; explicit realizations (count under
+        # the threshold: frozen spheres, complex S1/S2 speckle) stay on
+        # the Python engine
+        import common
+        from .mie import LogNormalDistribution, number_density
+        spec = common.parse_particles_spec(args.particles)
+        dist = LogNormalDistribution(
+            median_r=spec["median_um"] * 1e-6 / 2.0, gsd=spec["gsd"])
+        mat_p = scene.matdb.get(spec["material"])
+        rho_h = scene.ambient.density if scene.ambient.density > 0 \
+            else 1.204
+        N, _ = number_density(spec["phi"], mat_p.density, rho_h, dist)
+        count = N * float(np.prod(spec["box_size_m"]))
+        thr = args.particle_threshold if args.particle_threshold \
+            is not None else common.DEFAULTS["particle_threshold"]
+        if count <= thr:
+            feats.add("particles_explicit")
     if args.ray_differentials:
         feats.add("ray_differentials")
     if args.export_rays:
@@ -557,6 +576,7 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
         "roughs": roughs,
         "scatters": scatters,
         "gratings": gratings,
+        "particles": _particles_block(args, scene, lams),
         "gather": {
             # map the Python gather's --backend to the C engine's kernels
             "backend": {"auto": "auto", "torch": "cuda",
@@ -568,6 +588,52 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
             "occlusion": bool(args.gather_occlusion),
             "occlusion_tile": 16,
         },
+    }
+
+
+def _particles_block(args, scene, lams):
+    """Continuum particle-cloud tables at the stratum wavelengths (D1):
+    mu_ext / albedo per lam, the radius-node CDF, and a per-(lam, node)
+    inverse phase-function CDF built from the SAME
+    MieEvaluator.phase_function tables the Python engine samples from."""
+    if not args.particles:
+        return None
+    import common
+    from .particles import ParticleCloud
+    spec = common.parse_particles_spec(args.particles)
+    thr = args.particle_threshold if args.particle_threshold is not None \
+        else common.DEFAULTS["particle_threshold"]
+    cloud = ParticleCloud(spec, scene, threshold=thr,
+                          seed=int(args.seed0),
+                          lam_list=[float(x) for x in lams])
+    if cloud.mode != "continuum":
+        raise SystemExit(
+            "cengine: explicit-mode particles reached the C request "
+            "builder — feature routing bug")
+    n_u = 512
+    u_grid = np.linspace(0.0, 1.0, n_u)
+    radii = cloud.tables.radii
+    mu_ext, albedo, radius_cdf, inv_phase = [], [], [], []
+    for lam in lams:
+        t = cloud.tables._nearest(float(lam))
+        mu_ext.append(float(t["mu_ext"]))
+        albedo.append(float(t["albedo"]))
+        radius_cdf.extend(
+            float(x) for x in np.cumsum(t["radius_weights"]))
+        for rv in radii:
+            mu_g, _p, cdf = cloud.evaluator.phase_function(
+                float(rv), float(lam))
+            inv_phase.extend(
+                float(x) for x in np.interp(u_grid, cdf, mu_g))
+    return {
+        "box_lo": [float(x) for x in cloud.lo],
+        "box_hi": [float(x) for x in cloud.hi],
+        "n_quad": int(len(radii)),
+        "n_u": n_u,
+        "mu_ext": mu_ext,
+        "albedo": albedo,
+        "radius_cdf": radius_cdf,
+        "inv_phase": inv_phase,
     }
 
 

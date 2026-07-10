@@ -643,6 +643,30 @@ SceneC *request_load(const char *path) {
         }
     }
 
+    /* continuum particle cloud (optional) */
+    {
+        yyjson_val *po = yyjson_obj_get(root, "particles");
+        if (po && !yyjson_is_null(po)) {
+            ParticleC *p = (ParticleC *)calloc(1, sizeof(ParticleC));
+            if (!p) die(EXIT_INPUT, "request: OOM (particles)");
+            p->box_lo = need_vec3(po, "box_lo", "particles");
+            p->box_hi = need_vec3(po, "box_hi", "particles");
+            p->n_quad = (int)need_int(po, "n_quad", "particles");
+            p->n_u = (int)need_int(po, "n_u", "particles");
+            p->mu_ext = need_dbl_array(po, "mu_ext", "particles",
+                                       (size_t)s->n_lams);
+            p->albedo = need_dbl_array(po, "albedo", "particles",
+                                       (size_t)s->n_lams);
+            p->radius_cdf = need_dbl_array(
+                po, "radius_cdf", "particles",
+                (size_t)s->n_lams * p->n_quad);
+            p->inv_phase = need_dbl_array(
+                po, "inv_phase", "particles",
+                (size_t)s->n_lams * p->n_quad * p->n_u);
+            s->particles = p;
+        }
+    }
+
     /* faces */
     yyjson_val *faces = need(root, "faces", "root");
     s->n_faces = (int)yyjson_arr_size(faces);
@@ -848,6 +872,13 @@ void scene_free(SceneC *s) {
     free(s->gratings);
     free(s->roughs);
     free(s->scats);
+    if (s->particles) {
+        free(s->particles->mu_ext);
+        free(s->particles->albedo);
+        free(s->particles->radius_cdf);
+        free(s->particles->inv_phase);
+        free(s->particles);
+    }
     for (int i = 0; i < s->n_faces; i++) {
         free((void *)s->faces[i].trim.loop_off);
         free((void *)s->faces[i].trim.pts_u);

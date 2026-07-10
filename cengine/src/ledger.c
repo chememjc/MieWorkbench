@@ -66,6 +66,7 @@ void ledger_merge(LedgerC *into, const LedgerC *from) {
         into->surf_by_det[i] += from->surf_by_det[i];
         into->detected[i] += from->detected[i];
     }
+    into->by_particles += from->by_particles;
 }
 
 static double closure_err(const LedgerC *l, int i) {
@@ -142,6 +143,11 @@ void ledger_write_json(const LedgerC *l, const SceneC *s, const char *path,
         if (i == 0) fprintf(f, "\"ambient\"");
         else jesc(f, s->bodies[i - 1].label);
         fprintf(f, ": %.17g", l->by_body[i]);
+        first = 0;
+    }
+    if (l->by_particles != 0.0) {
+        fprintf(f, "%s\n    \"particles\": %.17g", first ? "" : ",",
+                l->by_particles);
         first = 0;
     }
     fprintf(f, "\n  },\n  \"element_flux_W\": {");

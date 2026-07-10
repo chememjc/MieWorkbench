@@ -310,6 +310,42 @@ def test_surface_roots_parity(kind, tmp_path):
     assert rel.max() < 1e-9, "%s: max rel root diff %g" % (kind, rel.max())
 
 
+def test_particles_continuum_parity(tmp_path):
+    """Phase G: continuum particle medium — ballistic decay, scattered
+    children, particle_absorbed bucket — vs the Python engine.
+    Statistical (MC scattering)."""
+    import run_trace
+    model_json = cengine_scenes.write_scene("c_plate", tmp_path / "g")
+    spec = ("box=8,-15,-15:10,30,30;material=water;phi=0.05;"
+            "median_um=10;gsd=1.6")
+
+    def run(engine, case):
+        rc = run_trace.main([
+            "--model-json", str(model_json), "--case-dir", str(case),
+            "--rays", "20000", "--resolution", "64", "--nlambda", "1",
+            "--spectral-bins", "4", "--engine", engine, "--workers", "1",
+            "--particles", spec])
+        assert rc == 0
+        return json.loads((case / "audit.json").read_text())["per_seed"][0]
+
+    py = run("python", tmp_path / "py")
+    case_c = tmp_path / "c"
+    cc = run("c", case_c)
+    assert json.loads((case_c / "case.json").read_text())["engine"] == "c"
+    for rep in (py, cc):
+        assert rep["closure_ok"], rep
+    ps = py["sources"]["Src"]
+    cs = cc["sources"]["Src"]
+    emitted = ps["emitted_W"]
+    for b in ("particle_absorbed", "escaped", "absorbed_bulk"):
+        assert abs(ps[b] - cs[b]) <= max(0.03 * abs(ps[b]),
+                                         2e-3 * emitted), \
+            "%s: %g vs %g" % (b, ps[b], cs[b])
+    for label in py["detected_W"]:
+        rel_close(py["detected_W"][label], cc["detected_W"][label], 0.05,
+                  "particles detected_W %s" % label)
+
+
 def test_thread_count_invariance(tmp_path):
     """Plan D2: results are a pure function of ray lineage — the detector
     cube must be BIT-identical across thread counts, the viz segment SET

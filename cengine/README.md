@@ -139,7 +139,7 @@ Python engine on synthetic feature scenes) plus the C unit tests.
 | D | coherent Huygens gather: fused CUDA kernel + CPU twin, occlusion, save-fields | **done** |
 | E | gratings (lamellar/dammann/table pre-resolved, Kogelnik per-ray), Beckmann roughness + diffusers, ABg scatter (g=2) | **done** |
 | F | uniaxial birefringence (o/e split, walk-off, mode-preserving internal reflections); biaxial stays Python-routed | **done** |
-| G | particles/Mie | pending |
+| G | continuum-mode particle clouds (Mie ensemble tables pre-resolved); explicit realizations stay Python-routed | **done** |
 | H | ray differentials, ghost analysis, export-rays, viz-pattern | pending |
 | I | importance aiming (opt-in), perf polish | pending |
 

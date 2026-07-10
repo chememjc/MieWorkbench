@@ -202,6 +202,20 @@ typedef struct {
     double *sample_area;
 } SourceC;
 
+/* continuum-mode particle cloud (particles.py _continuum): all tables
+ * pre-resolved per stratum wavelength by the glue; the phase-function
+ * draw uses a per-(lam, radius-node) INVERSE CDF (mu at uniform u).
+ * Explicit-realization mode is Python-routed. */
+typedef struct {
+    kvec3 box_lo, box_hi;
+    int n_quad;                 /* radius quadrature nodes */
+    int n_u;                    /* inverse-CDF resolution */
+    double *mu_ext;             /* [n_lams] */
+    double *albedo;             /* [n_lams] */
+    double *radius_cdf;         /* [n_lams][n_quad] cumulative weights */
+    double *inv_phase;          /* [n_lams][n_quad][n_u] mu(u) */
+} ParticleC;
+
 typedef struct {
     /* trace parameters (TraceConfig, tracer.py:52-78) */
     int max_reflections;
@@ -231,6 +245,7 @@ typedef struct {
     ScatC *scats;
     int n_gratings;
     GratC *gratings;
+    ParticleC *particles;       /* NULL when no --particles */
 
     /* scene-level TLAS over face AABBs — the algorithmic win the Python
      * engine lacks (its Scene.intersect is a brute-force all-faces loop,

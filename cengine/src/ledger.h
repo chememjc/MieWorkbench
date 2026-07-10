@@ -48,6 +48,7 @@ typedef struct {
     double *by_body;            /* [n_bodies + 1] */
     double *flux_in, *flux_out; /* [n_bodies] element boundary tallies */
     double *detected;           /* [n_dets] detected_W */
+    double by_particles;        /* by_body_W["particles"] diagnostic */
 } LedgerC;
 
 void ledger_init(LedgerC *l, const SceneC *s);
