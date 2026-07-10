@@ -1199,6 +1199,24 @@ def extract_one(fcstd_path, outdir, strict):
                     except ValueError as e:
                         die("%s: bad polarization spec %r: %s"
                             % (obj.Label, pol_raw, e))
+                apod_raw = str_prop_or_none(obj, "apodization")
+                if apod_raw is not None:
+                    try:
+                        source_dict["apodization"] = \
+                            common.parse_apodization_spec(apod_raw)
+                    except ValueError as e:
+                        die("%s: bad apodization spec %r: %s"
+                            % (obj.Label, apod_raw, e))
+                if hasattr(obj, "beam_waist"):
+                    waist_mm = float(obj.beam_waist)
+                    if waist_mm <= 0:
+                        die("%s: beam_waist must be > 0 mm (got %g)"
+                            % (obj.Label, waist_mm))
+                    m2 = float(obj.m2) if hasattr(obj, "m2") else 1.0
+                    if m2 < 1.0:
+                        die("%s: m2 must be >= 1.0 (got %g)"
+                            % (obj.Label, m2))
+                    source_dict["beam"] = {"waist_mm": waist_mm, "m2": m2}
                 body_dict["source"] = source_dict
             elif role == "detector":
                 n_detectors += 1
@@ -1215,6 +1233,16 @@ def extract_one(fcstd_path, outdir, strict):
 
             if role != "source" and str_prop_or_none(obj, "polarization") is not None:
                 warn("%s: polarization property is only meaningful on "
+                     "source bodies (role=%s); ignoring"
+                     % (obj.Label, role), warnings)
+
+            if role != "source" and str_prop_or_none(obj, "apodization") is not None:
+                warn("%s: apodization property is only meaningful on "
+                     "source bodies (role=%s); ignoring"
+                     % (obj.Label, role), warnings)
+
+            if role != "source" and hasattr(obj, "beam_waist"):
+                warn("%s: beam_waist property is only meaningful on "
                      "source bodies (role=%s); ignoring"
                      % (obj.Label, role), warnings)
 

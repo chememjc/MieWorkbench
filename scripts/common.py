@@ -353,6 +353,39 @@ def parse_polarization_spec(spec):
     raise ValueError("unknown polarization kind %r (one of %s)"
                      % (kind, ", ".join(POLARIZATION_KINDS)))
 
+def parse_apodization_spec(spec):
+    """'gaussian:w0=<mm>[:order=<n>]' -> canonical dict.
+
+    Transverse FIELD amplitude apodization across a source's emitting face
+    (source-only, any source): intensity ~ exp(-2 (r/w0)^(2*order)), r the
+    distance from the face center. order=1 is a plain Gaussian; order>1 is
+    a super-Gaussian (flatter core, steeper skirt)."""
+    parts = [p.strip() for p in str(spec).strip().split(":")]
+    kind = parts[0].lower()
+    if kind != "gaussian":
+        raise ValueError("unknown apodization kind %r (only 'gaussian' is "
+                         "supported): %r" % (kind, spec))
+    out = {"kind": "gaussian", "w0_mm": None, "order": 1}
+    for part in parts[1:]:
+        if "=" not in part:
+            raise ValueError("bad apodization field %r (expected k=v) in %r"
+                             % (part, spec))
+        key, _, val = part.partition("=")
+        key = key.strip().lower()
+        if key == "w0":
+            out["w0_mm"] = float(val)
+        elif key == "order":
+            out["order"] = int(val)
+        else:
+            raise ValueError("unknown apodization field %r in %r"
+                             % (key, spec))
+    if out["w0_mm"] is None or out["w0_mm"] <= 0:
+        raise ValueError("apodization needs w0=<mm> > 0: %r" % spec)
+    if out["order"] < 1:
+        raise ValueError("apodization order must be >= 1: %r" % spec)
+    return out
+
+
 def parse_axis_spec(spec):
     """'x,y,z' -> normalized [x, y, z].  Hard error on zero length."""
     try:
@@ -579,6 +612,26 @@ def validate_model(model):
                     raise ContractError(
                         "%s: source.polarization must be a dict with kind "
                         "in %s" % (bctx, ", ".join(POLARIZATION_KINDS)))
+            apod = src.get("apodization")
+            if apod is not None:
+                if (not isinstance(apod, dict) or apod.get("kind") != "gaussian"
+                        or not isinstance(apod.get("w0_mm"), (int, float))
+                        or apod["w0_mm"] <= 0
+                        or not isinstance(apod.get("order"), int)
+                        or apod["order"] < 1):
+                    raise ContractError(
+                        "%s: source.apodization must be a dict "
+                        "{kind:'gaussian', w0_mm>0, order>=1}" % bctx)
+            beam = src.get("beam")
+            if beam is not None:
+                if (not isinstance(beam, dict)
+                        or not isinstance(beam.get("waist_mm"), (int, float))
+                        or beam["waist_mm"] <= 0
+                        or not isinstance(beam.get("m2"), (int, float))
+                        or beam["m2"] < 1.0):
+                    raise ContractError(
+                        "%s: source.beam must be a dict "
+                        "{waist_mm>0, m2>=1.0}" % bctx)
         if role == "detector":
             n_detectors += 1
             det = _req(b, "detector", dict, bctx)
@@ -1117,6 +1170,19 @@ def _selfcheck():
             check("reject polarization %r" % bad_pol, False)
         except ValueError:
             check("reject polarization %r" % bad_pol, True)
+    apod = parse_apodization_spec("gaussian:w0=2")
+    check("apodization default order", apod["w0_mm"] == 2.0
+          and apod["order"] == 1)
+    apod2 = parse_apodization_spec("gaussian:w0=1.5:order=3")
+    check("apodization super-gaussian", apod2["order"] == 3)
+    for bad_apod in ("flattop:w0=1", "gaussian", "gaussian:w0=0",
+                     "gaussian:w0=-1", "gaussian:w0=1:order=0",
+                     "gaussian:w0=1:bogus=2"):
+        try:
+            parse_apodization_spec(bad_apod)
+            check("reject apodization %r" % bad_apod, False)
+        except ValueError:
+            check("reject apodization %r" % bad_apod, True)
     ax = parse_axis_spec("0,0,2")
     check("axis spec", abs(ax[2] - 1.0) < 1e-12 and ax[0] == 0.0)
     check("optprops dirs", COATINGS_CSV.exists() and NK_DATA_DIR.is_dir(),
