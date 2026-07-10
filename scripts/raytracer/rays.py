@@ -24,7 +24,7 @@ class RayBatch:
                  "pol_stratum", "pol_mode", "n_eff",
                  "generation", "last_face", "coherent", "birth_power",
                  "viz_flag", "scattered",
-                 "dPdx", "dDdx", "dPdy", "dDdy", "birth_pos")
+                 "dPdx", "dDdx", "dPdy", "dDdy", "birth_pos", "k_dir")
 
     # ray-differential slots (Igehy): allocated ONLY under
     # --ray-differentials (None otherwise — +96 B/ray when on). NaN rows
@@ -38,6 +38,13 @@ class RayBatch:
     # differential slots (select copies it; a mixed concat NaN-fills the
     # batches that lack it). Inherited unchanged by every child ray, so a
     # detected ray carries the pupil coordinate of the primary it came from.
+
+    # k_dir: (N,3) unit WAVEVECTOR direction for rays inside a biaxial
+    # crystal (pol_mode 2/3), where ray (Poynting) and wavevector differ
+    # and — unlike uniaxial — the ray->k inversion has no closed form, so
+    # k must be carried explicitly. Allocated only by the biaxial entry
+    # interface; NaN rows in a mixed concat are rays that never entered a
+    # biaxial medium (their pol_mode is 0/1 and k_dir is never read).
 
     def __init__(self, n):
         self.pos = np.zeros((n, 3), dtype=np.float64)
@@ -86,6 +93,7 @@ class RayBatch:
         self.dPdy = None
         self.dDdy = None
         self.birth_pos = None
+        self.k_dir = None
 
     def alloc_differentials(self):
         for name in self._DIFF_SLOTS:
@@ -175,6 +183,10 @@ class RayBatch:
         if any(b.birth_pos is not None for b in batches):
             # mixed batches: rays from a batch without birth_pos NaN-fill
             out.birth_pos = np.full((len(out), 3), np.nan)
+        if any(b.k_dir is not None for b in batches):
+            # mixed batches: NaN marks rays that never entered a biaxial
+            # medium (pol_mode 0/1 — k_dir is never read for them)
+            out.k_dir = np.full((len(out), 3), np.nan)
         at = 0
         for b in batches:
             n = len(b)

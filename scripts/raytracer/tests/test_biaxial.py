@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from raytracer import fresnel as fr            # noqa: E402
 from raytracer import birefringence as bi      # noqa: E402
+from . import scenehelpers as sh               # noqa: E402
 
 # KTP @ 1064 nm (Kato & Takaoka 2002), the canonical biaxial oracle
 KTP_NX, KTP_NY, KTP_NZ = 1.7377, 1.7453, 1.8297
@@ -261,6 +262,114 @@ def test_biaxial_registry_loads_and_pins_ktp_indices():
     for g, want in zip(got, (KTP_NX, KTP_NY, KTP_NZ)):
         assert abs(g - want) < 2e-3, (got, (KTP_NX, KTP_NY, KTP_NZ))
     assert props.biaxial["ktp"]["reference"]
+
+
+# ---------------------------------------------------------------------------
+# scene-level tracer integration: KTP walk-off plate
+# ---------------------------------------------------------------------------
+def _ktp_plate_model(polarization=None, t=0.015):
+    """Normal-incidence KTP slab with the X principal axis at 45 deg in the
+    global x-z plane (Y principal = global y): the beam propagates in the
+    X-Z principal plane at 45 deg — maximum-walk-off geometry. The
+    y-polarized sheet goes straight (n = n_y); the in-plane sheet walks
+    off in global z."""
+    c = np.sqrt(0.5)
+    bodies = [
+        sh.source_body(x=-0.01, half=0.00015, coherent=False,
+                       polarization=polarization),
+        sh.slab_body("KTP", "ktp", 0.0, t, half=0.008,
+                     crystal_axis=[c, 0.0, c],
+                     crystal_axis2=[0.0, 1.0, 0.0]),
+        sh.detector_body(x=t + 0.005, half=0.01),
+    ]
+    return sh.make_model(bodies)
+
+
+def _spots_z(det, thresh=0.2):
+    """Intensity-centroid spot positions [m] along global z (simplified
+    from test_scenes_e2e._spots_along)."""
+    img = det.inc.sum(axis=0)
+    ax_is_x = abs(det.xhat[2]) > abs(det.yhat[2])
+    if ax_is_x:
+        prof = img.sum(axis=0)
+        coord = det.x_lo + (np.arange(det.W) + 0.5) * det.pixel_m
+        sgn = np.sign(det.xhat[2])
+    else:
+        prof = img.sum(axis=1)
+        coord = det.y_lo + (np.arange(det.H) + 0.5) * det.pixel_m
+        sgn = np.sign(det.yhat[2])
+    above = prof > thresh * prof.max()
+    spots, i, n = [], 0, len(prof)
+    while i < n:
+        if not above[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and above[j]:
+            j += 1
+        w = prof[i:j]
+        spots.append(float(np.sum(coord[i:j] * w) / np.sum(w)))
+        i = j
+    return sorted(sgn * s for s in spots)
+
+
+def _expected_walkoff_dz(t, lam_nm=633.0):
+    """Predicted in-plane-sheet transverse displacement from the (already
+    unit-pinned) solver itself, for the _ktp_plate_model geometry."""
+    from raytracer import optprops
+    props = optprops.load_optical_properties()
+    mx, my, mz = props.matdb.get_biaxial("ktp")
+    lam = lam_nm * 1e-9
+    eps = np.array([[np.real(m.n_complex(lam)) ** 2
+                     for m in (mx, my, mz)]])
+    c = np.sqrt(0.5)
+    x_ax = np.array([c, 0.0, c])
+    y_ax = np.array([0.0, 1.0, 0.0])
+    frame = np.stack([x_ax, y_ax, np.cross(x_ax, y_ax)])
+    k = np.array([[1.0, 0.0, 0.0]])
+    modes = bi.biaxial_modes_for_k(k, frame, eps)
+    # the in-plane sheet is the one NOT polarized along global y
+    name = "slow" if abs(modes["D_slow"][0, 1]) < 0.5 else "fast"
+    K = modes["n_%s" % name][:, None] * k
+    s_ray, _, _ = bi.biaxial_ray_from_k(K, frame, eps)
+    return t * s_ray[0, 2] / s_ray[0, 0]
+
+
+def test_ktp_plate_scene_double_spot_and_closure():
+    model = _ktp_plate_model()
+    res, grids, scene = sh.trace_scene(model, rays=15000, resolution=400)
+    rep = res.ledger.report(res.source_names)
+    assert max(s["closure_error"] for s in rep["sources"].values()) < 1e-3
+
+    det = list(grids.values())[0]
+    spots = _spots_z(det)
+    assert len(spots) == 2, "expected 2 spots, got %r (mm)" \
+        % [round(s * 1e3, 3) for s in spots]
+    dz = _expected_walkoff_dz(t=0.015)
+    got = max(spots, key=abs)
+    straight = min(spots, key=abs)
+    assert abs(straight) < 1e-4
+    assert abs(got - dz) < 0.05 * abs(dz), \
+        "walk-off spot at %.4f mm vs solver-predicted %.4f mm" \
+        % (got * 1e3, dz * 1e3)
+
+
+def test_ktp_plate_polarization_selects_sheet():
+    # linear:90 = global +y -> the straight (n_y) sheet only;
+    # linear:0 = global +z -> the walking in-plane sheet only
+    dz = _expected_walkoff_dz(t=0.015)
+    _, g_y, _ = sh.trace_scene(
+        _ktp_plate_model({"kind": "linear", "angle_deg": 90}),
+        rays=12000, resolution=400)
+    _, g_z, _ = sh.trace_scene(
+        _ktp_plate_model({"kind": "linear", "angle_deg": 0}),
+        rays=12000, resolution=400)
+    sy = _spots_z(list(g_y.values())[0])
+    sz = _spots_z(list(g_z.values())[0])
+    assert len(sy) == 1 and abs(sy[0]) < 1e-4, \
+        "y-pol should give one straight spot, got %r" % sy
+    assert len(sz) == 1, "z-pol should give one spot, got %r" % sz
+    assert abs(sz[0] - dz) < 0.05 * abs(dz)
 
 
 def test_biaxial_frame_rotation_equivariance():
