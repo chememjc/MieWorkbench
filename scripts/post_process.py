@@ -143,6 +143,8 @@ def add_per_source_detected(case, report):
     return flat
 
 
+SLOW_RAY_COLOR = "#7b2d8b"  # biaxial slow sheet (pol_mode 2), dashed
+FAST_RAY_COLOR = "#0b6e4f"  # biaxial fast sheet (pol_mode 3), dashed
 E_RAY_COLOR = "black"       # fixed distinct color for extraordinary (o/e
                             # split) rays in plot_rays_2d -- deliberately
                             # NOT a wavelength color so it reads unambiguously
@@ -720,7 +722,8 @@ def plot_rays_2d(rays, model, outpath, max_generation=None,
                     continue
                 ax.plot(w[keep, 0] * 1e3, w[keep, 1] * 1e3,
                         color="0.55", lw=0.7, zorder=1)
-    has_e_ray = False
+    mode_colors = {1: E_RAY_COLOR, 2: SLOW_RAY_COLOR, 3: FAST_RAY_COLOR}
+    modes_seen = set()
     if len(rays):
         if dim_mode != "off":
             rel = np.clip(rays[:, 10], 0.0, 1.0)
@@ -738,17 +741,21 @@ def plot_rays_2d(rays, model, outpath, max_generation=None,
             idx = np.random.default_rng(0).choice(idx, 20000,
                                                   replace=False)
         for i in idx:
-            is_e = pol_mode[i] == 1
-            has_e_ray = has_e_ray or is_e
+            mode = int(pol_mode[i])
+            special = mode in mode_colors
+            if special:
+                modes_seen.add(mode)
             ax.plot([rays[i, 3] * 1e3, rays[i, 6] * 1e3],
                     [rays[i, 4] * 1e3, rays[i, 7] * 1e3],
-                    color=E_RAY_COLOR if is_e else colors[i],
-                    linestyle="--" if is_e else "-",
-                    alpha=float(alpha[i]), lw=0.9 if is_e else 0.5,
-                    zorder=3 if is_e else 2)
-    if has_e_ray:
-        ax.legend(handles=[Line2D([0], [0], color=E_RAY_COLOR, ls="--",
-                                  lw=1.2, label="e-ray")],
+                    color=mode_colors[mode] if special else colors[i],
+                    linestyle="--" if special else "-",
+                    alpha=float(alpha[i]), lw=0.9 if special else 0.5,
+                    zorder=3 if special else 2)
+    if modes_seen:
+        names = {1: "e-ray", 2: "slow sheet", 3: "fast sheet"}
+        ax.legend(handles=[Line2D([0], [0], color=mode_colors[m], ls="--",
+                                  lw=1.2, label=names[m])
+                           for m in sorted(modes_seen)],
                   loc="upper right", fontsize=8)
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("y [mm]")
