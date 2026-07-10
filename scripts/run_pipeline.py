@@ -212,6 +212,8 @@ def trace_cmd(stem, case_dir, args):
            else common.DEFAULTS["backend"]]
     if args.engine is not None:
         cmd += ["--engine", args.engine]
+    if args.importance_aim:
+        cmd += ["--importance-aim"]
     cmd += ["--workers", str(args.workers)]
     for f in args.source_face:
         cmd += ["--source-face", f]

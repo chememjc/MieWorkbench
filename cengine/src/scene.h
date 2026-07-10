@@ -267,6 +267,7 @@ typedef struct {
     int occ_tile;               /* shadow tile size (default 16) */
     uint8_t export_rays;        /* --export-rays (this seed) */
     uint8_t track_history;      /* --ghost-analysis (this seed) */
+    uint8_t importance_aim;     /* --importance-aim (opt-in) */
 
     int max_strata;             /* max n_strata over sources (tally dims) */
     int max_pol;                /* max n_pol over sources */

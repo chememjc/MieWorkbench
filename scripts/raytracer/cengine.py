@@ -568,6 +568,8 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
                        else resolve_workers(args.workers),
             "mesh_flat_normals": bool(args.mesh_flat_normals),
             "export_rays": bool(export_this_seed),
+            "importance_aim": bool(getattr(args, "importance_aim",
+                                           False)),
             "track_history": bool(track_this_seed),
             "linear_scan": bool(os.environ.get("MIEWB_CENGINE_LINEAR")
                                 == "1"),

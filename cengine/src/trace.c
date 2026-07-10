@@ -1271,12 +1271,57 @@ static kvec3 sample_emit_position(const SourceC *src, uint64_t ray_key,
         "(4096 attempts) — trim geometry suspect", label);
 }
 
+/* --importance-aim birth test: does this emission ray meet the scene's
+ * root bounding box at all? Misses are culled at birth with their power
+ * credited to 'escaped' — the exact fate they would have had. */
+static int aim_hits_scene(const SceneC *s, kvec3 o, kvec3 d) {
+    if (!s->tlas.nodes) return 1;
+    kvec3 inv = v3(1.0 / d.x, 1.0 / d.y, 1.0 / d.z);
+    return bvh_ray_box(o, inv, INFINITY, s->tlas.nodes[0].bbmin,
+                       s->tlas.nodes[0].bbmax, 0.0);
+}
+
 /* Sample one source into a fresh batch. Mirrors the field assignments of
- * sources.py:323-354 one-for-one. */
+ * sources.py:323-354 one-for-one. With --importance-aim the CANDIDATE
+ * count M is raised to ~rays/f (f estimated from a deterministic probe
+ * pre-pass) so the requested ray budget all does useful work; per-
+ * candidate power power_W/M keeps every expectation exactly unchanged. */
 static void sample_source_c(const SceneC *s, int source_index, RayVec *batch,
                             LedgerC *ledger) {
     const SourceC *src = &s->sources[source_index];
     int64_t n = s->rays;
+
+    if (s->importance_aim) {
+        /* probe pass: acceptance fraction estimate (budget only — the
+         * per-candidate weights below stay exact regardless) */
+        const int64_t PROBES = 4096;
+        int64_t hits = 0;
+        for (int64_t i = 0; i < PROBES; i++) {
+            uint64_t key = rng_primary_key(s->seed ^ 0xA13Aull,
+                                           (uint32_t)source_index,
+                                           (uint64_t)i);
+            kvec3 pos = sample_emit_position(src, key, src->label);
+            kvec3 dir;
+            if (src->emit_policy == EMIT_COLLIMATED) {
+                dir = src->emit_dir;
+            } else {
+                kvec3 nrm = surf_normal(&src->emit_face.surf, pos);
+                dir = src->flip_all ? v3_scale(nrm, -1.0) : nrm;
+                if (!src->flip_all
+                        && v3_dot(nrm, v3_scale(pos, -1.0)) < 0.0)
+                    continue;   /* clipped candidates count as misses */
+                dir = v3_unit(dir);
+            }
+            if (aim_hits_scene(s, pos, dir)) hits++;
+        }
+        double f = (double)hits / (double)PROBES;
+        if (f < 1e-3) f = 1e-3;     /* runaway guard */
+        int64_t m = (int64_t)((double)n / f) + 1;
+        LOGI("importance-aim %s: acceptance ~%.1f%%, %lld candidates "
+             "for %lld useful rays", src->label, 100.0 * f,
+             (long long)m, (long long)n);
+        n = m;
+    }
     double p_ray = src->power_W / (double)n;
 
     for (int64_t i = 0; i < n; i++) {
@@ -1306,6 +1351,12 @@ static void sample_source_c(const SceneC *s, int source_index, RayVec *batch,
                 dir = nrm;
             }
             dir = v3_unit(dir);
+        }
+        if (s->importance_aim && !aim_hits_scene(s, pos, dir)) {
+            /* would fly straight past every face: same 'escaped' fate,
+             * zero trace cost (emitted power was recorded above) */
+            ledger_credit(ledger, BK_ESCAPED, (int)source_index, p_ray);
+            continue;
         }
 
         Ray r;

@@ -149,6 +149,10 @@ def _build_pipeline_parser():
                         "when the binary exists and every feature the "
                         "scene uses is ported, else Python (choice + "
                         "reason logged and recorded in case.json)")
+    g.add_argument("--importance-aim", action="store_true",
+                   help="C-engine variance reduction: birth-cull source "
+                        "samples that would immediately escape (unbiased; "
+                        "see run_trace --help)")
     g.add_argument("--rough-fresnel", default=None,
                    choices=["micro", "macro"],
                    help="roughness-lobe Fresnel model (default micro)")
@@ -277,6 +281,16 @@ def _build_trace_parser():
                         "reason logged and recorded in case.json). "
                         "--workers applies to the Python engine only; the "
                         "C engine threads internally (OpenMP).")
+    p.add_argument("--importance-aim", action="store_true",
+                   help="C-engine variance reduction (opt-in): candidate "
+                        "source samples whose ray misses the scene "
+                        "bounding box are culled AT BIRTH with their power "
+                        "credited straight to 'escaped' (exactly the fate "
+                        "they would have had), and the candidate count is "
+                        "raised so the requested --rays all do useful "
+                        "work. Unbiased: every expectation is unchanged; "
+                        "only the MC noise on detectors drops. Python "
+                        "engine ignores the flag.")
     p.add_argument("--workers", type=_workers_arg, default="auto",
                    metavar="N",
                    help="parallel trace shards (spawned processes) for the "
