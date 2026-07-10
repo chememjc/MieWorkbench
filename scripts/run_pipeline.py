@@ -210,6 +210,7 @@ def trace_cmd(stem, case_dir, args):
                            else common.DEFAULTS["seeds"])]
     cmd += ["--backend", args.backend if args.backend is not None
            else common.DEFAULTS["backend"]]
+    cmd += ["--workers", str(args.workers)]
     for f in args.source_face:
         cmd += ["--source-face", f]
     for f in args.detector_face:
@@ -270,6 +271,9 @@ def post_cmd(stem, case_dir, args):
         cmd += ["--spectrometer"]
     if args.emit_csv:
         cmd += ["--emit-csv"]
+    if args.wavefront_point is not None:
+        cmd += ["--wavefront-point",
+                "%g,%g" % (args.wavefront_point[0], args.wavefront_point[1])]
     return cmd
 
 

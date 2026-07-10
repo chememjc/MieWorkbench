@@ -33,6 +33,37 @@ import common  # noqa: E402  (stdlib-only shared contract hub)
 STAGES = ("pipeline", "trace", "post", "viz")
 
 
+def _workers_arg(s):
+    """argparse type for --workers: the literal string 'auto' or a positive
+    int. Kept stdlib (no numpy/os) so cli_specs stays importable under every
+    interpreter stack and the self-check passes."""
+    if s == "auto":
+        return "auto"
+    try:
+        v = int(s)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            "--workers must be 'auto' or a positive integer (got %r)" % (s,))
+    if v < 1:
+        raise argparse.ArgumentTypeError(
+            "--workers must be >= 1 (got %d)" % v)
+    return v
+
+
+def parse_wavefront_point(s):
+    """'X_MM,Y_MM' -> (float, float). argparse type= for --wavefront-point
+    (render_wavefront's optional image-point override, post stage)."""
+    parts = s.split(",")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            "invalid --wavefront-point %r (expected X_MM,Y_MM)" % s)
+    try:
+        return float(parts[0]), float(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "invalid --wavefront-point %r (expected X_MM,Y_MM)" % s)
+
+
 # ---------------------------------------------------------------------------
 # pipeline  (scripts/run_pipeline.py)
 # ---------------------------------------------------------------------------
@@ -178,6 +209,14 @@ def _build_pipeline_parser():
                    help="per-detector cap on exported rays (default "
                         "2000000); above it a seeded uniform-random subset "
                         "is kept and the fraction recorded in the npz meta")
+    g.add_argument("--wavefront-point", default=None,
+                   type=parse_wavefront_point, metavar="X_MM,Y_MM",
+                   help="override render_wavefront's image (wavefront "
+                        "reference) point, in detector-grid-frame mm (the "
+                        "same u=pos.xhat, v=pos.yhat convention the spot/"
+                        "fan renders use); default: each coherent key's "
+                        "power-weighted landing centroid. post stage only, "
+                        "requires --export-rays")
 
     g = p.add_argument_group("execution / orchestration")
     g.add_argument("--keep-going", action="store_true",
@@ -187,6 +226,12 @@ def _build_pipeline_parser():
     g.add_argument("--print-only", action="store_true",
                    help="compose and print every stage command without "
                         "running anything")
+    g.add_argument("--workers", type=_workers_arg, default="auto",
+                   metavar="N",
+                   help="parallel trace shards forwarded to run_trace.py "
+                        "(default 'auto' = max(1, cpu_count-2); '1' = single-"
+                        "process). The coherent gather always runs single-"
+                        "process in the parent.")
     return p
 
 
@@ -208,6 +253,16 @@ def _build_trace_parser():
     p.add_argument("--seed0", type=int, default=42)
     p.add_argument("--backend", default="auto",
                    choices=["auto", "torch", "numpy"])
+    p.add_argument("--workers", type=_workers_arg, default="auto",
+                   metavar="N",
+                   help="parallel trace shards (spawned processes) for the "
+                        "trace loop; 'auto' = max(1, cpu_count-2), '1' = "
+                        "single-process, bit-identical to the pre-sharding "
+                        "path. Each worker traces rays/N primaries with its "
+                        "own RNG stream; the parent merges the shards and "
+                        "runs the coherent Huygens gather ONCE (single-"
+                        "process, torch-CUDA), so N>1 results are "
+                        "statistically equivalent (not bit-identical) to N=1.")
     p.add_argument("--viz-rays", type=int, default=None,
                    help="absolute viz-ray cap per source (overrides "
                         "--viz-density when set)")
@@ -322,6 +377,14 @@ def _build_post_parser():
                    help="also write results/<case>/data/*.csv alongside "
                         "every chart (plus data/index.csv mapping file -> "
                         "entity/chart/units/provenance)")
+    g.add_argument("--wavefront-point", default=None,
+                   type=parse_wavefront_point, metavar="X_MM,Y_MM",
+                   help="override render_wavefront's image (wavefront "
+                        "reference) point, in detector-grid-frame mm (the "
+                        "same u=pos.xhat, v=pos.yhat convention the spot/"
+                        "fan renders use); default: each coherent key's "
+                        "power-weighted landing centroid. Only matters "
+                        "when rays_full.npz exists (--export-rays ran)")
     return p
 
 

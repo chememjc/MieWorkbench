@@ -41,6 +41,13 @@ from raytracer.optprops import load_optical_properties   # noqa: E402
 from raytracer.sources import (wavelength_strata,        # noqa: E402
                                jones_for, n_pol_strata)
 from raytracer.audit import BUCKETS                      # noqa: E402
+from raytracer.analysis_field import (psf_from_fields,   # noqa: E402
+                                      normalize_psf, radial_profile,
+                                      mtf2d, mtf50, encircled_energy,
+                                      ee_radius)
+from raytracer.analysis import (fit_zernike, opd_from_rays,  # noqa: E402
+                                strehl_marechal, noll_name,
+                                fringe_index, noll_to_nm)
 
 
 # =============================================================================
@@ -1345,6 +1352,22 @@ def render_spot_diagram(safe, dm, cols, adir, report, csv_emitter=None):
             image="analysis/spot_%s.png" % safe)
 
 
+def _pupil_xy(bp, xhat, yhat, power):
+    """Power-weighted-centroid, max-radius-normalized transverse pupil
+    coordinates (px, py) from a source/key's birth positions -- the
+    convention render_ray_fans (and now render_wavefront) samples the
+    exit/emit wavefront at. Returns None if every birth position
+    coincides (rmax <= 0, e.g. a point-like or single-ray population)."""
+    wsum = float(np.sum(power)) or 1.0
+    c = (power[:, None] * bp).sum(axis=0) / wsum
+    px = (bp - c) @ xhat
+    py = (bp - c) @ yhat
+    rmax = float(np.max(np.hypot(px, py))) if len(px) else 0.0
+    if rmax <= 0:
+        return None
+    return px / rmax, py / rmax
+
+
 def render_ray_fans(safe, dm, cols, adir, report, csv_emitter=None,
                     min_rays=50, slab=0.05):
     """Transverse tangential/sagittal ray fans + a chief-referenced OPD fan,
@@ -1353,7 +1376,11 @@ def render_ray_fans(safe, dm, cols, adir, report, csv_emitter=None,
     Tangential = rays in the |pupil_x|<slab strip (Δy_landing vs pupil_y);
     sagittal the transpose; OPD = opl + straight-line ambient path to the
     landing centroid, referenced to the chief (min-pupil-radius) ray, in
-    waves at each ray's own wavelength."""
+    waves at each ray's own wavelength.
+
+    Pupil normalization (birth centroid, max-radius scale) is factored
+    into _pupil_xy() so render_wavefront samples the identical pupil
+    coordinate convention."""
     label = dm["label"]
     xhat = np.asarray(dm["xhat"]); yhat = np.asarray(dm["yhat"])
     pos = cols["pos"]; bp = cols["birth_pos"]
@@ -1377,14 +1404,10 @@ def render_ray_fans(safe, dm, cols, adir, report, csv_emitter=None,
             continue
         bpm = bp[m]
         pw = power[m]
-        wsum = float(np.sum(pw)) or 1.0
-        c = (pw[:, None] * bpm).sum(axis=0) / wsum
-        px = (bpm - c) @ xhat
-        py = (bpm - c) @ yhat
-        rmax = float(np.max(np.hypot(px, py)))
-        if rmax <= 0:
+        pupil = _pupil_xy(bpm, xhat, yhat, pw)
+        if pupil is None:
             continue
-        px = px / rmax; py = py / rmax
+        px, py = pupil
         um, vm = u[m], v[m]
         uc = float(np.mean(um)); vc = float(np.mean(vm))
         lamm = lam[m]; oplm = opl[m]
@@ -1468,6 +1491,354 @@ def render_ray_analysis(case_dir, report, csv_emitter=None):
         render_ray_fans(safe, dm, cols, adir, report, csv_emitter)
 
 
+# =============================================================================
+# --save-fields follow-on: PSF / FFT-MTF / encircled-energy analysis from a
+# detector's coherent field maps (analysis_field.py; see the 'fields/<key>/
+# {Ex,Ey}' layout documented above render_stokes_maps and _iter_field_keys).
+# One row/panel per (source,lam,pol) gather key PLUS a final 'all' row that
+# is the incoherent SUM of every key's PSF -- this detector's overall
+# broadband/multi-source spot, legitimate because different gather keys
+# never interfere (the same assumption render_stokes_maps' summed DOP panel
+# already relies on). Silent no-op when the 'fields' group is empty/absent
+# (the trace did not use --save-fields). SEED 0 ONLY (fields/ is written
+# only for seed 0, see run_trace.save_detectors) -- every figure title says
+# so explicitly.
+# =============================================================================
+def _field_key_metrics(psf, pixel_m):
+    """One (coherent-key or 'all'-summed) PSF -> {scalars, mtf, radial, ee}
+    -- the report's scalar metrics plus the raw curves the plotting/CSV
+    helpers need, computed once and shared by both."""
+    peak_w_m2 = float(psf.max()) / pixel_m ** 2 if psf.size else 0.0
+    mtf = mtf2d(psf, pixel_m)
+    W = mtf["mtf"].shape[1]
+    H = mtf["mtf"].shape[0]
+    freq = mtf["freq_cy_mm"]
+    tan_half = mtf["tangential"][W // 2:]
+    sag_half = mtf["sagittal"][H // 2:]
+    radii, ee = encircled_energy(psf, pixel=pixel_m)
+    r_prof, prof = radial_profile(psf, pixel=pixel_m)
+    scalars = {
+        "psf_peak_W_m2": peak_w_m2,
+        "mtf50_tan_cy_mm": mtf50(freq, tan_half),
+        "mtf50_sag_cy_mm": mtf50(freq, sag_half),
+        "ee_r50_um": ee_radius(radii, ee, 0.5) * 1e6,
+        "ee_r80_um": ee_radius(radii, ee, 0.8) * 1e6,
+        "ee_r90_um": ee_radius(radii, ee, 0.9) * 1e6,
+    }
+    return {"scalars": scalars, "mtf": mtf, "radial": (r_prof, prof),
+            "ee": (radii, ee)}
+
+
+def _plot_psf_panels(panels, pixel_m, outpath, title):
+    n = len(panels)
+    fig, axes = plt.subplots(n, 3, figsize=(11.5, 3.3 * n), squeeze=False)
+    for i, (name, psf) in enumerate(panels):
+        norm, _ = normalize_psf(psf)
+        H, W = psf.shape
+        extent_um = [0, W * pixel_m * 1e6, 0, H * pixel_m * 1e6]
+        ax0, ax1, ax2 = axes[i]
+        im0 = ax0.imshow(norm, origin="lower", cmap="inferno",
+                         extent=extent_um)
+        ax0.set_title("%s — linear" % name, fontsize=9)
+        fig.colorbar(im0, ax=ax0, fraction=0.046)
+        log_img = np.log10(np.maximum(norm, 1e-6))
+        im1 = ax1.imshow(log_img, origin="lower", cmap="inferno",
+                         extent=extent_um, vmin=-6, vmax=0)
+        ax1.set_title("%s — log10" % name, fontsize=9)
+        fig.colorbar(im1, ax=ax1, fraction=0.046)
+        r, prof = radial_profile(psf, pixel=pixel_m)
+        pk = float(prof.max()) if len(prof) and prof.max() > 0 else 1.0
+        ax2.semilogy(r * 1e6, np.maximum(prof / pk, 1e-8))
+        ax2.set_ylim(1e-6, 2.0)
+        ax2.set_title("%s — radial profile" % name, fontsize=9)
+        ax2.set_xlabel("r [µm]")
+        ax2.set_ylabel("normalized irradiance")
+        for ax in (ax0, ax1):
+            ax.set_xlabel("x [µm]")
+            ax.set_ylabel("y [µm]")
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(outpath, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_mtf_panels(panels, metrics_by_key, outpath, title):
+    n = len(panels)
+    fig, axes = plt.subplots(n, 2, figsize=(10, 3.3 * n), squeeze=False)
+    for i, (name, _psf) in enumerate(panels):
+        mtf = metrics_by_key[name]["mtf"]
+        ax0, ax1 = axes[i]
+        im0 = ax0.imshow(mtf["mtf"], origin="lower", cmap="viridis",
+                         extent=[mtf["fx_cy_mm"][0], mtf["fx_cy_mm"][-1],
+                                mtf["fy_cy_mm"][0], mtf["fy_cy_mm"][-1]])
+        ax0.set_title("%s — 2D MTF" % name, fontsize=9)
+        ax0.set_xlabel("fx [cyc/mm]")
+        ax0.set_ylabel("fy [cyc/mm]")
+        fig.colorbar(im0, ax=ax0, fraction=0.046)
+        W = mtf["mtf"].shape[1]
+        H = mtf["mtf"].shape[0]
+        freq = mtf["freq_cy_mm"]
+        ax1.plot(freq, mtf["tangential"][W // 2:], label="tangential")
+        ax1.plot(freq, mtf["sagittal"][H // 2:], label="sagittal")
+        ax1.axhline(0.5, color="0.7", lw=0.6, zorder=0)
+        ax1.set_title("%s — 1D slices" % name, fontsize=9)
+        ax1.set_xlabel("frequency [cyc/mm]")
+        ax1.set_ylabel("MTF")
+        ax1.set_ylim(0, 1.02)
+        ax1.legend(fontsize=7)
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(outpath, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_ee_panel(metrics_by_key, panels, outpath, title):
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for name, _psf in panels:
+        radii, ee = metrics_by_key[name]["ee"]
+        ax.plot(radii * 1e6, ee, label=name, lw=1.0)
+        for frac in (0.5, 0.8, 0.9):
+            r = ee_radius(radii, ee, frac)
+            if np.isfinite(r):
+                ax.plot(r * 1e6, frac, "o", ms=4, color="0.2")
+    ax.set_xlabel("radius [µm]")
+    ax.set_ylabel("encircled energy fraction")
+    ax.set_ylim(0, 1.05)
+    ax.legend(fontsize=7)
+    ax.set_title(title, fontsize=10)
+    fig.savefig(outpath, bbox_inches="tight")
+    plt.close(fig)
+
+
+def render_field_analysis(h5path, adir, report, csv_emitter=None):
+    """--save-fields follow-on (see the module comment above): PSF/MTF/
+    encircled-energy analysis per coherent gather key + one incoherent-sum
+    'all' row. No-op if the h5 has no populated 'fields' group."""
+    with h5py.File(h5path) as h:
+        keys = _iter_field_keys(h)
+        if not keys:
+            return
+        attrs = dict(h.attrs)
+        label = attrs["label"]
+        pixel_m = float(attrs["pixel_m"])
+        field_data = [(key, grp["Ex"][...], grp["Ey"][...])
+                     for key, grp in keys]
+    safe = label.replace(".", "_")
+    adir.mkdir(parents=True, exist_ok=True)
+
+    panels = [(key, psf_from_fields(Ex, Ey)) for key, Ex, Ey in field_data]
+    if len(panels) > 1:
+        summed = np.sum([p for _, p in panels], axis=0)
+        panels = panels + [("all", summed)]
+
+    metrics_by_key = {name: _field_key_metrics(psf, pixel_m)
+                      for name, psf in panels}
+    # headline scalars come from the dominant-POWER physical key (never the
+    # synthetic 'all' summed row, which mixes strata that may not even
+    # share a wavelength) -- per-key numbers (including 'all') live in
+    # block["keys"].
+    phys_names = [k for k, _, _ in field_data]
+    dominant = max(phys_names,
+                  key=lambda k: metrics_by_key[k]["scalars"]["psf_peak_W_m2"])
+
+    block = {"keys": {name: m["scalars"]
+                      for name, m in metrics_by_key.items()}}
+    block.update(metrics_by_key[dominant]["scalars"])
+    report.setdefault("detectors", {}).setdefault(
+        label, {})["analysis"] = block
+
+    caveat = "%s — seed 0 only" % label
+    _plot_psf_panels(panels, pixel_m, adir / ("psf_%s.png" % safe),
+                     "PSF — %s" % caveat)
+    _plot_mtf_panels(panels, metrics_by_key, adir / ("mtf_%s.png" % safe),
+                     "MTF — %s" % caveat)
+    _plot_ee_panel(metrics_by_key, panels, adir / ("ee_%s.png" % safe),
+                  "Encircled energy — %s" % caveat)
+
+    if csv_emitter is not None:
+        for name, m in metrics_by_key.items():
+            r_prof, prof = m["radial"]
+            csv_emitter.emit(
+                "psf_radial_%s_%s.csv" % (safe, name),
+                ["radius_um", "irradiance_W_m2"],
+                zip(r_prof * 1e6, prof / pixel_m ** 2), entity=label,
+                chart="psf_radial_profile", units="W/m^2",
+                image="analysis/psf_%s.png" % safe)
+            mtf = m["mtf"]
+            W = mtf["mtf"].shape[1]
+            H = mtf["mtf"].shape[0]
+            freq = mtf["freq_cy_mm"]
+            csv_emitter.emit(
+                "mtf_slices_%s_%s.csv" % (safe, name),
+                ["freq_cy_mm", "tangential", "sagittal"],
+                zip(freq, mtf["tangential"][W // 2:],
+                   mtf["sagittal"][H // 2:]), entity=label,
+                chart="mtf_slices", units="cyc/mm",
+                image="analysis/mtf_%s.png" % safe)
+            radii, ee = m["ee"]
+            csv_emitter.emit(
+                "ee_%s_%s.csv" % (safe, name),
+                ["radius_um", "ee_fraction"], zip(radii * 1e6, ee),
+                entity=label, chart="encircled_energy", units="um",
+                image="analysis/ee_%s.png" % safe)
+
+
+# =============================================================================
+# --export-rays follow-on: per-coherent-key wavefront (Zernike/Strehl)
+# analysis from rays_full.npz's birth_pos/opl records -- the source-
+# referenced pupil model documented in analysis.py's module docstring
+# (exact for the collimated/laser benches this tracer models; NOT a true
+# exit pupil for finite-conjugate imaging -- see that docstring). No-op
+# unless rays_full.npz exists AND at least one (source,lam_stratum,
+# pol_stratum) key has more than MIN_WAVEFRONT_RAYS COHERENT rays landing
+# on a detector.
+#
+# FUTURE WORK (explicitly out of scope): a psf-peak-ratio Strehl (measured
+# PSF peak / diffraction-limited reference PSF peak) would let --save-
+# fields and --export-rays cross-check each other, but needs a reference
+# (Airy/aberration-free) PSF model this module does not build -- left for
+# a later pass, see future.md.
+# =============================================================================
+MIN_WAVEFRONT_RAYS = 200
+ZERNIKE_JMAX = 15
+
+
+def _zernike_panel(ax_map, ax_bar, px, py, opd_waves, coeffs_waves, title):
+    lim = float(np.max(np.abs(opd_waves))) if len(opd_waves) else 1e-12
+    lim = max(lim, 1e-12)
+    sca = ax_map.scatter(px, py, c=opd_waves, s=6, cmap="RdBu_r",
+                         vmin=-lim, vmax=lim)
+    theta = np.linspace(0, 2 * np.pi, 200)
+    ax_map.plot(np.cos(theta), np.sin(theta), color="0.4", lw=0.7)
+    ax_map.set_aspect("equal", "box")
+    ax_map.set_xlabel("pupil x")
+    ax_map.set_ylabel("pupil y")
+    ax_map.set_title("%s — OPD map [waves]" % title, fontsize=9)
+    plt.colorbar(sca, ax=ax_map, fraction=0.046)
+
+    jmax = len(coeffs_waves)
+    js = np.arange(1, jmax + 1)
+    ax_bar.bar(js, coeffs_waves, color="C0")
+    ax_bar.set_xlabel("Noll j")
+    ax_bar.set_ylabel("coeff [waves]")
+    ax_bar.set_title("%s — Zernike (jmax=%d)" % (title, jmax), fontsize=9)
+    ax_bar.set_xticks(js)
+    ax_bar.tick_params(axis="x", labelsize=6)
+
+
+def render_wavefront(case_dir, report, csv_emitter=None,
+                     wavefront_point=None):
+    npz_path = case_dir / "rays_full.npz"
+    if not npz_path.exists():
+        return
+    z = np.load(npz_path, allow_pickle=True)
+    meta = json.loads(str(z["meta"]))
+    adir = case_dir / "analysis"
+    jmax = ZERNIKE_JMAX
+
+    for safe, dm in meta["detectors"].items():
+        label = dm["label"]
+        xhat = np.asarray(dm["xhat"], dtype=np.float64)
+        yhat = np.asarray(dm["yhat"], dtype=np.float64)
+        normal = np.asarray(dm["normal"], dtype=np.float64)
+        cols = {k: z["%s/%s" % (safe, k)]
+                for k in ("pos", "opl", "lam", "source_id", "lam_stratum",
+                          "pol_stratum", "power", "coherent", "birth_pos")}
+        if len(cols["pos"]) == 0:
+            continue
+        coh = cols["coherent"].astype(bool)
+        if not np.any(coh):
+            continue
+        sid = cols["source_id"].astype(int)
+        lst = cols["lam_stratum"].astype(int)
+        pst = cols["pol_stratum"].astype(int)
+        finite_bp = np.isfinite(cols["birth_pos"]).all(axis=1)
+        combo_keys = sorted(set(zip(sid[coh & finite_bp].tolist(),
+                                   lst[coh & finite_bp].tolist(),
+                                   pst[coh & finite_bp].tolist())))
+
+        rows_by_key = []
+        panels = []
+        csv_rows = []
+        for (s, l, p) in combo_keys:
+            m = coh & finite_bp & (sid == s) & (lst == l) & (pst == p)
+            n = int(np.sum(m))
+            if n <= MIN_WAVEFRONT_RAYS:
+                continue
+            bp = cols["birth_pos"][m]
+            pw = cols["power"][m]
+            pupil = _pupil_xy(bp, xhat, yhat, pw)
+            if pupil is None:
+                continue
+            px, py = pupil
+            pos_m = cols["pos"][m]
+            opl_m = cols["opl"][m]
+            lam_mean = float(np.mean(cols["lam"][m]))
+            total_power = float(np.sum(pw))
+            if wavefront_point is not None:
+                x_mm, y_mm = wavefront_point
+                n_off = float(np.dot(pos_m[0], normal))
+                ref = (x_mm * 1e-3 * xhat + y_mm * 1e-3 * yhat
+                      + n_off * normal)
+            else:
+                wsum = total_power or 1.0
+                ref = (pw[:, None] * pos_m).sum(axis=0) / wsum
+            opd, rho, theta = opd_from_rays(
+                np.stack([px, py], axis=1), pos_m, opl_m, ref)
+            fit = fit_zernike(rho, theta, opd, jmax=jmax, weights=pw)
+            strehl = strehl_marechal(fit["rms_wavefront"], lam_mean)
+            key_name = "%d_%d_%d" % (s, l, p)
+            rows_by_key.append({
+                "key": key_name, "source_id": s, "lam_stratum": l,
+                "pol_stratum": p, "strehl_marechal": strehl,
+                "rms_waves": fit["rms_wavefront"] / lam_mean,
+                "pv_waves": fit["pv"] / lam_mean, "n_rays": n,
+                "total_power_W": total_power,
+            })
+            panels.append((key_name, px, py, opd / lam_mean,
+                          fit["coeffs"] / lam_mean))
+            for j in range(1, jmax + 1):
+                n_j, m_j = noll_to_nm(j)
+                csv_rows.append((
+                    s, l, p, j, fringe_index(n_j, m_j), noll_name(j),
+                    fit["coeffs"][j - 1] / lam_mean,
+                    fit["coeffs"][j - 1] * 1e9))
+
+        if not rows_by_key:
+            continue
+        adir.mkdir(parents=True, exist_ok=True)
+        dominant = max(rows_by_key, key=lambda r: r["total_power_W"])
+        block = {
+            "keys": rows_by_key,
+            "strehl_marechal": dominant["strehl_marechal"],
+            "rms_waves": dominant["rms_waves"],
+            "pv_waves": dominant["pv_waves"],
+            "n_rays": dominant["n_rays"],
+        }
+        report.setdefault("detectors", {}).setdefault(
+            label, {})["wavefront"] = block
+
+        n = len(panels)
+        fig, axes = plt.subplots(n, 2, figsize=(9, 3.6 * n), squeeze=False)
+        for i, (name, px, py, opd_w, coeffs_w) in enumerate(panels):
+            _zernike_panel(axes[i, 0], axes[i, 1], px, py, opd_w, coeffs_w,
+                          "%s key %s" % (label, name))
+        fig.suptitle("Wavefront — %s (source-referenced pupil, seed 0 "
+                     "only)" % label, fontsize=11)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.savefig(adir / ("wavefront_%s.png" % safe), bbox_inches="tight")
+        plt.close(fig)
+
+        if csv_emitter is not None:
+            csv_emitter.emit(
+                "zernike_%s.csv" % safe,
+                ["source_id", "lam_stratum", "pol_stratum", "noll_j",
+                 "fringe_j", "name", "coeff_waves", "coeff_nm"], csv_rows,
+                entity=label, chart="zernike_fit", units="waves; nm",
+                provenance="rays_full.npz",
+                image="analysis/wavefront_%s.png" % safe)
+
+
 def main(argv=None):
     p = cli_specs.build_parser("post")
     args = p.parse_args(argv)
@@ -1539,6 +1910,20 @@ def main(argv=None):
     # the trace stage wrote rays_full.npz). Runs regardless of --emit-csv;
     # the CSV export of the same data is gated on the emitter being present.
     render_ray_analysis(case_dir, report, csv_emitter)
+
+    # --save-fields follow-on: PSF/MTF/encircled-energy analysis, one h5 at
+    # a time (no-op per-detector unless that h5 has a populated 'fields'
+    # group, i.e. the trace ran with --save-fields).
+    adir = case_dir / "analysis"
+    for h5path in h5paths:
+        render_field_analysis(h5path, adir, report, csv_emitter)
+
+    # --export-rays follow-on: per-coherent-key wavefront/Zernike/Strehl
+    # analysis (no-op unless rays_full.npz exists AND some key clears
+    # MIN_WAVEFRONT_RAYS). --wavefront-point overrides the default power-
+    # weighted landing centroid image point.
+    render_wavefront(case_dir, report, csv_emitter,
+                     wavefront_point=args.wavefront_point)
 
     common.progress_emit("post", 0.8, "diagnostic plots",
                          case_dir=case_dir)

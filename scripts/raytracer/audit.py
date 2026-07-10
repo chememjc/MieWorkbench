@@ -69,6 +69,31 @@ class PowerLedger:
                 "detected_geometric", "absorbed_surface") else self.by_body
             sub[where] = sub.get(where, 0.0) + float(np.sum(power))
 
+    def merge(self, other):
+        """Fold another ledger into this one (multi-process --workers trace
+        sharding). Every quantity is a linear tally, so shards add: the
+        emitted / bucket arrays add elementwise, and the diagnostic
+        by_surface/by_body/detected dicts and the per-element flux in/out
+        sub-totals add per key. Returns self for chaining."""
+        if other.n_sources != self.n_sources:
+            raise ValueError(
+                "PowerLedger.merge: source-count mismatch (%d vs %d)"
+                % (self.n_sources, other.n_sources))
+        self.emitted += other.emitted
+        for b in BUCKETS:
+            self.buckets[b] += other.buckets[b]
+        for k, v in other.by_surface.items():
+            self.by_surface[k] = self.by_surface.get(k, 0.0) + v
+        for k, v in other.by_body.items():
+            self.by_body[k] = self.by_body.get(k, 0.0) + v
+        for k, v in other.flux.items():
+            entry = self.flux.setdefault(k, {"in_W": 0.0, "out_W": 0.0})
+            entry["in_W"] += v["in_W"]
+            entry["out_W"] += v["out_W"]
+        for k, v in other.detected.items():
+            self.detected[k] = self.detected.get(k, 0.0) + v
+        return self
+
     def closure(self):
         """Per-source relative closure error |1 - sum(buckets)/emitted|."""
         total = sum(self.buckets.values())
