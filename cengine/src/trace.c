@@ -23,6 +23,8 @@
 #include "log.h"
 #include "kernels/fresnel.h"
 #include "kernels/thinfilm.h"
+#include "kernels/scatterk.h"
+#include "kernels/gratingk.h"
 #include "rng.h"
 
 #include <omp.h>
@@ -236,6 +238,74 @@ static void apply_polarizer(const SceneC *s, const BodyC *body, Ray *trans,
     trans->s_hat = t_hat;
 }
 
+/* Interface amplitude/power coefficients at a given incidence cosine:
+ * bare Fresnel, TMM coating (re-evaluated at the local angle), or a
+ * measured table (macro values reused for microfacet lobes, documented
+ * in tracer.py:758-768). NaN-poisoned grazing-lobe outputs are zeroed
+ * exactly like tracer.py:774-784's nan_to_num. */
+typedef struct {
+    kcplx rs, rp, ts, tp;
+    double Rs, Rp, Ts, Tp;
+} IfcCoef;
+
+static void nan_guard(IfcCoef *c) {
+    if (!isfinite(c->rs.re) || !isfinite(c->rs.im)) c->rs = kc(0, 0);
+    if (!isfinite(c->rp.re) || !isfinite(c->rp.im)) c->rp = kc(0, 0);
+    if (!isfinite(c->ts.re) || !isfinite(c->ts.im)) c->ts = kc(0, 0);
+    if (!isfinite(c->tp.re) || !isfinite(c->tp.im)) c->tp = kc(0, 0);
+    if (!isfinite(c->Rs)) c->Rs = 0.0;
+    if (!isfinite(c->Rp)) c->Rp = 0.0;
+    if (!isfinite(c->Ts) || c->Ts < 0.0) c->Ts = 0.0;
+    if (!isfinite(c->Tp) || c->Tp < 0.0) c->Tp = 0.0;
+}
+
+static IfcCoef interface_coeffs(const SceneC *s, const FaceC *face,
+                                const Ray *r, double cos_x, kcplx n1,
+                                kcplx n2, const IfcCoef *macro) {
+    IfcCoef c;
+    if (face->coating >= 0
+            && s->coatings[face->coating].kind == COAT_TMM) {
+        const CoatC *co = &s->coatings[face->coating];
+        kcplx layer_n[COAT_MAX_LAYERS];
+        for (int j = 0; j < co->n_layers; j++) {
+            size_t at = (size_t)j * s->n_lams + r->lam_idx;
+            layer_n[j] = kc(co->layer_n_re[at], co->layer_n_im[at]);
+        }
+        TmmC T = tmm_eval(r->lam, cos_x, n1, n2, layer_n, co->layer_d,
+                          co->n_layers);
+        c.rs = T.rs; c.rp = T.rp; c.ts = T.ts; c.tp = T.tp;
+        c.Rs = T.Rs; c.Rp = T.Rp; c.Ts = T.Ts; c.Tp = T.Tp;
+    } else if (face->coating >= 0 && macro) {
+        c = *macro;     /* single-AOI table keeps its macro values */
+    } else if (face->coating >= 0) {
+        /* macro evaluation of a table coating (tracer.py:549-578) */
+        const CoatC *co = &s->coatings[face->coating];
+        FresnelC F = fresnel_eval(cos_x, n1, n2);
+        c.Rs = co->Rs[r->lam_idx];
+        c.Rp = co->Rp[r->lam_idx];
+        c.Ts = co->Ts[r->lam_idx];
+        c.Tp = co->Tp[r->lam_idx];
+        if (fresnel_is_tir(cos_x, n1, n2)) {
+            c.Rs += c.Ts; if (c.Rs > 1.0) c.Rs = 1.0; if (c.Rs < 0.0) c.Rs = 0.0;
+            c.Rp += c.Tp; if (c.Rp > 1.0) c.Rp = 1.0; if (c.Rp < 0.0) c.Rp = 0.0;
+            c.Ts = 0.0;
+            c.Tp = 0.0;
+        }
+        c.rs = kc_scale(kc_cis(kc_arg(F.rs)), sqrt(c.Rs));
+        c.rp = kc_scale(kc_cis(kc_arg(F.rp)), sqrt(c.Rp));
+        c.ts = kc_scale(kc_cis(kc_arg(F.ts)),
+                        sqrt(c.Ts > 0.0 ? c.Ts : 0.0));
+        c.tp = kc_scale(kc_cis(kc_arg(F.tp)),
+                        sqrt(c.Tp > 0.0 ? c.Tp : 0.0));
+    } else {
+        FresnelC F = fresnel_eval(cos_x, n1, n2);
+        c.rs = F.rs; c.rp = F.rp; c.ts = F.ts; c.tp = F.tp;
+        c.Rs = F.Rs; c.Rp = F.Rp; c.Ts = F.Ts; c.Tp = F.Tp;
+    }
+    nan_guard(&c);
+    return c;
+}
+
 /* ----------------------------------------------------- optic children */
 /* Port of Tracer._optic_children (tracer.py:457-896), phase-A subset:
  * bare Fresnel + mirror/absorbance + medium stack + seam guard. Coatings/
@@ -279,48 +349,32 @@ static void optic_children(const SceneC *s, const FaceC *face,
     kcplx n2 = scene_medium_n(s, far, r->lam_idx);
 
     /* amplitude coefficients: bare Fresnel, TMM coating, or measured
-     * coating table (tracer.py:538-584) */
-    kcplx rs, rp, ts, tp;
-    double Rs, Rp, Ts, Tp;
-    if (face->coating >= 0
-            && s->coatings[face->coating].kind == COAT_TMM) {
-        const CoatC *c = &s->coatings[face->coating];
-        kcplx layer_n[COAT_MAX_LAYERS];
-        for (int j = 0; j < c->n_layers; j++) {
-            size_t at = (size_t)j * s->n_lams + r->lam_idx;
-            layer_n[j] = kc(c->layer_n_re[at], c->layer_n_im[at]);
-        }
-        TmmC T = tmm_eval(r->lam, cos_i, n1, n2, layer_n, c->layer_d,
-                          c->n_layers);
-        rs = T.rs; rp = T.rp; ts = T.ts; tp = T.tp;
-        Rs = T.Rs; Rp = T.Rp; Ts = T.Ts; Tp = T.Tp;
-    } else if (face->coating >= 0) {
-        /* tabulated coating: measured powers at the ray wavelength with
-         * the BARE-interface Fresnel phase; past the critical angle the
-         * table's T folds into R (tracer.py:549-578) */
-        const CoatC *c = &s->coatings[face->coating];
-        FresnelC F = fresnel_eval(cos_i, n1, n2);
-        Rs = c->Rs[r->lam_idx];
-        Rp = c->Rp[r->lam_idx];
-        Ts = c->Ts[r->lam_idx];
-        Tp = c->Tp[r->lam_idx];
-        if (fresnel_is_tir(cos_i, n1, n2)) {
-            Rs = Rs + Ts; if (Rs > 1.0) Rs = 1.0; if (Rs < 0.0) Rs = 0.0;
-            Rp = Rp + Tp; if (Rp > 1.0) Rp = 1.0; if (Rp < 0.0) Rp = 0.0;
-            Ts = 0.0;
-            Tp = 0.0;
-        }
-        rs = kc_scale(kc_cis(kc_arg(F.rs)), sqrt(Rs));
-        rp = kc_scale(kc_cis(kc_arg(F.rp)), sqrt(Rp));
-        ts = kc_scale(kc_cis(kc_arg(F.ts)), sqrt(Ts > 0.0 ? Ts : 0.0));
-        tp = kc_scale(kc_cis(kc_arg(F.tp)), sqrt(Tp > 0.0 ? Tp : 0.0));
-    } else {
-        FresnelC F = fresnel_eval(cos_i, n1, n2);
-        rs = F.rs; rp = F.rp; ts = F.ts; tp = F.tp;
-        Rs = F.Rs; Rp = F.Rp; Ts = F.Ts; Tp = F.Tp;
+     * coating table (tracer.py:538-584), via the shared helper (also
+     * used per microfacet lobe below) */
+    IfcCoef mc = interface_coeffs(s, face, r, cos_i, n1, n2, NULL);
+    kcplx rs = mc.rs, rp = mc.rp, ts = mc.ts, tp = mc.tp;
+    double Rs = mc.Rs, Rp = mc.Rp, Ts = mc.Ts, Tp = mc.Tp;
+    (void)Rs; (void)Rp;
+
+    /* ---- roughness: specular attenuation factor (tracer.py:620-628) */
+    const RoughC *rough = face->rough >= 0 ? &s->roughs[face->rough]
+                                           : NULL;
+    double A_spec = rough
+        ? rough_specular_factor(rough->sigma_m, cos_i, r->lam) : 1.0;
+    double sqrtA = sqrt(A_spec);
+
+    /* ---- ABg scatter: reflected-side specular/scatter split
+     * (tracer.py:630-645) ---- */
+    const ScatC *scat = face->scat >= 0 ? &s->scats[face->scat] : NULL;
+    double tis = 0.0;
+    if (scat) {
+        tis = abg_tis_g2(scat->A, scat->B, cos_i);
+        if (scat->tis_cap >= 0.0 && tis > scat->tis_cap)
+            tis = scat->tis_cap;
+        if (tis < 0.0) tis = 0.0;
+        if (tis > 1.0) tis = 1.0;
     }
-    if (Ts < 0.0) Ts = 0.0;                /* tracer.py:583-584 clip */
-    if (Tp < 0.0) Tp = 0.0;
+    double refl_scale = sqrt(1.0 - tis);
 
     /* rotate Jones into this interface's (s,p) basis (tracer.py:586-590) */
     kvec3 s_new, p_new;
@@ -336,11 +390,15 @@ static void optic_children(const SceneC *s, const FaceC *face,
     double p_in = kc_abs2(Es) + kc_abs2(Ep);
 
     /* ---- reflected child (tracer.py:647-681): power-exact amplitude
-     * sqrt(r_m + phys |r|^2), phase from the physical coefficient ---- */
-    kcplx amp_rs = kc_scale(kc_cis(kc_arg(rs)),
-                            sqrt(r_m + phys * kc_abs2(rs)));
-    kcplx amp_rp = kc_scale(kc_cis(kc_arg(rp)),
-                            sqrt(r_m + phys * kc_abs2(rp)));
+     * sqrt(r_m + phys |r|^2), phase from the physical coefficient; the
+     * specular child additionally carries sqrtA (roughness) and
+     * refl_scale (ABg specular remainder) ---- */
+    kcplx full_amp_rs = kc_scale(kc_cis(kc_arg(rs)),
+                                 sqrt(r_m + phys * kc_abs2(rs)));
+    kcplx full_amp_rp = kc_scale(kc_cis(kc_arg(rp)),
+                                 sqrt(r_m + phys * kc_abs2(rp)));
+    kcplx amp_rs = kc_scale(full_amp_rs, sqrtA * refl_scale);
+    kcplx amp_rp = kc_scale(full_amp_rp, sqrtA * refl_scale);
     Ray refl = *r;
     refl.dir = fresnel_reflect_dir(r->dir, n_hat);
     refl.s_hat = s_new;
@@ -364,12 +422,17 @@ static void optic_children(const SceneC *s, const FaceC *face,
     int tir = (Ts + Tp) <= 1e-15;
     double p_trans_pre = 0.0;   /* PRE-polarizer power for the exact-
                                  * difference accounting (tracer.py:715) */
+    Ray trans;                  /* kept in scope: scattered-transmission
+                                 * lobes inherit its medium stack */
+    memset(&trans, 0, sizeof trans);
     if (!tir) {
-        Ray trans = *r;
+        trans = *r;
         trans.dir = fresnel_refract_dir(r->dir, n_hat, cos_i, n1.re, n2.re);
         trans.s_hat = s_new;
-        kcplx amp_ts = kc_scale(kc_cis(kc_arg(ts)), sqrt(phys * Ts));
-        kcplx amp_tp = kc_scale(kc_cis(kc_arg(tp)), sqrt(phys * Tp));
+        kcplx amp_ts = kc_scale(kc_cis(kc_arg(ts)),
+                                sqrt(phys * Ts) * sqrtA);
+        kcplx amp_tp = kc_scale(kc_cis(kc_arg(tp)),
+                                sqrt(phys * Tp) * sqrtA);
         trans.Es = kc_mul(Es, amp_ts);
         trans.Ep = kc_mul(Ep, amp_tp);
         /* medium bookkeeping (tracer.py:705-710) */
@@ -398,14 +461,247 @@ static void optic_children(const SceneC *s, const FaceC *face,
         }
     }
 
+    double p_accounted = p_refl + (tir ? 0.0 : p_trans_pre);
+
+    /* ---- roughness: Beckmann-scattered lobes carry the (1-A) power
+     * (tracer.py:732-852, rough_fresnel='micro': coefficients at each
+     * MICROFACET-LOCAL angle, per polarization in the microfacet basis;
+     * the legacy 'macro' model is feature-routed to Python) ---- */
+    if (rough && A_spec < 1.0 - 1e-12) {
+        const int k_lobe = 2;
+        kvec3 p_of_snew = v3_cross(r->dir, s_new);
+        for (int j = 0; j < k_lobe; j++) {
+            kvec3 n_j = beckmann_facet(n_hat, rough->slope, r->ray_key,
+                                       r->event_ctr, (uint32_t)(64 * j));
+            double cos_j = -v3_dot(r->dir, n_j);
+            if (cos_j < 0.0) cos_j = 0.0;
+            if (cos_j > 1.0) cos_j = 1.0;
+            IfcCoef lc = interface_coeffs(
+                s, face, r, cos_j, n1, n2,
+                (face->coating >= 0
+                 && s->coatings[face->coating].kind == COAT_TABLE)
+                    ? &mc : NULL);
+            /* Jones into the microfacet's own s/p basis */
+            kvec3 s_j, p_j;
+            fresnel_pol_basis(r->dir, n_j, &s_j, &p_j);
+            kcplx Es_j, Ep_j;
+            fresnel_rotate_jones(Es, Ep, s_new, p_of_snew, s_j, p_j,
+                                 &Es_j, &Ep_j);
+            double frac = (1.0 - A_spec) / (double)k_lobe;
+            /* scattered reflection */
+            Ray sc = *r;
+            sc.dir = fresnel_reflect_dir(r->dir, n_j);
+            sc.s_hat = s_j;
+            sc.Es = kc_mul(Es_j, kc_scale(
+                kc_cis(kc_arg(lc.rs)),
+                sqrt(frac * (r_m + phys * kc_abs2(lc.rs)))));
+            sc.Ep = kc_mul(Ep_j, kc_scale(
+                kc_cis(kc_arg(lc.rp)),
+                sqrt(frac * (r_m + phys * kc_abs2(lc.rp)))));
+            sc.generation = (int16_t)(r->generation + 1);
+            sc.scattered = 1;
+            sc.ray_key = rng_child_key(r->ray_key, r->event_ctr,
+                                       CHILD_SLOT_ROUGH_R0 + (uint32_t)j);
+            sc.event_ctr = 0;
+            double p_sc = ray_power(&sc);
+            int ok = v3_dot(sc.dir, n_hat) > 0.0
+                     && sc.generation <= s->max_reflections && p_sc > 0.0;
+            if (!ok && p_sc > 0.0) {
+                ledger_credit(&cx->ledger, BK_ABSORBED_SURFACE,
+                              r->source_id, p_sc);
+                cx->ledger.surf_by_body[body->index] += p_sc;
+            }
+            p_accounted += p_sc;
+            if (ok) {
+                flux_out_child(&cx->ledger, body, &sc);
+                push_child(s, cx, &sc);
+            }
+            /* scattered transmission (suppressed under macro TIR — the
+             * medium stack was never pushed; tracer.py:832-836) */
+            int tir_j = ((lc.Ts + lc.Tp) <= 1e-15) || tir;
+            if (!tir) {
+                Ray st = trans;     /* inherits the post-push/pop stack */
+                st.dir = fresnel_refract_dir(r->dir, n_j, cos_j, n1.re,
+                                             n2.re);
+                st.s_hat = s_j;
+                st.Es = kc_mul(Es_j, kc_scale(kc_cis(kc_arg(lc.ts)),
+                                              sqrt(frac * phys * lc.Ts)));
+                st.Ep = kc_mul(Ep_j, kc_scale(kc_cis(kc_arg(lc.tp)),
+                                              sqrt(frac * phys * lc.Tp)));
+                st.scattered = 1;
+                st.generation = r->generation;
+                st.ray_key = rng_child_key(
+                    r->ray_key, r->event_ctr,
+                    CHILD_SLOT_ROUGH_T0 + (uint32_t)j);
+                st.event_ctr = 0;
+                double p_st = ray_power(&st);
+                int okt = !tir_j && p_st > 0.0
+                          && v3_dot(st.dir, n_hat) < 0.0;
+                if (!okt && p_st > 0.0 && !tir_j) {
+                    ledger_credit(&cx->ledger, BK_ABSORBED_SURFACE,
+                                  r->source_id, p_st);
+                    cx->ledger.surf_by_body[body->index] += p_st;
+                }
+                if (!tir_j) p_accounted += p_st;
+                if (okt) {
+                    flux_out_child(&cx->ledger, body, &st);
+                    push_child(s, cx, &st);
+                }
+            }
+        }
+    }
+
+    /* ---- ABg scattered lobes: TIS share of the reflected power around
+     * the specular direction (tracer.py:854-886) ---- */
+    if (scat && tis > 0.0) {
+        const int k_lobe = 2;
+        kvec3 d_spec = fresnel_reflect_dir(r->dir, n_hat);
+        double amp_lobe = sqrt(tis / (double)k_lobe);
+        for (int j = 0; j < k_lobe; j++) {
+            Ray sc = *r;
+            sc.dir = abg_sample_g2(scat->A, scat->B, d_spec, n_hat,
+                                   r->ray_key, r->event_ctr,
+                                   (uint32_t)(256 + 2 * j));
+            sc.s_hat = s_new;
+            sc.Es = kc_scale(kc_mul(Es, full_amp_rs), amp_lobe);
+            sc.Ep = kc_scale(kc_mul(Ep, full_amp_rp), amp_lobe);
+            sc.generation = (int16_t)(r->generation + 1);
+            sc.scattered = 1;
+            sc.ray_key = rng_child_key(r->ray_key, r->event_ctr,
+                                       CHILD_SLOT_ABG_0 + (uint32_t)j);
+            sc.event_ctr = 0;
+            double p_sc = ray_power(&sc);
+            int ok = v3_dot(sc.dir, n_hat) > 0.0
+                     && sc.generation <= s->max_reflections && p_sc > 0.0;
+            if (!ok && p_sc > 0.0) {
+                ledger_credit(&cx->ledger, BK_ABSORBED_SURFACE,
+                              r->source_id, p_sc);
+                cx->ledger.surf_by_body[body->index] += p_sc;
+            }
+            p_accounted += p_sc;
+            if (ok) {
+                flux_out_child(&cx->ledger, body, &sc);
+                push_child(s, cx, &sc);
+            }
+        }
+    }
+
     /* ---- surface absorption = exact power difference (tracer.py:888-894)
      * pre-polarizer (that loss has its own bucket); generation-capped
      * reflection already credited; TIR kills the transmitted child ---- */
-    double absorbed = p_in - (p_refl + p_trans_pre);
+    double absorbed = p_in - p_accounted;
     if (absorbed > 0.0) {
         ledger_credit(&cx->ledger, BK_ABSORBED_SURFACE, r->source_id,
                       absorbed);
         cx->ledger.surf_by_body[body->index] += absorbed;
+    }
+}
+
+/* -------------------------------------------------------- gratings */
+/* Port of grating.apply_to_batch (grating.py:379-483): one child per
+ * propagating order; reflective when body.mirror >= 0.5. Order
+ * efficiencies: lambda-only models arrive pre-resolved per
+ * (order, lam_idx); Kogelnik is evaluated per ray. Children carry no
+ * grating phase beyond OPL (documented Python limitation, same here). */
+static void grating_children(const SceneC *s, const FaceC *face,
+                             const BodyC *body, const Ray *r,
+                             ThreadCtx *cx) {
+    const GratC *g = &s->gratings[face->grating];
+    kvec3 n_out = v3_scale(face_normal_canonical(face, r->pos),
+                           face->outward_sign);
+    double dt = v3_dot(n_out, r->dir);
+    double sgn = (dt < 0.0) ? 1.0 : -1.0;
+    kvec3 n_hat = v3_scale(n_out, sgn);
+    int entering = sgn > 0.0;
+    double cos_i = -v3_dot(r->dir, n_hat);
+
+    double n1 = scene_medium_n(s, ray_current_medium(r), r->lam_idx).re;
+    double n2g = g->n2[r->lam_idx];
+    double n1s = entering ? n1 : n2g;
+    double n2s = entering ? n2g : n1;
+
+    /* groove periodicity vector projected into the local tangent plane
+     * (grating.groove_vector) */
+    kvec3 gh = v3_sub(g->groove_base,
+                      v3_scale(n_hat, v3_dot(g->groove_base, n_hat)));
+    double gn = v3_norm(gh);
+    if (gn < 1e-8)
+        die(EXIT_PHYSICS, "grating on face %s: groove vector nearly "
+            "parallel to the local normal", face->id);
+    gh = v3_scale(gh, 1.0 / gn);
+
+    kvec3 s_new, p_new;
+    fresnel_pol_basis(r->dir, n_hat, &s_new, &p_new);
+    kvec3 p_old = v3_cross(r->dir, r->s_hat);
+    kcplx Es, Ep;
+    fresnel_rotate_jones(r->Es, r->Ep, r->s_hat, p_old, s_new, p_new,
+                         &Es, &Ep);
+    double Is = kc_abs2(Es);
+    double Ip = kc_abs2(Ep);
+    double p_in = Is + Ip;
+
+    int reflective = body->mirror >= 0.5;
+    double order_power = 0.0;
+
+    double kog_es = 0.0, kog_ep = 0.0;
+    if (g->model == GRATING_KOGELNIK)
+        kogelnik_eta(g->thickness_m, g->dn, g->slant_rad, g->lines_per_mm,
+                     r->lam, cos_i, &kog_es, &kog_ep);
+
+    for (int m = g->lo; m <= g->hi; m++) {
+        double eta_s, eta_p;
+        if (g->model == GRATING_FIXED) {
+            size_t at = (size_t)(m - g->lo) * s->n_lams + r->lam_idx;
+            eta_s = g->eta_s[at];
+            eta_p = g->eta_p[at];
+        } else {
+            /* Kogelnik: only orders 0 and +1 carry power */
+            if (m == 0) { eta_s = 1.0 - kog_es; eta_p = 1.0 - kog_ep; }
+            else if (m == 1) { eta_s = kog_es; eta_p = kog_ep; }
+            else { eta_s = eta_p = 0.0; }
+        }
+        kvec3 dir_t, dir_r;
+        int prop_t, prop_r;
+        grating_order_dirs(r->dir, n_hat, gh, g->lines_per_mm, r->lam, m,
+                           n1s, n2s, &dir_t, &prop_t, &dir_r, &prop_r);
+        kvec3 d_new = reflective ? dir_r : dir_t;
+        int prop = reflective ? prop_r : prop_t;
+        double contrib = Is * eta_s + Ip * eta_p;
+        if (prop) order_power += contrib;
+        if (!prop || contrib <= 0.0) continue;
+
+        Ray child = *r;
+        child.dir = d_new;
+        child.s_hat = s_new;
+        child.Es = kc_scale(Es, sqrt(eta_s));
+        child.Ep = kc_scale(Ep, sqrt(eta_p));
+        child.ray_key = rng_child_key(r->ray_key, r->event_ctr,
+                                      CHILD_SLOT_GRATING0
+                                      + (uint32_t)(m + 8));
+        child.event_ctr = 0;
+        if (reflective) {
+            child.generation = (int16_t)(r->generation + 1);
+            if (child.generation > s->max_reflections) {
+                ledger_credit(&cx->ledger, BK_TRUNCATED_GENERATION,
+                              r->source_id, ray_power(&child));
+                continue;
+            }
+        } else {
+            if (entering)
+                push_medium(&child, (int16_t)body->index, s, face->id);
+            else
+                pop_medium(&child, (int16_t)body->index, s, face->id);
+        }
+        push_child(s, cx, &child);
+    }
+    /* efficiency losses + evanescent orders -> absorbed
+     * (grating.py:474-482; Python books under label+":grating" — folded
+     * into the body's surface-absorption diagnostic here) */
+    double p_abs = p_in - order_power;
+    if (p_abs > 0.0) {
+        ledger_credit(&cx->ledger, BK_ABSORBED_SURFACE, r->source_id,
+                      p_abs);
+        cx->ledger.surf_by_body[body->index] += p_abs;
     }
 }
 
@@ -524,6 +820,8 @@ static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
                                      CHILD_SLOT_TRANSMIT);
         cont.event_ctr = 0;
         push_child(s, cx, &cont);
+    } else if (face->grating >= 0) {
+        grating_children(s, face, body, r, cx);   /* tracer.py:309-311 */
     } else {
         optic_children(s, face, body, r, cx);
     }

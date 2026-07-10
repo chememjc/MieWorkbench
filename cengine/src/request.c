@@ -354,6 +354,12 @@ static void parse_face_into(FaceC *f, yyjson_val *fobj, const char *ctx,
     yyjson_val *coat = yyjson_obj_get(fobj, "coating");
     f->coating = coat && yyjson_is_int(coat)
                  ? (int32_t)yyjson_get_sint(coat) : -1;
+    yyjson_val *v = yyjson_obj_get(fobj, "rough");
+    f->rough = v && yyjson_is_int(v) ? (int32_t)yyjson_get_sint(v) : -1;
+    v = yyjson_obj_get(fobj, "scatter");
+    f->scat = v && yyjson_is_int(v) ? (int32_t)yyjson_get_sint(v) : -1;
+    v = yyjson_obj_get(fobj, "grating");
+    f->grating = v && yyjson_is_int(v) ? (int32_t)yyjson_get_sint(v) : -1;
 }
 
 /* Source-UV sampling bounds — port of _sample_face_points' bbox logic
@@ -563,6 +569,70 @@ SceneC *request_load(const char *path) {
         }
     }
 
+    /* per-face physics option tables (optional arrays) */
+    {
+        yyjson_val *rs = yyjson_obj_get(root, "roughs");
+        s->n_roughs = rs ? (int)yyjson_arr_size(rs) : 0;
+        s->roughs = (RoughC *)calloc(
+            (size_t)(s->n_roughs ? s->n_roughs : 1), sizeof(RoughC));
+        if (rs) {
+            size_t ri, rmax;
+            yyjson_val *ro;
+            yyjson_arr_foreach(rs, ri, rmax, ro) {
+                s->roughs[ri].sigma_m = need_num(ro, "sigma_m", "rough");
+                s->roughs[ri].slope = need_num(ro, "slope", "rough");
+            }
+        }
+        yyjson_val *sc = yyjson_obj_get(root, "scatters");
+        s->n_scats = sc ? (int)yyjson_arr_size(sc) : 0;
+        s->scats = (ScatC *)calloc(
+            (size_t)(s->n_scats ? s->n_scats : 1), sizeof(ScatC));
+        if (sc) {
+            size_t si2, smax2;
+            yyjson_val *so;
+            yyjson_arr_foreach(sc, si2, smax2, so) {
+                s->scats[si2].A = need_num(so, "A", "scatter");
+                s->scats[si2].B = need_num(so, "B", "scatter");
+                yyjson_val *tc = yyjson_obj_get(so, "tis_cap");
+                s->scats[si2].tis_cap = (tc && yyjson_is_num(tc))
+                    ? yyjson_get_num(tc) : -1.0;
+            }
+        }
+        yyjson_val *gr = yyjson_obj_get(root, "gratings");
+        s->n_gratings = gr ? (int)yyjson_arr_size(gr) : 0;
+        s->gratings = (GratC *)calloc(
+            (size_t)(s->n_gratings ? s->n_gratings : 1), sizeof(GratC));
+        if (gr) {
+            size_t gi, gmax;
+            yyjson_val *go;
+            yyjson_arr_foreach(gr, gi, gmax, go) {
+                GratC *g = &s->gratings[gi];
+                char ctx[48];
+                snprintf(ctx, sizeof ctx, "grating[%zu]", gi);
+                char model[24];
+                need_str_into(go, "model", ctx, model, sizeof model);
+                g->lo = (int32_t)need_int(go, "lo", ctx);
+                g->hi = (int32_t)need_int(go, "hi", ctx);
+                g->lines_per_mm = need_num(go, "lines_per_mm", ctx);
+                g->groove_base = need_vec3(go, "groove_base", ctx);
+                g->n2 = need_dbl_array(go, "n2", ctx, (size_t)s->n_lams);
+                int n_orders = g->hi - g->lo + 1;
+                if (strcmp(model, "kogelnik") == 0) {
+                    g->model = GRATING_KOGELNIK;
+                    g->thickness_m = need_num(go, "thickness_m", ctx);
+                    g->dn = need_num(go, "dn", ctx);
+                    g->slant_rad = need_num(go, "slant_rad", ctx);
+                } else {
+                    g->model = GRATING_FIXED;
+                    g->eta_s = need_dbl_array(
+                        go, "eta_s", ctx, (size_t)n_orders * s->n_lams);
+                    g->eta_p = need_dbl_array(
+                        go, "eta_p", ctx, (size_t)n_orders * s->n_lams);
+                }
+            }
+        }
+    }
+
     /* faces */
     yyjson_val *faces = need(root, "faces", "root");
     s->n_faces = (int)yyjson_arr_size(faces);
@@ -758,6 +828,14 @@ void scene_free(SceneC *s) {
         free(s->coatings[i].Tp);
     }
     free(s->coatings);
+    for (int i = 0; i < s->n_gratings; i++) {
+        free(s->gratings[i].eta_s);
+        free(s->gratings[i].eta_p);
+        free(s->gratings[i].n2);
+    }
+    free(s->gratings);
+    free(s->roughs);
+    free(s->scats);
     for (int i = 0; i < s->n_faces; i++) {
         free((void *)s->faces[i].trim.loop_off);
         free((void *)s->faces[i].trim.pts_u);

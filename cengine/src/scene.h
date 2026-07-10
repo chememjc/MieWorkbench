@@ -78,6 +78,38 @@ typedef struct {
     double *Rs, *Rp, *Ts, *Tp;         /* n_lams each */
 } CoatC;
 
+/* per-face roughness entry (scene.roughness; diffusers already resolved
+ * to sigma/slope by scene.py + the glue) */
+typedef struct {
+    double sigma_m;             /* RMS height (Davies specular factor) */
+    double slope;               /* RMS microfacet slope (Beckmann) */
+} RoughC;
+
+/* ABg measured-scatter entry (scene.scatter; g == 2 enforced by routing) */
+typedef struct {
+    double A, B;
+    double tis_cap;             /* < 0 = uncapped */
+} ScatC;
+
+/* grating models: lambda-only efficiencies pre-resolved to tables by the
+ * glue (lamellar/dammann/table -> FIXED); Kogelnik is angle-dependent and
+ * evaluated per ray (kernels/gratingk.h) */
+enum {
+    GRATING_FIXED = 0,
+    GRATING_KOGELNIK = 1,
+};
+
+typedef struct {
+    uint8_t model;
+    int32_t lo, hi;             /* inclusive order range */
+    double lines_per_mm;
+    kvec3 groove_base;          /* projected into the local tangent plane */
+    double *eta_s, *eta_p;      /* FIXED: [n_orders][n_lams] */
+    double thickness_m, dn, slant_rad;   /* KOGELNIK params */
+    double *n2;                 /* per-lam far-side index (glue-resolved
+                                 * exactly like grating.apply_to_batch) */
+} GratC;
+
 typedef struct {
     char id[MIEWB_MAX_NAME];    /* "Body.Feature.FaceN" contract name */
     int32_t body;               /* owning body index */
@@ -88,6 +120,9 @@ typedef struct {
     double area_m2;
     int32_t detector;           /* index into SceneC.dets, or -1 */
     int32_t coating;            /* index into SceneC.coatings, or -1 */
+    int32_t rough;              /* index into SceneC.roughs, or -1 */
+    int32_t scat;               /* index into SceneC.scats, or -1 */
+    int32_t grating;            /* index into SceneC.gratings, or -1 */
     /* conservative world AABB (Python glue: STL-union-trim padded, or
      * analytic full-primitive bounds; +-INF when unknown = never culled) */
     kvec3 aabb_lo, aabb_hi;
@@ -186,6 +221,12 @@ typedef struct {
     DetC *dets;
     int n_coatings;
     CoatC *coatings;
+    int n_roughs;
+    RoughC *roughs;
+    int n_scats;
+    ScatC *scats;
+    int n_gratings;
+    GratC *gratings;
 
     /* scene-level TLAS over face AABBs — the algorithmic win the Python
      * engine lacks (its Scene.intersect is a brute-force all-faces loop,

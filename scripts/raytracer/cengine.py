@@ -47,6 +47,9 @@ PORTED = frozenset({
     "surface:mesh",             # phase C (triangle BLAS)
     "coherent",                 # phase D (Huygens gather, CPU/CUDA)
     "save_fields",              # phase D (complex Ex/Ey field maps)
+    "grating",                  # phase E (all models; kogelnik per-ray)
+    "roughness",                # phase E (Beckmann lobes, micro Fresnel)
+    "scatter",                  # phase E (ABg lobes, g == 2)
 })
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -94,8 +97,15 @@ def detect_features(args, scene):
         feats.add("grating")
     if scene.roughness:
         feats.add("roughness")
+        if (getattr(args, "rough_fresnel", None) or "micro") == "macro":
+            # legacy nominal-angle scalar model: Python engine only
+            feats.add("rough_fresnel_macro")
     if scene.scatter:
         feats.add("scatter")
+        for entry in scene.scatter.values():
+            if abs(float(entry["g"]) - 2.0) >= 1e-12:
+                # numeric inverse-CDF sampler: Python engine only
+                feats.add("scatter_g_ne_2")
     if scene.face_coatings:
         feats.add("coating")
     if scene.extra_detector_faces:
@@ -369,14 +379,83 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
             }
         bodies.append(entry)
 
+    # ---- per-face roughness / ABg scatter / grating tables (phase E) ----
+    from .roughness import slope_from_sigma_lcorr
+    roughs = []
+    rough_of_fid = {}
+    for fid, rspec in scene.roughness.items():
+        rough_of_fid[fid] = len(roughs)
+        sigma_m = float(rspec["sigma_nm"]) * 1e-9
+        lcorr_m = float(rspec["lcorr_um"]) * 1e-6
+        roughs.append({"sigma_m": sigma_m,
+                       "slope": float(slope_from_sigma_lcorr(sigma_m,
+                                                             lcorr_m))})
+    scatters = []
+    scat_of_fid = {}
+    for fid, sspec in scene.scatter.items():
+        scat_of_fid[fid] = len(scatters)
+        scatters.append({"A": float(sspec["A"]), "B": float(sspec["B"]),
+                         "tis_cap": (float(sspec["tis_cap"])
+                                     if sspec.get("tis_cap") is not None
+                                     else None)})
+    gratings = []
+    grat_of_fid = {}
+    for fid, gspec in scene.gratings.items():
+        grat_of_fid[fid] = len(gratings)
+        lo, hi = gspec["orders"]
+        orders = list(range(lo, hi + 1))
+        face = scene.faces[fid]
+        body = scene.body_of_face(fid)
+        # groove base vector (grating.groove_vector's 'u'/'v'/explicit)
+        gv = gspec["groove"]
+        if gv == "u":
+            base = face.surface.t1
+        elif gv == "v":
+            base = face.surface.t2
+        else:
+            base = np.array([float(x) for x in gv.split(",")])
+        # far-side index exactly like apply_to_batch (grating.py:414-417)
+        if body.material not in (None, "detector"):
+            n2 = np.real(scene.matdb.get(body.material).n_complex(lams))
+            n2 = np.broadcast_to(n2, lams.shape)
+        else:
+            n2 = np.ones(len(lams))
+        entry = {
+            "lo": int(lo), "hi": int(hi),
+            "lines_per_mm": float(gspec["lines_per_mm"]),
+            "groove_base": [float(x) for x in base],
+            "n2": [float(x) for x in n2],
+        }
+        if (gspec.get("model") or "lamellar") == "bragg_kogelnik":
+            p = gspec.get("params", {})
+            entry["model"] = "kogelnik"
+            entry["thickness_m"] = float(p["thickness_um"]) * 1e-6
+            entry["dn"] = float(p["dn"])
+            entry["slant_rad"] = float(
+                np.deg2rad(float(p.get("slant_deg", 0.0))))
+        else:
+            # lambda-only models: pre-resolve through the SAME Python
+            # code (order_efficiencies) at every stratum wavelength
+            from .grating import order_efficiencies
+            eta_s, eta_p = order_efficiencies(
+                gspec, lams, np.ones(len(lams)), orders)
+            entry["model"] = "fixed"
+            # [order][lam] flattening matching the C layout
+            entry["eta_s"] = [float(x) for x in eta_s.T.ravel()]
+            entry["eta_p"] = [float(x) for x in eta_p.T.ravel()]
+        gratings.append(entry)
+
     geometry_dir = Path(args.model_json).parent
-    faces = [
-        _face_entry(fid, scene.face_records[fid], scene.face_body[fid],
-                    det_index.get(fid, -1),
-                    coat_index.get(scene.face_coatings.get(fid), -1),
-                    geometry_dir=geometry_dir)
-        for fid in range(len(scene.faces))
-    ]
+    faces = []
+    for fid in range(len(scene.faces)):
+        fe = _face_entry(fid, scene.face_records[fid],
+                         scene.face_body[fid], det_index.get(fid, -1),
+                         coat_index.get(scene.face_coatings.get(fid), -1),
+                         geometry_dir=geometry_dir)
+        fe["rough"] = rough_of_fid.get(fid, -1)
+        fe["scatter"] = scat_of_fid.get(fid, -1)
+        fe["grating"] = grat_of_fid.get(fid, -1)
+        faces.append(fe)
 
     # viz caps (int or {sid: int} — run_trace.compute_viz_caps)
     from run_trace import compute_viz_caps
@@ -463,6 +542,9 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
         "sources": sources,
         "detectors": detectors,
         "coatings": coatings,
+        "roughs": roughs,
+        "scatters": scatters,
+        "gratings": gratings,
         "gather": {
             # map the Python gather's --backend to the C engine's kernels
             "backend": {"auto": "auto", "torch": "cuda",

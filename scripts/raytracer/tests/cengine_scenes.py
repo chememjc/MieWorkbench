@@ -158,6 +158,31 @@ def scene_c_polarizer_malus():
     ])
 
 
+def scene_c_grating():
+    """Transmission grating plate at normal incidence (600 l/mm, orders
+    -1..1, lamellar duty-0.5 efficiencies). Deterministic in totals."""
+    return make_model([
+        source_body("Src", x=-0.02, half=0.003, power_mW=1.0,
+                    lambdac_nm=633.0),
+        slab_body("Grat", "bk7", 0.0, 0.002, half=0.02,
+                  grating={"Grat.Pad.Face2": "600:v:orders=-1..1"}),
+        detector_body("Det", x=0.05, half=0.045),
+    ])
+
+
+def scene_c_rough_plate():
+    """Rough-faced glass plate: Beckmann lobes + Davies specular
+    retention (per-face roughness string). Statistical."""
+    return make_model([
+        source_body("Src", x=-0.02, half=0.003, power_mW=1.0,
+                    lambdac_nm=633.0),
+        slab_body("RoughP", "bk7", 0.0, 0.002, half=0.02,
+                  roughness_faces={"RoughP.Pad.Face1":
+                                   "80:lcorr=5"}),
+        detector_body("Det", x=0.03, half=0.028),
+    ])
+
+
 # name -> (builder, comparison class)
 SCENES = {
     "c_plate": (scene_c_plate, "deterministic"),
@@ -167,6 +192,8 @@ SCENES = {
     "c_coating_ar": (scene_c_coating_ar, "deterministic"),         # phase B
     "c_polarizer_malus": (scene_c_polarizer_malus, "deterministic"),
     "c_torus": (scene_c_torus, "statistical"),                     # phase B
+    "c_grating": (scene_c_grating, "deterministic"),               # phase E
+    "c_rough_plate": (scene_c_rough_plate, "statistical"),         # phase E
 }
 
 # Real extracted geometries (repo geometry/ dirs) that become routable as
@@ -185,6 +212,8 @@ REAL_SCENES = {
     "lens_achromat": "statistical",        # two glasses + 5um air gap (B)
     "ghost_doublet": "statistical",        # multi-bounce ghosts (B)
     "mesh_freeform": "statistical",        # tessellated face -> BLAS (C)
+    "scatter_plate": "statistical",        # ABg measured scatter (E)
+    "bench": "statistical",                # diffuser + coherent source (E)
 }
 
 
