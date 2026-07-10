@@ -1152,6 +1152,26 @@ def extract_one(fcstd_path, outdir, strict):
                 warn("%s: crystal_axis is only meaningful on optic bodies "
                      "(role=%s); ignoring" % (obj.Label, role), warnings)
 
+            # biaxial crystals need a full principal frame: crystal_axis is
+            # the X principal axis, crystal_axis2 the Y axis (Z = X x Y;
+            # orthogonalization happens tracer-side). Emitted only when
+            # authored — the scene loader errors if a biaxial material
+            # lacks it.
+            axis2_raw = str_prop_or_none(obj, "crystal_axis2")
+            if axis2_raw is not None:
+                if role != "optic":
+                    warn("%s: crystal_axis2 is only meaningful on optic "
+                         "bodies (role=%s); ignoring" % (obj.Label, role),
+                         warnings)
+                else:
+                    try:
+                        local2 = common.parse_axis_spec(axis2_raw)
+                    except ValueError as e:
+                        die("%s: bad crystal_axis2 spec %r: %s"
+                            % (obj.Label, axis2_raw, e))
+                    body_dict["crystal_axis2"] = rotated_local_axis(
+                        obj, local2)
+
             grating_raw = str_prop_or_none(obj, "grating")
             if grating_raw is not None:
                 if role != "optic":

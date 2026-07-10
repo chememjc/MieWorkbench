@@ -27,7 +27,8 @@ class Body:
                  "diffuser_faces", "grating_map", "source", "detector",
                  "closed", "face_ids", "polarizer", "polarizer_axis",
                  "filter", "crystal_axis", "birefringent", "filter_lam_um",
-                 "filter_alpha_per_m")
+                 "filter_alpha_per_m", "crystal_axis2", "crystal_frame",
+                 "biaxial")
 
     def __init__(self, index, rec):
         self.index = index
@@ -62,6 +63,11 @@ class Body:
         self.crystal_axis = np.asarray(ca, dtype=np.float64) \
             if ca is not None else np.array([1.0, 0.0, 0.0])
         self.birefringent = False           # set by Scene from the matdb
+        ca2 = rec.get("crystal_axis2")
+        self.crystal_axis2 = np.asarray(ca2, dtype=np.float64) \
+            if ca2 is not None else None
+        self.crystal_frame = None           # (3,3) rows = principal axes,
+        self.biaxial = False                # both set by Scene (biaxial)
         self.filter_lam_um = None           # set by Scene from optprops
         self.filter_alpha_per_m = None
         self.source = rec.get("source")
@@ -135,6 +141,32 @@ class Scene:
                         raise ValueError("body %s: zero crystal_axis"
                                          % body.label)
                     body.crystal_axis = body.crystal_axis / nrm
+                elif matdb.is_biaxial(body.material):
+                    # full principal frame: crystal_axis = X, crystal_axis2
+                    # = Y (Gram-Schmidt orthogonalized), Z = X x Y
+                    if body.crystal_axis2 is None:
+                        raise ValueError(
+                            "body %s: biaxial material %r needs BOTH "
+                            "crystal_axis (X principal axis) and "
+                            "crystal_axis2 (Y)" % (body.label,
+                                                   body.material))
+                    x = body.crystal_axis
+                    nx = np.linalg.norm(x)
+                    if nx < 1e-9:
+                        raise ValueError("body %s: zero crystal_axis"
+                                         % body.label)
+                    x = x / nx
+                    y = body.crystal_axis2
+                    y = y - np.dot(y, x) * x
+                    ny = np.linalg.norm(y)
+                    if ny < 1e-6:
+                        raise ValueError(
+                            "body %s: crystal_axis2 is (near-)parallel to "
+                            "crystal_axis — principal frame undefined"
+                            % body.label)
+                    y = y / ny
+                    body.crystal_frame = np.stack([x, y, np.cross(x, y)])
+                    body.biaxial = True
                 else:
                     matdb.get(body.material)
             if body.coating is not None:
@@ -402,12 +434,26 @@ class Scene:
             return self.ambient.n_complex(lam)
         if body.birefringent:
             return self.matdb.get_uniaxial(body.material)[0].n_complex(lam)
+        if body.biaxial:
+            # scalar bookkeeping index (medium stack / seam accounting):
+            # the geometric mean keeps it sheet-neutral
+            mx, my, mz = self.matdb.get_biaxial(body.material)
+            return (np.real(mx.n_complex(lam))
+                    * np.real(my.n_complex(lam))
+                    * np.real(mz.n_complex(lam))) ** (1.0 / 3.0)
         return self.matdb.get(body.material).n_complex(lam)
 
     def uniaxial_indices(self, body, lam):
         """(n_o_real, n_e_real) arrays for a birefringent body at lam [m]."""
         mo, me = self.matdb.get_uniaxial(body.material)
         return (np.real(mo.n_complex(lam)), np.real(me.n_complex(lam)))
+
+    def biaxial_eps(self, body, lam):
+        """(n,3) principal permittivities (n_x^2, n_y^2, n_z^2), real, for
+        a biaxial body at lam [m] (per-ray arrays for dispersion)."""
+        mx, my, mz = self.matdb.get_biaxial(body.material)
+        return np.stack([np.real(m.n_complex(lam)) ** 2
+                         for m in (mx, my, mz)], axis=-1)
 
     # ------------------------------------------------------------------
     def intersect(self, pos, direction):
