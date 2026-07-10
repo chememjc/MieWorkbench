@@ -85,6 +85,7 @@ class Project(QObject):
         self.faces = {}          # body_name -> {"faces": [...], "placement"}
         self.body_states = {}    # body_name -> BodyState
         self._dirty = False
+        self._recompute_diverged = False
         self.undo_stack = UndoStack(parent=self)
         self.undo_stack.indexChanged.connect(self._sync_dirty_from_stack)
         self.stash_root = None   # override for delete-undo stashes
@@ -122,6 +123,10 @@ class Project(QObject):
         self._refresh_geometry()
         self.undo_stack.clear()
         self._set_dirty(False)
+        # the worker's open-time recompute may have changed the doc vs the
+        # file (expression-bound placements); that IS unsaved state
+        self._set_recompute_diverged(
+            bool(self.structure.get("recompute_changed")))
         self.sceneLoaded.emit()
 
     def new_document(self, path):
@@ -133,6 +138,7 @@ class Project(QObject):
         self.faces = {}
         self.body_states = {}
         self.undo_stack.clear()
+        self._set_recompute_diverged(False)
         self._set_dirty(False)
         self.sceneLoaded.emit()
 
@@ -149,6 +155,7 @@ class Project(QObject):
         self.faces = {}
         self.body_states = {}
         self.undo_stack.clear()
+        self._set_recompute_diverged(False)
         self._set_dirty(False)
         if had_doc:
             # views rebuild against the now-empty structure (File -> Close);
@@ -1015,18 +1022,33 @@ class Project(QObject):
     def save(self):
         self.fc.request("save", {"doc": self.doc})
         self.undo_stack.mark_clean()
+        self._set_recompute_diverged(False)
         self._set_dirty(False)
 
     def save_as(self, path):
         self.fc.request("save_as", {"doc": self.doc, "path": path})
         self.fcstd_path = os.path.abspath(path)
         self.undo_stack.mark_clean()
+        self._set_recompute_diverged(False)
         self._set_dirty(False)
 
     def is_dirty(self):
-        return self._dirty
+        # _recompute_diverged: the open-time recompute changed the doc vs
+        # its file (expression-bound placements etc.) — genuinely unsaved
+        # state even though the user made no edit. Kept separate from
+        # _dirty so undoing to a clean stack can't mask it.
+        return self._dirty or self._recompute_diverged
 
     def _set_dirty(self, flag):
-        if flag != self._dirty:
-            self._dirty = flag
-            self.dirtyChanged.emit(flag)
+        before = self._dirty or self._recompute_diverged
+        self._dirty = flag
+        after = self._dirty or self._recompute_diverged
+        if after != before:
+            self.dirtyChanged.emit(after)
+
+    def _set_recompute_diverged(self, flag):
+        before = self._dirty or self._recompute_diverged
+        self._recompute_diverged = flag
+        after = self._dirty or self._recompute_diverged
+        if after != before:
+            self.dirtyChanged.emit(after)

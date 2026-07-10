@@ -312,8 +312,14 @@ def op_open_document(params):
     if not os.path.isfile(path):
         raise OpError("no such file: %s" % path)
     doc = FreeCAD.openDocument(path)
-    doc.recompute()
-    return _structure(doc)
+    # Diff the as-loaded state against the post-recompute state: any
+    # divergence (expression-bound placements, stale sketch dims) means
+    # the in-memory doc no longer matches the file, and the GUI must
+    # treat that as unsaved changes. This op must never write the file.
+    reshaped, moved, _invalid = _recompute_and_diff(doc)
+    out = _structure(doc)
+    out["recompute_changed"] = sorted(set(reshaped) | set(moved))
+    return out
 
 
 def op_new_document(params):

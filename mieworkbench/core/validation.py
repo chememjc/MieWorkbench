@@ -192,13 +192,24 @@ def check_library_names(v):
             continue
         mat = str(v.prop(b, "material") or "").strip()
         if role != "source" and mat and mat.lower() != "detector":
-            known = (mat in p.matdb) or (mat in p.uniaxial)
+            biaxial = getattr(p, "biaxial", {}) or {}
+            known = (mat in p.matdb) or (mat in p.uniaxial) \
+                or (mat in biaxial)
             if not known:
                 out.append(Finding(ERROR, "%s: unknown material %r"
                                    % (b["label"], mat), body=b["name"],
                                    fix_hint="add it to materials.miemat "
                                    "or pick an existing one",
                                    check="library-names"))
+            if mat in biaxial and v.prop(b, "crystal_axis2") is None:
+                out.append(Finding(
+                    ERROR, "%s: material %r is biaxial and needs a "
+                    "crystal_axis2 property (the Y principal axis; "
+                    "crystal_axis is the X axis, Z is derived)"
+                    % (b["label"], mat), body=b["name"],
+                    fix_hint="add crystal_axis2='x,y,z' (body-local, "
+                    "not parallel to crystal_axis) on this body",
+                    check="library-names"))
         for prop_name, registry, what in (
                 ("coating", p.coatings, "coating"),
                 ("filter", p.filters, "filter"),
@@ -260,7 +271,7 @@ def check_spec_syntax(v):
             except ValueError as exc:
                 out.append(Finding(ERROR, "%s: %s" % (b["label"], exc),
                                    body=b["name"], check="spec-syntax"))
-        for name in ("polarizer_axis", "crystal_axis"):
+        for name in ("polarizer_axis", "crystal_axis", "crystal_axis2"):
             axis = v.prop(b, name)
             if axis is None:
                 continue
@@ -286,7 +297,7 @@ def check_spec_syntax(v):
                                    "[0, 1] (got %r)"
                                    % (b["label"], name, val),
                                    body=b["name"], check="spec-syntax"))
-        for name in ("roughness", "surface_override"):
+        for name in ("roughness", "surface_override", "scatter"):
             raw = v.prop(b, name)
             if raw is None:
                 continue
@@ -296,6 +307,73 @@ def check_spec_syntax(v):
                 out.append(Finding(ERROR, "%s: bad %s spec: %s"
                                    % (b["label"], name, exc),
                                    body=b["name"], check="spec-syntax"))
+        apod = v.prop(b, "apodization")
+        if apod is not None:
+            try:
+                common.parse_apodization_spec(str(apod))
+            except ValueError as exc:
+                out.append(Finding(ERROR, "%s: bad apodization spec: %s"
+                                   % (b["label"], exc),
+                                   body=b["name"], check="spec-syntax"))
+        bw = v.prop(b, "beam_waist")
+        if bw is not None:
+            try:
+                if not float(bw) > 0.0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                out.append(Finding(
+                    ERROR, "%s: beam_waist must be a number > 0 mm "
+                    "(got %r)" % (b["label"], bw), body=b["name"],
+                    check="spec-syntax"))
+        m2 = v.prop(b, "m2")
+        if m2 is not None:
+            try:
+                if not float(m2) >= 1.0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                out.append(Finding(
+                    ERROR, "%s: m2 must be a number >= 1.0 (got %r)"
+                    % (b["label"], m2), body=b["name"],
+                    check="spec-syntax"))
+        sraw = v.prop(b, "scatter")
+        if sraw is not None:
+            try:
+                smap = v.facemap_values(b, "scatter")
+            except ValueError:
+                smap = None   # already reported above
+            if smap is not None:
+                if v.optprops is not None:
+                    scatter_reg = getattr(v.optprops, "scatter", {}) or {}
+                    for face, name in smap.items():
+                        if str(name).strip().lower() in ("", "none"):
+                            continue
+                        if name not in scatter_reg:
+                            out.append(Finding(
+                                ERROR, "%s: unknown scatter entry %r%s"
+                                % (b["label"], name,
+                                   "" if face in (None, common.FACEMAP_ALL)
+                                   else " on %s" % face),
+                                body=b["name"],
+                                fix_hint="add it to opticalproperties/"
+                                "scatter/bsdf.miebsdf or pick an "
+                                "existing entry", check="spec-syntax"))
+                for other in ("roughness", "diffuser"):
+                    if v.prop(b, other) is None:
+                        continue
+                    try:
+                        omap = v.facemap_values(b, other)
+                    except ValueError:
+                        continue   # already reported above
+                    clash = (common.FACEMAP_ALL in smap
+                             or common.FACEMAP_ALL in omap
+                             or set(smap) & set(omap))
+                    if clash:
+                        out.append(Finding(
+                            ERROR, "%s: scatter and %s cover the same "
+                            "face(s) — they are alternative models of "
+                            "one surface, pick one per face"
+                            % (b["label"], other), body=b["name"],
+                            check="spec-syntax"))
         draw = v.prop(b, "diffuser")
         if draw is not None:
             try:

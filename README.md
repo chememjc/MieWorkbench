@@ -653,7 +653,20 @@ and thumbnail galleries for `images/`, `spectra/`, `plots/`, `viz/`. Tabs:
 - **Power** — per-element energy accounting table (Power In / Out / Absorbed /
   Detected, all in mW; seed-averaged from the trace ledger). Useful for auditing
   where energy flows through a scene or identifying absorbing elements.
+- **Analysis** — a metrics table (Strehl, RMS/PV wavefront error, MTF50, encircled-energy
+  radii, spot RMS, ghost-path totals — whatever `report.json`'s optional `analysis`/
+  `wavefront`/`ghosts` blocks contain) above a thumbnail gallery of
+  `results/<case>/analysis/*.png` (PSF/MTF/encircled-energy from `--save-fields`;
+  spot diagrams, ray/OPD fans, Zernike wavefront maps, and ghost/stray-light tables +
+  footprints from `--export-rays`/`--ghost-analysis`). Empty on an older case that
+  didn't use those flags.
+- **Sources** — per-(source, detector) detected power (coherent + incoherent watts,
+  sample counts), from the same `case.json`/`report.json` data the CLI's
+  `data/source_detector.csv` exports.
 
+Every image thumbnail and results table supports **right-click → Save image as…** /
+**Export CSV…** (paired through the same `data/index.csv` convention the CLI's
+`--emit-csv` uses, so a GUI export and a headless one land in the same shape).
 Thumbnails are clickable and open in a lightbox (arrow keys cycle, Esc closes).
 **Open in ParaView** launches interactive ParaView on the case's `.vtp` ray/detector
 data (enabled once viz output exists). **Monitor mode**: opening a case that is
@@ -690,7 +703,17 @@ validated line edit for floats/strings (empty = unset). Only values that
 differ from the parser's own default are ever forwarded as flags, so the
 form can never accidentally override a default the pipeline would have
 picked anyway. A **Preset** combo and an **Estimate runtime** button sit
-above the form.
+above the form. One option is special-cased instead of auto-generated:
+`--save-fields` gets a dedicated, always-visible checkbox ("Save coherent
+fields (enables Stokes/PSF/MTF)") above the rest of the form, since it
+gates whether the Analysis tab's PSF/MTF/encircled-energy products and
+the Stokes/DOP maps have anything to render — still opt-in (unchecked by
+default), not forwarded unless checked.
+
+Both **Run** and **Dry Run** now gate through a **Save&Run** prompt when
+the model has unsaved changes (the run always operates on the last saved
+file, never silently auto-saving): a confirmation dialog offers to save
+and proceed, or cancel — replacing an earlier silent preflight save.
 
 ### 3.11 Estimate Runtime
 
@@ -825,11 +848,13 @@ on a missing one.
 | `filter/filters.miefilt` (+ `filter/tables/*.mietab`) | bulk spectral filters (Beer-Lambert) | registry: `name,table_csv,ref_thickness_mm,reference`; table: `wavelength_nm,transmittance_internal` |
 | `grating/gratings.miegrat` (+ `grating/tables/*.mietab`) | lamellar/Kogelnik/Dammann/table registry | registry: `name,model,lines_per_mm,params,table_csv,reference`; table: `wavelength_nm,order,eta_s,eta_p` |
 | `birefringence/uniaxial.miebrf` | calcite/quartz/sapphire o/e crystal pairs | `name,n_o_material,n_e_material,reference` (+`notes`) |
+| `birefringence/biaxial.mibiax` | KTP/KTA/LBO/BiBO principal-index triples | `name,n_x_material,n_y_material,n_z_material,reference` (+`notes`) |
 | `diffuser/diffusers.miedif` | ground-glass diffuser grit registry (no `tables/`) | `name,grit,slope_rms,reference` (exactly one of `grit`/`slope_rms` per row) |
+| `scatter/bsdf.miebsdf` | measured ABg/BSDF surfaces (no `tables/`) | `name,model,A,B,g,tis_cap,reference` (+`notes`); `model` is currently always `abg` |
 
 Full schema semantics, the citation policy, and the physics each category
 feeds into are in docs/RAYTRACER.md §7. Loader: `scripts/raytracer/optprops.py`
-(polarizer/filter/grating/birefringence/diffuser) and
+(polarizer/filter/grating/birefringence [uniaxial and biaxial]/diffuser/scatter) and
 `scripts/raytracer/materials.py` (materials/coatings). See
 [CUSTOMIZE.md](CUSTOMIZE.md) for adding entries.
 
@@ -861,7 +886,11 @@ sweeping a `miewb_vars.<name>` global re-solves every chained placement
 and rebuilds every referencing primitive per variant; `--print-only`
 prints the composed commands without running anything. Presets fill in rays/resolution/nlambda/spectral-bins/viz-rays:
 `quick` = 1e5/512/5/16, `normal` = 1e6/2048/9/16, `detailed` =
-1e7/4096/17/32 (`common.PRESETS`).
+1e7/4096/17/32 (`common.PRESETS`). Analysis/export flags
+(`--emit-csv`, `--export-rays[-max]`, `--ghost-analysis`,
+`--wavefront-point`) and `--workers N` (parallel trace sharding) are also
+accepted and forwarded to the appropriate stage — see
+docs/RAYTRACER.md §8.1/§6.9/§6.10 for the full contract.
 
 ### 5.2 `run_trace.py` — the solver (optics env python)
 
@@ -882,6 +911,13 @@ bit-identical with and without it). Patterns:
 - `fan[:n=K]` — one ray from the center of each source's emit face, plus
   top/bottom/left/right rays (5 total per face if unspecified, or `K` rays
   per face if given). Used by the GUI's "Live ray preview…" feature.
+
+`--workers N` shards the trace loop across `N` spawned processes
+(`N=1` is bit-identical to the pre-sharding path; the coherent gather
+always stays single-process). `--export-rays`/`--export-rays-max` and
+`--ghost-analysis` capture seed-0 per-ray landing/reflection-history
+records into `rays_full.npz` for `post_process.py`'s spot/ray-fan/
+Zernike/ghost-analysis products (docs/RAYTRACER.md §6.9/§6.10/§8.2).
 
 One writer per case — see §6.
 
@@ -922,12 +958,23 @@ FreeCAD expressions alone — see CUSTOMIZE.md).
 ```
 post_process.py --case-dir CASE_DIR --model-json MODEL_JSON [--viz-generations N]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
+    [--photometric] [--spectrometer] [--emit-csv] [--wavefront-point X_MM,Y_MM]
 ```
 
 Rerunnable without re-tracing. `--viz-generations N` declutters
 `rays_xy.png` to reconstructed-generation ≤ N segments only. `--dim-rays`
 switches segment alpha to each ray's remaining/birth power (attenuation
-dimming) instead of the default ensemble-percentile scaling.
+dimming) instead of the default ensemble-percentile scaling. `--emit-csv`
+writes `results/<case>/data/*.csv` + `data/index.csv` beside nearly every
+chart this stage renders (including the PSF/MTF/EE, spot/fan/Zernike, and
+ghost-analysis products below, when the trace produced their inputs).
+`--wavefront-point` overrides the Zernike/Strehl wavefront fit's default
+image point (only matters if the trace ran with `--export-rays`). See
+docs/RAYTRACER.md §6.10/§8.3 for the full set of conditionally-rendered
+analysis products (PSF/MTF/encircled-energy from `--save-fields`; spot
+diagrams, ray/OPD fans, Zernike wavefront maps, and ghost/stray-light
+tables from `--export-rays`/`--ghost-analysis`) — all silent no-ops when
+their trace-stage prerequisite wasn't used.
 
 ### 5.6 `make_viz.py` — 3D visualization (ParaView `pvpython`)
 

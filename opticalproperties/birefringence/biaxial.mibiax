@@ -1,0 +1,5 @@
+name,n_x_material,n_y_material,n_z_material,reference,notes
+ktp,ktp_nx,ktp_ny,ktp_nz,"Kato & Takaoka 2002 Appl. Opt. 41 5040","biaxial positive; nx<ny<nz = 1.738/1.745/1.830@1064; premier 1064nm SHG/OPO (chi2 needs engine support); EXACT-converted"
+kta,kta_nx,kta_ny,kta_nz,"Fenimore et al. 1995 JOSA B 12 794","biaxial; 1.782/1.787/1.868@1064; KTP isomorph, lower mid-IR absorption; FITTED (max err 2.4e-5); no RII page"
+lbo,lbo_nx,lbo_ny,lbo_nz,"Chen et al. 1989 JOSA B 6 616","biaxial negative; 1.566/1.591/1.606@1064; low-walk-off SHG/THG of 1064; all axes now HIGH (ny multistart 2.5e-4)"
+bibo,bibo_nx,bibo_ny,bibo_nz,"Umemura Miyata & Kato 2007 Opt. Mater. 30 532 (orig. Hellwig 2000)","biaxial; 1.757/1.784/1.917@1064; large nonlinearity; monoclinic (X,Z rotation angle UNVERIFIED); FITTED"

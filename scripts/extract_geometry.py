@@ -1100,6 +1100,21 @@ def extract_one(fcstd_path, outdir, strict):
                         % (obj.Label, diffuser_raw, e))
                 body_dict["diffuser_faces"] = dmap
 
+            # scatter: per-face map (or whole-body) of ABg/BSDF registry
+            # names 'name' | 'FaceN=polished_bk7_glass;...' (validated
+            # against opticalproperties/scatter/ at scene build; measured
+            # reflected-side scatter at trace). Names only, no value grammar
+            # (like coating).
+            scatter_raw = str_prop_or_none(obj, "scatter")
+            if scatter_raw is not None:
+                try:
+                    smap = parse_facemap_value_safe(
+                        scatter_raw, obj.Name, tip_name)
+                except ValueError as e:
+                    die("%s: bad scatter spec %r: %s"
+                        % (obj.Label, scatter_raw, e))
+                body_dict["scatter_faces"] = smap
+
             # coating (schema v2): per-face map, {'__all__': name} for the
             # legacy "whole body, one coating" form.
             coating_raw = coating_value(obj)
@@ -1152,6 +1167,26 @@ def extract_one(fcstd_path, outdir, strict):
                 warn("%s: crystal_axis is only meaningful on optic bodies "
                      "(role=%s); ignoring" % (obj.Label, role), warnings)
 
+            # biaxial crystals need a full principal frame: crystal_axis is
+            # the X principal axis, crystal_axis2 the Y axis (Z = X x Y;
+            # orthogonalization happens tracer-side). Emitted only when
+            # authored — the scene loader errors if a biaxial material
+            # lacks it.
+            axis2_raw = str_prop_or_none(obj, "crystal_axis2")
+            if axis2_raw is not None:
+                if role != "optic":
+                    warn("%s: crystal_axis2 is only meaningful on optic "
+                         "bodies (role=%s); ignoring" % (obj.Label, role),
+                         warnings)
+                else:
+                    try:
+                        local2 = common.parse_axis_spec(axis2_raw)
+                    except ValueError as e:
+                        die("%s: bad crystal_axis2 spec %r: %s"
+                            % (obj.Label, axis2_raw, e))
+                    body_dict["crystal_axis2"] = rotated_local_axis(
+                        obj, local2)
+
             grating_raw = str_prop_or_none(obj, "grating")
             if grating_raw is not None:
                 if role != "optic":
@@ -1199,6 +1234,24 @@ def extract_one(fcstd_path, outdir, strict):
                     except ValueError as e:
                         die("%s: bad polarization spec %r: %s"
                             % (obj.Label, pol_raw, e))
+                apod_raw = str_prop_or_none(obj, "apodization")
+                if apod_raw is not None:
+                    try:
+                        source_dict["apodization"] = \
+                            common.parse_apodization_spec(apod_raw)
+                    except ValueError as e:
+                        die("%s: bad apodization spec %r: %s"
+                            % (obj.Label, apod_raw, e))
+                if hasattr(obj, "beam_waist"):
+                    waist_mm = float(obj.beam_waist)
+                    if waist_mm <= 0:
+                        die("%s: beam_waist must be > 0 mm (got %g)"
+                            % (obj.Label, waist_mm))
+                    m2 = float(obj.m2) if hasattr(obj, "m2") else 1.0
+                    if m2 < 1.0:
+                        die("%s: m2 must be >= 1.0 (got %g)"
+                            % (obj.Label, m2))
+                    source_dict["beam"] = {"waist_mm": waist_mm, "m2": m2}
                 body_dict["source"] = source_dict
             elif role == "detector":
                 n_detectors += 1
@@ -1215,6 +1268,16 @@ def extract_one(fcstd_path, outdir, strict):
 
             if role != "source" and str_prop_or_none(obj, "polarization") is not None:
                 warn("%s: polarization property is only meaningful on "
+                     "source bodies (role=%s); ignoring"
+                     % (obj.Label, role), warnings)
+
+            if role != "source" and str_prop_or_none(obj, "apodization") is not None:
+                warn("%s: apodization property is only meaningful on "
+                     "source bodies (role=%s); ignoring"
+                     % (obj.Label, role), warnings)
+
+            if role != "source" and hasattr(obj, "beam_waist"):
+                warn("%s: beam_waist property is only meaningful on "
                      "source bodies (role=%s); ignoring"
                      % (obj.Label, role), warnings)
 

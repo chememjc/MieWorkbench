@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
-EXCLUDED_DESTS = ("help", "models", "print_only", "preset")
+EXCLUDED_DESTS = ("help", "models", "print_only", "preset", "save_fields")
 
 
 def _fmt_num(value):
@@ -72,6 +72,22 @@ class ConfigMatrix(QWidget):
                "spectral-bins/viz-rays defaults)")
         self.preset_combo.currentTextChanged.connect(self._on_preset_changed)
 
+        # save-fields gets a dedicated, always-visible checkbox (like
+        # preset) instead of burying it in the generic physics-options
+        # group: it is the single flag that unlocks the Stokes/PSF/MTF
+        # analysis products (see lowhanging.md #1), so it needs to be
+        # impossible to miss.
+        save_fields_action = self._find_action("save_fields")
+        self.save_fields_check = QCheckBox(
+            "Save coherent fields (enables Stokes / PSF / MTF)")
+        self.save_fields_check.setChecked(False)
+        self.save_fields_check.setToolTip(
+            (save_fields_action.help or "") +
+            " Seed-0 only (cross-seed field averaging is phase-"
+            "meaningless) and adds disk cost at high resolution.")
+        self.widgets[save_fields_action.dest] = self.save_fields_check
+        self.actions[save_fields_action.dest] = save_fields_action
+
         self.estimate_button = QPushButton("Estimate runtime")
         self.estimate_button.setToolTip(
             "Estimate wall-clock runtime and accumulator memory for the "
@@ -82,6 +98,7 @@ class ConfigMatrix(QWidget):
         top_row = QHBoxLayout()
         top_row.addWidget(QLabel("Preset:"))
         top_row.addWidget(self.preset_combo)
+        top_row.addWidget(self.save_fields_check)
         top_row.addStretch(1)
         top_row.addWidget(self.estimate_button)
 

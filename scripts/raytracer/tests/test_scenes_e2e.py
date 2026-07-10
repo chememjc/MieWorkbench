@@ -66,7 +66,14 @@ import make_test_scenes as mts                             # noqa: E402
 GEO = SCRIPTS.parent / "geometry"
 SCENES = mts.SCENES
 SRC_POWER_W = 5e-3                         # every scene source emits 5 mW
-ALL_SCENES = sorted(SCENES.keys())
+# The Phase-12 new-physics scenes (biaxial / Gaussian / ghost / scatter /
+# curved-detector) have dedicated coverage in test_new_scenes_e2e.py; this
+# module is the original 24-scene validation catalog and its generic
+# run_scene builds a planar DetectorGrid (curved_focal has a cylinder
+# detector face that needs CurvedDetectorGrid dispatch).
+_NEW_PHYSICS_SCENES = {"ktp_walkoff", "gaussian_bench", "ghost_doublet",
+                       "scatter_plate", "curved_focal"}
+ALL_SCENES = sorted(set(SCENES.keys()) - _NEW_PHYSICS_SCENES)
 
 
 def _has(scene):

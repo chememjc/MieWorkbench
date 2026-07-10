@@ -183,3 +183,14 @@ class Scene3DPane(QWidget):
             # nothing to show yet: ask the host to produce rays (last run's
             # overlay or a live preview) instead of silently doing nothing
             self.raysPreviewRequested.emit()
+
+    # -- teardown -------------------------------------------------------------
+    def shutdown(self):
+        """Release the view's native VTK resources at app shutdown (the
+        bead-animation controller is owned by the main window, not this
+        pane, so there is no timer to stop here)."""
+        self.view.shutdown()
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)

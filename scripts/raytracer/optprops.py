@@ -31,6 +31,7 @@ from .materials import (MaterialDB, MaterialError, load_coatings,
                         _swap_suffix)
 
 DEFAULT_BIREFRINGENCE_CSV = DEFAULT_OPTPROPS_DIR / "birefringence" / "uniaxial.miebrf"
+DEFAULT_BIAXIAL_CSV = DEFAULT_OPTPROPS_DIR / "birefringence" / "biaxial.mibiax"
 DEFAULT_POLARIZERS_CSV = DEFAULT_OPTPROPS_DIR / "polarizer" / "polarizers.miepol"
 DEFAULT_FILTERS_CSV = DEFAULT_OPTPROPS_DIR / "filter" / "filters.miefilt"
 DEFAULT_GRATINGS_CSV = DEFAULT_OPTPROPS_DIR / "grating" / "gratings.miegrat"
@@ -175,6 +176,38 @@ def load_uniaxial(csv_path=None, db=None):
         out[name] = {"o": db.get(o_name), "e": db.get(e_name),
                      "reference": (row.get("reference") or "").strip(),
                      "notes": (row.get("notes") or "").strip()}
+    return out
+
+
+def load_biaxial(csv_path=None, db=None):
+    """-> {crystal_name: {"x","y","z": Material, "reference": str,
+    "notes": str}}. All three principal-index material rows must exist in
+    `db`. Call db.attach_biaxial(result) to enable db.is_biaxial()."""
+    csv_path = Path(csv_path) if csv_path is not None \
+        else DEFAULT_BIAXIAL_CSV
+    if db is None:
+        raise MaterialError("load_biaxial requires a MaterialDB (db=...)")
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "n_x_material", "n_y_material",
+                       "n_z_material", "reference"},
+            "biaxial birefringence"):
+        axes = {ax: (row.get("n_%s_material" % ax) or "").strip()
+                for ax in ("x", "y", "z")}
+        for mn in axes.values():
+            if mn not in db:
+                raise MaterialError(
+                    "%s: references unknown material %r (must be a "
+                    "materials.csv row)" % (ctx, mn))
+        if name in db and name.lower() not in (
+                v.lower() for v in axes.values()):
+            # same shadowing rule as uniaxial crystal names
+            raise MaterialError(
+                "%s: crystal name collides with unrelated materials.csv "
+                "row %r" % (ctx, name))
+        out[name] = {ax: db.get(mn) for ax, mn in axes.items()}
+        out[name]["reference"] = (row.get("reference") or "").strip()
+        out[name]["notes"] = (row.get("notes") or "").strip()
     return out
 
 
@@ -453,16 +486,75 @@ def load_diffusers(csv_path=None):
     return out
 
 
+# ---------------------------------------------------------------------------
+# scatter/bsdf.miebsdf  (ABg / Harvey-Shack measured-scatter surfaces)
+# ---------------------------------------------------------------------------
+SCATTER_MODELS = ("abg",)
+
+
+def load_scatter(csv_path=None):
+    """-> {name: {"model": "abg", "A": float, "B": float, "g": float,
+    "tis_cap": float|None, "reference": str, "notes": str}}.
+
+    ABg BSDF registry for polished optical surfaces (raytracer/scatter.py):
+    BSDF(u) = A/(B + u^g), u = |beta - beta0| the direction-cosine offset
+    from specular. Each row is validated: A > 0, B > 0, g > 0, and the total
+    integrated scatter at normal incidence (scatter.abg_tis, the fraction of
+    reflected power that leaves the specular direction) must not exceed 1
+    (energy). tis_cap, if given, is an OPTIONAL per-entry ceiling on the TIS
+    used by the tracer split (a measured scatter fraction the ABg fit may
+    over-integrate); it must itself be in (0, 1]."""
+    from .scatter import abg_tis
+    csv_path = Path(csv_path) if csv_path is not None \
+        else DEFAULT_OPTPROPS_DIR / "scatter" / "bsdf.miebsdf"
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "model", "A", "B", "g", "reference"},
+            "scatter"):
+        model = (row.get("model") or "").strip()
+        if model not in SCATTER_MODELS:
+            raise MaterialError("%s: model %r must be one of %s"
+                                % (ctx, model, ", ".join(SCATTER_MODELS)))
+        try:
+            A = float((row.get("A") or "").strip())
+            B = float((row.get("B") or "").strip())
+            g = float((row.get("g") or "").strip())
+        except ValueError:
+            raise MaterialError("%s: A, B, g must be numeric" % ctx)
+        if not A > 0.0:
+            raise MaterialError("%s: A must be > 0" % ctx)
+        if not B > 0.0:
+            raise MaterialError("%s: B must be > 0" % ctx)
+        if not g > 0.0:
+            raise MaterialError("%s: g must be > 0" % ctx)
+        cap_raw = (row.get("tis_cap") or "").strip()
+        tis_cap = float(cap_raw) if cap_raw else None
+        if tis_cap is not None and not 0.0 < tis_cap <= 1.0:
+            raise MaterialError("%s: tis_cap must be in (0, 1]" % ctx)
+        tis0 = abg_tis(A, B, g, 1.0)      # normal incidence = widest umax
+        if tis0 > 1.0 + 1e-9:
+            raise MaterialError(
+                "%s: total integrated scatter %.4g exceeds 1 (energy) — the "
+                "ABg fit scatters more than the incident power" % (ctx, tis0))
+        out[name] = {"model": model, "A": A, "B": B, "g": g,
+                     "tis_cap": tis_cap,
+                     "reference": (row.get("reference") or "").strip(),
+                     "notes": (row.get("notes") or "").strip()}
+    return out
+
+
 class OpticalProperties:
     """Everything loaded from an opticalproperties/ root. Attributes:
     matdb (MaterialDB, with uniaxial attached), coatings, polarizers,
     filters, gratings, uniaxial — shapes per the load_* docstrings."""
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
-                 "gratings", "uniaxial", "diffusers", "detectors")
+                 "gratings", "uniaxial", "biaxial", "diffusers", "detectors",
+                 "scatter")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
-                 uniaxial, diffusers=None, detectors=None):
+                 uniaxial, diffusers=None, detectors=None, biaxial=None,
+                 scatter=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -470,8 +562,10 @@ class OpticalProperties:
         self.filters = filters
         self.gratings = gratings
         self.uniaxial = uniaxial
+        self.biaxial = biaxial if biaxial is not None else {}
         self.diffusers = diffusers if diffusers is not None else {}
         self.detectors = detectors if detectors is not None else {}
+        self.scatter = scatter if scatter is not None else {}
 
 
 def load_optical_properties(root=None, db=None):
@@ -497,6 +591,9 @@ def load_optical_properties(root=None, db=None):
     uniaxial = optional(load_uniaxial,
                         root / "birefringence" / "uniaxial.miebrf", db=db)
     db.attach_uniaxial(uniaxial)
+    biaxial = optional(load_biaxial,
+                       root / "birefringence" / "biaxial.mibiax", db=db)
+    db.attach_biaxial(biaxial)
     return OpticalProperties(
         root=root, matdb=db, coatings=coatings,
         polarizers=optional(load_polarizers,
@@ -504,10 +601,12 @@ def load_optical_properties(root=None, db=None):
         filters=optional(load_filters, root / "filter" / "filters.miefilt"),
         gratings=optional(load_gratings, root / "grating" / "gratings.miegrat"),
         uniaxial=uniaxial,
+        biaxial=biaxial,
         diffusers=optional(load_diffusers,
                            root / "diffuser" / "diffusers.miedif"),
         detectors=optional(load_detectors,
-                           root / "detector" / "detectors.miedet"))
+                           root / "detector" / "detectors.miedet"),
+        scatter=optional(load_scatter, root / "scatter" / "bsdf.miebsdf"))
 
 
 # ---------------------------------------------------------------------------
@@ -523,5 +622,7 @@ if __name__ == "__main__":
     print("  filters   : %d" % len(props.filters))
     print("  gratings  : %d" % len(props.gratings))
     print("  uniaxial  : %d" % len(props.uniaxial))
+    print("  biaxial   : %d" % len(props.biaxial))
     print("  diffusers : %d" % len(props.diffusers))
     print("  detectors : %d" % len(props.detectors))
+    print("  scatter   : %d" % len(props.scatter))

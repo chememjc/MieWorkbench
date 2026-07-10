@@ -1,0 +1,13 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "CurvedDet.CurvedDet_pad.Face1": {
+   "peak_irradiance_W_m2": 1873891.8671090878,
+   "power_seed_std_W": 6.7309898605662895e-06,
+   "profile_visibility": 0.9999999999526795,
+   "total_power_W": 0.004590371735525711
+  }
+ },
+ "seeds": 3
+}

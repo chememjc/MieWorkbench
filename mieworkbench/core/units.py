@@ -24,11 +24,16 @@ PROPERTY_UNITS = {
     "polarizer": None,            # registry name
     "polarizer_axis": "x,y,z",    # body-local axis triple
     "crystal_axis": "x,y,z",
+    "crystal_axis2": "x,y,z",     # biaxial Y principal axis (X = crystal_axis)
     "grating": None,              # per-face map spec
     "surface_override": None,     # per-face analytic-surface spec
     "mirror": "0–1",         # reflected fraction
     "absorbance": "0–1",     # absorbed fraction
     "qe_curve": None,             # detector QE-curve registry name
+    "beam_waist": "mm",           # Gaussian beam waist w0 (source-only)
+    "m2": None,                    # beam quality factor M^2 (unitless, >=1)
+    "apodization": None,          # spec string ('gaussian:w0=<mm>[:order=<n>]')
+    "scatter": None,               # ABg/BSDF registry name or per-face map
 }
 
 # Geometry/transform panels (values live in FreeCAD sheets / placements).

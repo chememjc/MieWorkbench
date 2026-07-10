@@ -29,6 +29,18 @@ def test_label_with_unit():
     assert label_with_unit("not_a_prop") == "not_a_prop"  # unknown passes
 
 
+def test_new_biaxial_apodization_scatter_props_have_unit_decisions():
+    """Lowhanging round: beam_waist/m2/apodization (Gaussian-beam source
+    extras), crystal_axis2 (biaxial Y principal axis), and scatter
+    (ABg/BSDF per-face registry) all need explicit unit decisions, same
+    as every other contract property."""
+    assert label_with_unit("beam_waist") == "beam_waist [mm]"
+    assert label_with_unit("m2") == "m2"                  # unitless
+    assert label_with_unit("apodization") == "apodization"  # spec string
+    assert label_with_unit("crystal_axis2") == "crystal_axis2 [x,y,z]"
+    assert label_with_unit("scatter") == "scatter"        # registry name
+
+
 def test_format_power_mw():
     assert format_power_mw(0.005) == "5"
     assert format_power_mw(1.23e-6) == "0.00123"

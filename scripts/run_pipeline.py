@@ -210,6 +210,7 @@ def trace_cmd(stem, case_dir, args):
                            else common.DEFAULTS["seeds"])]
     cmd += ["--backend", args.backend if args.backend is not None
            else common.DEFAULTS["backend"]]
+    cmd += ["--workers", str(args.workers)]
     for f in args.source_face:
         cmd += ["--source-face", f]
     for f in args.detector_face:
@@ -236,6 +237,12 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--mesh-flat-normals"]
     if args.save_fields:
         cmd += ["--save-fields"]
+    if args.export_rays:
+        cmd += ["--export-rays"]
+    if args.ghost_analysis:
+        cmd += ["--ghost-analysis"]
+    if args.export_rays or args.ghost_analysis:
+        cmd += ["--export-rays-max", str(int(args.export_rays_max))]
     if args.strict_analytic:
         cmd += ["--strict-analytic"]
     if args.optical_properties:
@@ -265,6 +272,11 @@ def post_cmd(stem, case_dir, args):
         cmd += ["--photometric"]
     if args.spectrometer:
         cmd += ["--spectrometer"]
+    if args.emit_csv:
+        cmd += ["--emit-csv"]
+    if args.wavefront_point is not None:
+        cmd += ["--wavefront-point",
+                "%g,%g" % (args.wavefront_point[0], args.wavefront_point[1])]
     return cmd
 
 

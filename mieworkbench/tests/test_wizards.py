@@ -191,6 +191,134 @@ def test_waveplate_bad_kind_and_order_raise():
         wizards.waveplate_thickness("half", 633.0, order=0.5)
 
 
+########################################################################
+# Gaussian-beam source extras (beam_waist/m2/apodization) -- lowhanging
+# round: wizard fields for the new source props, writing body properties
+# through the same changed_props()/set_property() path as power/lambdac/
+# polarization.
+########################################################################
+def _laser_info():
+    import json
+    repo = os.path.normpath(os.path.join(os.path.dirname(__file__),
+                                         "..", ".."))
+    meta_path = os.path.join(repo, "primitives", "laser_collimated.meta.json")
+    with open(meta_path) as fh:
+        info = json.load(fh)
+    info["path"] = os.path.join(repo, "primitives", "laser_collimated.FCStd")
+    return info
+
+
+def test_property_rows_for_source_includes_beam_fields():
+    from mieworkbench.panes.element_wizard import property_rows_for
+    rows = property_rows_for(_laser_info())
+    by_name = {name: (kind, default) for name, kind, default, _tip in rows}
+    assert by_name["beam_waist"] == ("float_optional", None)
+    assert by_name["m2"] == ("float", 1.0)
+    assert by_name["apodization"] == ("apod", None)
+
+
+def test_apodization_editor_round_trip(qtbot):
+    from mieworkbench.panes.element_wizard import ApodizationEditor
+    ed = ApodizationEditor(None)
+    qtbot.addWidget(ed)
+    assert ed.spec() is None
+    assert ed.kind_combo.currentText() == "none"
+    assert not ed.w0_edit.isEnabled()
+
+    ed.kind_combo.setCurrentText("gaussian")
+    assert ed.w0_edit.isEnabled()
+    ed.w0_edit.setText("2")
+    assert ed.spec() == "gaussian:w0=2"
+    ed.order_edit.setText("3")
+    assert ed.spec() == "gaussian:w0=2:order=3"
+
+    ed2 = ApodizationEditor("gaussian:w0=1.5:order=2")
+    qtbot.addWidget(ed2)
+    assert ed2.kind_combo.currentText() == "gaussian"
+    assert ed2.w0_edit.text() == "1.5"
+    assert ed2.order_edit.text() == "2"
+    assert ed2.spec() == "gaussian:w0=1.5:order=2"
+
+    ed2.kind_combo.setCurrentText("none")
+    assert ed2.spec() is None
+    assert not ed2.w0_edit.isEnabled()
+
+
+def test_properties_form_beam_waist_blank_omits_from_values(qtbot):
+    from mieworkbench.panes.element_wizard import (
+        PropertiesFormWidget, property_rows_for,
+    )
+    rows = property_rows_for(_laser_info())
+    form = PropertiesFormWidget(rows)
+    qtbot.addWidget(form)
+
+    # defaults: waist blank/off -> beam_waist and apodization absent, m2
+    # gated off (no waist set yet)
+    values = form.values()
+    assert "beam_waist" not in values
+    assert "apodization" not in values
+    _kind, m2_editor, _default = form._editors["m2"]
+    assert not m2_editor.isEnabled()
+
+    # setting a waist both writes the value AND enables m2
+    _kind, bw_editor, _default = form._editors["beam_waist"]
+    bw_editor.setText("1.5")
+    assert m2_editor.isEnabled()
+    assert form.values()["beam_waist"] == pytest.approx(1.5)
+
+    # clearing it again turns m2 back off and drops the key
+    bw_editor.setText("")
+    assert not m2_editor.isEnabled()
+    assert "beam_waist" not in form.values()
+
+
+def test_wizard_dialog_beam_and_apodization_round_trip(qtbot, tmp_path):
+    """The wizard writes beam_waist/m2/apodization through the SAME
+    changed_props() path power/lambdac/polarization already use (verified
+    by feeding the result into a FakeProject and checking its call
+    audit -- see vtk_test_support.FakeProject)."""
+    from mieworkbench.panes.wizard_dialog import ElementWizardDialog
+    from mieworkbench.tests.vtk_test_support import (
+        FakeProject, make_two_body_scene,
+    )
+
+    dlg = ElementWizardDialog(_laser_info(), "laser1")
+    qtbot.addWidget(dlg)
+
+    # nothing changed yet -- beam extras are off by default
+    changed = dlg.changed_props()
+    assert "beam_waist" not in changed
+    assert "m2" not in changed
+    assert "apodization" not in changed
+
+    _kind, bw_editor, _default = dlg.props_form._editors["beam_waist"]
+    bw_editor.setText("2")
+    _kind, m2_editor, _default = dlg.props_form._editors["m2"]
+    m2_editor.setText("1.2")
+    _kind, apod_editor, _default = dlg.props_form._editors["apodization"]
+    apod_editor.kind_combo.setCurrentText("gaussian")
+    apod_editor.w0_edit.setText("2")
+
+    changed = dlg.changed_props()
+    assert changed["beam_waist"] == pytest.approx(2.0)
+    assert changed["m2"] == pytest.approx(1.2)
+    assert changed["apodization"] == "gaussian:w0=2"
+
+    # feed it through the same set_property mechanism _apply_wizard_output
+    # uses in mainwindow.py, and confirm it lands on the body + the call
+    # audit sees it (same shape as every other wizard-written property)
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    for name, value in changed.items():
+        project.set_property("Lens", name, value)
+    calls_by_name = {c[2]: c[3] for c in project.calls
+                    if c[0] == "set_property"}
+    assert calls_by_name["beam_waist"] == pytest.approx(2.0)
+    assert calls_by_name["apodization"] == "gaussian:w0=2"
+    assert project.body("Lens")["properties"]["apodization"]["value"] \
+        == "gaussian:w0=2"
+
+
 def test_waveplate_designer_fills_thickness(qtbot):
     """The waveplate wizard's retardance designer writes the solved
     quartz thickness into the parameter table."""

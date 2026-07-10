@@ -1,0 +1,78 @@
+{
+ "bodies": {
+  "KTP": {
+   "group": "KTP",
+   "label": "KTP",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "window"
+  },
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -10.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Screen": {
+   "group": "Screen",
+   "label": "Screen",
+   "placement": {
+    "pos_mm": [
+     20.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  }
+ },
+ "demo": "ktp_walkoff",
+ "sheets": {
+  "dim": {},
+  "dim_KTP": {
+   "round_flag": "0",
+   "thickness": "=15 mm",
+   "width": "=12 mm"
+  },
+  "dim_Laser": {
+   "diameter": "=0.3 mm",
+   "length": "=4 mm",
+   "round_flag": "1"
+  },
+  "dim_Screen": {
+   "height": "=0 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=8 mm"
+  }
+ }
+}

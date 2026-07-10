@@ -1,0 +1,13 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "DetRefl.DetRefl_pad.Face5": {
+   "peak_irradiance_W_m2": 23.597035282578855,
+   "power_seed_std_W": 7.429099517034332e-07,
+   "profile_visibility": 0.9999994202510092,
+   "total_power_W": 0.00047926327242845583
+  }
+ },
+ "seeds": 3
+}

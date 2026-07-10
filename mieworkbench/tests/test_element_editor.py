@@ -23,6 +23,7 @@ import common  # noqa: E402  (stdlib-only shared contract hub)
 import pytest  # noqa: E402
 from PySide6.QtWidgets import QFormLayout  # noqa: E402
 
+from mieworkbench.core.units import label_with_unit  # noqa: E402
 from mieworkbench.panes.element_editor import (  # noqa: E402
     ElementEditorPane, format_sheet_raw, merge_facemap, parse_sheet_raw,
 )
@@ -131,6 +132,87 @@ def test_editing_a_numeric_property_commits_a_float(qtbot, tmp_path):
     assert project.body("Lens")["properties"]["power"]["value"] == 12.5
     assert isinstance(project.body("Lens")["properties"]["power"]["value"],
                       float)
+
+
+# ---------------------------------------------------------------------------
+# new biaxial/apodization/scatter round properties
+# ---------------------------------------------------------------------------
+def test_beam_waist_and_m2_add_as_numeric_properties(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    for name in ("beam_waist", "m2"):
+        pane.add_prop_combo.setCurrentText(name)
+        pane.add_prop_button.click()
+        value = project.body("Lens")["properties"][name]["value"]
+        assert isinstance(value, float)
+        qtbot.waitUntil(
+            lambda n=name: label_with_unit(n) in _prop_labels(pane),
+            timeout=2000)
+
+
+def test_apodization_and_crystal_axis2_add_as_text_properties(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    pane.add_prop_combo.setCurrentText("apodization")
+    pane.add_prop_button.click()
+    assert project.body("Lens")["properties"]["apodization"]["value"] \
+        == "gaussian:w0=1"
+
+    pane.add_prop_combo.setCurrentText("crystal_axis2")
+    pane.add_prop_button.click()
+    assert project.body("Lens")["properties"]["crystal_axis2"]["value"] \
+        == "0,1,0"
+
+
+def test_scatter_facemap_assign_and_menu(qtbot, tmp_path):
+    structure, faces = make_lens_two_faces_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", {"Lens.Revolution.Face1"})
+
+    pane.facemap_prop_combo.setCurrentText("scatter")
+    pane.facemap_value_combo.setCurrentText("polished_bk7_glass")
+    pane.facemap_assign_button.click()
+
+    raw = project.body("Lens")["properties"]["scatter"]["value"]
+    parsed = common.parse_facemap_spec(raw, body="Lens",
+                                       feature="Revolution")
+    assert parsed == {"Lens.Revolution.Face1": "polished_bk7_glass"}
+
+    # the table refresh is deferred (a QTimer singleShot, so a commit's own
+    # signal handler never rebuilds rows out from under itself)
+    qtbot.waitUntil(
+        lambda: any(p == "scatter" for p, _v, _f in _assignment_rows(pane)),
+        timeout=2000)
+
+    menu = pane.build_active_properties_menu()
+    assert "scatter" in menu.property_submenus
+
+
+def test_scatter_value_options_read_the_real_registry(qtbot):
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    names = pane._facemap_value_options("scatter")
+    assert "polished_bk7_glass" in names
+    assert "polished_fused_silica" in names
+
+
+def test_scatter_value_options_tolerate_missing_registry(qtbot, tmp_path):
+    pane = ElementEditorPane(optprops_root=str(tmp_path / "no_such_root"))
+    qtbot.addWidget(pane)
+    assert pane._facemap_value_options("scatter") == []
 
 
 def _assignment_rows(pane):
@@ -337,7 +419,8 @@ def test_active_properties_menu_checkmarks_and_apply(qtbot, tmp_path):
     # ownership of that wrapper to Python and the GC deletes the C++ menu
     submenus = menu.property_submenus
     assert set(submenus) == set(
-        ("coating", "roughness", "diffuser", "grating", "surface_override"))
+        ("coating", "roughness", "diffuser", "scatter", "grating",
+         "surface_override"))
     coating_items = {a.text(): a for a in submenus["coating"].actions()
                      if a.text() and a.text() != "Custom…"}
     assert coating_items["MgF2"].isChecked()

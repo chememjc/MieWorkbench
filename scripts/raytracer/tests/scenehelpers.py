@@ -52,9 +52,14 @@ def box_faces(name, x0, x1, half):
 
 def source_body(name="Src", x=-0.02, half=0.001, power_mW=1.0,
                 lambdac_nm=633.0, coherent=False, polarization=None,
-                lambdamin_nm=None, lambdamax_nm=None):
+                lambdamin_nm=None, lambdamax_nm=None, apodization=None,
+                beam_waist_mm=None, m2=1.0):
     """Source with a single square emitting plane at x (normal +x; the
-    toward-origin policy sends rays along +x)."""
+    toward-origin policy sends rays along +x). apodization: already-parsed
+    dict (common.parse_apodization_spec). beam_waist_mm: sets source.beam
+    {waist_mm, m2} — half MUST be large enough that the waist's Gaussian
+    tail doesn't need excessive rejection-sampling tries against the
+    emitting face's physical aperture."""
     face = _rect_face("%s.Pad.Face1" % name, [x, 0, 0], [1, 0, 0],
                       [[x, -half, -half], [x, half, -half],
                        [x, half, half], [x, -half, half]],
@@ -67,6 +72,10 @@ def source_body(name="Src", x=-0.02, half=0.001, power_mW=1.0,
         src["lambdamax_nm"] = lambdamax_nm
     if polarization is not None:
         src["polarization"] = polarization
+    if apodization is not None:
+        src["apodization"] = apodization
+    if beam_waist_mm is not None:
+        src["beam"] = {"waist_mm": beam_waist_mm, "m2": m2}
     return {"name": name, "label": name, "role": "source",
             "source": src, "faces": [face]}
 

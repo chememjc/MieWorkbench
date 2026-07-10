@@ -24,10 +24,14 @@ sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "scripts")))
 import common  # noqa: E402  (stdlib-only shared contract hub)
 
-# The five per-face properties of the body-tagging contract, in display
-# order (docs/RAYTRACER.md §5; keep in sync with extract_geometry.py).
-FACEMAP_PROPERTIES = ("coating", "roughness", "diffuser", "grating",
-                      "surface_override")
+# The per-face properties of the body-tagging contract, in display order
+# (docs/RAYTRACER.md §5; keep in sync with extract_geometry.py). `scatter`
+# (ABg/BSDF measured-scatter registry entry) sits next to roughness/
+# diffuser -- the three are alternative models of one surface and NEVER
+# combine on the same face (scene.py hard-errors scatter+roughness and
+# scatter+diffuser; diffuser+roughness is checked GUI-side too).
+FACEMAP_PROPERTIES = ("coating", "roughness", "diffuser", "scatter",
+                      "grating", "surface_override")
 
 # One row of the Active Properties view: a (property, value) pair and the
 # full face ids it applies to. whole_body is True when the value is STORED

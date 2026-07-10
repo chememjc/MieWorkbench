@@ -340,6 +340,94 @@ SCENES = {
         "detector_x_mm": 40.0, "expects_mesh_fallback": True,
         "faces": {"mesh": 1},
     },
+
+    # ---------------------------------------------------------------------
+    # Phase-12 new-physics scenes (biaxial / Gaussian / ghost / scatter /
+    # curved detector). "As simple as possible but physically real": solids
+    # with real materials, sources/detectors per the §5 body-tagging
+    # contract, energy closes <1e-3 in every one.
+    # ---------------------------------------------------------------------
+    "ktp_walkoff": {
+        "description": "15mm KTP biaxial plate, X principal axis at 45deg in "
+                       "the global x-z plane ('0.70711,0,0.70711'), Y "
+                       "principal = global y ('0,1,0'); 633nm unpolarized "
+                       "narrow beam propagates in the X-Z principal plane "
+                       "(maximum walk-off). The y-polarized sheet goes "
+                       "straight (n=n_y); the in-plane sheet walks off in "
+                       "global z -> two spots.",
+        "material": "ktp",
+        "crystal_axis_local": "0.70711,0,0.70711",
+        "crystal_axis2_local": "0,1,0",
+        "lambda_nm": 633.0, "thickness_mm": 15.0, "beam_dia_mm": 0.3,
+        "walkoff_axis": "z",
+        "note": "two-spot separation is the solver-predicted in-plane-sheet "
+                "transverse displacement (biaxial_ray_from_k); see "
+                "test_biaxial._expected_walkoff_dz.",
+        "detector_x_mm": 20.0,
+        "faces": {"plane": 6},
+    },
+    "gaussian_bench": {
+        "description": "Gaussian-beam source (beam_waist 50um at the emitting "
+                       "face, M2=1.0) propagating 62mm (=5 Rayleigh ranges) "
+                       "through empty air to a screen where the beam has "
+                       "expanded ~5x. Incoherent direct-deposit beam mode "
+                       "(coherent=False).",
+        "lambda_nm": 633.0, "beam_waist_mm": 0.05, "m2": 1.0,
+        "source_x_mm": -2.0, "source_aperture_mm": 2.0,
+        "detector_x_mm": 60.0, "det_half_mm": 2.0,
+        "note": "z from waist = detector_x - source_x = 62mm; "
+                "w(z)=w0*sqrt(1+(z/zR)^2), zR=pi*w0^2/lambda ~= 12.4mm.",
+        "faces": {"plane": 1},
+    },
+    "ghost_doublet": {
+        "description": "Two uncoated N-BK7 flat windows (4mm thick, 8mm air "
+                       "gap) in a collimated 633nm incoherent beam; a screen "
+                       "downstream records the direct beam plus the natural "
+                       "Fresnel ghosts. The dominant 2-bounce ghost carries "
+                       "direct_power * R^2 (R = normal-incidence air/BK7 "
+                       "Fresnel reflectance).",
+        "material": "bk7", "lambda_nm": 633.0,
+        "window_thickness_mm": 4.0, "gap_mm": 4.0, "window_size_mm": 20.0,
+        "beam_dia_mm": 6.0,
+        "g1_x0_mm": 0.0, "g2_x0_mm": 8.0, "detector_x_mm": 30.0,
+        "note": "ghost oracle: strongest gen-2 path power == direct * R^2 "
+                "(enumerated 2-reflection Fresnel product).",
+        "faces_each": {"plane": 6},
+    },
+    "scatter_plate": {
+        "description": "Flat BK7 window at 45deg with measured ABg scatter "
+                       "(scatter=polished_bk7_glass) on its beam-facing "
+                       "front face; collimated 633nm beam. The Fresnel "
+                       "reflection folds to +y where a screen catches the "
+                       "specular spot plus the diffuse scatter lobe.",
+        "material": "bk7", "scatter": "polished_bk7_glass",
+        "lambda_nm": 633.0, "plate_size_mm": 24.0, "plate_thickness_mm": 3.0,
+        "plate_rotation_deg": -45.0, "beam_dia_mm": 6.0,
+        "det_refl_y_mm": 30.0,
+        "note": "scattered rays are flagged scattered=True at the detector; "
+                "reflected-side specular + scatter split conserves R.",
+        "faces": {"plane": 6},
+    },
+    "curved_focal": {
+        "description": "Collimated 633nm Ø10 beam -> plano-convex BK7 lens "
+                       "(R=25, f~48.5, flat toward focus) -> CONCAVE "
+                       "cylindrical detector (material=detector, axis along "
+                       "z) whose curved face hugs the focus at x~50mm. The "
+                       "curved screen catches >90% of the focused power. "
+                       "coherent=False (geometric focus).",
+        "material": "bk7", "lambda_nm": 633.0,
+        "R1_mm": 25.0, "R2_mm": None, "thickness_mm": 5.0,
+        "aperture_mm": 20.0, "beam_dia_mm": 10.0, "n_633": 1.51508,
+        "expected_efl_mm": 48.536, "expected_bfl_mm": 45.236,
+        "det_center_of_curvature_x_mm": 30.0, "det_radius_mm": 20.0,
+        "det_half_y_mm": 5.0, "det_height_z_mm": 10.0, "det_back_pad_mm": 3.0,
+        "focus_x_mm": 50.236,
+        "note": "concave-toward-beam cylinder: center of curvature in FRONT "
+                "(x=30) so the vertex face at x=cx+R=50 sits on the focus; "
+                "curved detector face auto-picks or is pinned via "
+                "detector_face.",
+        "faces": {"cylinder": 1, "plane": 3},
+    },
 }
 
 
@@ -1212,6 +1300,158 @@ def make_mesh_freeform(outpath):
 
 
 # =============================================================================
+# Phase-12 new-physics scenes
+# =============================================================================
+def make_ktp_walkoff(outpath):
+    s = SCENES["ktp_walkoff"]
+    doc = App.newDocument("ktp_walkoff")
+    try:
+        t = s["thickness_mm"]
+        new_body_pad(doc, "KTP", "KTP",
+                     rects=[(-6.0, -6.0, 12.0, 12.0)], x_start=0.0, length=t,
+                     props={"material": s["material"],
+                            "crystal_axis": s["crystal_axis_local"],
+                            "crystal_axis2": s["crystal_axis2_local"]})
+        add_source(doc, "Source", -10.0, s["beam_dia_mm"] / 2.0,
+                   {"power": 5.0, "lambdac": s["lambda_nm"],
+                    "polarization": "unpolarized"})
+        add_detector(doc, "Screen", s["detector_x_mm"], 4.0)
+        finalize(doc, outpath)
+    finally:
+        App.closeDocument(doc.Name)
+
+
+def make_gaussian_bench(outpath):
+    s = SCENES["gaussian_bench"]
+    doc = App.newDocument("gaussian_bench")
+    try:
+        add_source(doc, "Source", s["source_x_mm"],
+                   s["source_aperture_mm"] / 2.0,
+                   {"power": 5.0, "lambdac": s["lambda_nm"],
+                    "coherent": False,
+                    "beam_waist": s["beam_waist_mm"], "m2": s["m2"]})
+        add_detector(doc, "Screen", s["detector_x_mm"], s["det_half_mm"])
+        finalize(doc, outpath)
+    finally:
+        App.closeDocument(doc.Name)
+
+
+def make_ghost_doublet(outpath):
+    s = SCENES["ghost_doublet"]
+    doc = App.newDocument("ghost_doublet")
+    try:
+        w = s["window_size_mm"] / 2.0
+        th = s["window_thickness_mm"]
+        for i, x0 in enumerate((s["g1_x0_mm"], s["g2_x0_mm"])):
+            new_body_pad(doc, "Glass%d" % (i + 1), "Glass%d" % (i + 1),
+                         rects=[(-w, -w, 2 * w, 2 * w)], x_start=x0, length=th,
+                         props={"material": s["material"]})
+        add_source(doc, "Source", -20.0, s["beam_dia_mm"] / 2.0,
+                   {"power": 10.0, "lambdac": s["lambda_nm"],
+                    "coherent": False})
+        add_detector(doc, "Screen", s["detector_x_mm"], 10.0)
+        finalize(doc, outpath)
+    finally:
+        App.closeDocument(doc.Name)
+
+
+def make_scatter_plate(outpath):
+    s = SCENES["scatter_plate"]
+    doc = App.newDocument("scatter_plate")
+    try:
+        S = s["plate_size_mm"] / 2.0
+        th = s["plate_thickness_mm"]
+        # plate on YZ (normal +x) then rotate 45deg about z so the +x beam
+        # hits at 45deg AOI; the Fresnel reflection folds to +y.
+        pl = App.Placement(App.Vector(0, 0, 0),
+                           App.Rotation(App.Vector(0, 0, 1),
+                                        s["plate_rotation_deg"]))
+        plate = pad_body(doc, "Window",
+                         [_line(-S, -S, S, -S), _line(S, -S, S, S),
+                          _line(S, S, -S, S), _line(-S, S, -S, -S)],
+                         plane="YZ", offset=-th / 2.0, length=th,
+                         props={"material": s["material"]}, placement=pl)
+        # measured scatter on the beam-facing front face (outward normal has
+        # the most-negative dot with the +x beam, i.e. points back at source).
+        doc.recompute()
+        # beam-facing front cap: outward normal = (-cos(theta), -sin(theta), 0)
+        # for a +x face rotated theta about z; theta=-45 -> (-0.707, +0.707, 0).
+        th = math.radians(s["plate_rotation_deg"])
+        front = _find_face_by_signed_normal(
+            plate, (-math.cos(th), -math.sin(th), 0.0))
+        if front is None:
+            log("ERROR: scatter_plate could not find front face")
+            os._exit(1)
+        plate.addProperty("App::PropertyString", "scatter", "Base")
+        plate.scatter = "Face%d=%s" % (front, s["scatter"])
+        add_source(doc, "Source", -30.0, s["beam_dia_mm"] / 2.0,
+                   {"power": 5.0, "lambdac": s["lambda_nm"],
+                    "coherent": False})
+        # reflected-arm screen at +y, facing -y (records the folded beam).
+        pl_r = App.Placement(App.Vector(0.0, s["det_refl_y_mm"], 0.0),
+                             App.Rotation(App.Vector(1, 0, 0), 90.0))
+        add_detector_plane(doc, "DetRefl", 15.0, 1.0, pl_r)
+        finalize(doc, outpath)
+    finally:
+        App.closeDocument(doc.Name)
+
+
+def _find_face_by_signed_normal(body, target, tol=1e-3):
+    """Return the 1-based face index whose OUTWARD normal is closest (signed)
+    to `target` (a direction), else None. Unlike _find_face_by_normal this
+    respects sign, so a front cap is distinguished from a parallel back cap."""
+    import FreeCAD as _fc
+    t = _fc.Vector(*target)
+    t.normalize()
+    best, best_dot = None, -2.0
+    for i, f in enumerate(body.Shape.Faces, start=1):
+        try:
+            u0, u1, v0, v1 = f.ParameterRange
+            nrm = f.normalAt((u0 + u1) / 2.0, (v0 + v1) / 2.0)
+            nrm.normalize()
+        except Exception:
+            continue
+        d = nrm.dot(t)
+        if d > best_dot:
+            best_dot, best = d, i
+    return best if best_dot > tol else None
+
+
+def make_curved_focal(outpath):
+    s = SCENES["curved_focal"]
+    doc = App.newDocument("curved_focal")
+    try:
+        _build_simple_lens(doc, s, name="Lens")
+        add_source(doc, "Source", -30.0, s["beam_dia_mm"] / 2.0,
+                   {"power": 5.0, "lambdac": s["lambda_nm"],
+                    "coherent": False})
+        # concave-toward-beam cylindrical screen: center of curvature at
+        # (cx, 0) in FRONT of the surface, so the surface x = cx + sqrt(R^2 -
+        # y^2) is deepest (+x) on axis (vertex) and curves forward (-x) at the
+        # rim -> concave as seen from the -x beam side. Axis along z.
+        cx = s["det_center_of_curvature_x_mm"]
+        R = s["det_radius_mm"]
+        sa = s["det_half_y_mm"]
+        Hz = s["det_height_z_mm"]
+        x_vtx = cx + R                         # deepest point (on the focus)
+        x_edge = cx + math.sqrt(R * R - sa * sa)
+        x_back = x_vtx + s["det_back_pad_mm"]
+        # meridian in the (x, y) sketch plane (padded along z): concave arc
+        # from (x_edge,-sa) via vertex (x_vtx,0) to (x_edge,+sa), then a flat
+        # back closing the solid.
+        arc = _arc3(x_edge, -sa, x_vtx, 0.0, x_edge, sa)
+        edges = [arc,
+                 _line(x_edge, sa, x_back, sa),
+                 _line(x_back, sa, x_back, -sa),
+                 _line(x_back, -sa, x_edge, -sa)]
+        pad_body(doc, "CurvedDet", edges, plane="XY", offset=-Hz / 2.0,
+                 length=Hz, props={"material": "detector"})
+        finalize(doc, outpath)
+    finally:
+        App.closeDocument(doc.Name)
+
+
+# =============================================================================
 # Dispatch
 # =============================================================================
 BUILDERS = {
@@ -1240,6 +1480,11 @@ BUILDERS = {
     "filter_bandpass": make_filter_bandpass,
     "hot_mirror": make_hot_mirror,
     "mesh_freeform": make_mesh_freeform,
+    "ktp_walkoff": make_ktp_walkoff,
+    "gaussian_bench": make_gaussian_bench,
+    "ghost_doublet": make_ghost_doublet,
+    "scatter_plate": make_scatter_plate,
+    "curved_focal": make_curved_focal,
 }
 
 

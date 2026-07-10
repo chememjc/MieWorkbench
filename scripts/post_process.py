@@ -14,6 +14,7 @@
 # outlines, per-material n/k dispersion curves, coating R(lambda), energy
 # audit bars. Everything is regenerable without re-tracing.
 # =============================================================================
+import csv
 import json
 import sys
 from pathlib import Path
@@ -37,8 +38,113 @@ from raytracer import thinfilm as tf                     # noqa: E402
 from raytracer import fresnel as fr                      # noqa: E402
 from raytracer import grating as gr                      # noqa: E402
 from raytracer.optprops import load_optical_properties   # noqa: E402
+from raytracer.sources import (wavelength_strata,        # noqa: E402
+                               jones_for, n_pol_strata)
+from raytracer.audit import BUCKETS                      # noqa: E402
+from raytracer.analysis_field import (psf_from_fields,   # noqa: E402
+                                      normalize_psf, radial_profile,
+                                      mtf2d, mtf50, encircled_energy,
+                                      ee_radius)
+from raytracer.analysis import (fit_zernike, opd_from_rays,  # noqa: E402
+                                strehl_marechal, noll_name,
+                                fringe_index, noll_to_nm)
 
 
+# =============================================================================
+# --emit-csv: unified data export (results/<case>/data/*.csv + index.csv).
+# Every renderer above stays PNG-only when args.emit_csv is False (byte-
+# identical to pre-CSV behavior); CsvEmitter is threaded in as an optional
+# argument everywhere a chart's underlying data is already sitting in a
+# numpy array, so no rendering math is duplicated or perturbed.
+# =============================================================================
+class CsvEmitter:
+    """Writes results/<case>/data/<filename>.csv and accumulates a row per
+    file for the final data/index.csv (file, entity, chart, units,
+    provenance, image). Convention: a chart's CSV shares its PNG's
+    basename; `image` records the PNG path (relative to the case dir) so
+    index.csv can join file <-> chart."""
+
+    def __init__(self, data_dir):
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.index_rows = []
+
+    def emit(self, filename, header_cols, rows, entity="", chart="",
+             units="", provenance="", image=None):
+        with open(self.data_dir / filename, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(header_cols)
+            w.writerows(rows)
+        self.index_rows.append((filename, entity, chart, units,
+                                provenance or "", image or ""))
+
+    def write_index(self):
+        with open(self.data_dir / "index.csv", "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["file", "entity", "chart", "units", "provenance",
+                       "image"])
+            w.writerows(self.index_rows)
+
+
+def _flatten_scalars(d, prefix=""):
+    """dict -> [(dotted.key, value)] for every int/float/bool leaf (recurses
+    into nested dicts; skips lists/strings/None). Used to dump a report.json
+    detector sub-dict into a flat metrics CSV without re-deriving anything."""
+    out = []
+    for k, v in d.items():
+        key = "%s.%s" % (prefix, k) if prefix else k
+        if isinstance(v, dict):
+            out.extend(_flatten_scalars(v, key))
+        elif isinstance(v, bool):
+            out.append((key, int(v)))
+        elif isinstance(v, (int, float)):
+            out.append((key, v))
+    return out
+
+
+# =============================================================================
+# Per-(source, detector) detected power -- surfaces case.json["detected"]
+# (run_trace.py's per-seed coherent+incoherent tally, see detector.py's
+# detected_geometric/detected_incoherent) into report.json + a CSV. Values
+# are averaged across seeds (coherent_W/incoherent_W are powers; n_samples
+# is a total ray count summed across seeds, not averaged, matching how the
+# gather diagnostics themselves report n_samples per seed).
+# =============================================================================
+def add_per_source_detected(case, report):
+    """Populate report['detectors'][label]['per_source'] from case.json's
+    per-seed 'detected' block. Returns the flat list of rows (one per
+    (source, detector, lam_stratum, pol_stratum)) for the CSV writer."""
+    sources = case.get("sources", [])
+    detected_all = case.get("detected", {})
+    n = float(len(detected_all)) or 1.0
+    acc = {}
+    for seed_block in detected_all.values():
+        for label, rows in seed_block.items():
+            for skey, vals in rows.items():
+                a = acc.setdefault((label, skey), {"coherent_W": 0.0,
+                                                    "incoherent_W": 0.0,
+                                                    "n_samples": 0})
+                a["coherent_W"] += vals.get("coherent_W", 0.0) / n
+                a["incoherent_W"] += vals.get("incoherent_W", 0.0) / n
+                a["n_samples"] += vals.get("n_samples", 0)
+    flat = []
+    for (label, skey), vals in sorted(acc.items()):
+        if label not in report["detectors"]:
+            continue
+        s, l, p = (int(x) for x in skey.split("/"))
+        src_name = sources[s] if s < len(sources) else str(s)
+        report["detectors"][label].setdefault("per_source", []).append({
+            "source": src_name, "lam_stratum": l, "pol_stratum": p,
+            "coherent_W": vals["coherent_W"],
+            "incoherent_W": vals["incoherent_W"],
+        })
+        flat.append((src_name, label, l, p, vals["coherent_W"],
+                    vals["incoherent_W"], vals["n_samples"]))
+    return flat
+
+
+SLOW_RAY_COLOR = "#7b2d8b"  # biaxial slow sheet (pol_mode 2), dashed
+FAST_RAY_COLOR = "#0b6e4f"  # biaxial fast sheet (pol_mode 3), dashed
 E_RAY_COLOR = "black"       # fixed distinct color for extraordinary (o/e
                             # split) rays in plot_rays_2d -- deliberately
                             # NOT a wavelength color so it reads unambiguously
@@ -78,18 +184,48 @@ def detector_qe_curve_for_label(label, qe_bodies):
 
 def render_detector(h5path, outdir_img, outdir_spec, report,
                     photometric=False, spectrometer=False,
-                    qe_bodies=None, detector_registry=None):
+                    qe_bodies=None, detector_registry=None,
+                    csv_emitter=None):
     with h5py.File(h5path) as h:
         cube = h["spectral_cube_mean"][...]
         mask = h["mask"][...]
         attrs = dict(h.attrs)
         std = h["spectral_cube_std"][...] \
             if "spectral_cube_std" in h else None
+        # curved (Sphere/Cylinder) detectors carry a TRUE per-pixel metric
+        # area map; planar files have none (byte-compatible with pre-Phase-10)
+        area_map = h["pixel_area_map"][...] \
+            if "pixel_area_map" in h else None
     label = attrs["label"]
     safe = label.replace(".", "_")
     lam_lo, lam_hi = attrs["lam_lo_m"], attrs["lam_hi_m"]
     pixel_m = attrs["pixel_m"]
-    pixel_area = pixel_m ** 2
+    curved = "surface_type" in attrs
+
+    # per-pixel area: curved uses the stored metric map (varies with latitude
+    # on a sphere); planar uses the square pixel. Irradiance = power / area
+    # either way, so the total detected POWER (cube.sum) is unchanged and
+    # flows into the report exactly as for a planar screen.
+    if curved:
+        pixel_area = np.where(area_map > 0.0, area_map, np.inf)
+        W_mm = attrs["radius_m"] * (attrs["u_hi"] - attrs["u_lo"]) / 1e-3
+        H_mm = (attrs["radius_m"] * (attrs["v_hi"] - attrs["v_lo"]) / 1e-3
+                if attrs["surface_type"] == "sphere"
+                else (attrs["v_hi"] - attrs["v_lo"]) / 1e-3)
+        extent_mm = [0, W_mm, 0, H_mm]
+        col_pitch_mm = W_mm / attrs["W"]
+        row_pitch_mm = H_mm / attrs["H"]
+        if attrs["surface_type"] == "sphere":
+            xlabel, ylabel = "azimuth arc [mm]", "polar arc [mm]"
+        else:
+            xlabel, ylabel = "arc s [mm]", "axial z [mm]"
+    else:
+        pixel_area = pixel_m ** 2
+        extent_mm = [0, attrs["W"] * pixel_m / 1e-3,
+                     0, attrs["H"] * pixel_m / 1e-3]
+        col_pitch_mm = pixel_m / 1e-3
+        row_pitch_mm = pixel_m / 1e-3
+        xlabel, ylabel = "x [mm]", "y [mm]"
 
     # the stored cube is UNBIASED and may contain zero-mean negative MC
     # noise (see gather.py); sums stay honest, displays clip at zero
@@ -102,8 +238,8 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
         "resolution": [int(attrs["H"]), int(attrs["W"])],
         "pixel_um": float(pixel_m / 1e-6),
     }
-    extent_mm = [0, attrs["W"] * pixel_m / 1e-3,
-                 0, attrs["H"] * pixel_m / 1e-3]
+    if curved:
+        report["detectors"][label]["surface_type"] = str(attrs["surface_type"])
 
     # sRGB wavelength-colored image (clip the noise for display)
     rgb = spectral_cube_to_srgb(np.maximum(cube, 0.0), lam_lo, lam_hi)
@@ -111,8 +247,8 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
     fig, ax = plt.subplots(figsize=(8, 8), dpi=max(
         128, int(attrs["W"]) // 8))
     ax.imshow(rgb, origin="lower", extent=extent_mm)
-    ax.set_xlabel("x [mm]")
-    ax.set_ylabel("y [mm]")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     ax.set_title("%s — wavelength-colored irradiance" % label)
     fig.savefig(outdir_img / ("det_%s.png" % safe), bbox_inches="tight")
     plt.close(fig)
@@ -129,8 +265,8 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
         fig.colorbar(im, ax=ax, fraction=0.046,
                      label="W/m$^2$" if tag == "lin"
                      else "log10 W/m$^2$")
-        ax.set_xlabel("x [mm]")
-        ax.set_ylabel("y [mm]")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
         ax.set_title("%s — irradiance (%s)" % (label, tag))
         fig.savefig(outdir_img / ("det_%s_%s.png" % (safe, tag)),
                     bbox_inches="tight")
@@ -140,15 +276,15 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
     if np.any(irr > 0):
         iy, ix = np.unravel_index(np.argmax(irr), irr.shape)
         fig, axes = plt.subplots(2, 1, figsize=(9, 7))
-        xmm = (np.arange(irr.shape[1]) + 0.5) * pixel_m / 1e-3
-        ymm = (np.arange(irr.shape[0]) + 0.5) * pixel_m / 1e-3
+        xmm = (np.arange(irr.shape[1]) + 0.5) * col_pitch_mm
+        ymm = (np.arange(irr.shape[0]) + 0.5) * row_pitch_mm
         axes[0].plot(xmm, irr[iy], lw=0.8)
         axes[0].set_title("%s — horizontal profile through peak "
                           "(row %d)" % (label, iy))
-        axes[0].set_xlabel("x [mm]")
+        axes[0].set_xlabel(xlabel)
         axes[1].plot(ymm, irr[:, ix], lw=0.8)
         axes[1].set_title("vertical profile through peak (col %d)" % ix)
-        axes[1].set_xlabel("y [mm]")
+        axes[1].set_xlabel(ylabel)
         for a in axes:
             a.set_ylabel("W/m$^2$")
         fig.tight_layout()
@@ -161,6 +297,16 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
         if len(seg) > 16:
             V = (seg.max() - seg.min()) / (seg.max() + seg.min())
             report["detectors"][label]["profile_visibility"] = float(V)
+        if csv_emitter is not None:
+            img = "images/det_%s_profiles.png" % safe
+            csv_emitter.emit(
+                "profile_h_%s.csv" % safe, ["position_m", "irradiance_W_m2"],
+                zip(xmm * 1e-3, irr[iy]), entity=label,
+                chart="profile_horizontal", units="W/m^2", image=img)
+            csv_emitter.emit(
+                "profile_v_%s.csv" % safe, ["position_m", "irradiance_W_m2"],
+                zip(ymm * 1e-3, irr[:, ix]), entity=label,
+                chart="profile_vertical", units="W/m^2", image=img)
 
     # spectrum
     bins = cube.shape[0]
@@ -178,6 +324,11 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
     plt.close(fig)
     if std is not None:
         np.save(outdir_spec / ("std_cube_%s.npy" % safe), std)
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "spectrum_%s.csv" % safe, ["wavelength_nm", "power_W"],
+            zip(lam_c, pw * 1e-3), entity=label, chart="detected_spectrum",
+            units="W", image="spectra/spectrum_%s.png" % safe)
 
     if photometric:
         _render_photometric(cube, mask, lam_lo, lam_hi, pixel_area,
@@ -203,6 +354,17 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
                 "qe_weighted_power_W": float(p_w),
                 "coverage_frac": float(cov),
             }
+
+    if csv_emitter is not None:
+        # scalar metrics: dump every already-computed number in this
+        # detector's report block (total/peak/visibility/photometric/
+        # spectrometer/qe) -- no re-derivation, just a flat metric,value
+        # table so nothing here can drift from report.json.
+        metrics = _flatten_scalars(
+            {k: v for k, v in report["detectors"][label].items()
+             if k != "per_source"})
+        csv_emitter.emit("metrics_%s.csv" % safe, ["metric", "value"],
+                         metrics, entity=label, chart="scalar_metrics")
 
 
 # =============================================================================
@@ -560,7 +722,8 @@ def plot_rays_2d(rays, model, outpath, max_generation=None,
                     continue
                 ax.plot(w[keep, 0] * 1e3, w[keep, 1] * 1e3,
                         color="0.55", lw=0.7, zorder=1)
-    has_e_ray = False
+    mode_colors = {1: E_RAY_COLOR, 2: SLOW_RAY_COLOR, 3: FAST_RAY_COLOR}
+    modes_seen = set()
     if len(rays):
         if dim_mode != "off":
             rel = np.clip(rays[:, 10], 0.0, 1.0)
@@ -578,17 +741,21 @@ def plot_rays_2d(rays, model, outpath, max_generation=None,
             idx = np.random.default_rng(0).choice(idx, 20000,
                                                   replace=False)
         for i in idx:
-            is_e = pol_mode[i] == 1
-            has_e_ray = has_e_ray or is_e
+            mode = int(pol_mode[i])
+            special = mode in mode_colors
+            if special:
+                modes_seen.add(mode)
             ax.plot([rays[i, 3] * 1e3, rays[i, 6] * 1e3],
                     [rays[i, 4] * 1e3, rays[i, 7] * 1e3],
-                    color=E_RAY_COLOR if is_e else colors[i],
-                    linestyle="--" if is_e else "-",
-                    alpha=float(alpha[i]), lw=0.9 if is_e else 0.5,
-                    zorder=3 if is_e else 2)
-    if has_e_ray:
-        ax.legend(handles=[Line2D([0], [0], color=E_RAY_COLOR, ls="--",
-                                  lw=1.2, label="e-ray")],
+                    color=mode_colors[mode] if special else colors[i],
+                    linestyle="--" if special else "-",
+                    alpha=float(alpha[i]), lw=0.9 if special else 0.5,
+                    zorder=3 if special else 2)
+    if modes_seen:
+        names = {1: "e-ray", 2: "slow sheet", 3: "fast sheet"}
+        ax.legend(handles=[Line2D([0], [0], color=mode_colors[m], ls="--",
+                                  lw=1.2, label=names[m])
+                           for m in sorted(modes_seen)],
                   loc="upper right", fontsize=8)
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("y [mm]")
@@ -623,7 +790,7 @@ def _coating_names(b):
     return [c]
 
 
-def plot_materials(model, outdir):
+def plot_materials(model, outdir, csv_emitter=None):
     props = load_optical_properties()
     db = props.matdb
     used = set()
@@ -636,6 +803,10 @@ def plot_materials(model, outdir):
             mo, me = db.get_uniaxial(name)
             used.add(mo.name)
             used.add(me.name)
+        elif getattr(db, "is_biaxial", lambda _n: False)(name):
+            # biaxial crystal names map to their three principal-index rows
+            for m in db.get_biaxial(name):
+                used.add(m.name)
         else:
             used.add(name)
     used = sorted(used)
@@ -651,6 +822,15 @@ def plot_materials(model, outdir):
         axes[0].plot(lam / 1e-9, np.real(n), label=name)
         axes[1].semilogy(lam / 1e-9,
                          np.maximum(np.imag(n), 1e-12), label=name)
+        if csv_emitter is not None:
+            ref = db.get(name).reference
+            csv_emitter.emit(
+                "nk_%s.csv" % _safe_name(name),
+                ["wavelength_nm", "n", "k", "reference"],
+                zip(lam / 1e-9, np.real(n), np.imag(n),
+                   [ref] * len(lam)),
+                entity=name, chart="material_dispersion", provenance=ref,
+                image="plots/materials_nk.png")
     axes[0].set_ylabel("n")
     axes[1].set_ylabel("k")
     for a in axes:
@@ -678,6 +858,16 @@ def plot_materials(model, outdir):
                 rs, rp, ts, tp, etas = tf.tmm_coeffs(lam, cos_i, n1, n_sub,
                                                      ln, ld)
                 R = 0.5 * (np.abs(rs) ** 2 + np.abs(rp) ** 2)
+                if csv_emitter is not None:
+                    Rs, Rp, Ts, Tp = tf.tmm_power(rs, rp, ts, tp, etas)
+                    ref = cspec.get("reference", "")
+                    csv_emitter.emit(
+                        "coating_%s.csv" % _safe_name(cname),
+                        ["wavelength_nm", "Rs", "Rp", "Ts", "Tp",
+                         "reference"],
+                        zip(lam / 1e-9, Rs, Rp, Ts, Tp, [ref] * len(lam)),
+                        entity=cname, chart="coating_RT", provenance=ref,
+                        image="plots/coating_reflectance.png")
             else:
                 lam_um = lam * 1e6
                 R = 0.5 * (np.interp(lam_um, cspec["lam_um"], cspec["Rs"])
@@ -705,6 +895,17 @@ def plot_materials(model, outdir):
                     ax.plot(tab_lam_nm, 100 * cspec[key], linestyle=ls,
                            lw=1.0,
                            label="%s %s (AOI=%.0f°)" % (cname, key, aoi))
+            if csv_emitter is not None:
+                ref = cspec.get("reference", "")
+                nan = np.full(len(tab_lam_nm), np.nan)
+                csv_emitter.emit(
+                    "coating_%s.csv" % _safe_name(cname),
+                    ["wavelength_nm", "Rs", "Rp", "Ts", "Tp", "reference"],
+                    zip(tab_lam_nm, cspec.get("Rs", nan),
+                       cspec.get("Rp", nan), cspec.get("Ts", nan),
+                       cspec.get("Tp", nan), [ref] * len(tab_lam_nm)),
+                    entity=cname, chart="coating_RT", provenance=ref,
+                    image="plots/coating_reflectance.png")
 
         ax.set_xlabel("wavelength [nm]")
         ax.set_ylabel("R or T [%]")
@@ -909,6 +1110,888 @@ def plot_audit(audit, outdir):
     plt.close(fig)
 
 
+# =============================================================================
+# --emit-csv: per-source (spectrum/Stokes/ledger) + per-element + system CSVs.
+# Everything here reads data the trace/audit stages already produced (model
+# source props, audit.json buckets, report['elements'] from
+# common.element_power_table) -- no new physics, just a CSV projection.
+# =============================================================================
+def _avg_source_ledger(audit):
+    """{source_name: {emitted_W, closure_error, <bucket>: W, ...}} averaged
+    across seeds, same averaging convention as common.element_power_table."""
+    per_seed = audit.get("per_seed", [])
+    if not per_seed:
+        return {}
+    n = float(len(per_seed))
+    names = list(per_seed[0]["sources"])
+    out = {}
+    for name in names:
+        row = {"emitted_W": 0.0, "closure_error": 0.0}
+        row.update({b: 0.0 for b in BUCKETS})
+        for rep in per_seed:
+            s = rep["sources"][name]
+            row["emitted_W"] += s["emitted_W"] / n
+            row["closure_error"] += s["closure_error"] / n
+            for b in BUCKETS:
+                row[b] += s.get(b, 0.0) / n
+        out[name] = row
+    return out
+
+
+def _source_spectrum_rows(src, n_lambda):
+    """[(wavelength_nm, rel_power, power_W)] -- the n_lambda deterministic
+    equal-probability strata sample_source draws from (wavelength_strata),
+    each carrying 1/n_lambda of the source's total power."""
+    lam_m = wavelength_strata(src, n_lambda)
+    power_w = src["power_mW"] * 1e-3
+    rel = 1.0 / len(lam_m)
+    return [(float(l / 1e-9), rel, power_w * rel) for l in lam_m]
+
+
+def _source_stokes_row(src):
+    """Source polarization spec -> (S0,S1,S2,S3,DOP), power-normalized to
+    S0=1. Unpolarized sources average the two orthogonal pol_strata Jones
+    vectors jones_for() returns for pol_stratum 0/1 (equal power each) --
+    the same populations sample_source draws rays from -- which correctly
+    collapses to DOP=0."""
+    pol = src.get("polarization")
+    n_pol = n_pol_strata({"polarization": pol})
+    S = np.zeros(4)
+    for ps in range(n_pol):
+        Es, Ep = jones_for(pol, ps)
+        S += np.array(stokes_from_jones(np.array(Es), np.array(Ep))) / n_pol
+    dop = float(np.sqrt(S[1] ** 2 + S[2] ** 2 + S[3] ** 2) / S[0]) \
+        if S[0] > 0 else 0.0
+    return {"S0": float(S[0]), "S1": float(S[1]), "S2": float(S[2]),
+            "S3": float(S[3]), "DOP": dop}
+
+
+def emit_source_csvs(csv_emitter, model, case, audit):
+    """Per-source emitted spectrum, Stokes state, and averaged ledger
+    buckets/closure -- one CSV per chart kind, all sources concatenated
+    (a 'source' column distinguishes rows) since there is no per-source
+    chart today to share a basename with."""
+    n_lambda = int(case.get("options", {}).get("nlambda", 1) or 1)
+    src_bodies = [b for b in model["bodies"] if b.get("role") == "source"]
+
+    spec_rows = []
+    stokes_rows = []
+    for b in src_bodies:
+        name = b.get("label", b["name"])
+        src = b["source"]
+        for lam_nm, rel, p_w in _source_spectrum_rows(src, n_lambda):
+            spec_rows.append((name, lam_nm, rel, p_w))
+        st = _source_stokes_row(src)
+        stokes_rows.append((name, st["S0"], st["S1"], st["S2"], st["S3"],
+                            st["DOP"]))
+    if spec_rows:
+        csv_emitter.emit(
+            "source_spectrum.csv",
+            ["source", "wavelength_nm", "rel_power", "power_W"], spec_rows,
+            entity="sources", chart="emitted_spectrum", units="W")
+    if stokes_rows:
+        csv_emitter.emit(
+            "source_polarization.csv",
+            ["source", "S0", "S1", "S2", "S3", "DOP"], stokes_rows,
+            entity="sources", chart="polarization_state")
+
+    ledger = _avg_source_ledger(audit)
+    if ledger:
+        ledger_rows = [(name, bucket, row[bucket])
+                       for name, row in ledger.items() for bucket in BUCKETS]
+        csv_emitter.emit(
+            "source_ledger.csv", ["source", "bucket", "power_W"],
+            ledger_rows, entity="sources", chart="energy_ledger", units="W")
+        closure_rows = [(name, row["emitted_W"], row["closure_error"])
+                        for name, row in ledger.items()]
+        csv_emitter.emit(
+            "source_closure.csv",
+            ["source", "emitted_W", "closure_error"], closure_rows,
+            entity="sources", chart="closure_summary", units="W")
+
+
+def emit_element_csvs(csv_emitter, report, audit):
+    """Per-element power table (report['elements'], already the seed-
+    averaged common.element_power_table) + audit.json's per-seed-0
+    boundary-flux and per-face tallies (diagnostic side-tables, not
+    seed-averaged upstream -- reported as-is from seed 0, matching
+    plot_audit's existing seed-0 convention)."""
+    rows = [(label, r["power_in_W"], r["power_out_W"], r["absorbed_W"],
+            r["detected_W"]) for label, r in report["elements"].items()]
+    if rows:
+        csv_emitter.emit(
+            "element_power.csv",
+            ["element", "power_in_W", "power_out_W", "absorbed_W",
+             "detected_W"], rows, entity="elements",
+            chart="element_power_table", units="W")
+
+    rep0 = audit["per_seed"][0]
+    flux_rows = [(label, fx.get("in_W", 0.0), fx.get("out_W", 0.0))
+                for label, fx in sorted(rep0.get("element_flux_W", {}).items())]
+    if flux_rows:
+        csv_emitter.emit(
+            "element_boundary_flux.csv", ["element", "in_W", "out_W"],
+            flux_rows, entity="elements", chart="boundary_flux", units="W")
+
+    face_rows = [(face_id, w)
+                for face_id, w in sorted(rep0.get("by_surface_W", {}).items())]
+    if face_rows:
+        csv_emitter.emit(
+            "element_per_face_power.csv", ["face", "power_W"], face_rows,
+            entity="elements", chart="per_face_power", units="W")
+
+
+def emit_system_csvs(csv_emitter, report, audit):
+    """System-level data/energy_ledger.csv (source, bucket, power_W) +
+    data/power_flow.csv (from_node, to_node, power_W): a simple two-tier
+    flow graph SOURCES -> element (in) -> {ABSORBED, DETECTED,
+    SURROUNDINGS} plus SOURCES -> <loss bucket> for buckets that are not
+    tied to a specific element (escaped/truncated/etc — the ledger does
+    not attribute those to an element)."""
+    ledger = _avg_source_ledger(audit)
+    ledger_rows = [(name, bucket, row[bucket])
+                   for name, row in ledger.items() for bucket in BUCKETS]
+    if ledger_rows:
+        csv_emitter.emit(
+            "energy_ledger.csv", ["source", "bucket", "power_W"],
+            ledger_rows, entity="system", chart="energy_ledger", units="W")
+
+    flow_rows = []
+    for label, r in report["elements"].items():
+        if r["power_in_W"] > 0:
+            flow_rows.append(("SOURCES", label, r["power_in_W"]))
+        if r["absorbed_W"] > 0:
+            flow_rows.append((label, "ABSORBED", r["absorbed_W"]))
+        if r["detected_W"] > 0:
+            flow_rows.append((label, "DETECTED", r["detected_W"]))
+        if r["power_out_W"] > 0:
+            flow_rows.append((label, "SURROUNDINGS", r["power_out_W"]))
+    bucket_totals = {}
+    for row in ledger.values():
+        for b in BUCKETS:
+            bucket_totals[b] = bucket_totals.get(b, 0.0) + row[b]
+    for b, w in bucket_totals.items():
+        if w > 0:
+            flow_rows.append(("SOURCES", b.upper(), w))
+    if flow_rows:
+        csv_emitter.emit(
+            "power_flow.csv", ["from_node", "to_node", "power_W"],
+            flow_rows, entity="system", chart="power_flow", units="W")
+
+
+# =============================================================================
+# --export-rays follow-on: spot diagrams + transverse ray/OPD fans from
+# results/<case>/rays_full.npz (run_trace.py's seed-0 landing records). PNGs
+# go under results/<case>/analysis/; CSVs go through the CsvEmitter with the
+# index.csv `image` column pointing at the analysis PNG. No-op when the npz
+# is absent (i.e. the trace ran without --export-rays).
+# =============================================================================
+def _spot_stats(u, v, power):
+    """Centroid + RMS + geometric (100%) radius of landing points (u, v)
+    [m] in the detector grid frame. RMS is power-weighted-agnostic (a plain
+    geometric spot metric); centroid is the plain mean so a symmetric spot
+    reports its geometric center."""
+    uc = float(np.mean(u))
+    vc = float(np.mean(v))
+    dr = np.hypot(u - uc, v - vc)
+    rms = float(np.sqrt(np.mean(dr ** 2)))
+    geo = float(np.max(dr)) if len(dr) else 0.0
+    return uc, vc, rms, geo
+
+
+def render_spot_diagram(safe, dm, cols, adir, report, csv_emitter=None):
+    label = dm["label"]
+    xhat = np.asarray(dm["xhat"]); yhat = np.asarray(dm["yhat"])
+    pos = cols["pos"]
+    if len(pos) == 0:
+        return
+    u = pos @ xhat
+    v = pos @ yhat
+    sid = cols["source_id"].astype(int)
+    lst = cols["lam_stratum"].astype(int)
+    lam = cols["lam"]
+    power = cols["power"]
+    keys = sorted(set(zip(sid.tolist(), lst.tolist())))
+    keys = [k for k in keys if int(np.sum((sid == k[0]) & (lst == k[1]))) > 0]
+    if not keys:
+        return
+    rows = []
+    csv_rows = []
+    npanel = len(keys)
+    ncol = min(4, npanel)
+    nrow = int(np.ceil(npanel / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(3.2 * ncol, 3.2 * nrow),
+                             squeeze=False)
+    for ax in axes.ravel():
+        ax.axis("off")
+    for i, (s, l) in enumerate(keys):
+        m = (sid == s) & (lst == l)
+        uk, vk = u[m], v[m]
+        lam_nm = float(np.mean(lam[m])) * 1e9
+        uc, vc, rms, geo = _spot_stats(uk, vk, power[m])
+        ax = axes.ravel()[i]
+        ax.axis("on")
+        rgb = np.clip(wavelength_rgb(lam_nm).ravel(), 0, 1)
+        ax.scatter((uk - uc) * 1e6, (vk - vc) * 1e6, s=2,
+                   color=rgb, edgecolors="none")
+        ax.set_aspect("equal", "box")
+        ax.set_title("src %d λ%d %.0f nm\nRMS %.2f µm  geo %.2f µm"
+                     % (s, l, lam_nm, rms * 1e6, geo * 1e6), fontsize=8)
+        ax.set_xlabel("x − centroid [µm]", fontsize=7)
+        ax.set_ylabel("y − centroid [µm]", fontsize=7)
+        ax.tick_params(labelsize=6)
+        rows.append({"source_id": int(s), "lam_stratum": int(l),
+                     "rms_radius_um": rms * 1e6, "geo_radius_um": geo * 1e6,
+                     "centroid_x_um": uc * 1e6, "centroid_y_um": vc * 1e6,
+                     "n_rays": int(m.sum())})
+        csv_rows.append((int(s), int(l), rms * 1e6, geo * 1e6,
+                         uc * 1e6, vc * 1e6, int(m.sum())))
+    fig.suptitle("Spot diagram — %s" % label, fontsize=10)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    png = adir / ("spot_%s.png" % safe)
+    fig.savefig(png, bbox_inches="tight")
+    plt.close(fig)
+    if label in report["detectors"]:
+        report["detectors"][label]["spot"] = rows
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "spot_%s.csv" % safe,
+            ["source_id", "lam_stratum", "rms_radius_um", "geo_radius_um",
+             "centroid_x_um", "centroid_y_um", "n_rays"], csv_rows,
+            entity=label, chart="spot_diagram", units="um",
+            provenance="rays_full.npz",
+            image="analysis/spot_%s.png" % safe)
+
+
+def _pupil_xy(bp, xhat, yhat, power):
+    """Power-weighted-centroid, max-radius-normalized transverse pupil
+    coordinates (px, py) from a source/key's birth positions -- the
+    convention render_ray_fans (and now render_wavefront) samples the
+    exit/emit wavefront at. Returns None if every birth position
+    coincides (rmax <= 0, e.g. a point-like or single-ray population)."""
+    wsum = float(np.sum(power)) or 1.0
+    c = (power[:, None] * bp).sum(axis=0) / wsum
+    px = (bp - c) @ xhat
+    py = (bp - c) @ yhat
+    rmax = float(np.max(np.hypot(px, py))) if len(px) else 0.0
+    if rmax <= 0:
+        return None
+    return px / rmax, py / rmax
+
+
+def render_ray_fans(safe, dm, cols, adir, report, csv_emitter=None,
+                    min_rays=50, slab=0.05):
+    """Transverse tangential/sagittal ray fans + a chief-referenced OPD fan,
+    using each ray's birth_pos to build a per-source normalized pupil
+    coordinate (offset from the power-weighted birth centroid / max radius).
+    Tangential = rays in the |pupil_x|<slab strip (Δy_landing vs pupil_y);
+    sagittal the transpose; OPD = opl + straight-line ambient path to the
+    landing centroid, referenced to the chief (min-pupil-radius) ray, in
+    waves at each ray's own wavelength.
+
+    Pupil normalization (birth centroid, max-radius scale) is factored
+    into _pupil_xy() so render_wavefront samples the identical pupil
+    coordinate convention."""
+    label = dm["label"]
+    xhat = np.asarray(dm["xhat"]); yhat = np.asarray(dm["yhat"])
+    pos = cols["pos"]; bp = cols["birth_pos"]
+    if len(pos) == 0:
+        return
+    sid = cols["source_id"].astype(int)
+    opl = cols["opl"]; lam = cols["lam"]; power = cols["power"]
+    u = pos @ xhat
+    v = pos @ yhat
+    sources = [s for s in sorted(set(sid.tolist()))
+               if int(np.sum(sid == s)) > min_rays]
+    # a source with any NaN birth_pos (children from a fully-synthetic
+    # population) cannot be pupil-referenced; drop those rays per source
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.2))
+    csv_rows = []
+    fan_report = []
+    plotted = False
+    for s in sources:
+        m = (sid == s) & np.isfinite(bp).all(axis=1)
+        if int(m.sum()) <= min_rays:
+            continue
+        bpm = bp[m]
+        pw = power[m]
+        pupil = _pupil_xy(bpm, xhat, yhat, pw)
+        if pupil is None:
+            continue
+        px, py = pupil
+        um, vm = u[m], v[m]
+        uc = float(np.mean(um)); vc = float(np.mean(vm))
+        lamm = lam[m]; oplm = opl[m]
+        # chief ray: smallest pupil radius
+        chief = int(np.argmin(np.hypot(px, py)))
+        dist = np.hypot(um - uc, vm - vc)          # ambient path to centroid
+        opd = oplm + dist
+        opd_ref = opd - opd[chief]
+        opd_waves = opd_ref / lamm
+        # tangential strip
+        tan = np.abs(px) < slab
+        if np.any(tan):
+            order = np.argsort(py[tan])
+            axes[0].plot(py[tan][order], (vm[tan][order] - vc) * 1e6,
+                         marker=".", ms=3, lw=0.8, label="src %d" % s)
+            axes[2].plot(py[tan][order], opd_waves[tan][order],
+                         marker=".", ms=3, lw=0.8, label="src %d" % s)
+            for pyi, dyi, wi in zip(py[tan], (vm[tan] - vc),
+                                    opd_waves[tan]):
+                csv_rows.append((int(s), "tangential", float(pyi),
+                                 float(dyi * 1e6)))
+                csv_rows.append((int(s), "opd", float(pyi), float(wi)))
+            plotted = True
+        # sagittal strip
+        sag = np.abs(py) < slab
+        if np.any(sag):
+            order = np.argsort(px[sag])
+            axes[1].plot(px[sag][order], (um[sag][order] - uc) * 1e6,
+                         marker=".", ms=3, lw=0.8, label="src %d" % s)
+            for pxi, dxi in zip(px[sag], (um[sag] - uc)):
+                csv_rows.append((int(s), "sagittal", float(pxi),
+                                 float(dxi * 1e6)))
+            plotted = True
+        fan_report.append({"source_id": int(s),
+                           "opd_rms_waves": float(np.std(opd_waves)),
+                           "opd_pv_waves": float(np.ptp(opd_waves)),
+                           "n_rays": int(m.sum())})
+    if not plotted:
+        plt.close(fig)
+        return
+    axes[0].set_title("Tangential fan"); axes[0].set_xlabel("pupil y")
+    axes[0].set_ylabel("Δy landing [µm]")
+    axes[1].set_title("Sagittal fan"); axes[1].set_xlabel("pupil x")
+    axes[1].set_ylabel("Δx landing [µm]")
+    axes[2].set_title("OPD fan (chief-ref)"); axes[2].set_xlabel("pupil y")
+    axes[2].set_ylabel("OPD [waves]")
+    for ax in axes:
+        ax.axhline(0, color="0.7", lw=0.6, zorder=0)
+        ax.legend(fontsize=7)
+    fig.suptitle("Ray fans — %s" % label, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    png = adir / ("fan_%s.png" % safe)
+    fig.savefig(png, bbox_inches="tight")
+    plt.close(fig)
+    if label in report["detectors"]:
+        report["detectors"][label]["fan"] = fan_report
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "fan_%s.csv" % safe,
+            ["source_id", "fan_type", "pupil", "value"], csv_rows,
+            entity=label, chart="ray_fan",
+            units="Δlanding µm; opd waves", provenance="rays_full.npz",
+            image="analysis/fan_%s.png" % safe)
+
+
+# =============================================================================
+# --ghost-analysis follow-on: rank multi-bounce reflection ("ghost") paths by
+# detected power. Runs only when rays_full.npz carries the seed-0 refl_hist
+# face-id history (i.e. the trace ran with --ghost-analysis). A ghost is a
+# detector hit that reflected >= 2 times AND is purely specular (scattered
+# rays -- roughness/diffuser/particle lobes -- are excluded: they are a
+# continuous BSDF pedestal, not a discrete surface-reflection ghost). Rays are
+# grouped by the ORDERED tuple of face ids they reflected off (the path
+# signature, mapped to element labels via meta['face_labels']) and ranked by
+# summed detected power. No new physics -- pure bookkeeping over refl_hist.
+# =============================================================================
+GHOST_TOP_N = 12          # bar-chart / report rows
+GHOST_FOOTPRINTS = 3      # top-K paths that also get a footprint image
+
+
+def _ghost_face_label(fid, face_labels):
+    """Face index -> "<element>.<FaceN>" via the npz meta's face_labels list
+    (written by run_trace from the scene); falls back to "face<idx>" if the
+    map is missing or the index is out of range (defensive)."""
+    if face_labels is not None and 0 <= fid < len(face_labels):
+        return face_labels[fid]
+    return "face%d" % fid
+
+
+def _ghost_path_str(sig, face_labels):
+    return " -> ".join(_ghost_face_label(f, face_labels) for f in sig)
+
+
+def render_ghost_analysis(safe, dm, cols, adir, report, face_labels,
+                          csv_emitter=None):
+    """Ghost/stray-light table + footprints for one detector. Groups the
+    generation>=2 specular detector hits by their refl_hist face-id path
+    signature, ranks by summed detected power, writes:
+      analysis/ghost_table_<safe>.png     (top-N bar chart)
+      analysis/ghost_footprint_<safe>_<k>.png  (top-3 detector-frame maps)
+      data/ghost_table_<safe>.csv         (via CsvEmitter)
+      report['detectors'][label]['ghosts']  (top rows + totals)."""
+    label = dm["label"]
+    xhat = np.asarray(dm["xhat"]); yhat = np.asarray(dm["yhat"])
+    pos = cols["pos"]
+    hist = cols.get("refl_hist")
+    if hist is None or len(pos) == 0:
+        return
+    gen = cols["generation"].astype(int)
+    scat = cols["scattered"].astype(bool)
+    power = cols["power"]
+    total_det = float(np.sum(power))
+    cand = (gen >= 2) & (~scat)
+    if not np.any(cand) or total_det <= 0:
+        return
+    # group candidate rays by their ordered face-id reflection signature
+    groups = {}
+    for i in np.where(cand)[0]:
+        sig = tuple(int(x) for x in hist[i] if x >= 0)
+        if len(sig) < 2:            # defensive: history lost (should not happen)
+            continue
+        groups.setdefault(sig, []).append(i)
+    if not groups:
+        return
+    rows = []
+    for sig, idxs in groups.items():
+        idxs = np.asarray(idxs)
+        rows.append({"sig": sig, "idxs": idxs,
+                     "power_W": float(np.sum(power[idxs])),
+                     "n_rays": int(len(idxs)), "order": len(sig)})
+    rows.sort(key=lambda r: r["power_W"], reverse=True)
+    ghost_total = float(sum(r["power_W"] for r in rows))
+
+    # --- top-N bar chart -------------------------------------------------
+    top = rows[:GHOST_TOP_N]
+    fig, ax = plt.subplots(figsize=(8, max(2.4, 0.42 * len(top) + 1.0)))
+    ypos = np.arange(len(top))[::-1]
+    ax.barh(ypos, [r["power_W"] for r in top], color="#c0392b")
+    ax.set_yticks(ypos)
+    ax.set_yticklabels([_ghost_path_str(r["sig"], face_labels) for r in top],
+                       fontsize=7)
+    ax.set_xlabel("detected power [W]")
+    ax.set_title("Ghost paths (gen>=2 specular) — %s\n"
+                 "ghost total %.3g W of %.3g W detected (%.2f%%)"
+                 % (label, ghost_total, total_det,
+                    100.0 * ghost_total / total_det), fontsize=9)
+    fig.tight_layout()
+    fig.savefig(adir / ("ghost_table_%s.png" % safe), bbox_inches="tight")
+    plt.close(fig)
+
+    # --- footprints of the top few paths (detector-frame 2-D histograms) -
+    for rank, r in enumerate(rows[:GHOST_FOOTPRINTS], start=1):
+        idxs = r["idxs"]
+        u = (pos[idxs] @ xhat) * 1e3          # mm in the detector grid frame
+        v = (pos[idxs] @ yhat) * 1e3
+        figf, axf = plt.subplots(figsize=(4.2, 3.6))
+        if len(idxs) >= 4 and np.ptp(u) > 0 and np.ptp(v) > 0:
+            axf.hist2d(u, v, bins=40, weights=power[idxs], cmap="inferno")
+        else:
+            axf.scatter(u, v, s=6, c="#e67e22")
+        axf.set_aspect("equal", "box")
+        axf.set_xlabel("u [mm]", fontsize=8)
+        axf.set_ylabel("v [mm]", fontsize=8)
+        axf.set_title("Ghost #%d  %s\n%.3g W  %d rays"
+                      % (rank, _ghost_path_str(r["sig"], face_labels),
+                         r["power_W"], r["n_rays"]), fontsize=8)
+        figf.tight_layout()
+        figf.savefig(adir / ("ghost_footprint_%s_%d.png" % (safe, rank)),
+                     bbox_inches="tight")
+        plt.close(figf)
+
+    # --- report block + CSV ---------------------------------------------
+    report_rows = []
+    csv_rows = []
+    for r in top:
+        path = _ghost_path_str(r["sig"], face_labels)
+        frac = r["power_W"] / total_det
+        report_rows.append({
+            "path": path, "ghost_order": r["order"],
+            "detected_W": r["power_W"], "fraction_of_detected": frac,
+            "n_rays": r["n_rays"]})
+        csv_rows.append((path, r["order"], r["power_W"], frac, r["n_rays"]))
+    if label in report["detectors"]:
+        report["detectors"][label]["ghosts"] = {
+            "total_detected_W": total_det,
+            "ghost_detected_W": ghost_total,
+            "ghost_fraction": ghost_total / total_det,
+            "n_paths": len(rows),
+            "top": report_rows,
+        }
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "ghost_table_%s.csv" % safe,
+            ["path", "ghost_order", "detected_W", "fraction_of_detected",
+             "n_rays"], csv_rows,
+            entity=label, chart="ghost_table", units="W",
+            provenance="rays_full.npz",
+            image="analysis/ghost_table_%s.png" % safe)
+
+
+def render_ray_analysis(case_dir, report, csv_emitter=None):
+    npz_path = case_dir / "rays_full.npz"
+    if not npz_path.exists():
+        return
+    z = np.load(npz_path, allow_pickle=True)
+    meta = json.loads(str(z["meta"]))
+    face_labels = meta.get("face_labels")
+    adir = case_dir / "analysis"
+    adir.mkdir(exist_ok=True)
+    for safe, dm in meta["detectors"].items():
+        cols = {k: z["%s/%s" % (safe, k)]
+                for k in ("pos", "dir", "opl", "lam", "source_id",
+                          "lam_stratum", "pol_stratum", "generation",
+                          "pol_mode", "power", "scattered", "coherent",
+                          "birth_pos")}
+        hist_key = "%s/refl_hist" % safe
+        if hist_key in z.files:
+            cols["refl_hist"] = z[hist_key]
+        render_spot_diagram(safe, dm, cols, adir, report, csv_emitter)
+        render_ray_fans(safe, dm, cols, adir, report, csv_emitter)
+        if "refl_hist" in cols:
+            render_ghost_analysis(safe, dm, cols, adir, report,
+                                  face_labels, csv_emitter)
+
+
+# =============================================================================
+# --save-fields follow-on: PSF / FFT-MTF / encircled-energy analysis from a
+# detector's coherent field maps (analysis_field.py; see the 'fields/<key>/
+# {Ex,Ey}' layout documented above render_stokes_maps and _iter_field_keys).
+# One row/panel per (source,lam,pol) gather key PLUS a final 'all' row that
+# is the incoherent SUM of every key's PSF -- this detector's overall
+# broadband/multi-source spot, legitimate because different gather keys
+# never interfere (the same assumption render_stokes_maps' summed DOP panel
+# already relies on). Silent no-op when the 'fields' group is empty/absent
+# (the trace did not use --save-fields). SEED 0 ONLY (fields/ is written
+# only for seed 0, see run_trace.save_detectors) -- every figure title says
+# so explicitly.
+# =============================================================================
+def _field_key_metrics(psf, pixel_m):
+    """One (coherent-key or 'all'-summed) PSF -> {scalars, mtf, radial, ee}
+    -- the report's scalar metrics plus the raw curves the plotting/CSV
+    helpers need, computed once and shared by both."""
+    peak_w_m2 = float(psf.max()) / pixel_m ** 2 if psf.size else 0.0
+    mtf = mtf2d(psf, pixel_m)
+    W = mtf["mtf"].shape[1]
+    H = mtf["mtf"].shape[0]
+    freq = mtf["freq_cy_mm"]
+    tan_half = mtf["tangential"][W // 2:]
+    sag_half = mtf["sagittal"][H // 2:]
+    radii, ee = encircled_energy(psf, pixel=pixel_m)
+    r_prof, prof = radial_profile(psf, pixel=pixel_m)
+    scalars = {
+        "psf_peak_W_m2": peak_w_m2,
+        "mtf50_tan_cy_mm": mtf50(freq, tan_half),
+        "mtf50_sag_cy_mm": mtf50(freq, sag_half),
+        "ee_r50_um": ee_radius(radii, ee, 0.5) * 1e6,
+        "ee_r80_um": ee_radius(radii, ee, 0.8) * 1e6,
+        "ee_r90_um": ee_radius(radii, ee, 0.9) * 1e6,
+    }
+    return {"scalars": scalars, "mtf": mtf, "radial": (r_prof, prof),
+            "ee": (radii, ee)}
+
+
+def _plot_psf_panels(panels, pixel_m, outpath, title):
+    n = len(panels)
+    fig, axes = plt.subplots(n, 3, figsize=(11.5, 3.3 * n), squeeze=False)
+    for i, (name, psf) in enumerate(panels):
+        norm, _ = normalize_psf(psf)
+        H, W = psf.shape
+        extent_um = [0, W * pixel_m * 1e6, 0, H * pixel_m * 1e6]
+        ax0, ax1, ax2 = axes[i]
+        im0 = ax0.imshow(norm, origin="lower", cmap="inferno",
+                         extent=extent_um)
+        ax0.set_title("%s — linear" % name, fontsize=9)
+        fig.colorbar(im0, ax=ax0, fraction=0.046)
+        log_img = np.log10(np.maximum(norm, 1e-6))
+        im1 = ax1.imshow(log_img, origin="lower", cmap="inferno",
+                         extent=extent_um, vmin=-6, vmax=0)
+        ax1.set_title("%s — log10" % name, fontsize=9)
+        fig.colorbar(im1, ax=ax1, fraction=0.046)
+        r, prof = radial_profile(psf, pixel=pixel_m)
+        pk = float(prof.max()) if len(prof) and prof.max() > 0 else 1.0
+        ax2.semilogy(r * 1e6, np.maximum(prof / pk, 1e-8))
+        ax2.set_ylim(1e-6, 2.0)
+        ax2.set_title("%s — radial profile" % name, fontsize=9)
+        ax2.set_xlabel("r [µm]")
+        ax2.set_ylabel("normalized irradiance")
+        for ax in (ax0, ax1):
+            ax.set_xlabel("x [µm]")
+            ax.set_ylabel("y [µm]")
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(outpath, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_mtf_panels(panels, metrics_by_key, outpath, title):
+    n = len(panels)
+    fig, axes = plt.subplots(n, 2, figsize=(10, 3.3 * n), squeeze=False)
+    for i, (name, _psf) in enumerate(panels):
+        mtf = metrics_by_key[name]["mtf"]
+        ax0, ax1 = axes[i]
+        im0 = ax0.imshow(mtf["mtf"], origin="lower", cmap="viridis",
+                         extent=[mtf["fx_cy_mm"][0], mtf["fx_cy_mm"][-1],
+                                mtf["fy_cy_mm"][0], mtf["fy_cy_mm"][-1]])
+        ax0.set_title("%s — 2D MTF" % name, fontsize=9)
+        ax0.set_xlabel("fx [cyc/mm]")
+        ax0.set_ylabel("fy [cyc/mm]")
+        fig.colorbar(im0, ax=ax0, fraction=0.046)
+        W = mtf["mtf"].shape[1]
+        H = mtf["mtf"].shape[0]
+        freq = mtf["freq_cy_mm"]
+        ax1.plot(freq, mtf["tangential"][W // 2:], label="tangential")
+        ax1.plot(freq, mtf["sagittal"][H // 2:], label="sagittal")
+        ax1.axhline(0.5, color="0.7", lw=0.6, zorder=0)
+        ax1.set_title("%s — 1D slices" % name, fontsize=9)
+        ax1.set_xlabel("frequency [cyc/mm]")
+        ax1.set_ylabel("MTF")
+        ax1.set_ylim(0, 1.02)
+        ax1.legend(fontsize=7)
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(outpath, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_ee_panel(metrics_by_key, panels, outpath, title):
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for name, _psf in panels:
+        radii, ee = metrics_by_key[name]["ee"]
+        ax.plot(radii * 1e6, ee, label=name, lw=1.0)
+        for frac in (0.5, 0.8, 0.9):
+            r = ee_radius(radii, ee, frac)
+            if np.isfinite(r):
+                ax.plot(r * 1e6, frac, "o", ms=4, color="0.2")
+    ax.set_xlabel("radius [µm]")
+    ax.set_ylabel("encircled energy fraction")
+    ax.set_ylim(0, 1.05)
+    ax.legend(fontsize=7)
+    ax.set_title(title, fontsize=10)
+    fig.savefig(outpath, bbox_inches="tight")
+    plt.close(fig)
+
+
+def render_field_analysis(h5path, adir, report, csv_emitter=None):
+    """--save-fields follow-on (see the module comment above): PSF/MTF/
+    encircled-energy analysis per coherent gather key + one incoherent-sum
+    'all' row. No-op if the h5 has no populated 'fields' group."""
+    with h5py.File(h5path) as h:
+        keys = _iter_field_keys(h)
+        if not keys:
+            return
+        attrs = dict(h.attrs)
+        label = attrs["label"]
+        pixel_m = float(attrs["pixel_m"])
+        field_data = [(key, grp["Ex"][...], grp["Ey"][...])
+                     for key, grp in keys]
+    safe = label.replace(".", "_")
+    adir.mkdir(parents=True, exist_ok=True)
+
+    panels = [(key, psf_from_fields(Ex, Ey)) for key, Ex, Ey in field_data]
+    if len(panels) > 1:
+        summed = np.sum([p for _, p in panels], axis=0)
+        panels = panels + [("all", summed)]
+
+    metrics_by_key = {name: _field_key_metrics(psf, pixel_m)
+                      for name, psf in panels}
+    # headline scalars come from the dominant-POWER physical key (never the
+    # synthetic 'all' summed row, which mixes strata that may not even
+    # share a wavelength) -- per-key numbers (including 'all') live in
+    # block["keys"].
+    phys_names = [k for k, _, _ in field_data]
+    dominant = max(phys_names,
+                  key=lambda k: metrics_by_key[k]["scalars"]["psf_peak_W_m2"])
+
+    block = {"keys": {name: m["scalars"]
+                      for name, m in metrics_by_key.items()}}
+    block.update(metrics_by_key[dominant]["scalars"])
+    report.setdefault("detectors", {}).setdefault(
+        label, {})["analysis"] = block
+
+    caveat = "%s — seed 0 only" % label
+    _plot_psf_panels(panels, pixel_m, adir / ("psf_%s.png" % safe),
+                     "PSF — %s" % caveat)
+    _plot_mtf_panels(panels, metrics_by_key, adir / ("mtf_%s.png" % safe),
+                     "MTF — %s" % caveat)
+    _plot_ee_panel(metrics_by_key, panels, adir / ("ee_%s.png" % safe),
+                  "Encircled energy — %s" % caveat)
+
+    if csv_emitter is not None:
+        for name, m in metrics_by_key.items():
+            r_prof, prof = m["radial"]
+            csv_emitter.emit(
+                "psf_radial_%s_%s.csv" % (safe, name),
+                ["radius_um", "irradiance_W_m2"],
+                zip(r_prof * 1e6, prof / pixel_m ** 2), entity=label,
+                chart="psf_radial_profile", units="W/m^2",
+                image="analysis/psf_%s.png" % safe)
+            mtf = m["mtf"]
+            W = mtf["mtf"].shape[1]
+            H = mtf["mtf"].shape[0]
+            freq = mtf["freq_cy_mm"]
+            csv_emitter.emit(
+                "mtf_slices_%s_%s.csv" % (safe, name),
+                ["freq_cy_mm", "tangential", "sagittal"],
+                zip(freq, mtf["tangential"][W // 2:],
+                   mtf["sagittal"][H // 2:]), entity=label,
+                chart="mtf_slices", units="cyc/mm",
+                image="analysis/mtf_%s.png" % safe)
+            radii, ee = m["ee"]
+            csv_emitter.emit(
+                "ee_%s_%s.csv" % (safe, name),
+                ["radius_um", "ee_fraction"], zip(radii * 1e6, ee),
+                entity=label, chart="encircled_energy", units="um",
+                image="analysis/ee_%s.png" % safe)
+
+
+# =============================================================================
+# --export-rays follow-on: per-coherent-key wavefront (Zernike/Strehl)
+# analysis from rays_full.npz's birth_pos/opl records -- the source-
+# referenced pupil model documented in analysis.py's module docstring
+# (exact for the collimated/laser benches this tracer models; NOT a true
+# exit pupil for finite-conjugate imaging -- see that docstring). No-op
+# unless rays_full.npz exists AND at least one (source,lam_stratum,
+# pol_stratum) key has more than MIN_WAVEFRONT_RAYS COHERENT rays landing
+# on a detector.
+#
+# FUTURE WORK (explicitly out of scope): a psf-peak-ratio Strehl (measured
+# PSF peak / diffraction-limited reference PSF peak) would let --save-
+# fields and --export-rays cross-check each other, but needs a reference
+# (Airy/aberration-free) PSF model this module does not build -- left for
+# a later pass, see future.md.
+# =============================================================================
+MIN_WAVEFRONT_RAYS = 200
+ZERNIKE_JMAX = 15
+
+
+def _zernike_panel(ax_map, ax_bar, px, py, opd_waves, coeffs_waves, title):
+    lim = float(np.max(np.abs(opd_waves))) if len(opd_waves) else 1e-12
+    lim = max(lim, 1e-12)
+    sca = ax_map.scatter(px, py, c=opd_waves, s=6, cmap="RdBu_r",
+                         vmin=-lim, vmax=lim)
+    theta = np.linspace(0, 2 * np.pi, 200)
+    ax_map.plot(np.cos(theta), np.sin(theta), color="0.4", lw=0.7)
+    ax_map.set_aspect("equal", "box")
+    ax_map.set_xlabel("pupil x")
+    ax_map.set_ylabel("pupil y")
+    ax_map.set_title("%s — OPD map [waves]" % title, fontsize=9)
+    plt.colorbar(sca, ax=ax_map, fraction=0.046)
+
+    jmax = len(coeffs_waves)
+    js = np.arange(1, jmax + 1)
+    ax_bar.bar(js, coeffs_waves, color="C0")
+    ax_bar.set_xlabel("Noll j")
+    ax_bar.set_ylabel("coeff [waves]")
+    ax_bar.set_title("%s — Zernike (jmax=%d)" % (title, jmax), fontsize=9)
+    ax_bar.set_xticks(js)
+    ax_bar.tick_params(axis="x", labelsize=6)
+
+
+def render_wavefront(case_dir, report, csv_emitter=None,
+                     wavefront_point=None):
+    npz_path = case_dir / "rays_full.npz"
+    if not npz_path.exists():
+        return
+    z = np.load(npz_path, allow_pickle=True)
+    meta = json.loads(str(z["meta"]))
+    adir = case_dir / "analysis"
+    jmax = ZERNIKE_JMAX
+
+    for safe, dm in meta["detectors"].items():
+        label = dm["label"]
+        xhat = np.asarray(dm["xhat"], dtype=np.float64)
+        yhat = np.asarray(dm["yhat"], dtype=np.float64)
+        normal = np.asarray(dm["normal"], dtype=np.float64)
+        cols = {k: z["%s/%s" % (safe, k)]
+                for k in ("pos", "opl", "lam", "source_id", "lam_stratum",
+                          "pol_stratum", "power", "coherent", "birth_pos")}
+        if len(cols["pos"]) == 0:
+            continue
+        coh = cols["coherent"].astype(bool)
+        if not np.any(coh):
+            continue
+        sid = cols["source_id"].astype(int)
+        lst = cols["lam_stratum"].astype(int)
+        pst = cols["pol_stratum"].astype(int)
+        finite_bp = np.isfinite(cols["birth_pos"]).all(axis=1)
+        combo_keys = sorted(set(zip(sid[coh & finite_bp].tolist(),
+                                   lst[coh & finite_bp].tolist(),
+                                   pst[coh & finite_bp].tolist())))
+
+        rows_by_key = []
+        panels = []
+        csv_rows = []
+        for (s, l, p) in combo_keys:
+            m = coh & finite_bp & (sid == s) & (lst == l) & (pst == p)
+            n = int(np.sum(m))
+            if n <= MIN_WAVEFRONT_RAYS:
+                continue
+            bp = cols["birth_pos"][m]
+            pw = cols["power"][m]
+            pupil = _pupil_xy(bp, xhat, yhat, pw)
+            if pupil is None:
+                continue
+            px, py = pupil
+            pos_m = cols["pos"][m]
+            opl_m = cols["opl"][m]
+            lam_mean = float(np.mean(cols["lam"][m]))
+            total_power = float(np.sum(pw))
+            if wavefront_point is not None:
+                x_mm, y_mm = wavefront_point
+                n_off = float(np.dot(pos_m[0], normal))
+                ref = (x_mm * 1e-3 * xhat + y_mm * 1e-3 * yhat
+                      + n_off * normal)
+            else:
+                wsum = total_power or 1.0
+                ref = (pw[:, None] * pos_m).sum(axis=0) / wsum
+            opd, rho, theta = opd_from_rays(
+                np.stack([px, py], axis=1), pos_m, opl_m, ref)
+            fit = fit_zernike(rho, theta, opd, jmax=jmax, weights=pw)
+            strehl = strehl_marechal(fit["rms_wavefront"], lam_mean)
+            key_name = "%d_%d_%d" % (s, l, p)
+            rows_by_key.append({
+                "key": key_name, "source_id": s, "lam_stratum": l,
+                "pol_stratum": p, "strehl_marechal": strehl,
+                "rms_waves": fit["rms_wavefront"] / lam_mean,
+                "pv_waves": fit["pv"] / lam_mean, "n_rays": n,
+                "total_power_W": total_power,
+            })
+            panels.append((key_name, px, py, opd / lam_mean,
+                          fit["coeffs"] / lam_mean))
+            for j in range(1, jmax + 1):
+                n_j, m_j = noll_to_nm(j)
+                csv_rows.append((
+                    s, l, p, j, fringe_index(n_j, m_j), noll_name(j),
+                    fit["coeffs"][j - 1] / lam_mean,
+                    fit["coeffs"][j - 1] * 1e9))
+
+        if not rows_by_key:
+            continue
+        adir.mkdir(parents=True, exist_ok=True)
+        dominant = max(rows_by_key, key=lambda r: r["total_power_W"])
+        block = {
+            "keys": rows_by_key,
+            "strehl_marechal": dominant["strehl_marechal"],
+            "rms_waves": dominant["rms_waves"],
+            "pv_waves": dominant["pv_waves"],
+            "n_rays": dominant["n_rays"],
+        }
+        report.setdefault("detectors", {}).setdefault(
+            label, {})["wavefront"] = block
+
+        n = len(panels)
+        fig, axes = plt.subplots(n, 2, figsize=(9, 3.6 * n), squeeze=False)
+        for i, (name, px, py, opd_w, coeffs_w) in enumerate(panels):
+            _zernike_panel(axes[i, 0], axes[i, 1], px, py, opd_w, coeffs_w,
+                          "%s key %s" % (label, name))
+        fig.suptitle("Wavefront — %s (source-referenced pupil, seed 0 "
+                     "only)" % label, fontsize=11)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.savefig(adir / ("wavefront_%s.png" % safe), bbox_inches="tight")
+        plt.close(fig)
+
+        if csv_emitter is not None:
+            csv_emitter.emit(
+                "zernike_%s.csv" % safe,
+                ["source_id", "lam_stratum", "pol_stratum", "noll_j",
+                 "fringe_j", "name", "coeff_waves", "coeff_nm"], csv_rows,
+                entity=label, chart="zernike_fit", units="waves; nm",
+                provenance="rays_full.npz",
+                image="analysis/wavefront_%s.png" % safe)
+
+
 def main(argv=None):
     p = cli_specs.build_parser("post")
     args = p.parse_args(argv)
@@ -927,6 +2010,9 @@ def main(argv=None):
     plots = case_dir / "plots"
     for d in (img, spec, plots):
         d.mkdir(exist_ok=True)
+    # --emit-csv off (the default): no data/ dir is created at all, and
+    # every renderer below runs exactly as it did before this flag existed.
+    csv_emitter = CsvEmitter(case_dir / "data") if args.emit_csv else None
 
     report = {"detectors": {}, "closure_ok": all(
         a["closure_ok"] for a in audit["per_seed"]),
@@ -958,17 +2044,54 @@ def main(argv=None):
                         photometric=args.photometric,
                         spectrometer=args.spectrometer,
                         qe_bodies=qe_bodies,
-                        detector_registry=detector_registry)
+                        detector_registry=detector_registry,
+                        csv_emitter=csv_emitter)
         render_stokes_maps(h5path, img)
+
+    # per-(source, detector) detected power: promotes case.json["detected"]
+    # into report.json regardless of --emit-csv (deliverable independent of
+    # the CSV flag); the CSV export of the same rows IS gated on the flag.
+    per_source_flat = add_per_source_detected(case, report)
+    if csv_emitter is not None and per_source_flat:
+        csv_emitter.emit(
+            "source_detector.csv",
+            ["source", "detector", "lam_stratum", "pol_stratum",
+             "coherent_W", "incoherent_W", "n_samples"], per_source_flat,
+            entity="sources", chart="source_detector_power", units="W")
+
+    # --export-rays follow-on: spot diagrams + ray/OPD fans (no-op unless
+    # the trace stage wrote rays_full.npz). Runs regardless of --emit-csv;
+    # the CSV export of the same data is gated on the emitter being present.
+    render_ray_analysis(case_dir, report, csv_emitter)
+
+    # --save-fields follow-on: PSF/MTF/encircled-energy analysis, one h5 at
+    # a time (no-op per-detector unless that h5 has a populated 'fields'
+    # group, i.e. the trace ran with --save-fields).
+    adir = case_dir / "analysis"
+    for h5path in h5paths:
+        render_field_analysis(h5path, adir, report, csv_emitter)
+
+    # --export-rays follow-on: per-coherent-key wavefront/Zernike/Strehl
+    # analysis (no-op unless rays_full.npz exists AND some key clears
+    # MIN_WAVEFRONT_RAYS). --wavefront-point overrides the default power-
+    # weighted landing centroid image point.
+    render_wavefront(case_dir, report, csv_emitter,
+                     wavefront_point=args.wavefront_point)
+
     common.progress_emit("post", 0.8, "diagnostic plots",
                          case_dir=case_dir)
     rays = np.load(case_dir / "rays.npy")
     plot_rays_2d(rays, model, plots / "rays_xy.png",
                 max_generation=args.viz_generations,
                 dim_mode=args.dim_rays, dim_floor=args.dim_rays_floor)
-    plot_materials(model, plots)
+    plot_materials(model, plots, csv_emitter=csv_emitter)
     plot_optical_elements(model, plots)
     plot_audit(audit, plots)
+    if csv_emitter is not None:
+        emit_source_csvs(csv_emitter, model, case, audit)
+        emit_element_csvs(csv_emitter, report, audit)
+        emit_system_csvs(csv_emitter, report, audit)
+        csv_emitter.write_index()
     common.write_json(case_dir / "report.json", report)
     print("[post] wrote images/spectra/plots + report.json in %s"
           % case_dir, flush=True)

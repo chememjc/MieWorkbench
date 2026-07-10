@@ -40,6 +40,9 @@ DEMO_NAMES = [
     "beam_expander", "camera_triplet", "czerny_turner", "dobsonian",
     "fiber_coupler", "michelson", "microscope_objective", "newtonian",
     "prism_spectrometer", "schmidt_cassegrain",
+    # Phase-12 new-physics demos
+    "ktp_walkoff", "gaussian_bench", "ghost_doublet", "scatter_plate",
+    "curved_focal",
 ]
 
 

@@ -16,6 +16,10 @@ import numpy as np
 
 MEDIUM_STACK_DEPTH = 4
 AMBIENT = -1
+# refl_hist width: the ghost/stray-light history records the face id of each
+# reflection event, one slot per reflection generation, capped at this depth
+# (generation >= HIST_DEPTH-1 reuse the last slot).
+HIST_DEPTH = 8
 
 
 class RayBatch:
@@ -24,13 +28,37 @@ class RayBatch:
                  "pol_stratum", "pol_mode", "n_eff",
                  "generation", "last_face", "coherent", "birth_power",
                  "viz_flag", "scattered",
-                 "dPdx", "dDdx", "dPdy", "dDdy")
+                 "dPdx", "dDdx", "dPdy", "dDdy", "birth_pos", "k_dir",
+                 "refl_hist")
 
     # ray-differential slots (Igehy): allocated ONLY under
     # --ray-differentials (None otherwise — +96 B/ray when on). NaN rows
     # mean "differential lost" (grating/scatter/birefringent children);
     # the gather falls back to the source-referenced area per sample.
     _DIFF_SLOTS = ("dPdx", "dDdx", "dPdy", "dDdy")
+
+    # birth_pos: (N,3) world-metres position of each ray's birth point on
+    # its source face — allocated ONLY under --export-rays (None otherwise,
+    # +24 B/ray when on), following the same optional-slot lifecycle as the
+    # differential slots (select copies it; a mixed concat NaN-fills the
+    # batches that lack it). Inherited unchanged by every child ray, so a
+    # detected ray carries the pupil coordinate of the primary it came from.
+
+    # k_dir: (N,3) unit WAVEVECTOR direction for rays inside a biaxial
+    # crystal (pol_mode 2/3), where ray (Poynting) and wavevector differ
+    # and — unlike uniaxial — the ray->k inversion has no closed form, so
+    # k must be carried explicitly. Allocated only by the biaxial entry
+    # interface; NaN rows in a mixed concat are rays that never entered a
+    # biaxial medium (their pol_mode is 0/1 and k_dir is never read).
+
+    # refl_hist: (N, HIST_DEPTH) int32 face-id history for ghost/stray-light
+    # analysis — allocated ONLY under --ghost-analysis (TraceConfig.
+    # track_history; None otherwise, +32 B/ray when on). -1-filled; the
+    # tracer writes the FACE id of each reflection event into slot
+    # min(pre-increment generation, HIST_DEPTH-1). Same optional-slot
+    # lifecycle as birth_pos (select copies it; a mixed concat -1-fills the
+    # batches that lack it). Transmitted children inherit it unchanged, so a
+    # detected ray carries the ordered sequence of surfaces it reflected off.
 
     def __init__(self, n):
         self.pos = np.zeros((n, 3), dtype=np.float64)
@@ -78,10 +106,16 @@ class RayBatch:
         self.dDdx = None
         self.dPdy = None
         self.dDdy = None
+        self.birth_pos = None
+        self.k_dir = None
+        self.refl_hist = None
 
     def alloc_differentials(self):
         for name in self._DIFF_SLOTS:
             setattr(self, name, np.zeros((len(self), 3), dtype=np.float64))
+
+    def alloc_history(self):
+        self.refl_hist = np.full((len(self), HIST_DEPTH), -1, dtype=np.int32)
 
     @property
     def has_differentials(self):
@@ -144,7 +178,10 @@ class RayBatch:
             src = getattr(self, name)
             if src is None:
                 continue
-            if name in self._DIFF_SLOTS:
+            # optional slots (_DIFF_SLOTS, birth_pos) start as None on the
+            # fresh out batch — allocate them by copying the selection;
+            # the mandatory slots are pre-allocated, so assign into them
+            if getattr(out, name) is None:
                 setattr(out, name, src[idx].copy())
             else:
                 getattr(out, name)[...] = src[idx]
@@ -161,6 +198,17 @@ class RayBatch:
             out.alloc_differentials()
             for name in RayBatch._DIFF_SLOTS:
                 getattr(out, name)[:] = np.nan
+        if any(b.birth_pos is not None for b in batches):
+            # mixed batches: rays from a batch without birth_pos NaN-fill
+            out.birth_pos = np.full((len(out), 3), np.nan)
+        if any(b.k_dir is not None for b in batches):
+            # mixed batches: NaN marks rays that never entered a biaxial
+            # medium (pol_mode 0/1 — k_dir is never read for them)
+            out.k_dir = np.full((len(out), 3), np.nan)
+        if any(b.refl_hist is not None for b in batches):
+            # mixed batches: -1 marks rays from a batch without history
+            out.refl_hist = np.full((len(out), HIST_DEPTH), -1,
+                                    dtype=np.int32)
         at = 0
         for b in batches:
             n = len(b)

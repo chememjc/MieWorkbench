@@ -137,13 +137,83 @@ def wavelength_strata(src, n_lambda):
     return (lam_c - w + 2.0 * w * q) * 1e-9
 
 
+def _face_center_xyz(face):
+    """The emitting face's reference center point in world xyz — the
+    origin for apodization/beam-mode transverse radius, chosen the same
+    way sample_viz_pattern picks a face centroid (mean of the trim loop
+    vertices in the surface's own uv), so both features agree on what
+    'center of the face' means."""
+    surf = face.surface
+    if face.trim.mode == "untrimmed":
+        if surf.__class__.__name__ == "Sphere":
+            return surf.c + surf.r * surf.axis
+        raise NotImplementedError(
+            "apodization/beam center undefined for an untrimmed %s face"
+            % surf.__class__.__name__)
+    if face.trim.mode == "band":
+        v_lo, v_hi = face.trim.v_band
+        return _uv_to_xyz(surf, np.zeros(1), np.array([0.5 * (v_lo + v_hi)]))[0]
+    loop_uv = np.concatenate([np.asarray(lp) for lp in face.trim.loops])
+    c_uv = loop_uv.mean(axis=0)
+    return _uv_to_xyz(surf, c_uv[0:1], c_uv[1:2])[0]
+
+
+def _sample_beam_points(face, w0_m, n_rays, rng):
+    """Transverse position sampling for a beam_waist source: rejection-
+    sample (dx, dy) ~ independent N(0, sigma) in the face tangent frame
+    about the face center, sigma = w0/2 (matching the intensity profile
+    I(r) ~ exp(-2 r^2/w0^2): a radially-symmetric 2D Gaussian factors into
+    per-axis exp(-2 x^2/w0^2), i.e. std = w0/2), redrawing candidates that
+    land outside the physical aperture.
+
+    Truncation choice: REJECTION SAMPLING (not clip/clamp) — clamping would
+    pile spurious power at the rim and distort the profile; rejecting from
+    the untruncated Gaussian yields samples distributed exactly as the
+    aperture-TRUNCATED Gaussian, so uniform per-ray power (the caller keeps
+    p_ray = P/N unweighted) already integrates to the right shape without
+    any additional per-ray reweighting — position density IS the physical
+    photon density. Requires a planar emitting face (checked by the
+    caller): the tangent frame (t1, t2) is then a fixed, ray-independent
+    basis, which keeps this a simple 2D rejection sampler."""
+    surf = face.surface
+    center = _face_center_xyz(face)
+    pts = np.empty((0, 3))
+    target = n_rays
+    tries = 0
+    while len(pts) < target and tries < 200:
+        m = int((target - len(pts)) * 1.5) + 16
+        dx = rng.normal(0.0, w0_m / 2.0, size=m)
+        dy = rng.normal(0.0, w0_m / 2.0, size=m)
+        cand = center + dx[:, None] * surf.t1 + dy[:, None] * surf.t2
+        ok = face.trim.contains(surf.to_uv(cand))
+        pts = np.concatenate([pts, cand[ok]], axis=0)
+        tries += 1
+    if len(pts) < target:
+        raise RuntimeError(
+            "beam-mode source: Gaussian position sampling failed to "
+            "converge (%d/%d after %d rounds) — w0 too large relative to "
+            "the emitting face aperture?" % (len(pts), target, tries))
+    pts = pts[:target]
+    normals = surf.normal(pts)
+    return pts, normals
+
+
 def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
-                  ledger=None, differentials=False):
+                  ledger=None, differentials=False, export_rays=False):
     """Sample a RayBatch for one source. Power split equally across rays;
     each ray belongs to one wavelength stratum. differentials=True
     allocates Igehy ray differentials (wavefront patch h = sqrt(A/N)
     along the transverse frame; curvature from the emit surface's shape
-    operator) for --ray-differentials dA tracking."""
+    operator) for --ray-differentials dA tracking.
+
+    Optional source.beam {waist_mm, m2}: Gaussian-beam mode — position
+    sampled from the waist intensity profile (see _sample_beam_points)
+    instead of uniformly over the face, plus a per-ray angular divergence
+    added below (requires a planar emitting face). Optional
+    source.apodization {kind:'gaussian', w0_mm, order}: transverse FIELD
+    apodization — position sampling is untouched (any face shape), each
+    ray's POWER is reweighted by the profile and renormalized to the exact
+    source power instead."""
     face = scene.emit_faces.get(body.index)
     if face is None:
         raise ValueError("source %s has no emit face built — extractor/"
@@ -153,8 +223,18 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
     n_strata = len(lam_strata)
     power_W = src["power_mW"] * 1e-3
     coherent = bool(src.get("coherent", False))
+    beam = src.get("beam")
+    apod = src.get("apodization")
 
-    pts, normals = _sample_face_points(face, n_rays, rng)
+    if beam is not None:
+        if surf.__class__.__name__ != "Plane":
+            raise NotImplementedError(
+                "source %s: beam_waist requires a planar emitting face "
+                "(got %s)" % (body.label, surf.__class__.__name__))
+        w0_m = beam["waist_mm"] * 1e-3
+        pts, normals = _sample_beam_points(face, w0_m, n_rays, rng)
+    else:
+        pts, normals = _sample_face_points(face, n_rays, rng)
     n = len(pts)
 
     # direction: toward-origin sign policy
@@ -185,6 +265,20 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
             clipped = sign < 0
     dirs = dirs / np.linalg.norm(dirs, axis=-1, keepdims=True)
 
+    if apod is not None:
+        # apodization weights ALL n samples (pre-clip) so the ledger.emit
+        # call below (which records all n) still sums to power_W exactly
+        # by construction: p_ray_i = power_W * w_i / sum(w) over all n.
+        # (separate var from beam's w0_m — a source could carry both)
+        center = _face_center_xyz(face)
+        r_all = np.linalg.norm(pts - center, axis=-1)
+        apod_w0_m = apod["w0_mm"] * 1e-3
+        order = apod["order"]
+        weight = np.exp(-2.0 * (r_all / apod_w0_m) ** (2 * order))
+        p_ray = power_W * weight / weight.sum()       # (n,) exact-sum array
+    else:
+        p_ray = power_W / n                           # per-sample power
+
     keep = ~clipped
     pts, dirs = pts[keep], dirs[keep]
     n_kept = len(pts)
@@ -192,15 +286,36 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
         raise ValueError("source %s: all emission samples clipped — "
                          "check geometry orientation" % body.label)
 
-    p_ray = power_W / n                               # per-sample power
+    if beam is not None:
+        # per-ray divergence half-angle theta0 = M2*lambda/(pi*w0) — the
+        # STANDARD Gaussian-beam far-field 1/e^2-intensity half-angle
+        # (same "1/e^2 in intensity" convention as w0 itself), evaluated
+        # per ray at its own sampled wavelength for correct chromatic
+        # divergence. Independent per-axis angle std = theta0/2: matching
+        # the same near-field/far-field second-moment propagation
+        # w(z)^2 = w0^2 + (theta0*z)^2 that _sample_beam_points' sigma =
+        # w0/2 position sampling assumes (position std^2 + z^2*angle std^2
+        # must equal w(z)^2/4 at every z, and w0/zR = theta0 exactly, which
+        # forces angle std = theta0/2 — NOT theta0/sqrt(2)).
+        lam_of_ray = lam_strata[np.arange(n_kept) % n_strata]
+        theta0 = beam["m2"] * lam_of_ray / (np.pi * w0_m)
+        ang_std = theta0 / 2.0
+        ax = rng.normal(0.0, ang_std)
+        ay = rng.normal(0.0, ang_std)
+        tilted = dirs + np.tan(ax)[:, None] * surf.t1 + np.tan(ay)[:, None] * surf.t2
+        dirs = tilted / np.linalg.norm(tilted, axis=-1, keepdims=True)
+
     if ledger is not None:
         # emitted = the FULL source power; clipped samples immediately
         # balance into their bucket so closure holds
-        ledger.emit(np.full(n, source_id), np.full(n, p_ray))
+        ledger.emit(np.full(n, source_id), np.broadcast_to(p_ray, (n,)))
         if np.any(clipped):
+            p_clip = p_ray[clipped] if apod is not None \
+                else np.full(int(np.sum(clipped)), p_ray)
             ledger.credit("emission_clipped",
-                          np.full(int(np.sum(clipped)), source_id),
-                          np.full(int(np.sum(clipped)), p_ray))
+                          np.full(int(np.sum(clipped)), source_id), p_clip)
+    if apod is not None:
+        p_ray = p_ray[keep]                           # (n_kept,) kept subset
 
     pol = src.get("polarization") or {"kind": "unpolarized"}
     n_pol = n_pol_strata(src)
@@ -208,6 +323,10 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
     batch = RayBatch(n_kept)
     batch.pos[:] = pts
     batch.dir[:] = dirs
+    if export_rays:
+        # birth position on the source face (world metres); inherited
+        # unchanged by every child so a detected ray keeps its pupil coord
+        batch.birth_pos = batch.pos.copy()
     idx = np.arange(n_kept)
     batch.lam[:] = lam_strata[idx % n_strata]
     batch.lam_stratum[:] = idx % n_strata
@@ -220,7 +339,10 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
     # (module header) so (Es, Ep) IS the Jones vector in that frame
     e_ref, _ = _pol_reference_frame(dirs)
     batch.s_hat[:] = e_ref
-    amp = np.sqrt(p_ray)
+    # broadcast to (n_kept,) unconditionally so the per-stratum masking
+    # below (amp[sel]) works whether p_ray is the ordinary uniform scalar
+    # or an apodization-weighted per-ray array
+    amp = np.broadcast_to(np.sqrt(p_ray), n_kept)
     if coherent:
         phase = np.ones(n_kept, dtype=np.complex128)
     else:
@@ -228,10 +350,19 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
     for ps in range(n_pol):
         js, jp = jones_for(pol, ps)
         sel = batch.pol_stratum == ps
-        batch.Es[sel] = amp * js * phase[sel]
-        batch.Ep[sel] = amp * jp * phase[sel]
+        batch.Es[sel] = amp[sel] * js * phase[sel]
+        batch.Ep[sel] = amp[sel] * jp * phase[sel]
 
     if differentials:
+        # NOTE (scoped limitation): beam/apodization sources still seed the
+        # differential patch from the WHOLE face area, same as an ordinary
+        # source — the coherent gather's per-ray dA therefore falls back to
+        # this uniform footprint rather than the true (non-uniform) sampling
+        # density. Position-only accuracy (this function's actual contract)
+        # and incoherent detection are unaffected; a beam-mode source fed
+        # through the COHERENT Huygens gather gets an approximate (not
+        # density-corrected) diffraction-pattern shape. Fine-grained fix
+        # would need a per-ray dA at emission, which is out of scope here.
         from .differentials import init_flat, init_curved
         e_perp = np.cross(dirs, e_ref)
         h = np.sqrt((face.area_m2 or 1e-6) / n)

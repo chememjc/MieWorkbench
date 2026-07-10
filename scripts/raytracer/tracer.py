@@ -35,7 +35,7 @@ from . import thinfilm as tf
 from . import grating as grating_mod
 from . import roughness as rough_mod
 from . import differentials as diff_mod
-from .rays import RayBatch, AMBIENT
+from .rays import RayBatch, AMBIENT, HIST_DEPTH
 from .audit import PowerLedger
 
 
@@ -52,12 +52,22 @@ def _kill_differentials(batch):
 class TraceConfig:
     def __init__(self, max_reflections=6, power_floor=1e-4, n_lambda=5,
                  rays=int(1e5), seed=0, viz_rays=500, batch_size=1 << 20,
-                 rough_fresnel="micro"):
+                 rough_fresnel="micro", export_rays=False,
+                 track_history=False):
         self.max_reflections = max_reflections
         self.power_floor = power_floor
         self.n_lambda = n_lambda
         self.rays = int(rays)
         self.seed = seed
+        # export_rays: capture per-ray landing records at every detector
+        # event into DetectorGrid.ray_records (--export-rays; seed 0 only).
+        # Purely diagnostic — the splat/gather math is untouched.
+        self.export_rays = export_rays
+        # track_history: allocate RayBatch.refl_hist on the primaries and
+        # record the face id of every reflection event (ghost/stray-light
+        # analysis; --ghost-analysis, seed 0 only). Zero overhead when off
+        # (the slot stays None everywhere). Purely diagnostic.
+        self.track_history = track_history
         # viz_rays: int cap for every source, or {source_id: cap} computed
         # from --viz-density (rays per mm^2 of emit area) upstream
         self.viz_rays = viz_rays
@@ -141,6 +151,8 @@ class Tracer:
         queue = list(batches)
         for b in queue:
             VizStore.flag_primaries(b, self.cfg.viz_rays)
+            if self.cfg.track_history and b.refl_hist is None:
+                b.alloc_history()
         # a hard iteration cap guards against pathological loops; with the
         # generation cap the loop terminates naturally well before this
         for _ in range(64 * (self.cfg.max_reflections + 2)):
@@ -310,9 +322,25 @@ class Tracer:
         return self._apply_floors(merged)
 
     # ------------------------------------------------------------------
+    def _record_reflection(self, child, fid):
+        """Ghost-analysis bookkeeping (--ghost-analysis): stamp the FACE id
+        `fid` of this reflection event into the child batch's refl_hist,
+        indexed by the child's PRE-increment generation (capped at the last
+        slot). MUST be called BEFORE `child.generation += 1`. Zero overhead
+        when track_history is off (refl_hist is None). Purely diagnostic —
+        never touches power/phase/direction."""
+        if not self.cfg.track_history or child.refl_hist is None \
+                or len(child) == 0:
+            return
+        slot = np.minimum(child.generation, HIST_DEPTH - 1).astype(np.intp)
+        child.refl_hist[np.arange(len(child)), slot] = int(fid)
+
+    # ------------------------------------------------------------------
     def _detector_event(self, fid, grp, grp_start, grp_start_opl,
                         grp_nmed, grp_dA=None):
         det = self.detectors[fid]
+        if self.cfg.export_rays and len(grp) > 0:
+            self._export_records(det, grp)
         coh = grp.coherent
         if np.any(coh):
             c = np.where(coh)[0]
@@ -331,7 +359,10 @@ class Tracer:
                     dA=grp_dA[sel] if grp_dA is not None else None)
         if np.any(~coh):
             i = np.where(~coh)[0]
-            det.deposit_incoherent(grp.pos[i], grp.power[i], grp.lam[i])
+            det.deposit_incoherent(grp.pos[i], grp.power[i], grp.lam[i],
+                                   source_id=grp.source_id[i],
+                                   lam_stratum=grp.lam_stratum[i],
+                                   pol_stratum=grp.pol_stratum[i])
         # diagnostic ledger (not a closure bucket)
         self.ledger.by_surface[det.label] = (
             self.ledger.by_surface.get(det.label, 0.0)
@@ -339,6 +370,37 @@ class Tracer:
         # separate detected tally: by_surface historically mixes surface
         # absorption and detection under one key space
         self.ledger.detect(det.label, float(np.sum(grp.power)))
+
+    def _export_records(self, det, grp):
+        """--export-rays: append one per-detector-event record of the ray
+        states AT this detector hit (grp.pos is the hit point, grp.opl the
+        accumulated OPL to it — both already advanced to the intersection
+        before this call). Diagnostic only; never feeds the splat/gather."""
+        n = len(grp)
+        bp = grp.birth_pos
+        if bp is None:
+            bp = np.full((n, 3), np.nan)
+        rec = {
+            "pos": grp.pos.copy(),
+            "dir": grp.dir.copy(),
+            "opl": grp.opl.copy(),
+            "lam": grp.lam.copy(),
+            "source_id": grp.source_id.copy(),
+            "lam_stratum": grp.lam_stratum.copy(),
+            "pol_stratum": grp.pol_stratum.copy(),
+            "generation": grp.generation.copy(),
+            "pol_mode": grp.pol_mode.copy(),
+            "power": grp.power,
+            "scattered": grp.scattered.copy(),
+            "coherent": grp.coherent.copy(),
+            "birth_pos": bp.copy(),
+        }
+        # --ghost-analysis: the reflection face-id history rides along like
+        # every other field (so the --workers merge concatenates it too).
+        # Present only when track_history is on (refl_hist allocated).
+        if grp.refl_hist is not None:
+            rec["refl_hist"] = grp.refl_hist.copy()
+        det.ray_records.append(rec)
 
     def _flux_out_children(self, body, children):
         """Per-element boundary-flux tally (diagnostic, zero RNG use):
@@ -381,6 +443,7 @@ class Tracer:
             rf.dir = fr.reflect_dir(grp.dir, n_hat)
             rf.Es *= -np.sqrt(r_m)
             rf.Ep *= -np.sqrt(r_m)
+            self._record_reflection(rf, fid)
             rf.generation += 1
             out.append(rf)
         ab = (1.0 - r_m) * a
@@ -429,15 +492,19 @@ class Tracer:
         if body.birefringent:
             return self._birefringent_children(fid, grp, entering, n_hat,
                                                cos_i)
+        # ---- biaxial: dedicated slow/fast two-sheet split path ----
+        if body.biaxial:
+            return self._biaxial_children(fid, grp, entering, n_hat, cos_i)
         if np.any(grp.pol_mode != 0):
-            # a mode-tagged e-ray hit a non-birefringent boundary (nested
-            # body inside a crystal): approximate as ordinary from here on
+            # a mode-tagged crystal ray (uniaxial e, biaxial slow/fast)
+            # hit a non-birefringent boundary (nested body inside a
+            # crystal): approximate as ordinary from here on
             if not getattr(self, "_warned_nested_mode", False):
                 import warnings
                 warnings.warn(
-                    "e-mode ray hit non-birefringent face %s (nested body "
-                    "inside a crystal?) — continuing as ordinary index "
-                    "(documented approximation)" % face.id)
+                    "mode-tagged crystal ray hit non-birefringent face %s "
+                    "(nested body inside a crystal?) — continuing as "
+                    "ordinary index (documented approximation)" % face.id)
                 self._warned_nested_mode = True
             grp.pol_mode[:] = 0
             grp.n_eff[:] = 0.0
@@ -560,18 +627,41 @@ class Tracer:
             A_spec = np.ones(m)
         sqrtA = np.sqrt(A_spec)
 
+        # ---- measured scatter (ABg/BSDF): reflected-side specular/scatter
+        # split. TIS(cos_i) leaves the specular direction; the specular
+        # reflection keeps sqrt(1-TIS) of its amplitude (REFLECTED side only —
+        # the transmitted child is untouched, v1 BRDF scope), the scattered
+        # remainder is emitted as sampled lobes below. Mutually exclusive
+        # with roughness/diffuser by the scene contract, so sqrtA == 1 here.
+        scat = self.scene.scatter.get(fid)
+        if scat is not None:
+            from . import scatter as scatter_mod
+            tis = scatter_mod.abg_tis(scat["A"], scat["B"], scat["g"], cos_i)
+            if scat["tis_cap"] is not None:
+                tis = np.minimum(tis, scat["tis_cap"])
+            tis = np.clip(tis, 0.0, 1.0)
+            refl_scale = np.sqrt(1.0 - tis)
+        else:
+            refl_scale = np.ones(m)
+
         # ---- reflected child ----
-        # power-exact amplitude, phase from the physical coefficient
-        amp_rs = np.sqrt(r_m + phys * np.abs(rs) ** 2) \
-            * np.exp(1j * np.angle(rs)) * sqrtA
-        amp_rp = np.sqrt(r_m + phys * np.abs(rp) ** 2) \
-            * np.exp(1j * np.angle(rp)) * sqrtA
+        # power-exact amplitude, phase from the physical coefficient.
+        # full_amp_r* is the UNSPLIT reflected amplitude (reused by the
+        # scatter lobes); the specular child additionally carries sqrtA
+        # (roughness) and refl_scale (scatter specular remainder).
+        full_amp_rs = np.sqrt(r_m + phys * np.abs(rs) ** 2) \
+            * np.exp(1j * np.angle(rs))
+        full_amp_rp = np.sqrt(r_m + phys * np.abs(rp) ** 2) \
+            * np.exp(1j * np.angle(rp))
+        amp_rs = full_amp_rs * sqrtA * refl_scale
+        amp_rp = full_amp_rp * sqrtA * refl_scale
         can_reflect = grp.generation < self.cfg.max_reflections
         refl = grp.select(np.ones(m, dtype=bool))
         refl.dir = fr.reflect_dir(grp.dir, n_hat)
         refl.s_hat = s_new
         refl.Es = Es * amp_rs
         refl.Ep = Ep * amp_rp
+        self._record_reflection(refl, fid)
         refl.generation += 1
         if grp.has_differentials:
             if diff is None:
@@ -714,6 +804,7 @@ class Tracer:
                     amp_j = np.sqrt(loseR / k_lobe)
                     sc.Es = Es * amp_j
                     sc.Ep = Ep * amp_j
+                self._record_reflection(sc, fid)
                 sc.generation += 1
                 sc.scattered[:] = True
                 ok = ((np.sum(sc.dir * n_hat, axis=-1) > 0)
@@ -759,6 +850,40 @@ class Tracer:
                 p_accounted += st.power * (~tir_j)
                 if np.any(okt):
                     out.append(st.select(okt))
+
+        # ---- measured scatter (ABg): scattered reflected lobes carry the
+        # TIS share of the reflected power, sampled around the specular
+        # direction (scatter_mod.sample_abg). k_lobe matches the roughness
+        # convention. Each lobe scales the FULL reflected amplitude by
+        # sqrt(TIS/k), so specular (1-TIS) + scattered TIS == full R exactly.
+        # Reflected side only (BRDF); transmission is not scattered in v1.
+        if scat is not None and np.any(tis > 0.0):
+            k_lobe = 2
+            d_spec = fr.reflect_dir(grp.dir, n_hat)
+            amp_lobe = np.sqrt(tis / k_lobe)
+            for _j in range(k_lobe):
+                sc = grp.select(np.ones(m, dtype=bool))
+                _kill_differentials(sc)
+                sc.dir = scatter_mod.sample_abg(
+                    self.rng, m, scat["A"], scat["B"], scat["g"],
+                    d_spec, n_hat)
+                sc.s_hat = s_new
+                sc.Es = Es * full_amp_rs * amp_lobe
+                sc.Ep = Ep * full_amp_rp * amp_lobe
+                self._record_reflection(sc, fid)
+                sc.generation += 1
+                sc.scattered[:] = True
+                ok = ((np.sum(sc.dir * n_hat, axis=-1) > 0)
+                      & (sc.generation <= self.cfg.max_reflections)
+                      & (sc.power > 0))
+                below = ~ok & (sc.power > 0)
+                if np.any(below):
+                    self.ledger.credit("absorbed_surface",
+                                       sc.source_id[below],
+                                       sc.power[below], where=body.label)
+                p_accounted += sc.power
+                if np.any(ok):
+                    out.append(sc.select(ok))
 
         # ---- surface absorption = exact power difference ----
         # (generation-capped reflections were already credited above, so
@@ -917,6 +1042,7 @@ class Tracer:
                 * np.exp(1j * np.angle(rp_e))
             refl.Es = Eo_i * cs_o * amp_rs_o - Ee_i * sn_o * amp_rs_e
             refl.Ep = Eo_i * sn_o * amp_rp_o + Ee_i * cs_o * amp_rp_e
+            self._record_reflection(refl, fid)
             refl.generation += 1
             cr = can_reflect[ent]
             if np.any(~cr):
@@ -1049,6 +1175,7 @@ class Tracer:
                 * np.exp(1j * np.angle(rs))
             rf.Ep = Ep_i * np.sqrt(r_m + phys * np.abs(rp) ** 2) \
                 * np.exp(1j * np.angle(rp))
+            self._record_reflection(rf, fid)
             rf.generation += 1
             if np.any(is_e):
                 s_ray, _, n_ray = bir.ray_from_k(k_r[is_e], c_axis,
@@ -1064,6 +1191,250 @@ class Tracer:
             if np.any(keep):
                 out.append(rf.select(keep))
             p_accounted[exi] += rf.power
+
+        absorbed = np.clip(p_in - p_accounted, 0.0, None)
+        if np.any(absorbed > 0):
+            self.ledger.credit("absorbed_surface", grp.source_id, absorbed,
+                               where=body.label)
+        self._flux_out_children(body, out)
+        return RayBatch.concatenate(out) if out else None
+
+    # ------------------------------------------------------------------
+    def _biaxial_children(self, fid, grp, entering, n_hat, cos_i):
+        """Biaxial-crystal boundary: slow/fast two-sheet double refraction.
+
+        Structurally parallel to _birefringent_children with o/e replaced
+        by slow/fast (pol_mode 2/3). Both sheets are 'extraordinary-like':
+        ray (Poynting) and wavevector differ, and because the biaxial
+        ray->k inversion has no closed form the unit wavevector is carried
+        explicitly in batch.k_dir. Fresnel amplitudes use the same
+        effective-index approximation as uniaxial (each sheet's n_phase);
+        the dropped cross terms land in absorbed_surface via the exact
+        power difference, so closure holds by construction. Internal
+        reflections are sheet-preserving (reflect_internal_biaxial); rays
+        with no same-sheet returning root (conical corner cases) drop
+        their reflected share into absorbed_surface.
+        Coating/roughness on biaxial faces are not modeled (warned)."""
+        from . import birefringence as bir
+        scene = self.scene
+        body = scene.body_of_face(fid)
+        face = scene.faces[fid]
+        m = len(grp)
+        if (scene.face_coatings.get(fid) is not None
+                or scene.roughness.get(fid) is not None) \
+                and not getattr(self, "_warned_bir_extras", False):
+            import warnings
+            warnings.warn(
+                "coating/roughness on birefringent face %s is not modeled "
+                "(bare-interface Fresnel used)" % face.id)
+            self._warned_bir_extras = True
+
+        frame = body.crystal_frame
+        eps = scene.biaxial_eps(body, grp.lam)         # (m,3)
+        r_m = body.mirror
+        a = body.absorbance
+        phys = (1.0 - r_m) * (1.0 - a)
+        p_in = grp.power
+        p_accounted = np.zeros(m)
+        out = []
+        can_reflect = grp.generation < self.cfg.max_reflections
+
+        # ---------------- ENTRY: outside -> crystal ----------------
+        ent = np.where(entering)[0]
+        if len(ent):
+            sub = grp.select(ent)
+            nh = n_hat[ent]
+            ci = cos_i[ent]
+            cur = sub.current_medium()
+            n1 = np.empty(len(ent), dtype=np.complex128)
+            for mm in np.unique(cur):
+                s = cur == mm
+                n1[s] = scene.medium_index(int(mm), sub.lam[s])
+            res = bir.refract_in_biaxial(sub.dir, nh, frame, np.real(n1),
+                                         eps[ent])
+            # incident Jones in the interface (s,p) basis
+            s_new, p_new = fr.pol_basis(sub.dir, nh)
+            p_old = np.cross(sub.dir, sub.s_hat)
+            Es_i, Ep_i = fr.rotate_jones(sub.Es, sub.Ep, sub.s_hat, p_old,
+                                         s_new, p_new)
+            # unitary slow/fast channel decomposition at the incident k
+            # (same closure-preserving pattern as the uniaxial o/e split:
+            # each channel gets its own sheet-index Fresnel)
+            in_modes = bir.biaxial_modes_for_k(sub.dir, frame, eps[ent])
+            d_sl_i, d_fa_i = in_modes["D_slow"], in_modes["D_fast"]
+            E1_i, E2_i = fr.rotate_jones(Es_i, Ep_i, s_new, p_new,
+                                         d_sl_i, d_fa_i)
+            cs = np.sum(d_sl_i * s_new, axis=-1)
+            sn = np.sum(d_sl_i * p_new, axis=-1)
+
+            coeffs = {}
+            for name in ("slow", "fast"):
+                n2eff = res["n_phase_%s" % name].astype(np.complex128)
+                rs, rp, ts, tp, ct = fr.fresnel_coeffs(ci, n1, n2eff)
+                _, _, Ts, Tp = fr.power_coeffs(rs, rp, ts, tp, ci, ct,
+                                               n1, n2eff)
+                coeffs[name] = (rs, rp, ts, tp, np.clip(Ts, 0.0, None),
+                                np.clip(Tp, 0.0, None))
+
+            # reflected child: coherent sum of both channels' reflections
+            rs1, rp1 = coeffs["slow"][0], coeffs["slow"][1]
+            rs2, rp2 = coeffs["fast"][0], coeffs["fast"][1]
+            refl = sub.select(np.ones(len(ent), dtype=bool))
+            _kill_differentials(refl)
+            refl.dir = fr.reflect_dir(sub.dir, nh)
+            refl.s_hat = s_new
+            amp = {}
+            for tag, r in (("s1", rs1), ("p1", rp1), ("s2", rs2),
+                           ("p2", rp2)):
+                amp[tag] = np.sqrt(r_m + phys * np.abs(r) ** 2) \
+                    * np.exp(1j * np.angle(r))
+            refl.Es = E1_i * cs * amp["s1"] - E2_i * sn * amp["s2"]
+            refl.Ep = E1_i * sn * amp["p1"] + E2_i * cs * amp["p2"]
+            self._record_reflection(refl, fid)
+            refl.generation += 1
+            cr = can_reflect[ent]
+            if np.any(~cr):
+                self.ledger.credit("truncated_generation",
+                                   refl.source_id[~cr], refl.power[~cr])
+            keep = cr & (refl.power > 0)
+            if np.any(keep):
+                out.append(refl.select(keep))
+            p_accounted[ent] += refl.power
+
+            # transmitted sheet children (slow: pol_mode 2, fast: 3)
+            for name, mode_val, E_ch, ch_s, ch_p in (
+                    ("slow", 2, E1_i, cs, sn),
+                    ("fast", 3, E2_i, -sn, cs)):
+                rs, rp, ts, tp, Ts, Tp = coeffs[name]
+                k_hat = res["k_%s" % name]
+                s_ray = res["s_%s" % name]
+                D = res["D_%s" % name]
+                amp_ts = np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts))
+                amp_tp = np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp))
+                ch = sub.select(np.ones(len(ent), dtype=bool))
+                _kill_differentials(ch)
+                ch.dir = s_ray
+                # Jones basis: s_hat _|_ (ray, D-ish) so the full field
+                # sits in Ep along the projected D direction — the same
+                # single-mode bookkeeping the uniaxial e-child uses
+                sh = np.cross(s_ray, D)
+                nrm = np.linalg.norm(sh, axis=-1, keepdims=True)
+                # degenerate guard (D ~ parallel to ray cannot really
+                # happen off the optic axes; fall back to the interface s)
+                bad = nrm[:, 0] < 1e-12
+                sh = np.where(bad[:, None], s_new, sh / np.maximum(
+                    nrm, 1e-300))
+                ch.s_hat = sh
+                # channel field through its own Fresnel, magnitude only
+                # (the child is a single pure mode)
+                Ech_s = E_ch * ch_s * amp_ts
+                Ech_p = E_ch * ch_p * amp_tp
+                mag = np.sqrt(np.abs(Ech_s) ** 2 + np.abs(Ech_p) ** 2)
+                phase = np.exp(1j * np.angle(
+                    np.where(np.abs(Ech_p) >= np.abs(Ech_s), Ech_p,
+                             Ech_s)))
+                ch.Es = np.zeros_like(Ech_s)
+                ch.Ep = mag * phase
+                ch.pol_mode[:] = mode_val
+                ch.n_eff[:] = res["n_ray_%s" % name]
+                if ch.k_dir is None:
+                    ch.k_dir = np.full((len(ent), 3), np.nan)
+                ch.k_dir[...] = k_hat
+                ok = ~res["tir_%s" % name]
+                ch.push_medium(ok, np.full(len(ent), body.index))
+                keep = ok & (ch.power > 0)
+                if np.any(keep):
+                    out.append(ch.select(keep))
+                p_accounted[ent] += ch.power * ok
+
+        # ---------------- EXIT: crystal -> outside ----------------
+        exi = np.where(~entering)[0]
+        if len(exi):
+            sub = grp.select(exi)
+            nh = n_hat[exi]
+            depth = sub.depth
+            under = np.where(depth >= 2,
+                             sub.medium[np.arange(len(exi)),
+                                        np.maximum(depth - 2, 0)],
+                             AMBIENT).astype(np.int64)
+            n2 = np.empty(len(exi), dtype=np.complex128)
+            for mm in np.unique(under):
+                s = under == mm
+                n2[s] = scene.medium_index(int(mm), sub.lam[s])
+            is_slow = sub.pol_mode == 2
+            # the carried unit wavevector + its sheet's phase index
+            k_hat = sub.k_dir
+            if k_hat is None:
+                # defensive: a biaxial exit without an entry can only be
+                # authoring error (source inside the crystal)
+                raise RuntimeError(
+                    "biaxial exit through %s without carried k_dir "
+                    "(source inside a biaxial solid is unsupported)"
+                    % face.id)
+            modes = bir.biaxial_modes_for_k(k_hat, frame, eps[exi])
+            n_phase = np.where(is_slow, modes["n_slow"], modes["n_fast"])
+            K_int = n_phase[:, None] * k_hat
+            cos_k = np.clip(-np.sum(k_hat * nh, axis=-1), 0.0, 1.0)
+            d_out, tir = bir.refract_out_biaxial(K_int, nh, np.real(n2))
+            rs, rp, ts, tp, ct = fr.fresnel_coeffs(
+                cos_k, n_phase.astype(np.complex128), n2)
+            Rs, Rp, Ts, Tp = fr.power_coeffs(
+                rs, rp, ts, tp, cos_k, ct,
+                n_phase.astype(np.complex128), n2)
+            Ts = np.clip(Ts, 0.0, None)
+            Tp = np.clip(Tp, 0.0, None)
+            s_new, p_new = fr.pol_basis(k_hat, nh)
+            p_old = np.cross(sub.dir, sub.s_hat)
+            Es_i, Ep_i = fr.rotate_jones(sub.Es, sub.Ep, sub.s_hat, p_old,
+                                         s_new, p_new)
+
+            # transmitted child: leaves the crystal, mode resets
+            tr = sub.select(np.ones(len(exi), dtype=bool))
+            _kill_differentials(tr)
+            tr.dir = d_out
+            tr.s_hat = s_new
+            tr.Es = Es_i * np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts))
+            tr.Ep = Ep_i * np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp))
+            tr.pol_mode[:] = 0
+            tr.n_eff[:] = 0.0
+            ok_t = ~tir
+            tr.pop_medium(ok_t, np.full(len(exi), body.index))
+            keep = ok_t & (tr.power > 0)
+            if np.any(keep):
+                out.append(tr.select(keep))
+            p_accounted[exi] += tr.power * ok_t
+
+            # internal reflection: sheet-preserving quartic re-solve
+            K_refl, ok_r = bir.reflect_internal_biaxial(K_int, nh, frame,
+                                                        eps[exi])
+            if np.any(ok_r):
+                k_r_hat = K_refl / np.linalg.norm(K_refl, axis=-1,
+                                                  keepdims=True)
+                s_ray, _, n_ray = bir.biaxial_ray_from_k(K_refl, frame,
+                                                         eps[exi])
+                rf = sub.select(np.ones(len(exi), dtype=bool))
+                _kill_differentials(rf)
+                rf.dir = s_ray
+                rf.s_hat = s_new
+                rf.Es = Es_i * np.sqrt(r_m + phys * np.abs(rs) ** 2) \
+                    * np.exp(1j * np.angle(rs))
+                rf.Ep = Ep_i * np.sqrt(r_m + phys * np.abs(rp) ** 2) \
+                    * np.exp(1j * np.angle(rp))
+                self._record_reflection(rf, fid)
+                rf.generation += 1
+                rf.n_eff[...] = n_ray
+                rf.k_dir[...] = k_r_hat
+                cr = can_reflect[exi]
+                if np.any(~cr):
+                    self.ledger.credit("truncated_generation",
+                                       rf.source_id[~cr & ok_r],
+                                       rf.power[~cr & ok_r])
+                keep = cr & ok_r & (rf.power > 0)
+                if np.any(keep):
+                    out.append(rf.select(keep))
+                # rays without a same-sheet return (~ok_r) fall through to
+                # the absorbed_surface exact difference below
+                p_accounted[exi] += rf.power * ok_r
 
         absorbed = np.clip(p_in - p_accounted, 0.0, None)
         if np.any(absorbed > 0):
