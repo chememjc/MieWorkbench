@@ -2127,7 +2127,59 @@ high-resolution `--save-fields` runs.
 
 ---
 
-## 13. Troubleshooting
+## 13. The C engine (`cengine/`)
+
+A compiled OpenMP + CUDA implementation of the trace + coherent-gather
+core, selected per case by `--engine {auto,python,c}` (default `auto`).
+The Python engine in `scripts/raytracer/` is the PERMANENT REFERENCE:
+`auto` routes a case to the C engine only when every feature the scene
+uses has passed the side-by-side parity gates
+(`scripts/raytracer/tests/test_cengine_parity.py`); anything else runs on
+Python, and the choice + reason are logged and recorded in `case.json`
+(`engine`, `engine_reason`). No feature is ever lost — unported features
+simply keep their Python path.
+
+Build (optional; without the binary everything runs on Python):
+
+    cd cengine && ./build.sh        # cmake+ninja, gcc, OpenMP, CUDA 13
+
+Ported (routing source of truth: `PORTED` in `scripts/raytracer/
+cengine.py`): all analytic surfaces + mesh faces, trimmed geometry, the
+scene-wide BVH (an acceleration the Python engine lacks), Fresnel,
+TMM/table coatings, polarizers, spectral filters, the medium stack,
+gratings (all models), Beckmann roughness + diffusers, ABg scatter
+(g = 2), uniaxial birefringence, continuum-mode particle clouds, the
+coherent Huygens gather (fused CUDA kernel + CPU twin; same fp64-phase
+precision contract as the torch backend), gather occlusion, save-fields,
+export-rays, ghost analysis, viz-pattern overlays, multi-seed, and the
+opt-in `--importance-aim` variance reduction (unbiased birth culling).
+
+Still Python-routed (auto fallback; candidates for later porting):
+biaxial crystals, explicit-realization particles, beam/apodization
+sources, `--ray-differentials`, curved detectors, extra CLI detector
+faces, `rough_fresnel=macro`, ABg g != 2.
+
+Determinism: the C engine's RNG is counter-based Philox4x32-10 keyed by
+ray lineage — results are bit-identical across thread counts. It does
+NOT reproduce numpy's streams; parity is deterministic (~1e-12) for
+non-random physics and statistical (3-seed +-max(3sigma,1%)) for MC
+aggregates, the same bar the demo-equivalence gate uses.
+
+Performance: see `cengine/BENCHMARKS.md` (committed table). Headlines at
+production settings: trace-bound scenes ~13x per stage; gather-bound
+coherent scenes ~6.6x on the gather (fused CUDA vs torch).
+
+SUNSET ROADMAP (project decision): through the post-merge shakedown the
+torch gather remains the 100% fallback and three-way parity reference
+(numpy/torch/CUDA). Once the C engine has proven itself in day-to-day
+use, the torch backend (and its ~5 GB dependency) will be retired, and
+eventually the Python compute paths sunset for routine use — the numpy
+engine stays indefinitely as the slow, readable reference that the
+parity suite runs against. Errors in the C engine never present as bare
+segfaults: every failure carries context, a log
+(`<case>/cengine/cengine.log`), typed exit codes, and crash backtraces.
+
+## 14. Troubleshooting
 
 - **FreeCAD `-c` needs a bare `--` before the script's own flags.**
   Without it, FreeCAD's own argument parser tries to interpret

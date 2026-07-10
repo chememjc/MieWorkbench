@@ -375,6 +375,23 @@ tallies satisfy in − out = absorbed (diagnostic side-table, zero RNG use,
 never a closure bucket); undo torture walk (add/move/edit/duplicate/
 delete → undo to empty → redo to tip) compares worker structures equal.
 
+## C engine (`cengine/`)
+
+Compiled OpenMP+CUDA trace/gather core behind `--engine {auto,python,c}`
+(default auto: C when every scene feature is in `PORTED` in
+`scripts/raytracer/cengine.py`, else Python — the PERMANENT reference,
+never behaviorally modified). Build: `cd cengine && ./build.sh` (gcc,
+cmake, ninja; CUDA 13 at /usr/local/cuda-13 — the system nvcc is 11.5,
+CMake pins the right one). Binary override: `MIEWB_CENGINE`. Parity:
+`test_cengine_parity.py` (side-by-side scenes, root fuzz, TLAS==linear,
+thread invariance). RNG is lineage-keyed Philox (bit-identical across
+thread counts; NOT numpy streams — parity bar is 1e-12 deterministic /
+3-seed statistical). Engine+reason recorded in case.json; C failures
+fall back to Python under auto. `--workers` is Python-only (C threads
+internally). Benchmarks: `cengine/BENCHMARKS.md`;
+docs: `docs/RAYTRACER.md` §13, `cengine/README.md` (incl. torch-gather
+sunset roadmap).
+
 ## Everything else
 
 `docs/RAYTRACER.md`: full engine reference (authoring contract syntax,
