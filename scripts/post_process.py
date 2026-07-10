@@ -1473,12 +1473,148 @@ def render_ray_fans(safe, dm, cols, adir, report, csv_emitter=None,
             image="analysis/fan_%s.png" % safe)
 
 
+# =============================================================================
+# --ghost-analysis follow-on: rank multi-bounce reflection ("ghost") paths by
+# detected power. Runs only when rays_full.npz carries the seed-0 refl_hist
+# face-id history (i.e. the trace ran with --ghost-analysis). A ghost is a
+# detector hit that reflected >= 2 times AND is purely specular (scattered
+# rays -- roughness/diffuser/particle lobes -- are excluded: they are a
+# continuous BSDF pedestal, not a discrete surface-reflection ghost). Rays are
+# grouped by the ORDERED tuple of face ids they reflected off (the path
+# signature, mapped to element labels via meta['face_labels']) and ranked by
+# summed detected power. No new physics -- pure bookkeeping over refl_hist.
+# =============================================================================
+GHOST_TOP_N = 12          # bar-chart / report rows
+GHOST_FOOTPRINTS = 3      # top-K paths that also get a footprint image
+
+
+def _ghost_face_label(fid, face_labels):
+    """Face index -> "<element>.<FaceN>" via the npz meta's face_labels list
+    (written by run_trace from the scene); falls back to "face<idx>" if the
+    map is missing or the index is out of range (defensive)."""
+    if face_labels is not None and 0 <= fid < len(face_labels):
+        return face_labels[fid]
+    return "face%d" % fid
+
+
+def _ghost_path_str(sig, face_labels):
+    return " -> ".join(_ghost_face_label(f, face_labels) for f in sig)
+
+
+def render_ghost_analysis(safe, dm, cols, adir, report, face_labels,
+                          csv_emitter=None):
+    """Ghost/stray-light table + footprints for one detector. Groups the
+    generation>=2 specular detector hits by their refl_hist face-id path
+    signature, ranks by summed detected power, writes:
+      analysis/ghost_table_<safe>.png     (top-N bar chart)
+      analysis/ghost_footprint_<safe>_<k>.png  (top-3 detector-frame maps)
+      data/ghost_table_<safe>.csv         (via CsvEmitter)
+      report['detectors'][label]['ghosts']  (top rows + totals)."""
+    label = dm["label"]
+    xhat = np.asarray(dm["xhat"]); yhat = np.asarray(dm["yhat"])
+    pos = cols["pos"]
+    hist = cols.get("refl_hist")
+    if hist is None or len(pos) == 0:
+        return
+    gen = cols["generation"].astype(int)
+    scat = cols["scattered"].astype(bool)
+    power = cols["power"]
+    total_det = float(np.sum(power))
+    cand = (gen >= 2) & (~scat)
+    if not np.any(cand) or total_det <= 0:
+        return
+    # group candidate rays by their ordered face-id reflection signature
+    groups = {}
+    for i in np.where(cand)[0]:
+        sig = tuple(int(x) for x in hist[i] if x >= 0)
+        if len(sig) < 2:            # defensive: history lost (should not happen)
+            continue
+        groups.setdefault(sig, []).append(i)
+    if not groups:
+        return
+    rows = []
+    for sig, idxs in groups.items():
+        idxs = np.asarray(idxs)
+        rows.append({"sig": sig, "idxs": idxs,
+                     "power_W": float(np.sum(power[idxs])),
+                     "n_rays": int(len(idxs)), "order": len(sig)})
+    rows.sort(key=lambda r: r["power_W"], reverse=True)
+    ghost_total = float(sum(r["power_W"] for r in rows))
+
+    # --- top-N bar chart -------------------------------------------------
+    top = rows[:GHOST_TOP_N]
+    fig, ax = plt.subplots(figsize=(8, max(2.4, 0.42 * len(top) + 1.0)))
+    ypos = np.arange(len(top))[::-1]
+    ax.barh(ypos, [r["power_W"] for r in top], color="#c0392b")
+    ax.set_yticks(ypos)
+    ax.set_yticklabels([_ghost_path_str(r["sig"], face_labels) for r in top],
+                       fontsize=7)
+    ax.set_xlabel("detected power [W]")
+    ax.set_title("Ghost paths (gen>=2 specular) — %s\n"
+                 "ghost total %.3g W of %.3g W detected (%.2f%%)"
+                 % (label, ghost_total, total_det,
+                    100.0 * ghost_total / total_det), fontsize=9)
+    fig.tight_layout()
+    fig.savefig(adir / ("ghost_table_%s.png" % safe), bbox_inches="tight")
+    plt.close(fig)
+
+    # --- footprints of the top few paths (detector-frame 2-D histograms) -
+    for rank, r in enumerate(rows[:GHOST_FOOTPRINTS], start=1):
+        idxs = r["idxs"]
+        u = (pos[idxs] @ xhat) * 1e3          # mm in the detector grid frame
+        v = (pos[idxs] @ yhat) * 1e3
+        figf, axf = plt.subplots(figsize=(4.2, 3.6))
+        if len(idxs) >= 4 and np.ptp(u) > 0 and np.ptp(v) > 0:
+            axf.hist2d(u, v, bins=40, weights=power[idxs], cmap="inferno")
+        else:
+            axf.scatter(u, v, s=6, c="#e67e22")
+        axf.set_aspect("equal", "box")
+        axf.set_xlabel("u [mm]", fontsize=8)
+        axf.set_ylabel("v [mm]", fontsize=8)
+        axf.set_title("Ghost #%d  %s\n%.3g W  %d rays"
+                      % (rank, _ghost_path_str(r["sig"], face_labels),
+                         r["power_W"], r["n_rays"]), fontsize=8)
+        figf.tight_layout()
+        figf.savefig(adir / ("ghost_footprint_%s_%d.png" % (safe, rank)),
+                     bbox_inches="tight")
+        plt.close(figf)
+
+    # --- report block + CSV ---------------------------------------------
+    report_rows = []
+    csv_rows = []
+    for r in top:
+        path = _ghost_path_str(r["sig"], face_labels)
+        frac = r["power_W"] / total_det
+        report_rows.append({
+            "path": path, "ghost_order": r["order"],
+            "detected_W": r["power_W"], "fraction_of_detected": frac,
+            "n_rays": r["n_rays"]})
+        csv_rows.append((path, r["order"], r["power_W"], frac, r["n_rays"]))
+    if label in report["detectors"]:
+        report["detectors"][label]["ghosts"] = {
+            "total_detected_W": total_det,
+            "ghost_detected_W": ghost_total,
+            "ghost_fraction": ghost_total / total_det,
+            "n_paths": len(rows),
+            "top": report_rows,
+        }
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "ghost_table_%s.csv" % safe,
+            ["path", "ghost_order", "detected_W", "fraction_of_detected",
+             "n_rays"], csv_rows,
+            entity=label, chart="ghost_table", units="W",
+            provenance="rays_full.npz",
+            image="analysis/ghost_table_%s.png" % safe)
+
+
 def render_ray_analysis(case_dir, report, csv_emitter=None):
     npz_path = case_dir / "rays_full.npz"
     if not npz_path.exists():
         return
     z = np.load(npz_path, allow_pickle=True)
     meta = json.loads(str(z["meta"]))
+    face_labels = meta.get("face_labels")
     adir = case_dir / "analysis"
     adir.mkdir(exist_ok=True)
     for safe, dm in meta["detectors"].items():
@@ -1487,8 +1623,14 @@ def render_ray_analysis(case_dir, report, csv_emitter=None):
                           "lam_stratum", "pol_stratum", "generation",
                           "pol_mode", "power", "scattered", "coherent",
                           "birth_pos")}
+        hist_key = "%s/refl_hist" % safe
+        if hist_key in z.files:
+            cols["refl_hist"] = z[hist_key]
         render_spot_diagram(safe, dm, cols, adir, report, csv_emitter)
         render_ray_fans(safe, dm, cols, adir, report, csv_emitter)
+        if "refl_hist" in cols:
+            render_ghost_analysis(safe, dm, cols, adir, report,
+                                  face_labels, csv_emitter)
 
 
 # =============================================================================

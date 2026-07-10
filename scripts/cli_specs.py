@@ -209,6 +209,12 @@ def _build_pipeline_parser():
                    help="per-detector cap on exported rays (default "
                         "2000000); above it a seeded uniform-random subset "
                         "is kept and the fraction recorded in the npz meta")
+    g.add_argument("--ghost-analysis", action="store_true",
+                   help="ghost / stray-light analysis: track reflection "
+                        "face-id history (seed 0 only; implies "
+                        "--export-rays) so post ranks multi-bounce ghost "
+                        "paths by detected power into "
+                        "results/<case>/analysis/")
     g.add_argument("--wavefront-point", default=None,
                    type=parse_wavefront_point, metavar="X_MM,Y_MM",
                    help="override render_wavefront's image (wavefront "
@@ -338,6 +344,14 @@ def _build_trace_parser():
                         "2000000); above it a uniform-random subset drawn "
                         "with the run seed is kept and the kept fraction "
                         "recorded in the npz meta")
+    g.add_argument("--ghost-analysis", action="store_true",
+                   help="ghost / stray-light analysis: track the FACE-id "
+                        "history of every reflection (RayBatch.refl_hist, "
+                        "SEED 0 ONLY) and export it into rays_full.npz "
+                        "(implies --export-rays behavior; a bare "
+                        "--export-rays does NOT track history). post then "
+                        "ranks multi-bounce ghost paths by detected power "
+                        "into results/<case>/analysis/")
     return p
 
 

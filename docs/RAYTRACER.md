@@ -147,20 +147,31 @@ results/example/quick/
 ├── case.json               # options echo + status ("estimated" -> "completed") + diagnostics
 ├── audit.json               # per-seed energy ledger (closure gated at 1e-3, §6/§11)
 ├── rays.npy                 # viz polylines (N,13): source_id, lam_m, power_W, x0..z0, x1..z1,
-│                            #   pol_mode (0=isotropic/ordinary, 1=extraordinary o/e-split ray),
-│                            #   rel_power (power/birth_power in [0,1] — drives --dim-rays),
-│                            #   opl0_m, opl1_m (optical path Σn·ds at segment start/end; t = opl/c
-│                            #   drives the tracer-bead animation; escaped-ray stubs get a synthetic
-│                            #   opl1 = opl0 + n·0.25 m matching the drawn stub)
+│                            #   pol_mode (0=isotropic/ordinary, 1=uniaxial extraordinary,
+│                            #   2/3=biaxial slow/fast, §5.6b), rel_power (power/birth_power in
+│                            #   [0,1] — drives --dim-rays), opl0_m, opl1_m (optical path Σn·ds at
+│                            #   segment start/end; t = opl/c drives the tracer-bead animation;
+│                            #   escaped-ray stubs get a synthetic opl1 = opl0 + n·0.25 m matching
+│                            #   the drawn stub)
+├── rays_full.npz            # only if --export-rays/--ghost-analysis: per-detector namespaced
+│                            #   seed-0 ray records (§8.2) + JSON meta (grid basis, seed, cap,
+│                            #   face_labels if --ghost-analysis)
 ├── detectors/
 │   └── <safe_label>.h5      # spectral cube (mean [+std if --seeds>1]) + grid basis (§5.11)
 │                            #   + optional fields/<key>/{Ex,Ey} complex maps if --save-fields
+│                            #   + optional pixel_area_map + curved-detector attrs (§5.12) if the
+│                            #   detector face is a Sphere/Cylinder
+├── data/                    # only if --emit-csv: one *.csv per chart below + index.csv
+│                            #   (file -> entity, chart, units, provenance, image), §8.3
+├── analysis/                # only if --export-rays (spot_/fan_/ghost_*) and/or --save-fields
+│                            #   (psf_/mtf_/ee_*), plus wavefront_* when both a coherent key has
+│                            #   enough rays (§6.10, §8.3)
 ├── images/
 │   ├── det_<label>.png              # wavelength-colored sRGB irradiance
 │   ├── det_<label>_lin.png          # linear grayscale irradiance (colorbar, W/m^2)
 │   ├── det_<label>_log.png          # log10 grayscale irradiance
 │   ├── det_<label>_profiles.png     # horizontal/vertical cuts through the peak pixel
-│   ├── stokes_<label>_<key>.png     # 2x2 S0/S1/S2/S3 panel — only if --save-fields (§6.5)
+│   ├── stokes_<label>_<key>.png     # 2x2 S0/S1/S2/S3 panel — only if --save-fields (§6.7)
 │   └── dop_<label>.png              # summed degree-of-polarization map — only if --save-fields
 ├── spectra/
 │   └── spectrum_<label>.png         # detected power per spectral bin
@@ -187,7 +198,7 @@ results/example/quick/
 `safe_label` is the detector face id with `.` replaced by `_` (e.g.
 `Body003.Pad001.Face5` → `Body003_Pad001_Face5.h5`). The Stokes/DOP images
 and `fields/` HDF5 groups only appear when the trace was run with
-`--save-fields` (§6.5, §8.2) — every other output above is unconditional.
+`--save-fields` (§6.7, §8.2) — every other output above is unconditional.
 
 ### 4.1 Individual stages
 
@@ -213,20 +224,20 @@ and `fields/` HDF5 groups only appear when the trace was run with
 ### 4.2 Note: `run_pipeline.py`'s viz stage always uses make_viz.py's defaults
 
 `run_pipeline.py`'s internal `viz_cmd()` builder passes only `--case-dir`
-and `--model-json` to `make_viz.py` — it does **not** forward
-`--views`/`--resolution`/`--smoke`. Driving the pipeline through
-`run_pipeline.py` therefore always renders all six views
-(`overview3d`, `top`, `side`, `detector_closeup`, `turntable`,
-`rays_polmode`) at 1920×1080 (2048×2048 for `detector_closeup`). The only
-display options `post_cmd()`/`viz_cmd()` forward beyond
-`--case-dir`/`--model-json` are `--dim-rays`/`--dim-rays-floor`
-(attenuation dimming: segment opacity = P/P_birth, linear or sqrt curve,
-optional percent floor — applies to `rays_xy.png` and the 3D ray
-renders); `post_process.py`'s `--viz-generations` remains reachable only
-by invoking that script directly. To pick a subset of views, a different
-resolution/smoke test, or a decluttered ray plot, invoke
-`make_viz.py`/`post_process.py` directly (§8) on an already-completed
-case directory.
+and `--model-json` (plus `--dim-rays`/`--dim-rays-floor`) to
+`make_viz.py` — it does **not** forward `--views`/`--resolution`/
+`--smoke`. Driving the pipeline through `run_pipeline.py` therefore
+always renders all six views (`overview3d`, `top`, `side`,
+`detector_closeup`, `turntable`, `rays_polmode`) at 1920×1080 (2048×2048
+for `detector_closeup`). `post_cmd()` forwards a similarly small explicit
+set: `--dim-rays`/`--dim-rays-floor` (attenuation dimming: segment opacity
+= P/P_birth, linear or sqrt curve, optional percent floor — applies to
+`rays_xy.png` and the 3D ray renders), `--photometric`, `--spectrometer`,
+`--emit-csv`, and `--wavefront-point`; `post_process.py`'s
+`--viz-generations` remains reachable only by invoking that script
+directly. To pick a subset of views, a different resolution/smoke test,
+or a decluttered ray plot, invoke `make_viz.py`/`post_process.py` directly
+(§8) on an already-completed case directory.
 
 ---
 
@@ -249,12 +260,14 @@ fields on each `PartDesign::Body`:
 | Property | Type | Meaning |
 |---|---|---|
 | `power` (mW) + `lambdac` (nm) | Float | presence of **both** marks the body a **source** (checked first, before `material`) |
-| `material` | String | a row name in `opticalproperties/materials.csv`, a crystal name in `birefringence/uniaxial.csv` (§5.6), `"detector"`, or `"none"`/absent |
+| `material` | String | a row name in `opticalproperties/materials.csv`, a crystal name in `birefringence/uniaxial.csv` (§5.6) or `birefringence/biaxial.csv` (§5.6b), `"detector"`, or `"none"`/absent |
 | `coating` | String, optional | a coating name (whole-body) or a per-face map `'Face3=MgF2;Face5=x'` (§5.3) |
 | `polarizer` | String, optional | a row name in `opticalproperties/polarizer/polarizers.csv` (§5.3) |
 | `polarizer_axis` | String `'x,y,z'`, optional | body-local transmission-axis vector, default `0,0,1` (§5.3) |
 | `filter` | String, optional | a row name in `opticalproperties/filter/filters.csv` (§5.3) |
-| `crystal_axis` | String `'x,y,z'`, optional | body-local optic-axis vector for a birefringent `material` (§5.6), default `+x` |
+| `crystal_axis` | String `'x,y,z'`, optional | body-local optic-axis vector for a uniaxial birefringent `material` (§5.6), default `+x`; the X principal axis for a biaxial `material` (§5.6b) |
+| `crystal_axis2` | String `'x,y,z'`, optional | body-local Y principal axis; REQUIRED alongside `crystal_axis` when `material` is a biaxial crystal (§5.6b), otherwise ignored with a warning |
+| `scatter` | String, optional | a per-face map (or whole-body) of `opticalproperties/scatter/bsdf.miebsdf` registry names (§5.4.2) — mutually exclusive with `roughness`/`diffuser` on the same face |
 | `surface_override` | String, optional | per-face `'FaceN=asphere:R=..;k=..;A4=..;...;r_max=..'` (§5.7) |
 | `mirror` | Float, optional, [0,1] | achromatic partial-reflector fraction (§5.3 precedence) |
 | `absorbance` | Float, optional, [0,1] | fraction of the physical (non-mirror) remainder absorbed |
@@ -263,6 +276,8 @@ fields on each `PartDesign::Body`:
 | `grating` | String, optional | a per-face map `'Face2=600:v:orders=-1..1'` or `'Face2=@registryname'` (§5.5) — must name specific faces, not the whole body |
 | `polarization` | String, optional | source-only: `'unpolarized'` (default) `'linear:<deg>'` `'circular:left|right'` `'elliptical:<psi>:<chi>'` (§5.2) |
 | `lambdamin`, `lambdamax` (nm, optional), `coherent` (bool, default False) | — | source-only, see §5.2 |
+| `apodization` | String, optional | source-only: `'gaussian:w0=<mm>[:order=<n>]'` transverse field-amplitude taper across the emitting face (§5.2) |
+| `beam_waist` (mm) + `m2` (optional, default 1.0) | Float | source-only: Gaussian-beam mode — position sampled from the waist intensity profile plus a per-ray angular divergence (§5.2); requires a planar emitting face |
 
 Classification (`classify_body`, in this priority order):
 0. `miewb_exclude` truthy (a bool set by the GUI on unfolded fold
@@ -283,13 +298,18 @@ Classification (`classify_body`, in this priority order):
 capped to [0,1] with a loud warning (`capped01()`), and `model.json`
 contract validation (`common.validate_model`) then hard-errors if a body
 still shows an out-of-range value after that capping (an extractor bug,
-not a user error). `polarizer`/`filter`/`crystal_axis` set on a
-non-`optic` body are ignored with a warning (they are only meaningful on
-optics); `crystal_axis` is **always emitted** for every optic body
-(default local `+x` if the property is absent) since the tracer's own
+not a user error). `polarizer`/`filter`/`crystal_axis`/`crystal_axis2`/`apodization`/
+`beam_waist` set on a non-`optic` (or non-`source`, for the source-only
+properties) body are ignored with a warning (they are only meaningful on
+their intended role); `crystal_axis` is **always emitted** for every optic
+body (default local `+x` if the property is absent) since the tracer's own
 local-+x default would otherwise be ambiguous without the body's
-Placement rotation applied. A model needs **at least one source** and
-**at least one detector**, or extraction/validation fails outright.
+Placement rotation applied. `crystal_axis2` is emitted only when authored
+(there is no default second axis) — the `Scene` loader raises if a body's
+`material` resolves to a biaxial crystal (§5.6b) but `crystal_axis2` is
+absent or (near-)parallel to `crystal_axis`. A model needs **at least one
+source** and **at least one detector**, or extraction/validation fails
+outright.
 
 Extract-time validation resolves only geometry-shape properties
 (`surface_override`'s asphere declaration, §5.7); it does **not** check
@@ -388,6 +408,37 @@ instead via a per-ray `pol_mode`/`n_eff` state, so more rays are needed
 for a birefringent scene only insofar as the o/e power split dilutes the
 samples already present at each `(source, lambda, pol)` key — there is no
 separate fixed multiplier in the code for this.
+
+**Gaussian-beam mode (`beam_waist` + `m2`, source-only, `sources.py`).**
+Setting `beam_waist` (mm, required `> 0`) switches position sampling from
+uniform-over-the-face to a rejection-sampled 2D Gaussian about the face
+center (`_sample_beam_points`): `dx, dy ~ N(0, w0/2)` in the face tangent
+frame, redrawing candidates that land outside the physical aperture
+(rejection, not clamping, so the truncated-Gaussian shape is exact and
+each ray keeps uniform power `P/N` — position density alone carries the
+intensity profile `I(r) ~ exp(-2 r^2/w0^2)`). Each ray additionally gets a
+per-ray angular divergence: half-angle `theta0 = M2*lambda/(pi*w0)`
+(evaluated at the ray's own sampled wavelength) with independent per-axis
+tilt `N(0, theta0/2)` — the `/2` (not `/sqrt(2)`) is required so the
+near-field position spread and the far-field angular spread jointly
+satisfy `w(z)^2 = w0^2 + (theta0 z)^2` at every `z` (documented and
+derived in the `sources.py` docstring). `m2` (beam quality factor,
+default 1.0, must be `>= 1.0`) scales the diffraction-limited divergence;
+`m2=1` is a true TEM00 Gaussian mode. **Requires a planar emitting face**
+(`NotImplementedError` on a curved one).
+
+**Apodization (`apodization`, source-only, any face shape).** A
+*different* mechanism from `beam_waist`: it reweights each sampled ray's
+**power** by a transverse field-amplitude taper `exp(-2 (r/w0)^(2*order))`
+(`r` from the face center) and renormalizes so the total still equals the
+source's exact `power_mW` — position sampling itself is untouched (so it
+composes with any face geometry, not just planar). `order=1` is a plain
+Gaussian; `order>1` is a super-Gaussian (flatter core, steeper falloff).
+Grammar (`common.parse_apodization_spec`): `'gaussian:w0=<mm>[:order=<n>]'`
+(only `kind=gaussian` is implemented; `w0` required `>0`; `order` defaults
+to 1, must be `>=1`). A source can carry `beam_waist`/`m2` and
+`apodization` simultaneously (independent knobs — position spread from
+one, power taper from the other) but this is an uncommon combination.
 
 ### 5.3 Surface interaction: mirror/absorbance, coatings, polarizers, filters
 
@@ -531,6 +582,48 @@ leaks ~4×10⁻⁶ of the incident power through a crossed polarizer, ~m³
 scaling); real ground glass depolarizes more. Declaring `diffuser` and
 `roughness` on the same face is a ContractError.
 
+### 5.4.2 Measured scatter / BSDF (`scatter`)
+
+The `scatter` body property (same whole-body-or-per-face grammar as
+roughness/coating/grating — names only, no value grammar, like `coating`)
+declares a **measured, tabulated BRDF** on a face, using the empirical
+**ABg model** (`opticalproperties/scatter/bsdf.miebsdf`, §7.9; see
+Pfisterer, "Approximated Scatter Models for Stray Light Analysis," *Optics
+& Photonics News* (2011), and Harvey's Harvey-Shack formulation, *Opt.
+Eng.* 51, 013402 (2012)):
+
+```
+'polished_bk7_glass'          whole-body registry name
+'Face2=diamond_turned_aluminum' per-face map
+```
+
+**Model (v1, REFLECTED side only — BRDF; BTDF/transmitted-side scatter is
+out of scope).** The scattered lobe follows `BSDF(u) = A / (B + u^g)`,
+`u` the direction-cosine offset of a scattered ray from the specular
+direction (`scatter.py` module header derives the closed-form radial
+total-integrated-scatter integral for `g==2`, the case every shipped
+registry row uses; `g != 2` falls back to a per-call numeric inverse-CDF,
+exercised by tests but unused by any shipped entry). At each hit,
+`scatter.abg_tis(A, B, g, cos_i)` gives the fraction of the reflected
+power that leaves the specular direction at the ray's own incidence
+angle; the specular child keeps amplitude `sqrt(1 - TIS)` and the
+remainder is emitted as ABg-lobe-sampled scattered children (flagged
+`scattered=True`, same coherent-gather treatment as roughness/diffuser
+pedestals, §5.4). An optional per-row `tis_cap` ceilings the computed TIS
+(a measured total-scatter number the ABg fit may over-integrate at
+grazing incidence) — every registry entry is validated at load time so
+`TIS(normal incidence) <= 1` (energy).
+
+Honest limits: **BRDF only** — the transmitted side is untouched (a
+lens/window with `scatter` on its exit face scatters on reflection but
+transmits its Fresnel/TMM child unmodified); **single scatter** (no
+multiple-bounce lobe transport); the tabulated A/B/g fit is isotropic
+(a real diamond-turned or ground surface can be azimuthally anisotropic —
+out of scope). **Mutually exclusive with `roughness`/`diffuser` on the
+same face** (`Scene.__init__` hard-errors naming the face) — a face is
+either a Beckmann-microfacet roughness/diffuser surface or a measured-ABg
+surface, never both.
+
 ### 5.5 Gratings
 
 `grating` body property, a **per-face map only** — it must name specific
@@ -546,7 +639,7 @@ faces (`FaceN=...`), never a whole-body value:
 Body.Feature.FaceN:<same grammar>` (CLI, repeatable) is the fully
 face-qualified equivalent and takes precedence over the body property.
 A registry name (`@name`) is resolved against `opticalproperties/
-grating/gratings.csv` (§7.6) at scene-build time; an unrecognized name is
+grating/gratings.csv` (§7.5) at scene-build time; an unrecognized name is
 a hard error naming every loaded registry entry.
 
 Diffraction directions always come from the exact vector grating equation
@@ -562,7 +655,7 @@ via a registry row:
 | `lamellar` | Idealized binary-phase/duty-cycle grooves (`eta_m` closed form in the groove duty cycle) | scalar (`eta_s == eta_p`) | duty=0.5 reduces to the textbook `eta_{+-1} = 4/pi^2`, `eta_even = 0` |
 | `bragg_kogelnik` | Kogelnik (1969) thin-hologram transmission coupled-wave theory (volume Bragg gratings/VBGs); params `thickness_um`, `dn`, `slant_deg` | polarization-resolved (s/TE vs p/TM detuning factor) | exact Bragg incidence (`nu = pi/2`) gives `eta_1 = 1.0`, `nu = pi/4` gives `eta_1 = 0.5` |
 | `dammann` | Exact Fourier-order computation of a binary +-pi phase profile from its `transitions` list (fraction of period) | scalar | Parseval (`sum|c_m|^2 = 1`); a single transition at 0.5 reduces exactly to lamellar duty=0.5; a real 1x5 equal-intensity Dammann design matches its published transition points to <0.1% uniformity |
-| `table` | Per-order `eta_s`/`eta_p` interpolated at the ray wavelength from a CSV (§7.6) | measured, polarization-resolved | exact linear-interpolation roundtrip; hard error outside the tabulated range; an order absent from the table reads 0 |
+| `table` | Per-order `eta_s`/`eta_p` interpolated at the ray wavelength from a CSV (§7.5) | measured, polarization-resolved | exact linear-interpolation roundtrip; hard error outside the tabulated range; an order absent from the table reads 0 |
 
 Every model rotates the incident Jones vector into the grating face's own
 local (s,p) interface basis (the same `fr.pol_basis`/`fr.rotate_jones`
@@ -643,9 +736,9 @@ when the optic axis lies in the interface plane).
 Honest limits: absorbing crystals are out of scope (`Im(n_o)`/`Im(n_e)`
 are ignored; geometry uses real indices only, and the o-ray's index is
 used for bulk absorption of both modes — a documented approximation);
-biaxial crystals, optical activity, and gyrotropy are not modeled; an
-e-mode ray that hits a **non-birefringent** face (e.g. a body nested
-inside a crystal) is silently downgraded to ordinary-index propagation
+optical activity and gyrotropy are not modeled (biaxial crystals **are**
+now modeled — §5.6b); an e-mode ray that hits a **non-birefringent** face
+(e.g. a body nested inside a crystal) is silently downgraded to ordinary-index propagation
 with a one-time warning ("documented approximation"); ray differentials
 are not tracked through an o/e split (falls back to source-referenced
 patch area, like gratings). The closed-form birefringence math
@@ -653,6 +746,76 @@ patch area, like gratings). The closed-form birefringence math
 displacer/Wollaston/waveplate FreeCAD scenes in `make_test_scenes.py`
 have no dedicated end-to-end pytest gate the way the double-slit scene
 does (§10/§11) — treat them as manually-validated reference scenes.
+
+### 5.6b Biaxial birefringence (`crystal_axis` + `crystal_axis2`)
+
+Setting `material` to a crystal name in `opticalproperties/birefringence/
+biaxial.mibiax` (currently `ktp`, `kta`, `lbo`, `bibo`, §7.7) marks a body
+**biaxial** (`MaterialDB.is_biaxial`) instead of uniaxial. A biaxial
+crystal has three distinct principal indices `n_x != n_y != n_z` and
+**two** optic axes, so a single `crystal_axis` vector can no longer pin
+the crystal's orientation: the body needs a **full principal frame**.
+`crystal_axis` is the X principal axis and `crystal_axis2` (new,
+body-local `x,y,z`, no default) is the Y axis; the `Scene` loader
+Gram-Schmidt-orthogonalizes Y against X and derives Z = X × Y
+(`body.crystal_frame`, a 3×3 rotation matrix, rows = principal axes in
+global coordinates) — a missing `crystal_axis2`, or one (near-)parallel
+to `crystal_axis`, is a hard error at scene-build time.
+
+The o/e binary split becomes a **slow/fast two-sheet split** of the
+biaxial Fresnel wave-normal equation (`birefringence.py`, Born & Wolf):
+
+```
+H(K) = |K|^2 * P - Q + eps_x*eps_y*eps_z = 0
+P = sum_i eps_i K_i^2,   Q = sum_i eps_i*(eps_j + eps_k)*K_i^2
+```
+
+(`K` the wavevector in k0 units expressed in the crystal principal frame,
+`eps_i = n_i^2`). At an interface, substituting the conserved tangential
+wavevector `K = t_vec + s*n_hat` turns this into a **quartic in `s`**,
+solved batched via companion-matrix eigenvalues (`refract_in_biaxial`);
+the (at most) two real inward roots are the **slow** sheet (larger phase
+index) and **fast** sheet. D-field eigenvectors for each sheet come from
+a closed-form 2×2 symmetric eigenproblem of the inverse-permittivity
+tensor projected transverse to `K` (`biaxial_modes_for_k`), robust
+everywhere the uniaxial `k_i/(1/n^2 - eps_i)` closed form would hit a 0/0
+(the principal planes). The ray (Poynting) direction for each sheet comes
+from `grad_K H` (`biaxial_ray_from_k`) — like the uniaxial e-wave, ray and
+wavevector differ (walk-off), and because the biaxial ray→k inversion has
+**no closed form**, the tracer carries the internal unit wavevector
+explicitly in a per-ray `k_dir` field (allocated only inside a biaxial
+medium) rather than reconstructing it from the ray direction.
+
+Rays carry `pol_mode` 2 (slow) / 3 (fast) inside a biaxial body (0/1 stay
+reserved for isotropic/uniaxial-extraordinary); as with uniaxial e-mode
+rays, `n_eff`/OPL bookkeeping is ordinary from the gather's point of view
+— there is no dedicated biaxial code in `gather.py`. Interface Fresnel
+amplitudes use the **same effective-index approximation** as uniaxial
+(each sheet's own `n_phase` fed into isotropic Fresnel formulas per
+channel); the cross-terms this drops are absorbed into `absorbed_surface`
+via the exact power difference, so energy closure holds by construction
+even though per-channel phase/amplitude near a principal plane is not
+claimed exact. **KTP @ 1064 nm** (Kato & Takaoka 2002) is the validation
+oracle: the quartic normal-surface residual, D-eigenvector orthonormality,
+and the uniaxial/isotropic degenerate limits are all pinned to <1e-9
+relative (`test_biaxial.py`, 15 tests).
+
+Honest limits (mirror the uniaxial ones, plus two biaxial-specific ones):
+- **Conical refraction is not modeled.** Near an optic axis the two
+  sheets meet and their eigenvectors become numerically degenerate; the
+  solver returns an arbitrary orthonormal transverse pair there rather
+  than the physical internal/external conical-refraction cone. Keep
+  incidence away from the crystal's optic axes.
+- **Internal reflections are sheet-preserving** (`reflect_internal_
+  biaxial`): a slow-sheet ray reflects to another slow-sheet ray (same for
+  fast); real cross-sheet mode coupling at an internal reflection is
+  ignored (the same tier of approximation as the effective-index
+  interface Fresnel above). A ray with no same-sheet returning root (a
+  conical-corner case) drops its reflected share into `absorbed_surface`.
+- Absorbing crystals (`Im(n_x)`/`Im(n_y)`/`Im(n_z)`), optical activity,
+  and χ² nonlinear conversion are out of scope, exactly as for uniaxial.
+- Coating and roughness/scatter are not modeled on a biaxial face (bare
+  Fresnel used instead, one-time warning) — same restriction as uniaxial.
 
 ### 5.7 Aspheres (`surface_override`)
 
@@ -791,11 +954,44 @@ detector screen's own local frame happened to come out that way). See
 worked examples of reading this basis correctly instead of assuming a
 convention.
 
-Detectors are **planar only** — `DetectorGrid.__init__` raises
-`NotImplementedError` for a non-`Plane` surface (§6.2), and (separately)
-`Scene.__init__` raises `NotImplementedError` if a detector's recorded
-face is mesh-type (§5.8) — curved or freeform detector screens are not
-supported.
+Planar detectors use `DetectorGrid`; a detector body whose recorded face
+is a `Sphere` or `Cylinder` instead automatically gets `CurvedDetectorGrid`
+(§5.12) — chosen by face surface type, no body-property toggle needed.
+`Scene.__init__` still raises `NotImplementedError` if a detector's
+recorded face is mesh-type (§5.8) — freeform detector screens remain
+unsupported.
+
+### 5.12 Curved detectors (sphere/cylinder, incoherent only)
+
+A detector body whose recorded face canonicalizes to a `Sphere` or
+`Cylinder` builds a `CurvedDetectorGrid` (`detector.py`) instead of the
+planar `DetectorGrid` — same `run_trace.py`/`post_process.py` pipeline,
+no new CLI flag. Pixels are a regular grid in the surface's own canonical
+`(u, v)` parameterization (`surfaces.py`'s `to_uv`): for a sphere, `u` =
+azimuth, `v` = latitude, per-pixel metric area `R^2 * cos(v) * du * dv`;
+for a cylinder, `u` = azimuth, `v` = axial coordinate, per-pixel area
+`R * du * dv` (constant). `resolution` sizes pixels along the longer
+metric span so pixels stay square-ish regardless of aspect ratio. Power
+is splatted (bilinear) into the same `inc` accumulator the planar grid
+uses — the *only* difference is `to_grid` mapping world hits through
+`surf.to_uv` instead of an in-plane projection — so detected-power tallies
+and the energy-audit booking are byte-identical to the planar path;
+`post_process.py` divides by the recorded **true metric per-pixel area
+map** (`pixel_area_map`, an extra dataset in `detectors/<label>.h5`, only
+present for curved detectors so planar `.h5` files stay byte-compatible)
+to get irradiance, so total detected power is grid-geometry-independent.
+Curved-detector `.h5` files carry extra attrs: `surface_type` (`"sphere"`
+or `"cylinder"`), `radius_m`, `u_lo`/`u_hi`/`v_lo`/`v_hi` (the trimmed
+parameter range).
+
+**Honest limit: incoherent path only.** `CurvedDetectorGrid.
+add_gather_samples()` raises `NotImplementedError` — the coherent Huygens
+gather kernel (§6) assumes a flat aperture (obliquity/free-space
+propagation math is written for a planar reference); a curved detector
+must be fed by `coherent=false` sources only. `--export-rays`/
+`--save-fields` still populate a nominal in-plane `xhat`/`yhat`/`normal`
+frame at the arc center (for the ray-export meta and spot-diagram
+machinery, §8.2) but that frame is **not** used by the splat itself.
 
 ---
 
@@ -881,13 +1077,19 @@ Two-part model, in `scripts/raytracer/`:
   coefficients borrow the bare-interface Fresnel phase; only TMM layer
   stacks carry real coherent coating phase (§5.3).
 - **Effective-index Fresnel approximation for birefringent interfaces.**
-  Uniaxial o/e Fresnel amplitudes use isotropic Fresnel formulas with
-  `n_o`/`n(theta)` per channel rather than the true anisotropic-boundary
-  solution; energy still closes exactly via the ledger, but per-channel
-  phase/amplitude near-normal vs. grazing incidence is not claimed exact
-  (§5.6). Absorbing (dichroic) uniaxial crystals, biaxial crystals,
-  optical activity, and gyrotropy (e.g. quartz's rotary power along its
-  own optic axis) are **not modeled at all**.
+  Uniaxial o/e (§5.6) and biaxial slow/fast (§5.6b) Fresnel amplitudes both
+  use isotropic Fresnel formulas with each channel's own phase index rather
+  than the true anisotropic-boundary solution; energy still closes exactly
+  via the ledger, but per-channel phase/amplitude near-normal vs. grazing
+  incidence is not claimed exact. Absorbing (dichroic) uniaxial/biaxial
+  crystals, optical activity, and gyrotropy (e.g. quartz's rotary power
+  along its own optic axis) are **not modeled at all**; biaxial conical
+  refraction and cross-sheet internal-reflection coupling are also not
+  modeled (§5.6b).
+- **Measured scatter (`scatter`, §5.4.2) is reflected-side (BRDF) only,
+  single-scatter, isotropic.** The transmitted child at a scattering face
+  is untouched; multiple-bounce lobe transport and azimuthal anisotropy
+  (e.g. a real turned-metal surface's groove pattern) are not modeled.
 - **No occlusion test between a gather sample and the detector pixel
   being evaluated, unless `--gather-occlusion` is passed.** By default
   the Huygens sum in `gather.py` propagates every sample to every pixel by
@@ -923,8 +1125,12 @@ Two-part model, in `scripts/raytracer/`:
   an ensemble of azimuths, not per-collision); the default instead samples
   azimuth from the true polarized differential cross-section `|S1|^2|Es|^2
   + |S2|^2|Ep|^2` given the incoming Jones vector.
-- **Detector screens are planar only** (`DetectorGrid` hard-errors on a
-  non-Plane surface).
+- **Detector screens are planar or curved-incoherent only.** Planar
+  screens support the full coherent gather; sphere/cylinder screens
+  (`CurvedDetectorGrid`, §5.12) support incoherent power/irradiance only
+  — `add_gather_samples()` hard-errors, so a curved detector must be fed
+  by `coherent=false` sources. Any other surface type (mesh, freeform) is
+  still an unconditional hard error for a detector face.
 - **Mesh (non-analytic) faces carry a sag error far larger than a
   wavelength** — coherent phase through a mesh face is meaningless; they
   are for incoherent power accounting only (§5.8). A mesh-type source or
@@ -1066,6 +1272,85 @@ passing through two detector screens must not be double-counted against
 closure. `PowerLedger.report()`'s `closure_error` per source is
 `|1 - sum(buckets)/emitted|`, gated at `1e-3` (`closure_ok`).
 
+### 6.9 Multi-process trace sharding (`--workers`)
+
+Off by default in effect (`--workers auto` still means "use it"; pass
+`--workers 1` for the historical single-process path). `resolve_workers()`
+turns `auto` into `max(1, cpu_count - 2)`; any explicit integer is clamped
+to `>= 1`. **`--workers 1` is bit-identical** to the pre-sharding code
+path (same RNG stream, same results) — sharding only activates for
+`workers > 1` **and** `--rays > 1` (`run_trace._run_sharded`).
+
+With `N > 1`, the total primary-ray budget per source is split as evenly
+as possible across `N` spawned processes (`multiprocessing`, `"spawn"`
+context — required to keep CUDA state out of forked children), each given
+its own child `SeedSequence` (`np.random.SeedSequence(seed).spawn(N)`) so
+shards draw independent, non-overlapping RNG streams rather than
+re-running the same seed `N` times. Each shard rebuilds the `Scene` from
+scratch (cheap; no shared torch/CUDA state crosses the process boundary)
+and traces its share of rays through the geometric-propagation loop only;
+only worker 0 records viz rays (so the viz-ray budget doesn't multiply by
+`N`). The parent process then merges every shard's ray records/ledger
+tallies (linear accumulators — trivial to merge) and runs the
+**coherent Huygens gather once, single-process, in the parent** (torch-CUDA
+when available) — the gather itself is never sharded. Because the RNG
+draws differ from the `N=1` path, **`N>1` results are statistically
+equivalent to `N=1` (same closure, same expected detector image within MC
+noise) but not bit-identical** — `test_workers.py` pins this contract
+(merged ledgers/detector cubes agree with single-process runs within
+Monte-Carlo tolerance, and `N=1` reproduces the pre-sharding path exactly).
+`run_pipeline.py`/`post_process.py` also accept `--workers` for symmetry
+with the CLI-introspecting GUI config matrix, but only `run_trace.py`'s
+trace-loop stage actually shards.
+
+### 6.10 Named analysis products (PSF/MTF/EE/Zernike/Strehl, spot/ray-fan)
+
+Two independent post-processing families, both driven by opt-in trace
+flags and both **seed-0 only** (neither averages across `--seeds`):
+
+- **Field-based (needs `--save-fields`, §6.7):** `analysis_field.py` +
+  `post_process.render_field_analysis()` build, per coherent gather key
+  `(source, lam_stratum, pol_stratum)` **plus** a synthetic `"all"` row
+  (the incoherent sum of every key's PSF — valid because different keys
+  never interfere, §6), the **PSF** (the coherent irradiance image itself,
+  peak-normalized + log-stretched + a radial profile), the **2D FFT-MTF**
+  (`MTF = |FFT(PSF)| / FFT(PSF)|_0`, plus tangential/sagittal 1D slices and
+  the `MTF50` frequency), and **encircled energy** (radial cumulative sum,
+  reporting the 50/80/90% radii). Headline `report.json` scalars
+  (`detectors.<label>.analysis.{psf_peak_W_m2, mtf50_tan/sag_cy_mm,
+  ee_r50/r80/r90_um}`) come from the dominant-power **physical** key
+  (never the synthetic `"all"` row); every key's numbers (including
+  `"all"`) live in `analysis.keys`. Outputs: `analysis/psf_<label>.png`,
+  `analysis/mtf_<label>.png`, `analysis/ee_<label>.png` (+ CSVs under
+  `--emit-csv`, §8.3).
+- **Ray-based (needs `--export-rays`, §8.2/§8.3):** `render_ray_analysis()`
+  builds a **spot diagram** (per `(source, lam_stratum)` panel: landing
+  scatter about the centroid, RMS + geometric/100% radius) and **ray
+  fans** (tangential/sagittal transverse-aberration fans plus a
+  chief-referenced **OPD fan**, using each ray's `birth_pos` on the source
+  face as its pupil coordinate) into `analysis/spot_<label>.png` /
+  `analysis/fan_<label>.png`. `render_wavefront()` then Zernike-fits the
+  same per-key OPD (`analysis.py`: Noll-indexed, unit-RMS-normalized over
+  the unit disc, `jmax=15`, both Noll and Fringe indices reported) and
+  reports the **Maréchal-approximation Strehl** `exp(-(2*pi*sigma/lambda)^2)`
+  from the piston/tip/tilt-removed residual RMS, into
+  `analysis/wavefront_<label>.png` and `report.json`'s
+  `detectors.<label>.wavefront` block (per-key, plus the dominant-power
+  key's `strehl_marechal`/`rms_waves`/`pv_waves` promoted to the top
+  level). **Pupil model, stated honestly**: this is a **source-referenced**
+  pupil (each ray's normalized transverse birth position on the emitting
+  face), exact for the collimated/laser benches this tracer models but
+  **not a true exit pupil** for finite-conjugate, field-point imaging — a
+  real exit-pupil/chief-ray search is future work (`lowhanging.md`). A
+  key needs more than `MIN_WAVEFRONT_RAYS = 200` landing rays to get a
+  wavefront fit; `--wavefront-point X_MM,Y_MM` overrides the default
+  power-weighted landing centroid as the OPD reference point.
+  **Future work, explicitly out of scope today**: a PSF-peak-ratio Strehl
+  (measured PSF peak vs. a diffraction-limited reference PSF) that would
+  let `--save-fields` and `--export-rays` cross-check each other — this
+  needs a reference (Airy/aberration-free) PSF model this module does not
+  build yet.
+
 ---
 
 ## 7. Optical properties library (`opticalproperties/`)
@@ -1078,9 +1363,9 @@ registry hard-validates its referenced table CSVs at load time and
 requires a non-empty `reference` citation column — the same policy as
 `materials.csv` — and table interpolation **never extrapolates**
 (`interp_hard()` raises `MaterialError` outside the tabulated range).
-Coatings/polarizers/filters/gratings/birefringence are all **optional**:
-a trimmed library missing any of these CSVs loads that category as an
-empty dict rather than failing. `--optical-properties PATH` (run_trace.py/
+Coatings/polarizers/filters/gratings/birefringence (uniaxial and biaxial)/
+scatter are all **optional**: a trimmed library missing any of these CSVs
+loads that category as an empty dict rather than failing. `--optical-properties PATH` (run_trace.py/
 run_pipeline.py) overrides the library root; there is no per-category
 accessor beyond indexing the loaded dicts directly (e.g.
 `props.polarizers["lp_test"]`) except for materials, which get
@@ -1130,7 +1415,7 @@ axis rows), plus foundational `vacuum`, `air`, `bk7`, `fused_silica`, `sapphire_
 `water`, `glass`, `polystyrene`, `latex`, `pmma`, `polycarbonate`, `tio2`, `mgf2`,
 `sio2_film`, `detector`, `calcite`, `quartz`, `sf5`, and `fiber_core_na22`. All
 entries are spot-checked against authoritative sources (NIST, peer-reviewed
-publications, manufacturer datasheets) per §7.8 citation policy.
+publications, manufacturer datasheets) per §7.10 citation policy.
 
 **To add a material**: append a row with a unique `name`; pick `class`
 descriptively; pick `model` and supply the required parameters for it
@@ -1217,7 +1502,19 @@ addition enabling waveplate/Rochon prism designs), each pointing at a
 `materials.miemat` o/e pair (§7.1) with spot-checked birefringence values.
 See §5.6 for the physics model.
 
-### 7.7 `detector/detectors.miedet` (+ `detector/tables/*.mietab`)
+### 7.7 `birefringence/biaxial.mibiax`
+
+Columns `name, n_x_material, n_y_material, n_z_material, reference,
+notes`. 4 biaxial crystals ship: `ktp`, `kta`, `lbo`, `bibo`, each
+pointing at three `materials.miemat` principal-index rows (`<name>_nx`/
+`_ny`/`_nz`, §7.1) — e.g. `ktp` resolves to `ktp_nx`/`ktp_ny`/`ktp_nz`.
+All four are spot-checked HIGH-confidence rows (Kato & Takaoka 2002 for
+KTP; see `library.md` for the other three's citations). A body sets
+`material=ktp` plus **both** `crystal_axis` (X) and `crystal_axis2` (Y)
+to use one — see §5.6b for the physics model and the principal-frame
+contract.
+
+### 7.8 `detector/detectors.miedet` (+ `detector/tables/*.mietab`)
 
 Columns `name, table_csv, reference, notes`. Tables are `wavelength_nm, qe`
 (quantum efficiency, values in (0,1]). One detector QE curve ships: `hamamatsu_s1223`
@@ -1231,7 +1528,25 @@ makes that truncation visible). No CLI flag; it is driven entirely by the
 body property. The separate `--photometric` flag produces lux maps using the
 CIE Ȳ=V(λ) table in `raytracer/detector.py`.
 
-### 7.8 Citation policy
+### 7.9 `scatter/bsdf.miebsdf` (+ measured ABg surfaces)
+
+Columns `name, model, A, B, g, tis_cap, reference, notes`; `model` is
+always `abg` today (`SCATTER_MODELS = ("abg",)`). `A`, `B`, `g` must each
+be `> 0`; `tis_cap` is optional and, if given, must lie in `(0, 1]`. Every
+row is validated at load time: `scatter.abg_tis(A, B, g, cos_i=1)` (the
+widest, normal-incidence total-integrated-scatter integral) must not
+exceed 1 — a fit that would scatter more power than it receives is a
+load-time `MaterialError`, not a silent energy leak discovered at trace
+time. 3 surfaces ship: `polished_fused_silica` (TIS ~0.09% near normal),
+`polished_bk7_glass` (TIS ~2.2%, standard 60-40 scratch-dig polish), and
+`diamond_turned_aluminum` (raw TIS ~11.6%, `tis_cap=0.1` pins the split to
+a plausible measured 10% total scatter) — all three rows are flagged
+**UNVERIFIED** in `notes` (representative ABg fits per Pfisterer 2011's
+form, not transcribed from a specific vendor/published measurement); spot
+this before citing a scatter result as measured. See §5.4.2 for the
+physics model and the `roughness`/`diffuser` mutual-exclusion contract.
+
+### 7.10 Citation policy
 
 Every row in every registry above requires a non-empty `reference`
 column (`MaterialError` if blank, enforced identically in `materials.py`
@@ -1273,7 +1588,8 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--particle-threshold F] [--suppress-body NAME]...
     [--photometric] [--spectrometer]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
-    [--keep-going] [--print-only]
+    [--emit-csv] [--export-rays] [--export-rays-max N] [--ghost-analysis]
+    [--wavefront-point X,Y] [--keep-going] [--print-only] [--workers N]
 ```
 
 `--models` accepts globs and multiple files (bare names also resolve
@@ -1295,17 +1611,32 @@ function) and reports `photometric.{luminous_flux_lm, peak_illuminance_lux,
 mean_illuminance_lux}` in `report.json`. `--spectrometer` generates
 wavelength-centroid and λ-vs-position profile maps and reports
 `spectrometer.{lambda_min_nm, lambda_max_nm, dispersion_nm_per_mm, fit_r2}`
-(wavelength resolution quantized by `--spectral-bins`). `--keep-going`
-turns a stage failure into a `FAILED: <tag>` notice and a skip to the next
-model (process still exits nonzero if anything failed). `--print-only` composes
-and prints every stage command **without running anything**. Extract runs
-**once** for the whole model batch (one FreeCAD launch handles every
-model); trace/post/viz then loop **sequentially** per model (a single
-trace can already saturate every core/GPU). **`post_cmd()`/`viz_cmd()`
-forward nothing beyond `--case-dir`/`--model-json`** — `post_process.py`'s
-`--viz-generations` and `make_viz.py`'s `--views`/`--resolution`/`--out`/
-`--smoke`/`--skip-vtkexport` are unreachable through `run_pipeline.py`;
-invoke those two scripts directly for that (§4.2, §8.3). Logs:
+(wavelength resolution quantized by `--spectral-bins`). `--emit-csv`
+(forwarded to **post**) writes `results/<case>/data/*.csv` beside every
+PNG chart plus a `data/index.csv` (§8.3). `--export-rays`/
+`--export-rays-max` (forwarded to **trace**) capture per-detector ray
+landing records into `rays_full.npz` (§8.2), which **post** then turns
+into spot diagrams, ray/OPD fans, and (with enough coherent rays per key)
+a Zernike/Strehl wavefront fit under `results/<case>/analysis/` (§6.10).
+`--ghost-analysis` (forwarded to **trace**, implies `--export-rays`'s
+behavior and its own `--export-rays-max` forwarding) additionally tracks
+each ray's face-id reflection history so **post** can rank multi-bounce
+stray-light ("ghost") paths by detected power (§8.2/§8.3). `--wavefront-
+point X_MM,Y_MM` (forwarded to **post**) overrides the wavefront fit's
+default power-weighted-centroid image point. `--workers N`
+(forwarded to **trace**; default `auto`) shards the trace loop across `N`
+spawned processes (§6.9) — `1` reproduces the exact single-process path.
+`--keep-going` turns a stage failure into a `FAILED: <tag>` notice and a
+skip to the next model (process still exits nonzero if anything failed).
+`--print-only` composes and prints every stage command **without running
+anything**. Extract runs **once** for the whole model batch (one FreeCAD
+launch handles every model); trace/post/viz then loop **sequentially** per
+model (a single trace can already saturate every core/GPU).
+**`post_cmd()`/`viz_cmd()` forward only the small explicit set of flags
+named in §4.2** — `post_process.py`'s `--viz-generations` and
+`make_viz.py`'s `--views`/`--resolution`/`--out`/`--smoke`/
+`--skip-vtkexport` are unreachable through `run_pipeline.py`; invoke those
+two scripts directly for that (§4.2, §8.3). Logs:
 `results/log.extract` (batch), `results/log.permute-<stem>` (if swept),
 `results/<stem>/<case>/log.{trace,post,viz}` (per model/stage).
 
@@ -1317,6 +1648,7 @@ invoke those two scripts directly for that (§4.2, §8.3). Logs:
     [--rays F=1e5] [--nlambda N=5] [--resolution N=512] [--spectral-bins N=16]
     [--max-reflections N=6] [--power-floor F=1e-4]
     [--seeds N=1] [--seed0 N=42] [--backend {auto,torch,numpy}=auto]
+    [--workers N=auto]
     [--viz-rays N] [--viz-density F=1.0] [--viz-rays-max N=20000]
     [--ray-differentials] [--no-pol-scatter] [--rough-fresnel {micro,macro}=micro]
     [--source-face SPEC]... [--detector-face SPEC]...
@@ -1326,6 +1658,7 @@ invoke those two scripts directly for that (§4.2, §8.3). Logs:
     [--min-eff-samples F=1000.0] [--no-gather-gate]
     [--save-fields] [--gather-occlusion] [--optical-properties PATH]
     [--strict-analytic] [--mesh-flat-normals] [--dry-run]
+    [--export-rays] [--export-rays-max N=2000000] [--ghost-analysis]
 ```
 
 `--rays` is primary rays **per source**. `--seeds N` re-traces with
@@ -1351,31 +1684,111 @@ detector output). Exit code is `0` on closure-OK, `3` if any source's
 energy closure gate failed (still writes all outputs; this is a
 warning-level failure, not a crash).
 
+`--workers N` (default `auto` = `max(1, cpu_count-2)`; `1` = the exact
+pre-sharding single-process path) shards the trace loop across spawned
+processes; the coherent gather always runs single-process in the parent
+(§6.9). `--export-rays` captures seed-0 per-detector ray landing records
+(`pos, dir, opl, lam, source_id, lam_stratum, pol_stratum, generation,
+pol_mode, power, scattered, coherent, birth_pos`) into `results/<case>/
+rays_full.npz`, namespaced `<safe_label>/<field>` per detector plus a JSON
+`meta` array (grid basis, seed, cap, kept fraction, model name);
+`--export-rays-max` (default 2000000) caps the per-detector count above
+which a uniform-random subset (seeded by `--seed0`) is kept, with the kept
+fraction recorded in the meta. **Diagnostic only** — the splat/gather math
+and the `rays.npy` viz contract are completely untouched by either flag.
+`--ghost-analysis` additionally allocates `RayBatch.refl_hist` (an `(N,
+HIST_DEPTH=8)` int32 face-id history, one slot per reflection generation,
+generation `>= HIST_DEPTH-1` reusing the last slot) and implies
+`--export-rays`'s behavior (a bare `--export-rays` does **not** track
+history) — the npz then also carries `<safe_label>/refl_hist` per detector
+and a global `face_labels` list (face index → `"<element>.<FaceN>"`) so
+`post_process.py` can map a reflection-path signature to element names
+without reconstructing the scene. Both flags are **seed 0 only**, like
+`--save-fields`.
+
 ### 8.3 `post_process.py` / `compare_runs.py` / `make_viz.py` (rendering)
 
 ```
 /home3/optics/env/bin/python scripts/post_process.py \
     --case-dir DIR --model-json PATH [--viz-generations N]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
+    [--photometric] [--spectrometer]
+    [--emit-csv] [--wavefront-point X_MM,Y_MM]
 ```
 Requires `case.json["status"] == "completed"`; fully rerunnable without
 re-tracing (reads only `case.json`/`audit.json`/`rays.npy`/
-`detectors/*.h5` + `model.json`). `--viz-generations N` declutters
-`plots/rays_xy.png` to reconstructed-generation `<= N` segments only
-(default: every generation, unchanged behavior) — useful for scenes with
-many reflection/diffraction/o-e-split generations where the 2D plot would
-otherwise be an unreadable tangle. `--dim-rays` switches `rays_xy.png`'s
-segment alpha from the default ensemble 95th-percentile scaling to each
-segment's `rel_power` (power relative to its own ray's power at the
-source — linear, or sqrt for a perceptual curve; `--dim-rays-floor` sets
-a minimum opacity percent); falls back with a warning on a 10-column
-`rays.npy` predating the `rel_power` column. Unconditionally also renders (when the
+`detectors/*.h5`/`rays_full.npz` (if present) + `model.json`).
+`--viz-generations N` declutters `plots/rays_xy.png` to
+reconstructed-generation `<= N` segments only (default: every generation,
+unchanged behavior) — useful for scenes with many reflection/diffraction/
+o-e-split generations where the 2D plot would otherwise be an unreadable
+tangle. `--dim-rays` switches `rays_xy.png`'s segment alpha from the
+default ensemble 95th-percentile scaling to each segment's `rel_power`
+(power relative to its own ray's power at the source — linear, or sqrt
+for a perceptual curve; `--dim-rays-floor` sets a minimum opacity
+percent); falls back with a warning on a 10-column `rays.npy` predating
+the `rel_power` column. Unconditionally also renders (when the
 relevant body properties are present in the model) `polarizer_<name>.png`/
 `filter_<name>.png`/`grating_<name>.png` per-element response-curve plots
-and (when `--save-fields` produced `fields/` groups, §6.5)
+and (when `--save-fields` produced `fields/` groups, §6.7)
 `stokes_<label>_<key>.png` + `dop_<label>.png` polarization maps — none of
 these have their own CLI toggle; they are silent no-ops when the relevant
 inputs aren't present.
+
+**`--emit-csv`** writes `results/<case>/data/*.csv` alongside essentially
+every chart this stage renders (detector irradiance/profile/spectrum/
+photometric/spectrometer, material n/k, coating/grating/polarizer/filter
+response curves, per-source spectrum/polarization/ledger/closure,
+per-element power/boundary-flux/per-face power, system energy-ledger/
+power-flow, plus every `--export-rays`/`--save-fields` product below) and
+a single `data/index.csv` mapping `file -> entity, chart, units,
+provenance, image` (the PNG each CSV's data backs, where one exists).
+Every CSV containing library-derived numbers (n/k, R/T, coating, filter)
+carries the source registry row's `reference` column. Off by default: no
+`data/` directory is created at all, and every renderer runs exactly as it
+did before `--emit-csv` existed. The per-(source, detector) detected-power
+promotion from `case.json["detected"]` into `report.json`
+(`detectors.<label>.per_source`) and the `--export-rays`-driven analysis
+renders (spot/fan/PSF/MTF/EE/wavefront/ghost) run **regardless** of
+`--emit-csv` — only the CSV/`data/` side of those same products is gated
+on the flag.
+
+**`--export-rays` follow-on** (no-op unless the trace stage wrote
+`rays_full.npz`, §8.2): `render_ray_analysis()` writes
+`analysis/spot_<label>.png` + `analysis/fan_<label>.png` (spot diagram,
+transverse ray fans, chief-referenced OPD fan; §6.10) per detector, and,
+when the npz also carries `refl_hist` (i.e. the trace ran with
+`--ghost-analysis`), `render_ghost_analysis()` additionally writes
+`analysis/ghost_table_<label>.png` (top-12 multi-bounce specular paths by
+detected power, as an ordered `element.FaceN -> element.FaceN -> ...`
+signature) and `analysis/ghost_footprint_<label>_<k>.png` (detector-frame
+2D histograms for the top 3 paths), plus
+`report.json`'s `detectors.<label>.ghosts` block (`total_detected_W`,
+`ghost_detected_W`, `ghost_fraction`, `n_paths`, `top` rows). A "ghost" is
+defined as a detected ray with reflection generation `>= 2` that is
+**purely specular** (`scattered=False` — roughness/diffuser/scatter lobes
+are excluded as a continuous BSDF pedestal, not a discrete ghost).
+`render_wavefront()` (also gated on `rays_full.npz`, needing
+`> MIN_WAVEFRONT_RAYS=200` coherent rays in a key) writes
+`analysis/wavefront_<label>.png` (per-key OPD map + Zernike-coefficient
+bar chart) and `report.json`'s `detectors.<label>.wavefront` block;
+`--wavefront-point X_MM,Y_MM` overrides its default power-weighted
+landing-centroid image point (detector-grid-frame mm, same `u=pos.xhat,
+v=pos.yhat` convention as the spot/fan renders); ignored without
+`rays_full.npz`. See §6.10 for the physics.
+
+**`--save-fields` follow-on** (no-op per-detector unless that `.h5` has a
+populated `fields/` group, §6.7): `render_field_analysis()` writes
+`analysis/psf_<label>.png`/`analysis/mtf_<label>.png`/
+`analysis/ee_<label>.png` (one panel per coherent gather key plus a
+synthetic incoherent-summed `"all"` panel) and `report.json`'s
+`detectors.<label>.analysis` block. See §6.10 for the physics.
+
+Curved (sphere/cylinder) detectors (§5.12) render through the same
+`render_detector()` path as planar ones; `post_process.py` divides by the
+`.h5`'s extra `pixel_area_map` dataset (true per-pixel metric area,
+present only for curved detectors) instead of the fixed planar pixel
+area, so irradiance stays correct regardless of screen curvature.
 
 ```
 /home3/optics/env/bin/python scripts/compare_runs.py \
@@ -1707,7 +2120,7 @@ in `common.estimate()` but `run_pipeline.py`'s dry-run call does not yet
 thread `--save-fields`/actual polarization strata through to it, so
 treat `fields_h5_GB` as covering the always-written spectral cube, not
 an accurate prediction of `--save-fields`'s additional complex-field
-storage). `--save-fields` itself (§6.5) writes two more float64 complex
+storage). `--save-fields` itself (§6.7) writes two more float64 complex
 (i.e. 16-byte) `H×W` arrays per `(source, lam, pol)` key on top of the
 spectral cube, seed 0 only — budget accordingly for polarization-heavy,
 high-resolution `--save-fields` runs.

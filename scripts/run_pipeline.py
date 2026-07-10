@@ -238,8 +238,11 @@ def trace_cmd(stem, case_dir, args):
     if args.save_fields:
         cmd += ["--save-fields"]
     if args.export_rays:
-        cmd += ["--export-rays",
-                "--export-rays-max", str(int(args.export_rays_max))]
+        cmd += ["--export-rays"]
+    if args.ghost_analysis:
+        cmd += ["--ghost-analysis"]
+    if args.export_rays or args.ghost_analysis:
+        cmd += ["--export-rays-max", str(int(args.export_rays_max))]
     if args.strict_analytic:
         cmd += ["--strict-analytic"]
     if args.optical_properties:

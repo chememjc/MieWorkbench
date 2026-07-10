@@ -24,8 +24,11 @@ values wherever a public authoritative source exists.** Companion to `features.m
 ## Loader schema (target formats — from `scripts/raytracer/optprops.py` / `materials.py`)
 
 Every registry hard-requires a non-empty `reference`. Tables never extrapolate (hard error out of
-range). New file types (biaxial, scatter, emission spectra) are **proposed** schemas that need a
-loader (flagged [needs engine]).
+range). **Update (2026-07-10):** `birefringence/biaxial.mibiax` and `scatter/bsdf.miebsdf` are no
+longer proposed schemas — the `lowhanging-improvements` round landed the biaxial solver and the
+BSDF/ABg scatter sampler, and both registries are now **live** (see §3.2/§3.6 below). Only the
+emission-spectra family (`sources/emitters.miesrc` + `emission/*.miespec`) remains a **proposed**
+schema needing a loader (flagged [needs engine]).
 
 | File | Columns | Notes |
 |--|--|--|
@@ -37,8 +40,8 @@ loader (flagged [needs engine]).
 |`grating/gratings.miegrat`|`name,model,lines_per_mm,params,table_csv,reference`|model∈{lamellar,bragg_kogelnik,dammann,table}|
 |`birefringence/uniaxial.miebrf`|`name,n_o_material,n_e_material,reference,notes`|o/e reference materials rows|
 |`diffuser/diffusers.miedif`|`name,grit,slope_rms,reference`| |
-|**proposed** `birefringence/biaxial.mibiax`|`name,n_x_material,n_y_material,n_z_material,reference,notes`|**[needs engine: biaxial solver]**|
-|**proposed** `scatter/bsdf.miebsdf`|`name,model(abg/table),params,table_csv,reference`|**[needs engine: BSDF sampler]**|
+|**live** `birefringence/biaxial.mibiax`|`name,n_x_material,n_y_material,n_z_material,reference,notes`|4 rows shipped (ktp/kta/lbo/bibo); loader `optprops.load_biaxial()`; see §3.2|
+|**live** `scatter/bsdf.miebsdf`|`name,model,A,B,g,tis_cap,reference,notes`|3 rows shipped (`model=abg` only); loader `optprops.load_scatter()`; see §3.6|
 |**proposed** `sources/emitters.miesrc` + `emission/*.miespec`|`name,kind,table_csv,reference` + `wavelength_nm,relative_power`|**[needs engine: spectral-emission source]**|
 
 ## Current inventory recap (what already exists — do not duplicate)
@@ -106,8 +109,11 @@ stated).
 
 **1.5 Crystals — uniaxial + biaxial** (`materials_crystals.miemat`). **Uniaxial [data-only]:**
 LiNbO3, LiTaO3, YVO4, β-BBO, α-BBO, KDP, ADP, rutile TiO2, TeO2, MgF2-e (10 o/e pairs). **Biaxial
-[needs engine: biaxial solver]:** KTP, KTA, LBO, BiBO (x/y/z axes, HIGH) + 5 mineral placeholders
-(muscovite, aragonite, topaz, α-sulfur, borax — **INCOMPLETE/UNVERIFIED** handbook constants).
+— [needs engine: biaxial solver] RESOLVED (2026-07-10, `lowhanging-improvements` round):** KTP,
+KTA, LBO, BiBO (x/y/z axes, HIGH) are **promoted and live**, wired to the biaxial solver via
+`birefringence/biaxial.mibiax` (§3.2) — a body sets `material=ktp` (etc.) plus `crystal_axis` +
+`crystal_axis2`. 5 mineral placeholders remain unpromoted (muscovite, aragonite, topaz, α-sulfur,
+borax — still **INCOMPLETE/UNVERIFIED** handbook constants, no `biaxial.mibiax` row).
 13 HIGH; LiTaO3 MED; α-BBO LOW. *Absorbing-crystal caveat:* rutile below 0.43 µm and α-sulfur in
 blue need Im(n) **[needs engine: absorbing-crystal k]**. Nonlinear crystals carry linear index
 only **[needs engine: χ²]**. Birefringence registry entries in §3.
@@ -137,9 +143,16 @@ comment appears to state the reverse — verify. New film materials it depends o
 litao3, yvo4, bbo, alpha_bbo, kdp, adp, rutile, teo2, mgf2 (adds the MgF2 e-ray so MgF2 waveplates/
 Rochon prisms work). Current library has 3 (calcite/quartz/sapphire).
 
-**3.2 Birefringence — biaxial: 9 [needs engine: biaxial solver]** (`birefringence_biaxial.mibiax`,
-proposed `n_x/n_y/n_z` schema): ktp, kta, lbo, bibo (HIGH) + muscovite, aragonite, topaz,
-alpha_sulfur, borax (UNVERIFIED placeholders). See `lowhanging.md` §4.1 for the solver's difficulty.
+**3.2 Birefringence — biaxial: 4 PROMOTED + live, 5 still staged.** The biaxial solver landed
+(2026-07-10, `lowhanging-improvements` round): `opticalproperties/birefringence/biaxial.mibiax`
+(live `n_x/n_y/n_z` schema, §7.7 in `docs/RAYTRACER.md`) ships **ktp, kta, lbo, bibo** (all HIGH
+confidence, Kato & Takaoka 2002 the primary KTP citation) — a body sets `material=ktp` (etc.) plus
+**both** `crystal_axis` (X) and `crystal_axis2` (Y) to use one. The 5 mineral placeholders
+(muscovite, aragonite, topaz, alpha_sulfur, borax) remain **unpromoted** in
+`library_data/birefringence_biaxial.mibiax` — still UNVERIFIED handbook constants, not yet copied
+into the live registry. Honest solver limits (conical refraction near an optic axis not modeled;
+absorbing biaxial crystals/optical activity out of scope) are in `docs/RAYTRACER.md` §5.6b; see
+`lowhanging.md` §4.1 for the original difficulty analysis (now a progress record).
 
 **3.3 Filters — 40 new [data-only]** (`filters.miefilt` + `filter_tables.csv`; current library 16):
 the full **Schott colored-glass series** with real internal-transmittance tables (OG515/550/570,
@@ -155,13 +168,21 @@ and circular polarizers at 488/633/780 nm (L+R). Spec anchors real; wavelength d
 including the first **`lamellar` registry row** (model was supported but had no entry): lamellar_1200,
 echelle_79, transmission_iof_cubes (binary UV), vph_eso_574 (Kogelnik VPH), ruled_1200_500.
 
+**3.6a Measured BSDF / ABg scatter — RESOLVED (2026-07-10, `lowhanging-improvements` round),
+now live.** `opticalproperties/scatter/bsdf.miebsdf` (schema `name,model,A,B,g,tis_cap,reference,
+notes`; `docs/RAYTRACER.md` §7.9) ships 3 rows — `polished_fused_silica`, `polished_bk7_glass`,
+`diamond_turned_aluminum` — all flagged **UNVERIFIED** (representative ABg fits per Pfisterer
+2011's form, not transcribed from a specific measured/vendor curve; verify before production use).
+A per-face `scatter` body property selects one (mutually exclusive with `roughness`/`diffuser`).
+**v1 scope: reflected-side (BRDF) only** — BTDF (transmitted-side) scatter is not modeled; that
+and additional cited goniophotometer-derived rows are the natural next step
+(`lowhanging.md`'s new backlog, §6).
+
 **3.6 Still needing engine support (data notes only, no drop-in rows yet):**
 - **GRIN profiles** (radial/axial/Luneburg) **[needs engine: GRIN curved-ray integration]** —
   `features.md` §7.4; would need `n0`, gradient coeff, pitch per element.
 - **Stress-optic coefficients** (photoelastic C, per material) **[needs engine: stress
   birefringence]** — `lowhanging.md` §4.2.
-- **Measured BSDF / ABg scatter** **[needs engine: BSDF sampler]** — a proposed `scatter/bsdf.miebsdf`
-  schema (`name,model(abg/table),params,reference`); populate from goniophotometer/ABg fits.
 - **Absorbing-crystal Im(n)** for rutile-UV / α-sulfur-blue **[needs engine: complex uniaxial index]**.
 - **χ² nonlinear coefficients** for LiNbO3/BBO/KTP/LBO/BiBO **[needs engine: χ² frequency conversion]**.
 
@@ -205,8 +226,10 @@ Today: only `detector_plane` (planar, wavelength-independent). Missing types, ra
    already exist; needs a λ(x) rendering mode.
 6. **Far-field/goniometric (cd, I(θ,φ))** **[PARTIAL: post-processing angular histogram of ray
    dirs]** — no new geometry needed.
-7. **Curved/spherical detector** **[needs engine: non-planar UV grid]** — incoherent path moderate
-   (reuse Sphere/Cylinder `to_uv`), coherent gather needs per-pixel obliquity. `lowhanging.md` §5.
+7. **Curved/spherical detector** **[DONE, incoherent path — 2026-07-10]** — `CurvedDetectorGrid`
+   (sphere/cylinder, auto-selected by face surface type) reuses Sphere/Cylinder `to_uv` exactly as
+   scoped; coherent gather (needing per-pixel obliquity) remains **[needs engine]**, carried in
+   `lowhanging.md`'s new backlog (§6).
 8. **Photon-counting (shot noise)** **[PARTIAL basic / NONE dead-time]** — Poisson-sample the power
    cube ÷ photon energy; dead-time/afterpulsing out of scope.
 
@@ -254,20 +277,33 @@ Sellmeier order; the S-BSL7 negative-C2 and lbo_ny negative-B1 valid-but-check c
 · 40 filters · 12 polarizers · 5 gratings (incl. first `lamellar` registry entry) · 8 LED presets
 · QE detector data (1 curve + coverage metrics + `report.json` keys).
 
-**Staged (need engine work):** 9 biaxial crystals (§3.2, `needs engine: biaxial solver`), emission
-sources (blackbody/solar/LED spectral forms, needs spectral-source engine), curved detectors
-(§5.7, `needs engine: non-planar UV grid`).
+**Update (2026-07-10, `lowhanging-improvements` round):** 4 of the 9 staged biaxial crystals are
+now **promoted and live** (ktp, kta, lbo, bibo — §3.2) alongside the biaxial solver; a new
+**scatter/bsdf.miebsdf** registry (3 rows) also went live (§3.6a). Still staged: 5 mineral-
+placeholder biaxial rows (unpromoted, UNVERIFIED), emission sources, and coherent-gather support
+on curved detectors (the incoherent path landed, §5 item 7).
+
+**Staged (need engine work):** 5 mineral-placeholder biaxial crystals (§3.2, UNVERIFIED, not yet
+promoted), emission sources (blackbody/solar/LED spectral forms, needs spectral-source engine),
+coherent gather on curved detectors (incoherent path DONE, §5 item 7).
 
 **Net library growth (landed):** materials 25→168, coatings 23→38, filters 16→56, polarizers 5→17,
 gratings 3→8 (first `lamellar` entry), uniaxial crystals 3→13, n/k tables 5→18, detector QE curves
-(1 entry + infrastructure), LED presets (8), photometric lux mapping, spectrometer λ-profiles.
+(1 entry + infrastructure), LED presets (8), photometric lux mapping, spectrometer λ-profiles,
+biaxial crystals 0→4 (`birefringence/biaxial.mibiax`, new registry), scatter surfaces 0→3
+(`scatter/bsdf.miebsdf`, new registry), curved (sphere/cylinder) detector support (incoherent).
 
 ## Highest-priority additions (start here)
 1. **Optical glasses (§1.1)** and **CIE V(λ) photometric data (§5.1)** — both essentially free
    (glasses are a data import; V(λ) already sits in `detector.py`) and each closes a conspicuous gap.
+   **Done** (`library-expansion` round).
 2. **Metals/semiconductors/IR + colored-glass filters (§1.2, §3.3)** — high-value, all verified.
+   **Done** (`library-expansion` round).
 3. **Uniaxial crystals + MgF2 e-ray (§3.1)** — unlocks more waveplate/polarizer scenes now.
-4. **Biaxial crystals (§3.2)** — the data is ready; pairs with the biaxial solver in `lowhanging.md` §4.1.
+   **Done** (`library-expansion` round).
+4. **Biaxial crystals (§3.2)** — the data is ready; pairs with the biaxial solver in `lowhanging.md`
+   §4.1. **Done** (2026-07-10, `lowhanging-improvements` round) — 4 of 9 rows promoted; remaining
+   next step is promoting/verifying the 5 mineral placeholders if a demo needs them.
 
 ---
 

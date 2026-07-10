@@ -35,7 +35,7 @@ from . import thinfilm as tf
 from . import grating as grating_mod
 from . import roughness as rough_mod
 from . import differentials as diff_mod
-from .rays import RayBatch, AMBIENT
+from .rays import RayBatch, AMBIENT, HIST_DEPTH
 from .audit import PowerLedger
 
 
@@ -52,7 +52,8 @@ def _kill_differentials(batch):
 class TraceConfig:
     def __init__(self, max_reflections=6, power_floor=1e-4, n_lambda=5,
                  rays=int(1e5), seed=0, viz_rays=500, batch_size=1 << 20,
-                 rough_fresnel="micro", export_rays=False):
+                 rough_fresnel="micro", export_rays=False,
+                 track_history=False):
         self.max_reflections = max_reflections
         self.power_floor = power_floor
         self.n_lambda = n_lambda
@@ -62,6 +63,11 @@ class TraceConfig:
         # event into DetectorGrid.ray_records (--export-rays; seed 0 only).
         # Purely diagnostic — the splat/gather math is untouched.
         self.export_rays = export_rays
+        # track_history: allocate RayBatch.refl_hist on the primaries and
+        # record the face id of every reflection event (ghost/stray-light
+        # analysis; --ghost-analysis, seed 0 only). Zero overhead when off
+        # (the slot stays None everywhere). Purely diagnostic.
+        self.track_history = track_history
         # viz_rays: int cap for every source, or {source_id: cap} computed
         # from --viz-density (rays per mm^2 of emit area) upstream
         self.viz_rays = viz_rays
@@ -145,6 +151,8 @@ class Tracer:
         queue = list(batches)
         for b in queue:
             VizStore.flag_primaries(b, self.cfg.viz_rays)
+            if self.cfg.track_history and b.refl_hist is None:
+                b.alloc_history()
         # a hard iteration cap guards against pathological loops; with the
         # generation cap the loop terminates naturally well before this
         for _ in range(64 * (self.cfg.max_reflections + 2)):
@@ -314,6 +322,20 @@ class Tracer:
         return self._apply_floors(merged)
 
     # ------------------------------------------------------------------
+    def _record_reflection(self, child, fid):
+        """Ghost-analysis bookkeeping (--ghost-analysis): stamp the FACE id
+        `fid` of this reflection event into the child batch's refl_hist,
+        indexed by the child's PRE-increment generation (capped at the last
+        slot). MUST be called BEFORE `child.generation += 1`. Zero overhead
+        when track_history is off (refl_hist is None). Purely diagnostic —
+        never touches power/phase/direction."""
+        if not self.cfg.track_history or child.refl_hist is None \
+                or len(child) == 0:
+            return
+        slot = np.minimum(child.generation, HIST_DEPTH - 1).astype(np.intp)
+        child.refl_hist[np.arange(len(child)), slot] = int(fid)
+
+    # ------------------------------------------------------------------
     def _detector_event(self, fid, grp, grp_start, grp_start_opl,
                         grp_nmed, grp_dA=None):
         det = self.detectors[fid]
@@ -358,7 +380,7 @@ class Tracer:
         bp = grp.birth_pos
         if bp is None:
             bp = np.full((n, 3), np.nan)
-        det.ray_records.append({
+        rec = {
             "pos": grp.pos.copy(),
             "dir": grp.dir.copy(),
             "opl": grp.opl.copy(),
@@ -372,7 +394,13 @@ class Tracer:
             "scattered": grp.scattered.copy(),
             "coherent": grp.coherent.copy(),
             "birth_pos": bp.copy(),
-        })
+        }
+        # --ghost-analysis: the reflection face-id history rides along like
+        # every other field (so the --workers merge concatenates it too).
+        # Present only when track_history is on (refl_hist allocated).
+        if grp.refl_hist is not None:
+            rec["refl_hist"] = grp.refl_hist.copy()
+        det.ray_records.append(rec)
 
     def _flux_out_children(self, body, children):
         """Per-element boundary-flux tally (diagnostic, zero RNG use):
@@ -415,6 +443,7 @@ class Tracer:
             rf.dir = fr.reflect_dir(grp.dir, n_hat)
             rf.Es *= -np.sqrt(r_m)
             rf.Ep *= -np.sqrt(r_m)
+            self._record_reflection(rf, fid)
             rf.generation += 1
             out.append(rf)
         ab = (1.0 - r_m) * a
@@ -632,6 +661,7 @@ class Tracer:
         refl.s_hat = s_new
         refl.Es = Es * amp_rs
         refl.Ep = Ep * amp_rp
+        self._record_reflection(refl, fid)
         refl.generation += 1
         if grp.has_differentials:
             if diff is None:
@@ -774,6 +804,7 @@ class Tracer:
                     amp_j = np.sqrt(loseR / k_lobe)
                     sc.Es = Es * amp_j
                     sc.Ep = Ep * amp_j
+                self._record_reflection(sc, fid)
                 sc.generation += 1
                 sc.scattered[:] = True
                 ok = ((np.sum(sc.dir * n_hat, axis=-1) > 0)
@@ -839,6 +870,7 @@ class Tracer:
                 sc.s_hat = s_new
                 sc.Es = Es * full_amp_rs * amp_lobe
                 sc.Ep = Ep * full_amp_rp * amp_lobe
+                self._record_reflection(sc, fid)
                 sc.generation += 1
                 sc.scattered[:] = True
                 ok = ((np.sum(sc.dir * n_hat, axis=-1) > 0)
@@ -1010,6 +1042,7 @@ class Tracer:
                 * np.exp(1j * np.angle(rp_e))
             refl.Es = Eo_i * cs_o * amp_rs_o - Ee_i * sn_o * amp_rs_e
             refl.Ep = Eo_i * sn_o * amp_rp_o + Ee_i * cs_o * amp_rp_e
+            self._record_reflection(refl, fid)
             refl.generation += 1
             cr = can_reflect[ent]
             if np.any(~cr):
@@ -1142,6 +1175,7 @@ class Tracer:
                 * np.exp(1j * np.angle(rs))
             rf.Ep = Ep_i * np.sqrt(r_m + phys * np.abs(rp) ** 2) \
                 * np.exp(1j * np.angle(rp))
+            self._record_reflection(rf, fid)
             rf.generation += 1
             if np.any(is_e):
                 s_ray, _, n_ray = bir.ray_from_k(k_r[is_e], c_axis,
@@ -1256,6 +1290,7 @@ class Tracer:
                     * np.exp(1j * np.angle(r))
             refl.Es = E1_i * cs * amp["s1"] - E2_i * sn * amp["s2"]
             refl.Ep = E1_i * sn * amp["p1"] + E2_i * cs * amp["p2"]
+            self._record_reflection(refl, fid)
             refl.generation += 1
             cr = can_reflect[ent]
             if np.any(~cr):
@@ -1385,6 +1420,7 @@ class Tracer:
                     * np.exp(1j * np.angle(rs))
                 rf.Ep = Ep_i * np.sqrt(r_m + phys * np.abs(rp) ** 2) \
                     * np.exp(1j * np.angle(rp))
+                self._record_reflection(rf, fid)
                 rf.generation += 1
                 rf.n_eff[...] = n_ray
                 rf.k_dir[...] = k_r_hat

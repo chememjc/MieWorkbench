@@ -297,24 +297,29 @@ is only a name/type/purpose summary):
 
 | Property | Type | Purpose |
 |---|---|---|
-| `material` | String | registry row in `materials.miemat`, a crystal name in `uniaxial.miebrf`, `"detector"`, or absent/`"none"` (body ignored) |
+| `material` | String | registry row in `materials.miemat`, a crystal name in `uniaxial.miebrf` or `biaxial.mibiax`, `"detector"`, or absent/`"none"` (body ignored) |
 | `power` (mW) + `lambdac` (nm) | Float | presence of both marks the body a **source** |
 | `coating` | String | whole-body name, or per-face map `'Face3=MgF2;Face5=x'` |
 | `roughness` | Float or String | whole-body RMS nm, or per-face map `'Face1=200:lcorr=5;Face2=50'` |
+| `diffuser` | String | ground glass, whole-body or per-face map: `'grit:120'` \| `'slope:0.08'` \| `'@dg_600'` |
+| `scatter` | String | measured ABg/BSDF registry name, whole-body or per-face map — mutually exclusive with `roughness`/`diffuser` on the same face (§9 below) |
 | `filter` | String | a `filters.miefilt` row name |
 | `polarizer` + `polarizer_axis` | String, `'x,y,z'` | a `polarizers.miepol` row name + body-local transmission axis |
 | `polarizer_axis`/`crystal_axis` default | — | `0,0,1` / `+x` respectively when absent |
-| `crystal_axis` | String `'x,y,z'` | body-local optic axis for a birefringent `material` |
+| `crystal_axis` | String `'x,y,z'` | body-local optic axis for a uniaxial birefringent `material`; X principal axis for a biaxial one |
+| `crystal_axis2` | String `'x,y,z'` | body-local Y principal axis — REQUIRED (with `crystal_axis`) when `material` is biaxial (§10 below); no default |
 | `grating` | String | per-face map only: `'Face2=600:v:orders=-1..1'` or `'Face2=@registryname'` |
 | `surface_override` | String | per-face asphere declaration: `'FaceN=asphere:R=..;k=..;A4=..;...;r_max=..'` |
 | `mirror` | Float `[0,1]` | achromatic partial-reflector fraction |
 | `absorbance` | Float `[0,1]` | fraction of the non-mirror remainder absorbed |
 | `polarization`, `lambdamin`/`lambdamax`, `coherent` | source-only | emission spectrum/polarization — see docs/RAYTRACER.md §5.2 |
+| `apodization`, `beam_waist` + `m2` | String / Float | source-only: transverse field taper and Gaussian-beam mode — see docs/RAYTRACER.md §5.2 |
 
-`coating`/`roughness`/`grating`/`surface_override` are the four properties
-that support a per-face map form (`FaceN=value;FaceM=value`); the Element
-Properties pane's "Per-face assignments" section (README.md §3.3) edits
-exactly these four.
+`coating`/`roughness`/`diffuser`/`scatter`/`grating`/`surface_override` are
+the six properties that support a per-face map form
+(`FaceN=value;FaceM=value`); the Element Properties pane's "Per-face
+assignments" section (README.md §3.3, `core/facemaps.py`'s
+`FACEMAP_PROPERTIES`) edits exactly these six.
 
 ---
 
@@ -328,10 +333,11 @@ categories whose entries reference tabulated spectral data, a
 plain CSV under self-describing extensions — see README.md §4.4 for the
 exact required-column table per category, and docs/RAYTRACER.md §7 for
 full physical-model semantics of each column. Loaders:
-`scripts/raytracer/optprops.py` (polarizer/filter/grating/birefringence,
-plus diffusers as of B6) and `scripts/raytracer/materials.py`
-(materials/coatings, since those two predate the others and have their
-own loader path).
+`scripts/raytracer/optprops.py` (polarizer/filter/grating/birefringence
+— both uniaxial and biaxial, §10 below — plus diffusers as of B6 and
+scatter, §9 below, as of the `lowhanging-improvements` round) and
+`scripts/raytracer/materials.py` (materials/coatings, since those two
+predate the others and have their own loader path).
 
 The newest category, `diffuser/diffusers.miedif`, has no `tables/`
 subdirectory — its rows are flat, `name,grit,slope_rms,reference`. Each
@@ -613,3 +619,114 @@ To add a new LED preset:
 
 The existing presets' data come from Cree/Lumileds/Nichia datasheets, cited in
 the CSV header. Treat any non-datasheet source as UNVERIFIED and flag it accordingly.
+
+---
+
+## 9. Adding a measured-scatter (BSDF/ABg) registry entry
+
+`opticalproperties/scatter/bsdf.miebsdf` (loader: `optprops.load_scatter()`,
+docs/RAYTRACER.md §7.9/§5.4.2) is the ABg-model measured-scatter registry
+consumed by a body's `scatter` property. **v1 scope: reflected-side (BRDF)
+only, isotropic** — there is no transmitted-side (BTDF) support and no
+per-azimuth anisotropy, so don't try to model a grooved/turned surface's
+directional lobe with this schema yet.
+
+1. **Append a row to `scatter/bsdf.miebsdf`:**
+   - `name`: registry key (e.g., `my_ground_aluminum`)
+   - `model`: `abg` (the only supported value today)
+   - `A`, `B`, `g`: the ABg fit coefficients (`BSDF(u) = A/(B + u^g)`, `u`
+     the direction-cosine offset from specular) — all three **must be
+     `> 0`**. `g` is typically close to 2 for polished surfaces (2 gives a
+     closed-form radial CDF, so sampling needs no per-call tabulation;
+     other `g` values fall back to a numeric inverse-CDF, which works but
+     costs more per gather call).
+   - `tis_cap` (optional): a ceiling in `(0, 1]` on the total integrated
+     scatter the loader computes from `A`/`B`/`g` at normal incidence —
+     use this when a measured total-scatter number is known but the raw
+     ABg fit would over-integrate it (see the shipped
+     `diamond_turned_aluminum` row, capped at 0.1).
+   - `reference`: **required** citation — cite the actual goniophotometer
+     measurement or published ABg fit if you have one. If you are only
+     approximating a "representative" surface (as the three shipped rows
+     currently do, per Pfisterer's general ABg methodology rather than a
+     specific measured curve), say so explicitly and flag the row
+     **UNVERIFIED** in `notes` — do not present an engineering guess as a
+     measured curve.
+   - `notes`: free text; state the verification status plainly.
+
+2. **Validation at load time** (`optprops.load_scatter()`): `A`, `B`, `g`
+   numeric and `> 0`; `tis_cap` (if given) in `(0, 1]`; and
+   `scatter.abg_tis(A, B, g, cos_i=1)` (widest, normal-incidence total
+   integrated scatter) must not exceed 1 — a fit that would scatter more
+   power than it receives is a hard `MaterialError` at load time, not a
+   silent energy leak discovered mid-trace.
+
+3. **Tag a body:** in the GUI's **Properties** pane (or directly as an
+   `App::PropertyString`), set the face's `scatter` property to your
+   registry name — whole-body (`'my_ground_aluminum'`) or per-face
+   (`'Face2=my_ground_aluminum'`), same generic facemap grammar as
+   `coating`/`roughness`/`grating`. **`scatter` is mutually exclusive
+   with `roughness`/`diffuser` on the same face** (a `Scene`-build-time
+   `ValueError` naming the face) — they are alternative models of one
+   surface; pick one.
+
+See `opticalproperties/scatter/bsdf.miebsdf` for the three shipped rows
+(`polished_fused_silica`, `polished_bk7_glass`, `diamond_turned_aluminum`)
+and `scripts/raytracer/scatter.py`'s module header for the full ABg
+energy/sampling derivation.
+
+---
+
+## 10. Adding a biaxial crystal
+
+Biaxial crystals (`n_x != n_y != n_z`: KTP, KTA, LBO, BiBO today) need
+**two** registry additions plus a full principal-axis frame on the body
+— more moving parts than a uniaxial crystal (§4's `crystal_axis` alone).
+See docs/RAYTRACER.md §5.6b/§7.7 for the physics model and honest limits
+(conical refraction near an optic axis is not modeled).
+
+1. **Add three principal-index rows to `materials.miemat`** (§5.1 above),
+   one per axis, named `<crystal>_nx`/`_ny`/`_nz` (matching the shipped
+   `ktp_nx`/`ktp_ny`/`ktp_nz` convention) — `model=sellmeier` is typical
+   for a published Sellmeier fit, each with its own `reference`. Cross-
+   check the fit reproduces the reference's stated index at at least one
+   wavelength (the project's spot-check policy, §5.1) and note the
+   result in `notes`.
+
+2. **Append a row to `birefringence/biaxial.mibiax`:**
+   - `name`: the crystal name a body's `material` property will use
+     (e.g. `ktp`) — this name must **not** collide with an unrelated
+     `materials.miemat` row (same shadowing rule as uniaxial crystal
+     names).
+   - `n_x_material`, `n_y_material`, `n_z_material`: the three
+     `materials.miemat` row names from step 1.
+   - `reference`: required citation for the crystal identification (can
+     repeat the Sellmeier paper if it's the same source).
+   - `notes`: free text (e.g., index values at a reference wavelength,
+     positive/negative biaxial sign, fit confidence).
+
+3. **Tag a body:** set `material` to the crystal name from step 2, plus
+   **both** `crystal_axis` (the X principal axis, body-local `x,y,z`) and
+   `crystal_axis2` (the Y principal axis) — the `Scene` loader
+   Gram-Schmidt-orthogonalizes Y against X and derives Z = X × Y; a
+   missing `crystal_axis2`, or one (near-)parallel to `crystal_axis`, is
+   a hard error at scene-build time (the GUI's validation pane also flags
+   a biaxial `material` missing `crystal_axis2` before a run, §5.1 of
+   docs/RAYTRACER.md). Unlike `crystal_axis` (which defaults to local
+   `+x` on every optic), `crystal_axis2` has **no default** — it must be
+   authored explicitly.
+
+4. **Validate:** `load_biaxial()` requires all three principal-index
+   material rows to exist and requires a non-empty `reference`; a
+   crystal name colliding with an unrelated `materials.miemat` row is a
+   hard error naming both. Add a scene/test scene exercising the new
+   crystal if it will be relied on (the shipped four are pinned by
+   `scripts/raytracer/tests/test_biaxial.py`'s closed-form solver tests,
+   but there is no dedicated end-to-end FreeCAD scene gate the way
+   `doubleslit` has — treat a new crystal's authored scene as manually
+   validated, same caveat as the uniaxial Wollaston/waveplate scenes).
+
+See `opticalproperties/birefringence/biaxial.mibiax` for the four shipped
+rows and `library.md` §3.2 for the citation/confidence notes (the 5
+mineral-placeholder rows there are UNVERIFIED and not yet promoted —
+promoting one means clearing that flag against a real source first).

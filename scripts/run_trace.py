@@ -43,6 +43,7 @@ from raytracer.tracer import (Tracer, TraceConfig,       # noqa: E402
                               TraceResult, VizStore)
 from raytracer.detector import (DetectorGrid,            # noqa: E402
                                 CurvedDetectorGrid)
+from raytracer.rays import HIST_DEPTH                    # noqa: E402
 from raytracer.audit import PowerLedger                  # noqa: E402
 # NB: `gather` (the torch-CUDA coherent Huygens gather) is imported LAZILY
 # inside _do_gather so it stays PARENT-ONLY: a spawned trace-shard worker
@@ -242,7 +243,8 @@ def _merge_detector_payload(grid, dp):
 
 
 def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
-                  lam_range, particle_lams, export, viz_caps):
+                  lam_range, particle_lams, export, viz_caps,
+                  track_history=False):
     """One trace shard, run in a spawned process. Rebuilds the Scene from
     args.model_json (cheap; Scene is never pickled), traces rays_i primaries
     per source with an independent RNG stream, and returns a picklable
@@ -256,7 +258,7 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                       n_lambda=args.nlambda, rays=rays_i,
                       seed=worker_index, viz_rays=viz_caps,
                       rough_fresnel=args.rough_fresnel,
-                      export_rays=export)
+                      export_rays=export, track_history=track_history)
     particles = None
     part_diag = None
     if args.particles:
@@ -306,7 +308,7 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
 
 
 def _run_single(scene, args, seed, particle_lams, case_diag, export,
-                viz_caps, grids):
+                viz_caps, grids, track_history=False):
     """Single-process trace (the pre-sharding code path, unchanged). Populates
     `grids` in place and returns (TraceResult, trace_s)."""
     cfg = TraceConfig(max_reflections=args.max_reflections,
@@ -314,7 +316,7 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
                       n_lambda=args.nlambda, rays=int(args.rays),
                       seed=seed, viz_rays=viz_caps,
                       rough_fresnel=args.rough_fresnel,
-                      export_rays=export)
+                      export_rays=export, track_history=track_history)
     particles = None
     if args.particles:
         from raytracer.particles import ParticleCloud
@@ -344,7 +346,7 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
 
 
 def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
-                 export, workers, viz_caps, grids):
+                 export, workers, viz_caps, grids, track_history=False):
     """Multi-process trace: N spawned shards trace rays/N primaries each with
     independent RNG streams; the parent merges their accumulators into `grids`
     and a fresh ledger. Returns (TraceResult, trace_s). The gather still runs
@@ -355,7 +357,8 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
     rays_list = [base + (1 if i < rem else 0) for i in range(n_workers)]
     children = np.random.SeedSequence(seed).spawn(n_workers)
     tasks = [(args, children[i], i, rays_list[i], total, lam_range,
-              particle_lams, export, (viz_caps if i == 0 else 0))
+              particle_lams, export, (viz_caps if i == 0 else 0),
+              track_history)
              for i in range(n_workers)]
     print("[trace] --workers %d: sharding %d rays/source (%s) across "
           "spawned processes; gather runs single-process in the parent"
@@ -386,10 +389,13 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
 
 
 def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag,
-                 export=False, workers=1):
+                 export=False, workers=1, track_history=False):
     """Trace one seed. workers<=1 keeps the exact pre-sharding single-process
     path (bit-identical); workers>1 shards the trace across spawned processes
-    and merges. Either way the coherent gather runs ONCE in the parent."""
+    and merges. Either way the coherent gather runs ONCE in the parent.
+    track_history allocates RayBatch.refl_hist (ghost/stray-light face-id
+    history); it rides in the export ray records exactly like every other
+    field, so the --workers merge concatenates it too."""
     pattern = (common.parse_viz_pattern_spec(args.viz_pattern)
                if args.viz_pattern else None)
     viz_caps = compute_viz_caps(scene, args, pattern)
@@ -399,11 +405,11 @@ def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag,
     if workers > 1 and int(args.rays) > 1:
         result, trace_s = _run_sharded(
             scene, args, seed, lam_range, particle_lams, case_diag,
-            export, workers, viz_caps, grids)
+            export, workers, viz_caps, grids, track_history=track_history)
     else:
         result, trace_s = _run_single(
             scene, args, seed, particle_lams, case_diag, export,
-            viz_caps, grids)
+            viz_caps, grids, track_history=track_history)
 
     if pattern is not None:
         _viz_pattern_pass(scene, args, seed, pattern, result)
@@ -448,13 +454,19 @@ _EXPORT_KEYS = ("pos", "dir", "opl", "lam", "source_id", "lam_stratum",
                 "scattered", "coherent", "birth_pos")
 
 
-def write_rays_full(case_dir, grids, args, model_name):
+def write_rays_full(case_dir, grids, args, model_name, scene=None):
     """--export-rays: concatenate seed-0's per-detector ray records into one
     results/<case>/rays_full.npz. Per-detector arrays are namespaced
     '<safe_label>/<field>' (safe_label = label with '.' -> '_', matching the
     detector .h5 files); a global 'meta' key holds a JSON string with each
     detector's grid basis (xhat/yhat/normal/x_lo/y_lo), the seed, the cap,
     per-detector kept counts/fraction, and the model name.
+
+    Under --ghost-analysis (track_history) each detector also gets a
+    '<safe_label>/refl_hist' (N, HIST_DEPTH) int32 face-id history array, and
+    the meta carries a global 'face_labels' list (face index -> element-label
+    "<body>.<FaceN>") so the post ghost renderer maps a path signature to
+    surfaces without reconstructing the scene's face ordering.
 
     Per-detector cap args.export_rays_max: above it a uniform-random subset
     drawn with the run seed is kept (a NOTE is logged) so a huge focal spot
@@ -465,13 +477,26 @@ def write_rays_full(case_dir, grids, args, model_name):
     meta = {"seed": int(args.seed0), "model": model_name,
             "max_reflections": int(args.max_reflections),
             "export_rays_max": cap, "detectors": {}}
+    if scene is not None:
+        # face index -> "<element label>.<FaceN>" (the FaceN is the last
+        # dotted component of the extractor's face id "<Body>.<Feat>.FaceN")
+        meta["face_labels"] = [
+            "%s.%s" % (scene.body_of_face(i).label,
+                       scene.faces[i].id.rsplit(".", 1)[-1])
+            for i in range(len(scene.faces))]
+    # refl_hist rides along only when the trace tracked history (ghost mode).
+    any_hist = any("refl_hist" in r for det in grids.values()
+                   for r in det.ray_records)
     for det in grids.values():
         safe = det.label.replace(".", "_")
         recs = det.ray_records
+        keys = _EXPORT_KEYS + (("refl_hist",) if any_hist else ())
         cols = {}
-        for k in _EXPORT_KEYS:
-            if recs:
+        for k in keys:
+            if recs and k in recs[0]:
                 cols[k] = np.concatenate([r[k] for r in recs])
+            elif k == "refl_hist":
+                cols[k] = np.zeros((0, HIST_DEPTH), dtype=np.int32)
             else:
                 cols[k] = np.zeros((0, 3)) if k in ("pos", "dir",
                                                     "birth_pos") \
@@ -627,6 +652,11 @@ def _main_locked(args, case_dir):
 
     workers = resolve_workers(args.workers)
 
+    # --ghost-analysis implies export-rays behavior (it needs the seed-0 ray
+    # records) AND turns on refl_hist tracking; a bare --export-rays does NOT
+    # track history (zero overhead). Both are seed-0 only, like --save-fields.
+    export_on = args.export_rays or args.ghost_analysis
+
     case_diag = {}
     grids_list = []
     audits = []
@@ -643,7 +673,8 @@ def _main_locked(args, case_dir):
                              case_dir=case_dir)
         result, grids, gdiags, times = run_one_seed(
             scene, args, seed, lam_range, particle_lams, case_diag,
-            export=(args.export_rays and s == 0), workers=workers)
+            export=(export_on and s == 0), workers=workers,
+            track_history=(args.ghost_analysis and s == 0))
         grids_list.append(grids)
         rep = result.ledger.report(result.source_names)
         audits.append(rep)
@@ -659,9 +690,9 @@ def _main_locked(args, case_dir):
     common.progress_emit("trace", 0.95, "writing detectors",
                          case_dir=case_dir)
     np.save(case_dir / "rays.npy", all_viz)
-    if args.export_rays and grids_list:
+    if export_on and grids_list:
         write_rays_full(case_dir, grids_list[0], args,
-                        Path(args.model_json).parent.name)
+                        Path(args.model_json).parent.name, scene=scene)
     save_detectors(case_dir, grids_list, args.seeds)
     common.write_json(case_dir / "audit.json",
                       {"per_seed": audits, "gate": 1e-3})
