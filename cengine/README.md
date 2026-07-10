@@ -134,8 +134,8 @@ Python engine on synthetic feature scenes) plus the C unit tests.
 | Phase | Features | Status |
 |---|---|---|
 | A | plane/sphere surfaces, trim, Fresnel, mirror/absorbance, medium stack, bulk absorption + filters, incoherent detectors, viz, ledger | **done** |
-| B | cylinder/cone/torus/asphere, TMM coatings, polarizers, multi-seed edge cases | pending |
-| C | scene-wide TLAS BVH + mesh BLAS | pending |
+| B | cylinder/cone/torus/asphere, TMM + table coatings, polarizers | **done** |
+| C | scene-wide TLAS BVH + mesh BLAS (TLAS == linear scan pinned) | **done** |
 | D | CUDA coherent gather + GPU occlusion + save-fields | pending |
 | E | gratings, roughness/diffusers, ABg scatter | pending |
 | F | birefringence (uniaxial, biaxial) | pending |
