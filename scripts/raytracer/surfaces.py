@@ -110,6 +110,20 @@ class Sphere:
         v = np.arctan2(z, np.hypot(x, y))         # latitude (-pi/2, pi/2)
         return np.stack([u, v], axis=-1)
 
+    def uv_to_xyz(self, u, v):
+        """Inverse of to_uv: (azimuth u, latitude v) -> world points on the
+        sphere. Vectorized; u, v broadcast to a common (N,) shape. The exact
+        inverse of to_uv on the valid range (used by CurvedDetectorGrid to
+        place pixel centers and by area weighting)."""
+        u = np.asarray(u, dtype=np.float64)
+        v = np.asarray(v, dtype=np.float64)
+        cu, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+        return (self.c
+                + self.r * (cv * cu)[:, None] * self.t1
+                + self.r * (cv * su)[:, None] * self.t2
+                + self.r * sv[:, None] * self.axis)
+
     def normal_derivative(self, p):
         # nhat = (p-c)/r; implicit F = |p-c|^2 - r^2 gives H = 2I, |grad F| =
         # 2r, so dnhat/dp = (I - nhat nhat^T)/r. Positive radius, canonical
@@ -158,6 +172,17 @@ class Cylinder:
         u = np.arctan2(y, x)
         v = rel @ self.a
         return np.stack([u, v], axis=-1)
+
+    def uv_to_xyz(self, u, v):
+        """Inverse of to_uv: (azimuth u, axial v [m]) -> world points on the
+        cylinder. Vectorized; u, v broadcast to a common (N,) shape."""
+        u = np.asarray(u, dtype=np.float64)
+        v = np.asarray(v, dtype=np.float64)
+        cu, su = np.cos(u), np.sin(u)
+        return (self.o
+                + self.r * cu[:, None] * self.t1
+                + self.r * su[:, None] * self.t2
+                + v[:, None] * self.a)
 
     def normal_derivative(self, p):
         # Radial distance surface: implicit F = |p_perp|^2 - r^2 with

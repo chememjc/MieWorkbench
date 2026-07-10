@@ -183,11 +183,40 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
         attrs = dict(h.attrs)
         std = h["spectral_cube_std"][...] \
             if "spectral_cube_std" in h else None
+        # curved (Sphere/Cylinder) detectors carry a TRUE per-pixel metric
+        # area map; planar files have none (byte-compatible with pre-Phase-10)
+        area_map = h["pixel_area_map"][...] \
+            if "pixel_area_map" in h else None
     label = attrs["label"]
     safe = label.replace(".", "_")
     lam_lo, lam_hi = attrs["lam_lo_m"], attrs["lam_hi_m"]
     pixel_m = attrs["pixel_m"]
-    pixel_area = pixel_m ** 2
+    curved = "surface_type" in attrs
+
+    # per-pixel area: curved uses the stored metric map (varies with latitude
+    # on a sphere); planar uses the square pixel. Irradiance = power / area
+    # either way, so the total detected POWER (cube.sum) is unchanged and
+    # flows into the report exactly as for a planar screen.
+    if curved:
+        pixel_area = np.where(area_map > 0.0, area_map, np.inf)
+        W_mm = attrs["radius_m"] * (attrs["u_hi"] - attrs["u_lo"]) / 1e-3
+        H_mm = (attrs["radius_m"] * (attrs["v_hi"] - attrs["v_lo"]) / 1e-3
+                if attrs["surface_type"] == "sphere"
+                else (attrs["v_hi"] - attrs["v_lo"]) / 1e-3)
+        extent_mm = [0, W_mm, 0, H_mm]
+        col_pitch_mm = W_mm / attrs["W"]
+        row_pitch_mm = H_mm / attrs["H"]
+        if attrs["surface_type"] == "sphere":
+            xlabel, ylabel = "azimuth arc [mm]", "polar arc [mm]"
+        else:
+            xlabel, ylabel = "arc s [mm]", "axial z [mm]"
+    else:
+        pixel_area = pixel_m ** 2
+        extent_mm = [0, attrs["W"] * pixel_m / 1e-3,
+                     0, attrs["H"] * pixel_m / 1e-3]
+        col_pitch_mm = pixel_m / 1e-3
+        row_pitch_mm = pixel_m / 1e-3
+        xlabel, ylabel = "x [mm]", "y [mm]"
 
     # the stored cube is UNBIASED and may contain zero-mean negative MC
     # noise (see gather.py); sums stay honest, displays clip at zero
@@ -200,8 +229,8 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
         "resolution": [int(attrs["H"]), int(attrs["W"])],
         "pixel_um": float(pixel_m / 1e-6),
     }
-    extent_mm = [0, attrs["W"] * pixel_m / 1e-3,
-                 0, attrs["H"] * pixel_m / 1e-3]
+    if curved:
+        report["detectors"][label]["surface_type"] = str(attrs["surface_type"])
 
     # sRGB wavelength-colored image (clip the noise for display)
     rgb = spectral_cube_to_srgb(np.maximum(cube, 0.0), lam_lo, lam_hi)
@@ -209,8 +238,8 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
     fig, ax = plt.subplots(figsize=(8, 8), dpi=max(
         128, int(attrs["W"]) // 8))
     ax.imshow(rgb, origin="lower", extent=extent_mm)
-    ax.set_xlabel("x [mm]")
-    ax.set_ylabel("y [mm]")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     ax.set_title("%s — wavelength-colored irradiance" % label)
     fig.savefig(outdir_img / ("det_%s.png" % safe), bbox_inches="tight")
     plt.close(fig)
@@ -227,8 +256,8 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
         fig.colorbar(im, ax=ax, fraction=0.046,
                      label="W/m$^2$" if tag == "lin"
                      else "log10 W/m$^2$")
-        ax.set_xlabel("x [mm]")
-        ax.set_ylabel("y [mm]")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
         ax.set_title("%s — irradiance (%s)" % (label, tag))
         fig.savefig(outdir_img / ("det_%s_%s.png" % (safe, tag)),
                     bbox_inches="tight")
@@ -238,15 +267,15 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
     if np.any(irr > 0):
         iy, ix = np.unravel_index(np.argmax(irr), irr.shape)
         fig, axes = plt.subplots(2, 1, figsize=(9, 7))
-        xmm = (np.arange(irr.shape[1]) + 0.5) * pixel_m / 1e-3
-        ymm = (np.arange(irr.shape[0]) + 0.5) * pixel_m / 1e-3
+        xmm = (np.arange(irr.shape[1]) + 0.5) * col_pitch_mm
+        ymm = (np.arange(irr.shape[0]) + 0.5) * row_pitch_mm
         axes[0].plot(xmm, irr[iy], lw=0.8)
         axes[0].set_title("%s — horizontal profile through peak "
                           "(row %d)" % (label, iy))
-        axes[0].set_xlabel("x [mm]")
+        axes[0].set_xlabel(xlabel)
         axes[1].plot(ymm, irr[:, ix], lw=0.8)
         axes[1].set_title("vertical profile through peak (col %d)" % ix)
-        axes[1].set_xlabel("y [mm]")
+        axes[1].set_xlabel(ylabel)
         for a in axes:
             a.set_ylabel("W/m$^2$")
         fig.tight_layout()

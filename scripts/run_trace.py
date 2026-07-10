@@ -38,7 +38,8 @@ from raytracer.scene import Scene                        # noqa: E402
 from raytracer.sources import (sample_source, wavelength_strata,  # noqa: E402
                                n_pol_strata, sample_viz_pattern)
 from raytracer.tracer import Tracer, TraceConfig         # noqa: E402
-from raytracer.detector import DetectorGrid              # noqa: E402
+from raytracer.detector import (DetectorGrid,            # noqa: E402
+                                CurvedDetectorGrid)
 from raytracer import gather                             # noqa: E402
 
 
@@ -81,17 +82,25 @@ def lam_range_nm(scene):
     return (lo - pad) * 1e-9, (hi + pad) * 1e-9
 
 
+def _make_grid(face, args, lam_range):
+    """Dispatch a detector face to the right grid class by its surface type:
+    planar -> DetectorGrid (unchanged), Sphere/Cylinder -> CurvedDetectorGrid;
+    any other analytic/mesh surface falls through to DetectorGrid, which
+    raises the existing clear 'planar detector screens only' error."""
+    stype = face.surface.__class__.__name__
+    cls = CurvedDetectorGrid if stype in ("Sphere", "Cylinder") \
+        else DetectorGrid
+    return cls(face, args.resolution, args.spectral_bins, lam_range,
+               label=face.id)
+
+
 def build_detectors(scene, args, lam_range):
     grids = {}
     for fid in scene.detector_faces:
-        grids[fid] = DetectorGrid(scene.faces[fid], args.resolution,
-                                  args.spectral_bins, lam_range,
-                                  label=scene.faces[fid].id)
+        grids[fid] = _make_grid(scene.faces[fid], args, lam_range)
     for fid in scene.extra_detector_faces:
         if fid not in grids:
-            grids[fid] = DetectorGrid(scene.faces[fid], args.resolution,
-                                      args.spectral_bins, lam_range,
-                                      label=scene.faces[fid].id)
+            grids[fid] = _make_grid(scene.faces[fid], args, lam_range)
     return grids
 
 
@@ -326,6 +335,18 @@ def save_detectors(case_dir, grids_list, seeds):
                 "x_lo": g0.x_lo, "y_lo": g0.y_lo,
                 "seeds": seeds,
             })
+            # curved (Sphere/Cylinder) detectors: extra attrs + a true
+            # per-pixel metric area map so post_process divides power by the
+            # right area for irradiance. PLANAR files get NONE of this, so
+            # their .h5 stays byte-compatible.
+            if isinstance(g0, CurvedDetectorGrid):
+                h["pixel_area_map"] = g0.pixel_area_map
+                h.attrs.update({
+                    "surface_type": g0.surface_type,
+                    "radius_m": g0.radius,
+                    "u_lo": g0.u_lo, "u_hi": g0.u_hi,
+                    "v_lo": g0.v_lo, "v_hi": g0.v_hi,
+                })
 
 
 def main(argv=None):

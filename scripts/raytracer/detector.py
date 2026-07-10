@@ -26,7 +26,66 @@
 import numpy as np
 
 
-class DetectorGrid:
+class _IncoherentAccumMixin:
+    """Shared incoherent-power splat + per-key detected tally.
+
+    A host grid must provide: to_grid(points) -> (fx, fy) fractional pixel
+    coords, self.W/self.H (pixel counts), self.inc (spectral_bins, H, W),
+    self.spectral_bins, self.lam_lo/self.lam_hi, and the tally dicts
+    self.detected_incoherent / self.detected_incoherent_n. The planar and
+    curved grids share EXACTLY this math (bilinear splat + unique-key power
+    sum) so the two detector families book detected power identically."""
+
+    def lam_bin(self, lam):
+        b = ((lam - self.lam_lo) / max(self.lam_hi - self.lam_lo, 1e-30)
+             * self.spectral_bins).astype(int)
+        return np.clip(b, 0, self.spectral_bins - 1)
+
+    def deposit_incoherent(self, points, power, lam,
+                          source_id=None, lam_stratum=None, pol_stratum=None):
+        """Bilinear splat of ray power [W] at surface points (self.inc splat
+        math is UNCHANGED between planar and curved — only to_grid differs).
+        source_id/lam_stratum/pol_stratum are optional (None preserves the
+        pre-existing call signature) per-ray keys used only to accumulate
+        detected_incoherent[(s, l, p)] += power_sum, mirroring
+        add_gather_samples' detected_geometric tally so the two populations
+        combine under the same key shape."""
+        fx, fy = self.to_grid(points)
+        fx = fx - 0.5
+        fy = fy - 0.5
+        x0 = np.floor(fx).astype(int)
+        y0 = np.floor(fy).astype(int)
+        wx = fx - x0
+        wy = fy - y0
+        b = self.lam_bin(lam)
+        for dx, dy, w in ((0, 0, (1 - wx) * (1 - wy)),
+                          (1, 0, wx * (1 - wy)),
+                          (0, 1, (1 - wx) * wy),
+                          (1, 1, wx * wy)):
+            xi = x0 + dx
+            yi = y0 + dy
+            ok = (xi >= 0) & (xi < self.W) & (yi >= 0) & (yi < self.H)
+            np.add.at(self.inc, (b[ok], yi[ok], xi[ok]),
+                      power[ok] * w[ok])
+        if source_id is None or len(power) == 0:
+            return
+        keys = np.stack([np.asarray(source_id), np.asarray(lam_stratum),
+                         np.asarray(pol_stratum)], axis=1)
+        uniq, inv = np.unique(keys, axis=0, return_inverse=True)
+        inv = inv.reshape(-1)
+        sums = np.zeros(len(uniq))
+        np.add.at(sums, inv, power)
+        counts = np.zeros(len(uniq), dtype=np.int64)
+        np.add.at(counts, inv, 1)
+        for row, p, n in zip(uniq, sums, counts):
+            key = (int(row[0]), int(row[1]), int(row[2]))
+            self.detected_incoherent[key] = (
+                self.detected_incoherent.get(key, 0.0) + float(p))
+            self.detected_incoherent_n[key] = (
+                self.detected_incoherent_n.get(key, 0) + int(n))
+
+
+class DetectorGrid(_IncoherentAccumMixin):
     def __init__(self, face, resolution, spectral_bins, lam_range,
                  label=""):
         surf = face.surface
@@ -111,53 +170,6 @@ class DetectorGrid:
         gy = points @ self.yhat - self.y_lo
         return gx / self.pixel_m, gy / self.pixel_m
 
-    def lam_bin(self, lam):
-        b = ((lam - self.lam_lo) / max(self.lam_hi - self.lam_lo, 1e-30)
-             * self.spectral_bins).astype(int)
-        return np.clip(b, 0, self.spectral_bins - 1)
-
-    def deposit_incoherent(self, points, power, lam,
-                          source_id=None, lam_stratum=None, pol_stratum=None):
-        """Bilinear splat of ray power [W] at plane points (self.inc splat
-        math is UNCHANGED). source_id/lam_stratum/pol_stratum are optional
-        (None preserves the pre-existing call signature) per-ray keys used
-        only to accumulate detected_incoherent[(s, l, p)] += power_sum,
-        mirroring add_gather_samples' detected_geometric tally so the two
-        populations combine under the same key shape."""
-        fx, fy = self.to_grid(points)
-        fx = fx - 0.5
-        fy = fy - 0.5
-        x0 = np.floor(fx).astype(int)
-        y0 = np.floor(fy).astype(int)
-        wx = fx - x0
-        wy = fy - y0
-        b = self.lam_bin(lam)
-        for dx, dy, w in ((0, 0, (1 - wx) * (1 - wy)),
-                          (1, 0, wx * (1 - wy)),
-                          (0, 1, (1 - wx) * wy),
-                          (1, 1, wx * wy)):
-            xi = x0 + dx
-            yi = y0 + dy
-            ok = (xi >= 0) & (xi < self.W) & (yi >= 0) & (yi < self.H)
-            np.add.at(self.inc, (b[ok], yi[ok], xi[ok]),
-                      power[ok] * w[ok])
-        if source_id is None or len(power) == 0:
-            return
-        keys = np.stack([np.asarray(source_id), np.asarray(lam_stratum),
-                         np.asarray(pol_stratum)], axis=1)
-        uniq, inv = np.unique(keys, axis=0, return_inverse=True)
-        inv = inv.reshape(-1)
-        sums = np.zeros(len(uniq))
-        np.add.at(sums, inv, power)
-        counts = np.zeros(len(uniq), dtype=np.int64)
-        np.add.at(counts, inv, 1)
-        for row, p, n in zip(uniq, sums, counts):
-            key = (int(row[0]), int(row[1]), int(row[2]))
-            self.detected_incoherent[key] = (
-                self.detected_incoherent.get(key, 0.0) + float(p))
-            self.detected_incoherent_n[key] = (
-                self.detected_incoherent_n.get(key, 0) + int(n))
-
     def add_gather_samples(self, source_id, lam_stratum, pol_stratum,
                            pos, direction, Es, Ep, s_hat, lam, opl, power,
                            scattered, dA=None):
@@ -187,6 +199,136 @@ class DetectorGrid:
                             [r[k] for r in recs])
                         for k in recs[0]}
         return out
+
+
+class CurvedDetectorGrid(_IncoherentAccumMixin):
+    """Detector pixel grid over a trimmed Sphere or Cylinder face.
+
+    Incoherent path only (Phase 10). Pixels are a regular grid in the
+    surface's canonical (u, v) parameterization (see surfaces.to_uv):
+
+      * Sphere:   u = azimuth [rad], v = latitude [rad].
+                  per-pixel metric area = R^2 * cos(v) * du * dv.
+      * Cylinder: u = azimuth [rad], v = axial coordinate [m].
+                  per-pixel metric area = R * du * dv (constant).
+
+    Power is splatted (bilinear) into self.inc exactly like the planar
+    DetectorGrid — the ONLY difference is to_grid maps world hits through
+    surf.to_uv instead of an in-plane projection, so detected-power tallies
+    and the energy-audit booking are byte-for-byte the same interface the
+    tracer's _detector_event drives. post_process divides self.inc by the
+    per-pixel area map (self.pixel_area_map) to get irradiance, so the
+    total detected POWER is grid-geometry-independent.
+
+    Coherent Huygens gather is NOT supported on curved screens: the planar
+    gather kernel assumes a flat aperture. add_gather_samples raises; use
+    coherent=false sources on a curved detector.
+    """
+
+    def __init__(self, face, resolution, spectral_bins, lam_range,
+                 label=""):
+        surf = face.surface
+        stype = surf.__class__.__name__
+        if stype not in ("Sphere", "Cylinder"):
+            raise NotImplementedError(
+                "CurvedDetectorGrid supports Sphere/Cylinder faces only "
+                "(got %s on face %s)" % (stype, face.id))
+        self.face = face
+        self.label = label or face.id
+        self.surface = surf
+        self.surface_type = "sphere" if stype == "Sphere" else "cylinder"
+        self.is_sphere = stype == "Sphere"
+        self.radius = float(surf.r)
+        self.periodic_u = bool(getattr(surf, "periodic_u", False))
+
+        # trimmed (u, v) parameter range: the trim loops are already stored
+        # in this surface's canonical uv (unwrapped u for periodic faces),
+        # so their bbox is the face's uv extent.
+        allp = np.concatenate([np.asarray(lp) for lp in face.trim.loops])
+        self.u_lo, self.v_lo = (float(x) for x in allp.min(axis=0))
+        self.u_hi, self.v_hi = (float(x) for x in allp.max(axis=0))
+        span_u = self.u_hi - self.u_lo
+        span_v = self.v_hi - self.v_lo
+
+        # metric spans -> square-ish pixels: arc length across u is R*du for
+        # both classes; across v it is R*dv (sphere latitude) or dv (cylinder
+        # axial). resolution counts pixels along the longer metric side.
+        arc_u = self.radius * span_u
+        arc_v = self.radius * span_v if self.is_sphere else span_v
+        span = max(arc_u, arc_v, 1e-30)
+        self.pixel_m = span / resolution
+        self.W = max(8, int(np.ceil(arc_u / self.pixel_m)))
+        self.H = max(8, int(np.ceil(arc_v / self.pixel_m)))
+        self.du = span_u / self.W          # parameter step per pixel (u)
+        self.dv = span_v / self.H          # parameter step per pixel (v)
+
+        self.spectral_bins = spectral_bins
+        self.lam_lo, self.lam_hi = lam_range
+        self.inc = np.zeros((spectral_bins, self.H, self.W))
+
+        # pixel-center uv, world points, containment mask, and TRUE metric
+        # per-pixel area map.
+        us = self.u_lo + (np.arange(self.W) + 0.5) * self.du
+        vs = self.v_lo + (np.arange(self.H) + 0.5) * self.dv
+        gu, gv = np.meshgrid(us, vs)                       # (H, W)
+        uvc = np.stack([gu.reshape(-1), gv.reshape(-1)], axis=-1)
+        self.mask = face.trim.contains(uvc).reshape(self.H, self.W)
+        self.pixel_centers = surf.uv_to_xyz(
+            gu.reshape(-1), gv.reshape(-1)).reshape(self.H, self.W, 3)
+        if self.is_sphere:
+            area = self.radius ** 2 * np.cos(gv) * self.du * self.dv
+        else:
+            area = np.full((self.H, self.W), self.radius * self.du * self.dv)
+        # masked pixels collect nothing; guard the divide in post with a
+        # positive area everywhere the mask is False (inc is 0 there anyway).
+        self.pixel_area_map = np.where(self.mask, area, 0.0)
+
+        # per-(source, lam, pol) tallies, same key shape / semantics as the
+        # planar grid (detected_geometric stays empty: no coherent path).
+        self.samples = {}
+        self.detected_geometric = {}
+        self.detected_incoherent = {}
+        self.detected_incoherent_n = {}
+        self.ray_records = []
+
+        # nominal in-plane frame at the arc center so --export-rays' meta
+        # (xhat/yhat/normal/x_lo/y_lo) stays populated; NOT used by the splat.
+        u_c = 0.5 * (self.u_lo + self.u_hi)
+        v_c = 0.5 * (self.v_lo + self.v_hi)
+        center = surf.uv_to_xyz(np.array([u_c]), np.array([v_c]))[0]
+        self.normal = face.normal_out_of_solid(center[None])[0]
+        du_dir = surf.uv_to_xyz(np.array([u_c + 1e-4]),
+                                np.array([v_c]))[0] - center
+        nrm = np.linalg.norm(du_dir)
+        self.xhat = du_dir / nrm if nrm > 0 else np.array([1.0, 0.0, 0.0])
+        self.yhat = np.cross(self.normal, self.xhat)
+        yn = np.linalg.norm(self.yhat)
+        self.yhat = self.yhat / yn if yn > 0 else np.array([0.0, 1.0, 0.0])
+        self.x_lo, self.y_lo = self.u_lo, self.v_lo
+
+    def to_grid(self, points):
+        """World hits -> fractional pixel coords (fu along W, fv along H) via
+        the surface's canonical uv. Periodic-u hits are unwrapped into the
+        face's u-range so bilinear neighbours near the arc edges land right;
+        out-of-grid neighbours are dropped by the splat's own range mask."""
+        uv = self.surface.to_uv(points)
+        u = uv[..., 0]
+        v = uv[..., 1]
+        if self.periodic_u:
+            u = self.u_lo + np.mod(u - self.u_lo, 2.0 * np.pi)
+        fu = (u - self.u_lo) / self.du
+        fv = (v - self.v_lo) / self.dv
+        return fu, fv
+
+    def add_gather_samples(self, *args, **kwargs):
+        raise NotImplementedError(
+            "coherent gather on curved detectors unsupported — use "
+            "coherent=false sources on this detector")
+
+    def merged_samples(self):
+        # no coherent population is ever recorded (add_gather_samples raises),
+        # so gather.render_coherent short-circuits on the empty dict.
+        return {}
 
 
 # ---------------------------------------------------------------------------
