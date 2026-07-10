@@ -80,6 +80,10 @@ class DetectorGrid:
         # casing which population a key came from.
         self.detected_incoherent = {}
         self.detected_incoherent_n = {}     # (source_id, lam, pol) -> ray count
+        # --export-rays: per-detector-event landing records (list of dicts
+        # of per-ray arrays), populated by Tracer._export_records when the
+        # trace config has export_rays on. Empty otherwise (zero overhead).
+        self.ray_records = []
 
         # trim mask in pixel space
         xs = self.x_lo + (np.arange(self.W) + 0.5) * self.pixel_m

@@ -168,6 +168,16 @@ def _build_pipeline_parser():
                    help="also write results/<case>/data/*.csv alongside "
                         "every chart (plus data/index.csv mapping file -> "
                         "entity/chart/units/provenance); post stage only")
+    g.add_argument("--export-rays", action="store_true",
+                   help="capture per-ray landing records at every detector "
+                        "(seed 0 only) to results/<case>/rays_full.npz; "
+                        "post then renders spot diagrams + ray/OPD fans "
+                        "into results/<case>/analysis/")
+    g.add_argument("--export-rays-max", type=int, default=2000000,
+                   metavar="N",
+                   help="per-detector cap on exported rays (default "
+                        "2000000); above it a seeded uniform-random subset "
+                        "is kept and the fraction recorded in the npz meta")
 
     g = p.add_argument_group("execution / orchestration")
     g.add_argument("--keep-going", action="store_true",
@@ -258,6 +268,21 @@ def _build_trace_parser():
                    help="flat facet normals on mesh faces (default: "
                         "angle-weighted smoothed vertex normals)")
     p.add_argument("--dry-run", action="store_true")
+
+    g = p.add_argument_group("analysis / export options")
+    g.add_argument("--export-rays", action="store_true",
+                   help="capture per-ray landing records at every detector "
+                        "(SEED 0 ONLY, like --save-fields) into "
+                        "results/<case>/rays_full.npz with per-detector "
+                        "namespaced arrays + a JSON meta (grid basis, seed, "
+                        "cap). Diagnostic only: the splat/gather math and "
+                        "rays.npy viz contract are untouched")
+    g.add_argument("--export-rays-max", type=int, default=2000000,
+                   metavar="N",
+                   help="per-detector cap on exported rays (default "
+                        "2000000); above it a uniform-random subset drawn "
+                        "with the run seed is kept and the kept fraction "
+                        "recorded in the npz meta")
     return p
 
 

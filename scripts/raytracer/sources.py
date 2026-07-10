@@ -199,7 +199,7 @@ def _sample_beam_points(face, w0_m, n_rays, rng):
 
 
 def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
-                  ledger=None, differentials=False):
+                  ledger=None, differentials=False, export_rays=False):
     """Sample a RayBatch for one source. Power split equally across rays;
     each ray belongs to one wavelength stratum. differentials=True
     allocates Igehy ray differentials (wavefront patch h = sqrt(A/N)
@@ -323,6 +323,10 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
     batch = RayBatch(n_kept)
     batch.pos[:] = pts
     batch.dir[:] = dirs
+    if export_rays:
+        # birth position on the source face (world metres); inherited
+        # unchanged by every child so a detected ray keeps its pupil coord
+        batch.birth_pos = batch.pos.copy()
     idx = np.arange(n_kept)
     batch.lam[:] = lam_strata[idx % n_strata]
     batch.lam_stratum[:] = idx % n_strata

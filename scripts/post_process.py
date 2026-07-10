@@ -1232,6 +1232,213 @@ def emit_system_csvs(csv_emitter, report, audit):
             flow_rows, entity="system", chart="power_flow", units="W")
 
 
+# =============================================================================
+# --export-rays follow-on: spot diagrams + transverse ray/OPD fans from
+# results/<case>/rays_full.npz (run_trace.py's seed-0 landing records). PNGs
+# go under results/<case>/analysis/; CSVs go through the CsvEmitter with the
+# index.csv `image` column pointing at the analysis PNG. No-op when the npz
+# is absent (i.e. the trace ran without --export-rays).
+# =============================================================================
+def _spot_stats(u, v, power):
+    """Centroid + RMS + geometric (100%) radius of landing points (u, v)
+    [m] in the detector grid frame. RMS is power-weighted-agnostic (a plain
+    geometric spot metric); centroid is the plain mean so a symmetric spot
+    reports its geometric center."""
+    uc = float(np.mean(u))
+    vc = float(np.mean(v))
+    dr = np.hypot(u - uc, v - vc)
+    rms = float(np.sqrt(np.mean(dr ** 2)))
+    geo = float(np.max(dr)) if len(dr) else 0.0
+    return uc, vc, rms, geo
+
+
+def render_spot_diagram(safe, dm, cols, adir, report, csv_emitter=None):
+    label = dm["label"]
+    xhat = np.asarray(dm["xhat"]); yhat = np.asarray(dm["yhat"])
+    pos = cols["pos"]
+    if len(pos) == 0:
+        return
+    u = pos @ xhat
+    v = pos @ yhat
+    sid = cols["source_id"].astype(int)
+    lst = cols["lam_stratum"].astype(int)
+    lam = cols["lam"]
+    power = cols["power"]
+    keys = sorted(set(zip(sid.tolist(), lst.tolist())))
+    keys = [k for k in keys if int(np.sum((sid == k[0]) & (lst == k[1]))) > 0]
+    if not keys:
+        return
+    rows = []
+    csv_rows = []
+    npanel = len(keys)
+    ncol = min(4, npanel)
+    nrow = int(np.ceil(npanel / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(3.2 * ncol, 3.2 * nrow),
+                             squeeze=False)
+    for ax in axes.ravel():
+        ax.axis("off")
+    for i, (s, l) in enumerate(keys):
+        m = (sid == s) & (lst == l)
+        uk, vk = u[m], v[m]
+        lam_nm = float(np.mean(lam[m])) * 1e9
+        uc, vc, rms, geo = _spot_stats(uk, vk, power[m])
+        ax = axes.ravel()[i]
+        ax.axis("on")
+        rgb = np.clip(wavelength_rgb(lam_nm).ravel(), 0, 1)
+        ax.scatter((uk - uc) * 1e6, (vk - vc) * 1e6, s=2,
+                   color=rgb, edgecolors="none")
+        ax.set_aspect("equal", "box")
+        ax.set_title("src %d λ%d %.0f nm\nRMS %.2f µm  geo %.2f µm"
+                     % (s, l, lam_nm, rms * 1e6, geo * 1e6), fontsize=8)
+        ax.set_xlabel("x − centroid [µm]", fontsize=7)
+        ax.set_ylabel("y − centroid [µm]", fontsize=7)
+        ax.tick_params(labelsize=6)
+        rows.append({"source_id": int(s), "lam_stratum": int(l),
+                     "rms_radius_um": rms * 1e6, "geo_radius_um": geo * 1e6,
+                     "centroid_x_um": uc * 1e6, "centroid_y_um": vc * 1e6,
+                     "n_rays": int(m.sum())})
+        csv_rows.append((int(s), int(l), rms * 1e6, geo * 1e6,
+                         uc * 1e6, vc * 1e6, int(m.sum())))
+    fig.suptitle("Spot diagram — %s" % label, fontsize=10)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    png = adir / ("spot_%s.png" % safe)
+    fig.savefig(png, bbox_inches="tight")
+    plt.close(fig)
+    if label in report["detectors"]:
+        report["detectors"][label]["spot"] = rows
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "spot_%s.csv" % safe,
+            ["source_id", "lam_stratum", "rms_radius_um", "geo_radius_um",
+             "centroid_x_um", "centroid_y_um", "n_rays"], csv_rows,
+            entity=label, chart="spot_diagram", units="um",
+            provenance="rays_full.npz",
+            image="analysis/spot_%s.png" % safe)
+
+
+def render_ray_fans(safe, dm, cols, adir, report, csv_emitter=None,
+                    min_rays=50, slab=0.05):
+    """Transverse tangential/sagittal ray fans + a chief-referenced OPD fan,
+    using each ray's birth_pos to build a per-source normalized pupil
+    coordinate (offset from the power-weighted birth centroid / max radius).
+    Tangential = rays in the |pupil_x|<slab strip (Δy_landing vs pupil_y);
+    sagittal the transpose; OPD = opl + straight-line ambient path to the
+    landing centroid, referenced to the chief (min-pupil-radius) ray, in
+    waves at each ray's own wavelength."""
+    label = dm["label"]
+    xhat = np.asarray(dm["xhat"]); yhat = np.asarray(dm["yhat"])
+    pos = cols["pos"]; bp = cols["birth_pos"]
+    if len(pos) == 0:
+        return
+    sid = cols["source_id"].astype(int)
+    opl = cols["opl"]; lam = cols["lam"]; power = cols["power"]
+    u = pos @ xhat
+    v = pos @ yhat
+    sources = [s for s in sorted(set(sid.tolist()))
+               if int(np.sum(sid == s)) > min_rays]
+    # a source with any NaN birth_pos (children from a fully-synthetic
+    # population) cannot be pupil-referenced; drop those rays per source
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.2))
+    csv_rows = []
+    fan_report = []
+    plotted = False
+    for s in sources:
+        m = (sid == s) & np.isfinite(bp).all(axis=1)
+        if int(m.sum()) <= min_rays:
+            continue
+        bpm = bp[m]
+        pw = power[m]
+        wsum = float(np.sum(pw)) or 1.0
+        c = (pw[:, None] * bpm).sum(axis=0) / wsum
+        px = (bpm - c) @ xhat
+        py = (bpm - c) @ yhat
+        rmax = float(np.max(np.hypot(px, py)))
+        if rmax <= 0:
+            continue
+        px = px / rmax; py = py / rmax
+        um, vm = u[m], v[m]
+        uc = float(np.mean(um)); vc = float(np.mean(vm))
+        lamm = lam[m]; oplm = opl[m]
+        # chief ray: smallest pupil radius
+        chief = int(np.argmin(np.hypot(px, py)))
+        dist = np.hypot(um - uc, vm - vc)          # ambient path to centroid
+        opd = oplm + dist
+        opd_ref = opd - opd[chief]
+        opd_waves = opd_ref / lamm
+        # tangential strip
+        tan = np.abs(px) < slab
+        if np.any(tan):
+            order = np.argsort(py[tan])
+            axes[0].plot(py[tan][order], (vm[tan][order] - vc) * 1e6,
+                         marker=".", ms=3, lw=0.8, label="src %d" % s)
+            axes[2].plot(py[tan][order], opd_waves[tan][order],
+                         marker=".", ms=3, lw=0.8, label="src %d" % s)
+            for pyi, dyi, wi in zip(py[tan], (vm[tan] - vc),
+                                    opd_waves[tan]):
+                csv_rows.append((int(s), "tangential", float(pyi),
+                                 float(dyi * 1e6)))
+                csv_rows.append((int(s), "opd", float(pyi), float(wi)))
+            plotted = True
+        # sagittal strip
+        sag = np.abs(py) < slab
+        if np.any(sag):
+            order = np.argsort(px[sag])
+            axes[1].plot(px[sag][order], (um[sag][order] - uc) * 1e6,
+                         marker=".", ms=3, lw=0.8, label="src %d" % s)
+            for pxi, dxi in zip(px[sag], (um[sag] - uc)):
+                csv_rows.append((int(s), "sagittal", float(pxi),
+                                 float(dxi * 1e6)))
+            plotted = True
+        fan_report.append({"source_id": int(s),
+                           "opd_rms_waves": float(np.std(opd_waves)),
+                           "opd_pv_waves": float(np.ptp(opd_waves)),
+                           "n_rays": int(m.sum())})
+    if not plotted:
+        plt.close(fig)
+        return
+    axes[0].set_title("Tangential fan"); axes[0].set_xlabel("pupil y")
+    axes[0].set_ylabel("Δy landing [µm]")
+    axes[1].set_title("Sagittal fan"); axes[1].set_xlabel("pupil x")
+    axes[1].set_ylabel("Δx landing [µm]")
+    axes[2].set_title("OPD fan (chief-ref)"); axes[2].set_xlabel("pupil y")
+    axes[2].set_ylabel("OPD [waves]")
+    for ax in axes:
+        ax.axhline(0, color="0.7", lw=0.6, zorder=0)
+        ax.legend(fontsize=7)
+    fig.suptitle("Ray fans — %s" % label, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    png = adir / ("fan_%s.png" % safe)
+    fig.savefig(png, bbox_inches="tight")
+    plt.close(fig)
+    if label in report["detectors"]:
+        report["detectors"][label]["fan"] = fan_report
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "fan_%s.csv" % safe,
+            ["source_id", "fan_type", "pupil", "value"], csv_rows,
+            entity=label, chart="ray_fan",
+            units="Δlanding µm; opd waves", provenance="rays_full.npz",
+            image="analysis/fan_%s.png" % safe)
+
+
+def render_ray_analysis(case_dir, report, csv_emitter=None):
+    npz_path = case_dir / "rays_full.npz"
+    if not npz_path.exists():
+        return
+    z = np.load(npz_path, allow_pickle=True)
+    meta = json.loads(str(z["meta"]))
+    adir = case_dir / "analysis"
+    adir.mkdir(exist_ok=True)
+    for safe, dm in meta["detectors"].items():
+        cols = {k: z["%s/%s" % (safe, k)]
+                for k in ("pos", "dir", "opl", "lam", "source_id",
+                          "lam_stratum", "pol_stratum", "generation",
+                          "pol_mode", "power", "scattered", "coherent",
+                          "birth_pos")}
+        render_spot_diagram(safe, dm, cols, adir, report, csv_emitter)
+        render_ray_fans(safe, dm, cols, adir, report, csv_emitter)
+
+
 def main(argv=None):
     p = cli_specs.build_parser("post")
     args = p.parse_args(argv)
@@ -1298,6 +1505,11 @@ def main(argv=None):
             ["source", "detector", "lam_stratum", "pol_stratum",
              "coherent_W", "incoherent_W", "n_samples"], per_source_flat,
             entity="sources", chart="source_detector_power", units="W")
+
+    # --export-rays follow-on: spot diagrams + ray/OPD fans (no-op unless
+    # the trace stage wrote rays_full.npz). Runs regardless of --emit-csv;
+    # the CSV export of the same data is gated on the emitter being present.
+    render_ray_analysis(case_dir, report, csv_emitter)
 
     common.progress_emit("post", 0.8, "diagnostic plots",
                          case_dir=case_dir)

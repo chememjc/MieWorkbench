@@ -95,7 +95,8 @@ def build_detectors(scene, args, lam_range):
     return grids
 
 
-def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag):
+def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag,
+                 export=False):
     # --viz-pattern: deterministic overlay rays come from a SEPARATE
     # viz-only pass after the physical trace (throwaway ledger, no
     # detector grids), so the physical pass records no viz rays at all
@@ -117,7 +118,8 @@ def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag):
                       power_floor=args.power_floor,
                       n_lambda=args.nlambda, rays=int(args.rays),
                       seed=seed, viz_rays=viz_caps,
-                      rough_fresnel=args.rough_fresnel)
+                      rough_fresnel=args.rough_fresnel,
+                      export_rays=export)
     grids = build_detectors(scene, args, lam_range)
     particles = None
     if args.particles:
@@ -136,7 +138,8 @@ def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag):
         b = sample_source(scene, scene.bodies[bidx], src, sid,
                           cfg.rays, cfg.n_lambda, rng,
                           ledger=tracer.ledger,
-                          differentials=args.ray_differentials)
+                          differentials=args.ray_differentials,
+                          export_rays=export)
         batches.append(b)
         area = scene.emit_faces[bidx].area_m2 or 1e-6
         n_strata = len(wavelength_strata(src, cfg.n_lambda))
@@ -231,6 +234,65 @@ def build_detected_block(grids, gather_diags):
             rows[skey] = entry
         out[det.label] = rows
     return out
+
+
+_EXPORT_KEYS = ("pos", "dir", "opl", "lam", "source_id", "lam_stratum",
+                "pol_stratum", "generation", "pol_mode", "power",
+                "scattered", "coherent", "birth_pos")
+
+
+def write_rays_full(case_dir, grids, args, model_name):
+    """--export-rays: concatenate seed-0's per-detector ray records into one
+    results/<case>/rays_full.npz. Per-detector arrays are namespaced
+    '<safe_label>/<field>' (safe_label = label with '.' -> '_', matching the
+    detector .h5 files); a global 'meta' key holds a JSON string with each
+    detector's grid basis (xhat/yhat/normal/x_lo/y_lo), the seed, the cap,
+    per-detector kept counts/fraction, and the model name.
+
+    Per-detector cap args.export_rays_max: above it a uniform-random subset
+    drawn with the run seed is kept (a NOTE is logged) so a huge focal spot
+    does not blow the file up."""
+    cap = int(args.export_rays_max)
+    rng = np.random.default_rng(args.seed0)
+    payload = {}
+    meta = {"seed": int(args.seed0), "model": model_name,
+            "max_reflections": int(args.max_reflections),
+            "export_rays_max": cap, "detectors": {}}
+    for det in grids.values():
+        safe = det.label.replace(".", "_")
+        recs = det.ray_records
+        cols = {}
+        for k in _EXPORT_KEYS:
+            if recs:
+                cols[k] = np.concatenate([r[k] for r in recs])
+            else:
+                cols[k] = np.zeros((0, 3)) if k in ("pos", "dir",
+                                                    "birth_pos") \
+                    else np.zeros(0)
+        n_total = len(cols["pos"])
+        kept_fraction = 1.0
+        if n_total > cap:
+            idx = np.sort(rng.choice(n_total, size=cap, replace=False))
+            cols = {k: v[idx] for k, v in cols.items()}
+            kept_fraction = cap / float(n_total)
+            print("[trace] NOTE: detector %s exported %d/%d rays "
+                  "(subsampled, kept_fraction=%.4g)"
+                  % (det.label, cap, n_total, kept_fraction), flush=True)
+        for k, v in cols.items():
+            payload["%s/%s" % (safe, k)] = v
+        meta["detectors"][safe] = {
+            "label": det.label,
+            "xhat": [float(x) for x in det.xhat],
+            "yhat": [float(x) for x in det.yhat],
+            "normal": [float(x) for x in det.normal],
+            "x_lo": float(det.x_lo), "y_lo": float(det.y_lo),
+            "n_total": int(n_total), "n_kept": int(len(cols["pos"])),
+            "kept_fraction": float(kept_fraction),
+        }
+    payload["meta"] = np.array(json.dumps(meta))
+    np.savez(case_dir / "rays_full.npz", **payload)
+    print("[trace] --export-rays: wrote rays_full.npz (%d detector(s))"
+          % len(grids), flush=True)
 
 
 def save_detectors(case_dir, grids_list, seeds):
@@ -353,7 +415,8 @@ def _main_locked(args, case_dir):
                              "seed %d/%d" % (s + 1, args.seeds),
                              case_dir=case_dir)
         result, grids, gdiags, times = run_one_seed(
-            scene, args, seed, lam_range, particle_lams, case_diag)
+            scene, args, seed, lam_range, particle_lams, case_diag,
+            export=(args.export_rays and s == 0))
         grids_list.append(grids)
         rep = result.ledger.report(result.source_names)
         audits.append(rep)
@@ -369,6 +432,9 @@ def _main_locked(args, case_dir):
     common.progress_emit("trace", 0.95, "writing detectors",
                          case_dir=case_dir)
     np.save(case_dir / "rays.npy", all_viz)
+    if args.export_rays and grids_list:
+        write_rays_full(case_dir, grids_list[0], args,
+                        Path(args.model_json).parent.name)
     save_detectors(case_dir, grids_list, args.seeds)
     common.write_json(case_dir / "audit.json",
                       {"per_seed": audits, "gate": 1e-3})

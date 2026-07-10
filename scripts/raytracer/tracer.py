@@ -52,12 +52,16 @@ def _kill_differentials(batch):
 class TraceConfig:
     def __init__(self, max_reflections=6, power_floor=1e-4, n_lambda=5,
                  rays=int(1e5), seed=0, viz_rays=500, batch_size=1 << 20,
-                 rough_fresnel="micro"):
+                 rough_fresnel="micro", export_rays=False):
         self.max_reflections = max_reflections
         self.power_floor = power_floor
         self.n_lambda = n_lambda
         self.rays = int(rays)
         self.seed = seed
+        # export_rays: capture per-ray landing records at every detector
+        # event into DetectorGrid.ray_records (--export-rays; seed 0 only).
+        # Purely diagnostic — the splat/gather math is untouched.
+        self.export_rays = export_rays
         # viz_rays: int cap for every source, or {source_id: cap} computed
         # from --viz-density (rays per mm^2 of emit area) upstream
         self.viz_rays = viz_rays
@@ -313,6 +317,8 @@ class Tracer:
     def _detector_event(self, fid, grp, grp_start, grp_start_opl,
                         grp_nmed, grp_dA=None):
         det = self.detectors[fid]
+        if self.cfg.export_rays and len(grp) > 0:
+            self._export_records(det, grp)
         coh = grp.coherent
         if np.any(coh):
             c = np.where(coh)[0]
@@ -342,6 +348,31 @@ class Tracer:
         # separate detected tally: by_surface historically mixes surface
         # absorption and detection under one key space
         self.ledger.detect(det.label, float(np.sum(grp.power)))
+
+    def _export_records(self, det, grp):
+        """--export-rays: append one per-detector-event record of the ray
+        states AT this detector hit (grp.pos is the hit point, grp.opl the
+        accumulated OPL to it — both already advanced to the intersection
+        before this call). Diagnostic only; never feeds the splat/gather."""
+        n = len(grp)
+        bp = grp.birth_pos
+        if bp is None:
+            bp = np.full((n, 3), np.nan)
+        det.ray_records.append({
+            "pos": grp.pos.copy(),
+            "dir": grp.dir.copy(),
+            "opl": grp.opl.copy(),
+            "lam": grp.lam.copy(),
+            "source_id": grp.source_id.copy(),
+            "lam_stratum": grp.lam_stratum.copy(),
+            "pol_stratum": grp.pol_stratum.copy(),
+            "generation": grp.generation.copy(),
+            "pol_mode": grp.pol_mode.copy(),
+            "power": grp.power,
+            "scattered": grp.scattered.copy(),
+            "coherent": grp.coherent.copy(),
+            "birth_pos": bp.copy(),
+        })
 
     def _flux_out_children(self, body, children):
         """Per-element boundary-flux tally (diagnostic, zero RNG use):

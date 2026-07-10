@@ -24,13 +24,20 @@ class RayBatch:
                  "pol_stratum", "pol_mode", "n_eff",
                  "generation", "last_face", "coherent", "birth_power",
                  "viz_flag", "scattered",
-                 "dPdx", "dDdx", "dPdy", "dDdy")
+                 "dPdx", "dDdx", "dPdy", "dDdy", "birth_pos")
 
     # ray-differential slots (Igehy): allocated ONLY under
     # --ray-differentials (None otherwise — +96 B/ray when on). NaN rows
     # mean "differential lost" (grating/scatter/birefringent children);
     # the gather falls back to the source-referenced area per sample.
     _DIFF_SLOTS = ("dPdx", "dDdx", "dPdy", "dDdy")
+
+    # birth_pos: (N,3) world-metres position of each ray's birth point on
+    # its source face — allocated ONLY under --export-rays (None otherwise,
+    # +24 B/ray when on), following the same optional-slot lifecycle as the
+    # differential slots (select copies it; a mixed concat NaN-fills the
+    # batches that lack it). Inherited unchanged by every child ray, so a
+    # detected ray carries the pupil coordinate of the primary it came from.
 
     def __init__(self, n):
         self.pos = np.zeros((n, 3), dtype=np.float64)
@@ -78,6 +85,7 @@ class RayBatch:
         self.dDdx = None
         self.dPdy = None
         self.dDdy = None
+        self.birth_pos = None
 
     def alloc_differentials(self):
         for name in self._DIFF_SLOTS:
@@ -144,7 +152,10 @@ class RayBatch:
             src = getattr(self, name)
             if src is None:
                 continue
-            if name in self._DIFF_SLOTS:
+            # optional slots (_DIFF_SLOTS, birth_pos) start as None on the
+            # fresh out batch — allocate them by copying the selection;
+            # the mandatory slots are pre-allocated, so assign into them
+            if getattr(out, name) is None:
                 setattr(out, name, src[idx].copy())
             else:
                 getattr(out, name)[...] = src[idx]
@@ -161,6 +172,9 @@ class RayBatch:
             out.alloc_differentials()
             for name in RayBatch._DIFF_SLOTS:
                 getattr(out, name)[:] = np.nan
+        if any(b.birth_pos is not None for b in batches):
+            # mixed batches: rays from a batch without birth_pos NaN-fill
+            out.birth_pos = np.full((len(out), 3), np.nan)
         at = 0
         for b in batches:
             n = len(b)

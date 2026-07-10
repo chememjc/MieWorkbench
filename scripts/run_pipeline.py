@@ -236,6 +236,9 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--mesh-flat-normals"]
     if args.save_fields:
         cmd += ["--save-fields"]
+    if args.export_rays:
+        cmd += ["--export-rays",
+                "--export-rays-max", str(int(args.export_rays_max))]
     if args.strict_analytic:
         cmd += ["--strict-analytic"]
     if args.optical_properties:
