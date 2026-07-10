@@ -37,7 +37,8 @@ fix/wontfix rationale per numbered item):
     prospective parent" variant was NOT built; documented as deferred).
   * mark_fold(element, is_fold) -- the fold IDENTITY bit alone (does NOT
     touch the folded open/closed state on unmark), reachable via the
-    right-click "Mark as fold mirror" / "Unmark fold" entries. The Fold
+    right-click "Make fold mirror (unfoldable)" / "Remove fold
+    designation" entries. The Fold
     column's checkbox itself is now checkable for ANY chained element:
     checking a non-fold row is a shortcut for mark_fold(element, True)
     (which also sets folded=True); once an element IS a fold, the same
@@ -125,7 +126,17 @@ _HEADER_TOOLTIPS = {
     COL_TILTY: "Tilt Y (deg) -- rotation about v, the %s" % _BEAM_FRAME_NOTE,
     COL_TILTZ: "Tilt Z (deg) -- rotation about the beam direction d, the "
                "%s" % _BEAM_FRAME_NOTE,
+    COL_FOLD: "Fold state -- check to fold, uncheck to straighten the arm "
+              "(mirror excluded). For a plain chained mirror, checking "
+              "designates it a fold first.",
 }
+
+# shared by both context-menu wordings ("Make fold mirror (unfoldable)" /
+# "Remove fold designation") -- same underlying toggle, same explanation.
+_FOLD_MARK_TIP = (
+    "Designates this chained mirror as a FOLD: it gains a folded/unfolded "
+    "toggle -- unfolding straightens the downstream arm and excludes the "
+    "mirror from simulation.")
 
 # editable numeric edge columns -> solver record field
 _COL_FIELD = {
@@ -452,10 +463,18 @@ class TrainEditorPane(QWidget):
                 folded = bool(rec.get("folded", True))
                 item.setCheckState(COL_FOLD,
                                    Qt.Checked if folded else Qt.Unchecked)
+                item.setToolTip(
+                    COL_FOLD,
+                    "Folded/unfolded -- unchecked straightens the "
+                    "downstream arm and excludes this mirror from the "
+                    "simulation")
                 if not folded:
                     self._grey_italic(item)          # excluded (unfolded) row
             else:
                 item.setCheckState(COL_FOLD, Qt.Unchecked)
+                item.setToolTip(
+                    COL_FOLD,
+                    "Check to make this mirror a fold (unfoldable)")
             item.setCheckState(
                 COL_FLIP, Qt.Checked if rec.get("flip") else Qt.Unchecked)
         else:
@@ -1033,17 +1052,20 @@ class TrainEditorPane(QWidget):
         call."""
         rec = self._project.train().records().get(element, {})
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         act = menu.addAction("Edge details…")
         act.triggered.connect(lambda: self._open_edge_details_dialog(element))
         act = menu.addAction("Pick reference in 3D…")
         act.triggered.connect(lambda: self.begin_pick_reference(element))
         if rec.get("mode") == "chained":
             if rec.get("fold"):
-                act = menu.addAction("Unmark fold")
+                act = menu.addAction("Remove fold designation")
                 act.triggered.connect(lambda: self.mark_fold(element, False))
             else:
-                act = menu.addAction("Mark as fold mirror")
+                act = menu.addAction("Make fold mirror (unfoldable)")
                 act.triggered.connect(lambda: self.mark_fold(element, True))
+            act.setToolTip(_FOLD_MARK_TIP)
+            act.setStatusTip(_FOLD_MARK_TIP)
             ref = rec.get("ref")
             ref_rec = (self._project.train().records().get(ref)
                       if ref else None)

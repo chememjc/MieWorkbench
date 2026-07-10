@@ -233,3 +233,44 @@ def test_derive_edge_roundtrip_through_project():
     assert edge["distance"] == pytest.approx(10.0, abs=1e-9)
     assert edge["decenter_y"] == pytest.approx(1.5, abs=1e-9)
     assert edge["tilt_ry"] == pytest.approx(10.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# candidate_edge / available_ports (the no-move conversion preview)
+# ---------------------------------------------------------------------------
+def test_available_ports():
+    project, _ = make_scene()
+    tm = project.train()
+    assert tm.available_ports("L1") == ["out", "transmit"]
+    assert "reflect" in tm.available_ports("FM")
+
+
+def test_candidate_edge_matches_actual_chain():
+    project, _ = make_scene()
+    project.set_chain("L1", {"ref": "SRC", "distance": "10"})
+    # L2 stays anchored at (60,0,0); its candidate edge vs L1 must equal
+    # the distance that, when chained, reproduces its current pose:
+    # L1 exit vertex at x=19, L2 entry (local -1) at 59 -> 40
+    edge = project.train().candidate_edge("L2", "L1")
+    assert edge["distance"] == pytest.approx(40.0, abs=1e-9)
+    assert edge["decenter_x"] == pytest.approx(0.0, abs=1e-9)
+    # converting with those floats must not move the element
+    before = _pos(project, "L2")
+    payload = {"ref": "L1"}
+    payload.update({k: float(v) for k, v in edge.items()})
+    project.set_chain("L2", payload)
+    assert np.allclose(_pos(project, "L2"), before, atol=1e-9)
+
+
+def test_candidate_edge_refuses_cycles_and_unknown_ports():
+    project, _ = make_scene()
+    project.set_chain("L1", {"ref": "SRC", "distance": "10"})
+    project.set_chain("L2", {"ref": "L1", "distance": "20"})
+    tm = project.train()
+    import train_solver
+    with pytest.raises(train_solver.TrainError, match="cycle"):
+        tm.candidate_edge("L1", "L2")
+    with pytest.raises(train_solver.TrainError, match="cycle"):
+        tm.candidate_edge("L1", "L1")
+    with pytest.raises(train_solver.TrainError, match="no port"):
+        tm.candidate_edge("DET", "L1", "reflect")

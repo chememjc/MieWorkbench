@@ -287,6 +287,51 @@ class TrainModel:
         state = self.body_states.get(self.primary_body_name(element))
         return train_solver.derive_edge(frame, state.current.to_dict(), rec)
 
+    def available_ports(self, element):
+        """Exit-port names an element offers (record-level approximation
+        of train_solver.exit_frames): pass-through always; reflect when a
+        reflect plane exists; deviate when an explicit deviation is set
+        (or the element is a plane-less fold)."""
+        rec = self.records()[element]
+        loc = rec.get("local") or {}
+        ports = ["out", "transmit"]
+        if loc.get("reflect_plane"):
+            ports.append("reflect")
+        if rec.get("fold_deviation") not in (None, "") or (
+                rec.get("fold") and not loc.get("reflect_plane")):
+            ports.append("deviate")
+        return ports
+
+    def candidate_edge(self, element, ref, port=None, variables=None):
+        """What `element`'s chain edge WOULD be against an arbitrary
+        (ref, port), derived from its CURRENT placement — the no-move
+        conversion preview (anchored -> chained). Returns the same float
+        dict as derive_edge. Raises TrainError for unknown/cyclic
+        references or unavailable ports."""
+        element, ref = str(element), str(ref)
+        recs = self.records()
+        if element not in recs:
+            raise train_solver.TrainError("unknown element %r" % element)
+        if ref not in recs:
+            raise train_solver.TrainError("unknown reference %r" % ref)
+        if ref == element or ref in self.downstream_of(element):
+            raise train_solver.TrainError(
+                "chaining %s to %s would create a cycle" % (element, ref))
+        port = port or train_solver._default_port(recs[ref])
+        frames = self.solve(variables)["frames"]
+        try:
+            frame = frames[ref][port]
+        except KeyError:
+            raise train_solver.TrainError(
+                "%s has no port %r (available: %s)"
+                % (ref, port, ", ".join(sorted(frames.get(ref, {})))))
+        state = self.body_states.get(self.primary_body_name(element))
+        if state is None:
+            raise train_solver.TrainError(
+                "no live placement for %r" % element)
+        return train_solver.derive_edge(frame, state.current.to_dict(),
+                                        recs[element])
+
     # -- validation ---------------------------------------------------------------
     def validate(self, variables_raw=None):
         """Chain-level problems as [(severity, message)]. Checks: cycles

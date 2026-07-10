@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (
 
 from ..core import train as _trainmod  # noqa: F401  (puts scripts/ on sys.path)
 from ..core.transforms import (
-    Operation, euler_from_quat, quat_from_euler, snap_to_axis_ops,
+    Operation, euler_from_quat, project_point_on_axis, quat_from_euler,
+    snap_to_axis_ops,
 )
 
 import train_solver  # noqa: E402
@@ -174,9 +175,20 @@ class TransformPanel(QWidget):
         # -- snap to optical axis -------------------------------------------
         lay.addWidget(self._build_snap_group())
 
-        # -- translate ------------------------------------------------------
-        tg = QGroupBox("Translate")
-        tgl = QGridLayout(tg)
+        # -- translate (collapsed nudge tools; the Position section above
+        # is the primary surface) --------------------------------------------
+        tg = QGroupBox("Nudge (world frame)")
+        tg.setToolTip("Incremental world-frame moves — for chained "
+                      "elements the chain re-derives after every nudge")
+        tg_body = QWidget()
+        tgl = QGridLayout(tg_body)
+        tgl.setContentsMargins(0, 0, 0, 0)
+        _tg_lay = QVBoxLayout(tg)
+        _tg_lay.addWidget(tg_body)
+        tg.setCheckable(True)
+        tg.toggled.connect(tg_body.setVisible)
+        tg.setChecked(False)
+        tg_body.setVisible(False)
         self.d = []
         for i, axis in enumerate("XYZ"):
             tgl.addWidget(QLabel(axis), 0, 2 * i)
@@ -209,9 +221,19 @@ class TransformPanel(QWidget):
         tgl.addLayout(row, 3, 0, 1, 6)
         lay.addWidget(tg)
 
-        # -- rotate ----------------------------------------------------------
-        rg = QGroupBox("Rotate")
-        rgl = QGridLayout(rg)
+        # -- rotate (collapsed) ------------------------------------------------
+        rg = QGroupBox("Rotate (world frame)")
+        rg.setToolTip("Rotate about an axis through a reference point — "
+                      "chained elements re-derive their tilt fields")
+        rg_body = QWidget()
+        rgl = QGridLayout(rg_body)
+        rgl.setContentsMargins(0, 0, 0, 0)
+        _rg_lay = QVBoxLayout(rg)
+        _rg_lay.addWidget(rg_body)
+        rg.setCheckable(True)
+        rg.toggled.connect(rg_body.setVisible)
+        rg.setChecked(False)
+        rg_body.setVisible(False)
         rgl.addWidget(QLabel("Axis"), 0, 0)
         self.axis = QComboBox()
         for label in ("Global X", "Global Y", "Global Z",
@@ -257,83 +279,388 @@ class TransformPanel(QWidget):
         lay.addStretch(1)
 
     # -- train positioning -----------------------------------------------------
+    _EDGE_FIELDS = ("distance", "decenter_x", "decenter_y")
+    _EDGE_LABELS = {"distance": "Distance", "decenter_x": "Dec X",
+                    "decenter_y": "Dec Y"}
+
     def _build_positioning_group(self):
-        g = QGroupBox("Positioning")
-        gl = QVBoxLayout(g)
+        """The mode-aware Position section: BOTH representations of the
+        selected element's pose. Its stored mode (anchored vs chained) is
+        the editable one; the other is a live derived view, and Convert
+        switches storage mode WITHOUT moving the element."""
+        g = QGroupBox("Position")
+        gl = QGridLayout(g)
         self.pos_status = QLabel("—")
-        self.pos_status.setStyleSheet("color: gray;")
+        self.pos_status.setStyleSheet("font-weight: bold;")
         self.pos_status.setWordWrap(True)
-        gl.addWidget(self.pos_status)
-        row = QHBoxLayout()
-        self.btn_chain = QPushButton("Chain…")
-        self.btn_chain.setToolTip("Chain this element to the nearest upstream "
-                                  "train element so it follows the train")
-        self.btn_chain.clicked.connect(self._on_chain_clicked)
-        row.addWidget(self.btn_chain)
-        self.btn_anchor_here = QPushButton("Anchor here")
-        self.btn_anchor_here.setToolTip("Freeze this element at its current "
-                                        "pose (stops following the train)")
-        self.btn_anchor_here.clicked.connect(self._on_anchor_here_clicked)
-        row.addWidget(self.btn_anchor_here)
-        gl.addLayout(row)
+        gl.addWidget(self.pos_status, 0, 0, 1, 4)
+
+        gl.addWidget(QLabel("Reference"), 1, 0)
+        self.train_ref = QComboBox()
+        self.train_ref.setToolTip(
+            "Upstream element this one is (or would be) chained to. For a "
+            "chained element, changing it re-chains; for an anchored one "
+            "it previews the would-be chain values.")
+        self.train_ref.currentIndexChanged.connect(self._on_train_ref_changed)
+        gl.addWidget(self.train_ref, 1, 1, 1, 2)
+        self.btn_pick_ref = QPushButton("Pick…")
+        self.btn_pick_ref.setToolTip(
+            "Then click an element — or a specific face — in the 3D view "
+            "or the outliner to use it as the reference (a face pick also "
+            "selects the nearest exit port).")
+        self.btn_pick_ref.clicked.connect(self._arm_ref_pick)
+        gl.addWidget(self.btn_pick_ref, 1, 3)
+
+        gl.addWidget(QLabel("Port"), 2, 0)
+        self.train_port = QComboBox()
+        self.train_port.setToolTip(
+            "Which exit port of the reference the beam is taken from "
+            "(transmit / reflect / deviate).")
+        self.train_port.currentIndexChanged.connect(
+            self._on_train_port_changed)
+        gl.addWidget(self.train_port, 2, 1, 1, 2)
+
+        self.edge_fields = {}
+        for i, field in enumerate(self._EDGE_FIELDS):
+            gl.addWidget(QLabel(self._EDGE_LABELS[field]), 3 + i, 0)
+            e = QLineEdit()
+            e.setToolTip({
+                "distance": "Along-beam distance from the reference port "
+                            "(exit vertex) to this element's entry vertex, "
+                            "mm. Expressions over the global variables "
+                            "work (e.g. arm1 - 5).",
+                "decenter_x": "Transverse offset along the beam frame's "
+                              "horizontal (u) axis, mm.",
+                "decenter_y": "Transverse offset along the beam frame's "
+                              "vertical (v = up) axis, mm.",
+            }[field])
+            e.editingFinished.connect(
+                lambda f=field: self._on_edge_field_committed(f))
+            gl.addWidget(e, 3 + i, 1, 1, 2)
+            self.edge_fields[field] = e
+        self.edge_eval = QLabel("")
+        self.edge_eval.setStyleSheet("color: gray;")
+        self.edge_eval.setWordWrap(True)
+        gl.addWidget(self.edge_eval, 3, 3, 3, 1)
+
+        self.btn_convert = QPushButton("Convert")
+        self.btn_convert.clicked.connect(self._on_convert_clicked)
+        self.btn_convert.hide()
+        gl.addWidget(self.btn_convert, 6, 0, 1, 4)
+        self.pos_note = QLabel("")
+        self.pos_note.setStyleSheet("color: gray;")
+        self.pos_note.setWordWrap(True)
+        gl.addWidget(self.pos_note, 7, 0, 1, 4)
+        self._pos_updating = False
+        self._ref_pick_armed = False
+        self._candidate = {}   # element -> (ref, port) chosen while anchored
         return g
 
-    def _refresh_positioning(self):
-        if not hasattr(self, "pos_status"):
-            return
+    # helpers ------------------------------------------------------------------
+    def _element_and_rec(self):
         if self.project is None or not self.body_name:
-            self.pos_status.setText("—")
-            self.btn_chain.setEnabled(False)
-            self.btn_anchor_here.setEnabled(False)
-            return
+            return None, None
         try:
             element = self.project.element_group(self.body_name)
-            rec = self.project.train().records().get(element)
+            return element, self.project.train().records().get(element)
         except Exception:
-            rec = None
+            return None, None
+
+    def _refresh_positioning(self):
+        if not hasattr(self, "pos_status") or self._pos_updating:
+            return
+        self._pos_updating = True
+        try:
+            self._do_refresh_positioning()
+        finally:
+            self._pos_updating = False
+
+    def _do_refresh_positioning(self):
+        element, rec = self._element_and_rec()
+        widgets = (self.train_ref, self.train_port, self.btn_pick_ref,
+                   *self.edge_fields.values())
         if rec is None:
             self.pos_status.setText("—")
-            self.btn_chain.setEnabled(False)
-            self.btn_anchor_here.setEnabled(False)
+            self.pos_note.setText("")
+            self.edge_eval.setText("")
+            for w in widgets:
+                w.setEnabled(False)
+            self.btn_convert.hide()
             return
-        if rec.get("mode") == "chained":
-            ref = rec.get("ref", "?")
-            port = rec.get("port") or ""
-            dist_raw = rec.get("distance")
-            dtxt = ""
-            if dist_raw not in (None, ""):
-                try:
-                    dtxt = ", %g mm" % train_solver.eval_expr(
-                        dist_raw, self.project.train_variables())
-                except train_solver.TrainError:
-                    dtxt = ", %s mm" % dist_raw
-            self.pos_status.setText("Chained to %s (%s)%s" % (ref, port, dtxt))
-            self.btn_chain.setEnabled(False)
-            self.btn_anchor_here.setEnabled(True)
-        else:
-            self.pos_status.setText("Anchored")
-            self.btn_chain.setEnabled(bool(self._default_chain_ref()))
-            self.btn_anchor_here.setEnabled(False)
+        for w in widgets:
+            w.setEnabled(True)
+        tm = self.project.train()
+        chained = rec.get("mode") == "chained"
 
-    def _default_chain_ref(self):
-        """The last upstream train element the selection can chain to (the
-        deepest element that is neither the selection nor its descendant)."""
-        if self.project is None or not self.body_name:
-            return None
-        try:
-            element = self.project.element_group(self.body_name)
-            tm = self.project.train()
-        except Exception:
-            return None
+        # reference combo: everything except self + descendants
         try:
             order = train_solver.sort_chain(tm.records())
         except train_solver.TrainError:
             order = tm.element_labels()
         skip = set(tm.downstream_of(element)) | {element}
-        for el in reversed(order):
-            if el not in skip:
-                return el
-        return None
+        candidates = [el for el in order if el not in skip]
+        want_ref = (rec.get("ref") if chained
+                    else self._candidate.get(element, (None, None))[0])
+        if want_ref not in candidates:
+            want_ref = candidates[-1] if candidates else None
+        self.train_ref.blockSignals(True)
+        self.train_ref.clear()
+        for el in candidates:
+            self.train_ref.addItem(el, el)
+        if want_ref is not None:
+            self.train_ref.setCurrentIndex(candidates.index(want_ref))
+        self.train_ref.blockSignals(False)
+
+        # port combo for the chosen reference
+        ports = []
+        if want_ref is not None:
+            try:
+                ports = tm.available_ports(want_ref)
+            except Exception:
+                ports = ["out"]
+        want_port = (rec.get("port") if chained
+                     else self._candidate.get(element, (None, None))[1])
+        if want_port not in ports:
+            want_port = (train_solver._default_port(tm.records()[want_ref])
+                         if want_ref is not None else None)
+        self.train_port.blockSignals(True)
+        self.train_port.clear()
+        for p in ports:
+            self.train_port.addItem(p, p)
+        if want_port in ports:
+            self.train_port.setCurrentIndex(ports.index(want_port))
+        self.train_port.blockSignals(False)
+
+        variables = self.project.train_variables()
+        if chained:
+            self.pos_status.setText("🔗 Chained to %s (%s)"
+                                    % (rec.get("ref", "?"),
+                                       rec.get("port")
+                                       or want_port or "out"))
+            evals = []
+            for field, w in self.edge_fields.items():
+                raw = str(rec.get(field) or "0")
+                if not w.hasFocus():
+                    w.setText(raw)
+                w.setReadOnly(False)
+                try:
+                    evals.append("%.4g" % train_solver.eval_expr(
+                        raw, variables))
+                except train_solver.TrainError:
+                    evals.append("?")
+            self.edge_eval.setText("= %s mm" % ", ".join(evals))
+            self.btn_convert.setText("Convert to anchored (keeps position)")
+            self.btn_convert.setToolTip(
+                "Freeze this element at its current world pose (stops "
+                "following the train). The element does not move.")
+            self.btn_convert.show()
+            self.pos_note.setText("")
+        else:
+            self.pos_status.setText("⚓ Anchored (world pose below is "
+                                    "authoritative)")
+            ok = False
+            if want_ref is not None:
+                try:
+                    edge = tm.candidate_edge(element, want_ref, want_port,
+                                             variables)
+                    for field, w in self.edge_fields.items():
+                        w.setText("%.4g" % edge[field])
+                        w.setReadOnly(True)
+                    self.edge_eval.setText("(derived preview)")
+                    ok = True
+                    self.pos_note.setText(
+                        "Values show what the chain would be relative to "
+                        "the chosen reference — Convert makes it real "
+                        "without moving anything.")
+                except train_solver.TrainError as exc:
+                    for w in self.edge_fields.values():
+                        w.setText("")
+                        w.setReadOnly(True)
+                    self.edge_eval.setText("")
+                    self.pos_note.setText(str(exc))
+            else:
+                for w in self.edge_fields.values():
+                    w.setText("")
+                    w.setReadOnly(True)
+                self.edge_eval.setText("")
+                self.pos_note.setText("No upstream element to chain to.")
+            self.btn_convert.setText("Convert to chained (keeps position)")
+            self.btn_convert.setToolTip(
+                "Store this element's position as a chain relative to the "
+                "chosen reference/port. The element does not move — the "
+                "shown values become its chain edge.")
+            self.btn_convert.setVisible(ok)
+
+    # combo / field commits ------------------------------------------------------
+    def _on_train_ref_changed(self):
+        if self._pos_updating:
+            return
+        element, rec = self._element_and_rec()
+        if rec is None:
+            return
+        ref = self.train_ref.currentData()
+        if not ref:
+            return
+        if rec.get("mode") == "chained":
+            try:
+                self.project.set_chain(element, {"ref": ref},
+                                       text="Re-chain %s to %s"
+                                       % (element, ref))
+            except Exception as exc:
+                self.pos_note.setText(str(exc))
+        else:
+            self._candidate[element] = (ref, None)
+        self._refresh_positioning()
+
+    def _on_train_port_changed(self):
+        if self._pos_updating:
+            return
+        element, rec = self._element_and_rec()
+        if rec is None:
+            return
+        port = self.train_port.currentData()
+        if not port:
+            return
+        if rec.get("mode") == "chained":
+            try:
+                self.project.set_chain(element, {"port": port},
+                                       text="Set %s port to %s"
+                                       % (element, port))
+            except Exception as exc:
+                self.pos_note.setText(str(exc))
+        else:
+            ref = self._candidate.get(element, (None, None))[0] \
+                or self.train_ref.currentData()
+            self._candidate[element] = (ref, port)
+        self._refresh_positioning()
+
+    def _on_edge_field_committed(self, field):
+        if self._pos_updating:
+            return
+        element, rec = self._element_and_rec()
+        if rec is None or rec.get("mode") != "chained":
+            return
+        text = self.edge_fields[field].text().strip() or "0"
+        if text == str(rec.get(field) or "0"):
+            return
+        try:
+            train_solver.eval_expr(text, self.project.train_variables())
+        except train_solver.TrainError as exc:
+            self.pos_note.setText("%s: %s" % (self._EDGE_LABELS[field], exc))
+            return
+        try:
+            self.project.set_chain(element, {field: text},
+                                   text="Edit %s of %s" % (field, element))
+        except Exception as exc:
+            self.pos_note.setText(str(exc))
+            return
+        self.pos_note.setText("")
+        self._refresh_positioning()
+
+    # convert ---------------------------------------------------------------------
+    def _on_convert_clicked(self):
+        element, rec = self._element_and_rec()
+        if rec is None:
+            return
+        try:
+            if rec.get("mode") == "chained":
+                self.project.set_anchored(element)
+            else:
+                ref = self.train_ref.currentData()
+                port = self.train_port.currentData()
+                tm = self.project.train()
+                edge = tm.candidate_edge(element, ref, port,
+                                         self.project.train_variables())
+                payload = {"ref": ref, "port": port}
+                payload.update({k: float(v) for k, v in edge.items()})
+                self.project.set_chain(
+                    element, payload,
+                    text="Convert %s to chained" % element)
+        except Exception as exc:
+            self.pos_note.setText(str(exc))
+            return
+        self._refresh_positioning()
+
+    # reference picking (3D face pick OR any selection while armed) ---------------
+    def _arm_ref_pick(self):
+        if self.project is None or not self.body_name:
+            return
+        self._ref_pick_armed = True
+        self.pos_note.setText("Click an element (or a face) in the 3D view "
+                              "or the outliner to use it as the reference…")
+        if self._view is not None:
+            self._view.pick_face_once(self._on_ref_face_picked)
+
+    def _on_ref_face_picked(self, body_name, face_id):
+        if not self._ref_pick_armed:
+            return
+        self._ref_pick_armed = False
+        if not body_name:
+            self.pos_note.setText("Pick cancelled.")
+            return
+        try:
+            ref = self.project.element_group(body_name)
+        except Exception:
+            self.pos_note.setText("Could not resolve the picked element.")
+            return
+        port = self._infer_port(ref, body_name, face_id)
+        self._take_reference(ref, port)
+
+    def _infer_port(self, ref_element, body_name, face_id):
+        """Face pick -> nearest exit port of the element (None = default)."""
+        if not face_id:
+            return None
+        try:
+            tm = self.project.train()
+            loc = tm.local_ports(ref_element)
+            state = self.project.body_states[
+                tm.primary_body_name(ref_element)]
+            face_state = self.project.body_states.get(body_name)
+            fc = face_state.face_centroid_world(face_id)
+            candidates = {}
+            exit_w = state.current.transform_point(loc["exit"])
+            candidates["out"] = exit_w
+            candidates["transmit"] = exit_w
+            rp = loc.get("reflect_plane")
+            if rp:
+                candidates["reflect"] = state.current.transform_point(
+                    rp["point"])
+            avail = set(tm.available_ports(ref_element))
+            best, best_d = None, None
+            for port, pt in candidates.items():
+                if port not in avail:
+                    continue
+                d = sum((float(pt[i]) - float(fc[i])) ** 2 for i in range(3))
+                if best_d is None or d < best_d:
+                    best, best_d = port, d
+            return best
+        except Exception:
+            return None
+
+    def _take_reference(self, ref, port):
+        element, rec = self._element_and_rec()
+        if rec is None:
+            return
+        if ref == element or ref in self.project.train().downstream_of(
+                element):
+            self.pos_note.setText("%s cannot be the reference (it is "
+                                  "downstream of %s)." % (ref, element))
+            return
+        if rec.get("mode") == "chained":
+            payload = {"ref": ref}
+            if port:
+                payload["port"] = port
+            try:
+                self.project.set_chain(element, payload,
+                                       text="Re-chain %s to %s"
+                                       % (element, ref))
+            except Exception as exc:
+                self.pos_note.setText(str(exc))
+                return
+        else:
+            self._candidate[element] = (ref, port)
+        self.pos_note.setText("")
+        self._refresh_positioning()
 
     def chain_to(self, ref_element):
         """Dialog-free: chain the selected element to `ref_element`."""
@@ -345,28 +672,10 @@ class TransformPanel(QWidget):
                                    text="Chain %s to %s"
                                    % (element, ref_element))
         except Exception as exc:
-            self.pos_status.setText(str(exc))
+            self.pos_note.setText(str(exc))
             return False
         self._refresh_positioning()
         return True
-
-    def _on_chain_clicked(self):
-        ref = self._default_chain_ref()
-        if not ref:
-            self.pos_status.setText("No upstream element to chain to.")
-            return
-        self.chain_to(ref)
-
-    def _on_anchor_here_clicked(self):
-        if self.project is None or not self.body_name:
-            return
-        element = self.project.element_group(self.body_name)
-        try:
-            self.project.set_anchored(element)
-        except Exception as exc:
-            self.pos_status.setText(str(exc))
-            return
-        self._refresh_positioning()
 
     # -- absolute pose ---------------------------------------------------------
     def _build_absolute_group(self):
@@ -513,15 +822,20 @@ class TransformPanel(QWidget):
             "onto that axis and centers on the axis line (one undo step).")
         self.snap_pick_btn.clicked.connect(self._pick_snap_target)
         gl.addWidget(self.snap_pick_btn, 1, 0, 1, 3)
-        gl.addWidget(QLabel("Along-axis offset"), 2, 0)
+        gl.addWidget(QLabel("Position along axis"), 2, 0)
         self.snap_offset = QDoubleSpinBox()
         self.snap_offset.setRange(-1e5, 1e5)
         self.snap_offset.setDecimals(3)
         self.snap_offset.setSuffix(" mm")
-        self.snap_offset.setToolTip("Distance to shift along the snapped "
-                                    "axis (needs a target picked first)")
+        self.snap_offset.setToolTip(
+            "The element's CURRENT signed distance from the snap reference "
+            "point along the axis. Type a new value to move it to that "
+            "absolute station (not an incremental offset).")
         gl.addWidget(self.snap_offset, 2, 1)
-        self.snap_offset_btn = QPushButton("Apply offset")
+        self.snap_offset_btn = QPushButton("Move to position")
+        self.snap_offset_btn.setToolTip(
+            "Move the element so its optical center sits at the typed "
+            "along-axis position")
         self.snap_offset_btn.setEnabled(False)
         self.snap_offset_btn.clicked.connect(self._apply_snap_offset)
         gl.addWidget(self.snap_offset_btn, 2, 2)
@@ -529,6 +843,30 @@ class TransformPanel(QWidget):
         self.snap_status.setStyleSheet("color: gray;")
         gl.addWidget(self.snap_status, 3, 0, 1, 3)
         return g
+
+    def _along_axis_t(self, point=None):
+        """The selected element's optical-center coordinate along the
+        armed snap axis (signed mm from the reference point), or None."""
+        if self._snap_axis is None or self.project is None \
+                or not self.body_name:
+            return None
+        try:
+            axis_point, axis = self._snap_axis
+            probe = point if point is not None else \
+                self.project.resolver().resolve_point(
+                    {"kind": "optical_center", "body": self.body_name})
+            _foot, t = project_point_on_axis(probe, axis_point, axis)
+            return float(t)
+        except Exception:
+            return None
+
+    def _refresh_snap_position(self):
+        t = self._along_axis_t()
+        if t is None or self.snap_offset.hasFocus():
+            return
+        self.snap_offset.blockSignals(True)
+        self.snap_offset.setValue(t)
+        self.snap_offset.blockSignals(False)
 
     def set_scene_view(self, view):
         """Give the panel the 3D view it arms picks / drags on."""
@@ -576,19 +914,31 @@ class TransformPanel(QWidget):
         self.snap_offset_btn.setEnabled(True)
         self.history.addItem("%s: snap to axis" % self.body_name)
         self.history.scrollToBottom()
+        self._refresh_snap_position()
         self.snap_status.setText(
             "Snapped. Drag along the axis in the 3D view (Esc cancels), "
-            "or type an offset.")
+            "or type an absolute position.")
         self._begin_snap_drag()
 
     def _apply_snap_offset(self):
-        if self._snap_axis is None:
+        """Move to the typed ABSOLUTE along-axis position (the spinbox
+        shows the current position; committing the same value is a
+        no-op)."""
+        current = self._along_axis_t()
+        if current is None:
             return
         _point, axis = self._snap_axis
-        d = self.snap_offset.value()
-        v = [d * a for a in axis]
+        target = self.snap_offset.value()
+        d = target - current
+        if abs(d) < 1e-9:
+            self.snap_status.setText("Already at %.3f mm along the axis."
+                                     % target)
+            return
+        n = sum(a * a for a in axis) ** 0.5
+        v = [d * a / n for a in axis]
         self._apply(Operation("translate", {"vector_mm": v}),
-                    "offset %g mm along axis" % d)
+                    "position %g mm along axis" % target)
+        self._refresh_snap_position()
 
     def _begin_snap_drag(self):
         if self._view is None or self._snap_axis is None:
@@ -616,6 +966,15 @@ class TransformPanel(QWidget):
                               for i in range(3)],
                    "quat": base_pl["quat"]}
         self._view.update_placement(self.body_name, preview)
+        # live ABSOLUTE readout while dragging (world_pt is where the
+        # optical center is heading, already on the axis line)
+        t = self._along_axis_t(point=list(world_pt))
+        if t is not None:
+            self.snap_status.setText("at %.3f mm along the axis" % t)
+            if not self.snap_offset.hasFocus():
+                self.snap_offset.blockSignals(True)
+                self.snap_offset.setValue(t)
+                self.snap_offset.blockSignals(False)
 
     def _snap_drag_commit(self, world_pt):
         base = self._drag_base
@@ -650,11 +1009,25 @@ class TransformPanel(QWidget):
             lambda _n: self._refresh_positioning())
         project.bodiesMoved.connect(
             lambda _d: (self.toward._emit(), self.about._emit(),
-                        self._refresh_absolute(), self._refresh_positioning()))
+                        self._refresh_absolute(), self._refresh_positioning(),
+                        self._refresh_snap_position()))
         self._refresh_ref_combo()
         self._refresh_positioning()
 
     def set_body(self, body_name):
+        # armed reference pick: the NEXT selection (outliner or 3D click,
+        # both route through here) becomes the chain reference instead of
+        # changing what the panel operates on
+        if getattr(self, "_ref_pick_armed", False) and body_name \
+                and body_name != self.body_name:
+            self._ref_pick_armed = False
+            try:
+                ref = self.project.element_group(body_name)
+            except Exception:
+                ref = None
+            if ref:
+                self._take_reference(ref, None)
+            return
         self.body_name = body_name
         if self.project is not None and body_name:
             b = self.project.body(body_name)

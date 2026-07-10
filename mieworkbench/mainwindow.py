@@ -136,6 +136,7 @@ class MainWindow(QMainWindow):
         self._build_menus()
         self._build_toolbar()
         self._build_animation_toolbar()
+        self._rebuild_folds_menu()      # initial (disabled/no-fold) state
         self.statusBar().showMessage("Ready")
         self._wire_runner()
         self._wire_panes()
@@ -423,6 +424,15 @@ class MainWindow(QMainWindow):
         self.stop_action.setToolTip("Stop the running pipeline")
         self.stop_action.triggered.connect(self.runner.stop)
 
+        # per-fold "Folds" menu: one checkable action per fold element
+        # (checked = folded), rebuilt from the live TrainModel whenever
+        # the train indicators refresh. Exposed both here and as a
+        # toolbar dropdown (_build_toolbar) sharing this SAME QMenu
+        # instance so the two stay in sync for free.
+        sim_menu.addSeparator()
+        self.folds_menu = QMenu("&Folds", self)
+        sim_menu.addMenu(self.folds_menu)
+
         tools_menu = menubar.addMenu("&Tools")
         act = tools_menu.addAction("&Property Library Editor…")
         act.setToolTip("View/edit/import optical property definitions "
@@ -601,6 +611,14 @@ class MainWindow(QMainWindow):
         self.validate_action.setIcon(
             icon(QStyle.StandardPixmap.SP_DialogApplyButton))
         toolbar.addAction(self.validate_action)
+
+        toolbar.addSeparator()
+        self.folds_toolbutton = QToolButton()
+        self.folds_toolbutton.setText("Folds ▾")
+        self.folds_toolbutton.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.folds_toolbutton.setMenu(self.folds_menu)
+        toolbar.addWidget(self.folds_toolbutton)
 
         toolbar.addSeparator()
         rays_btn = QToolButton()
@@ -1194,6 +1212,7 @@ class MainWindow(QMainWindow):
             view.set_excluded_bodies(set())
             view.set_chain_links([])
             self.outliner.set_train_info({})
+            self._rebuild_folds_menu()
             return
         structure = self.project.structure or {}
 
@@ -1239,6 +1258,49 @@ class MainWindow(QMainWindow):
                 "problem": problem,
             }
         self.outliner.set_train_info(info)
+        self._rebuild_folds_menu(tm)
+
+    def _rebuild_folds_menu(self, tm=None):
+        """Repopulate the shared Folds menu (Simulation menu + toolbar
+        dropdown) from the current TrainModel: one checkable action per
+        fold element (checked = folded, "(excluded)" suffix when
+        unfolded), then Unfold/Refold all. Signals are blocked while
+        clearing/re-adding actions so the rebuild can't re-enter
+        set_fold_state via a stray toggled() during teardown."""
+        menu = self.folds_menu
+        menu.blockSignals(True)
+        try:
+            menu.clear()
+            tm = tm if tm is not None else self.project.train()
+            records = tm.records()
+            folds = sorted(tm.folds())
+            for element in folds:
+                folded = bool(records[element].get("folded", True))
+                text = element if folded else "%s (excluded)" % element
+                act = menu.addAction(text)
+                act.setCheckable(True)
+                act.setChecked(folded)
+                act.triggered.connect(
+                    lambda checked, el=element:
+                        self._on_toggle_fold(el, checked))
+            menu.addSeparator()
+            act = menu.addAction("Unfold all")
+            act.triggered.connect(lambda: self.project.set_folds_all(False))
+            act = menu.addAction("Refold all")
+            act.triggered.connect(lambda: self.project.set_folds_all(True))
+        finally:
+            menu.blockSignals(False)
+        has_folds = bool(folds)
+        self.folds_toolbutton.setEnabled(has_folds)
+        self.folds_toolbutton.setToolTip(
+            "Fold/unfold individual segments" if has_folds
+            else "No fold elements in this scene")
+
+    def _on_toggle_fold(self, element, checked):
+        try:
+            self.project.set_fold_state(element, checked)
+        except ProjectError as e:
+            self.statusBar().showMessage(str(e))
 
     def _chain_links(self, tm, records):
         """[{from, to, kind}] mm-world links from each chained element's

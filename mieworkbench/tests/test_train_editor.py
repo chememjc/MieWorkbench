@@ -602,18 +602,55 @@ def test_context_menu_offers_mark_fold_and_port_submenu_for_chained(qtbot):
     pane, _sel = make_pane(qtbot, project)
 
     menu = pane._build_context_menu("FM")
+    assert menu.toolTipsVisible()
     texts = [a.text() for a in menu.actions()]
-    assert "Mark as fold mirror" in texts
+    assert "Make fold mirror (unfoldable)" in texts
     assert any(t.startswith("Chain onto port") for t in texts)
     # a chained row never offers "Set absolute pose..." (that's the
     # anchored-only cross-navigation entry)
     assert "Set absolute pose…" not in texts
 
-    act = next(a for a in menu.actions() if a.text() == "Mark as fold mirror")
+    act = next(a for a in menu.actions()
+               if a.text() == "Make fold mirror (unfoldable)")
+    assert "FOLD" in act.toolTip()
+    assert "FOLD" in act.statusTip()
     act.trigger()
     assert project.train().records()["FM"]["fold"] is True
 
     menu2 = pane._build_context_menu("FM")
     texts2 = [a.text() for a in menu2.actions()]
-    assert "Unmark fold" in texts2
-    assert "Mark as fold mirror" not in texts2
+    assert "Remove fold designation" in texts2
+    assert "Make fold mirror (unfoldable)" not in texts2
+    act2 = next(a for a in menu2.actions()
+               if a.text() == "Remove fold designation")
+    assert "FOLD" in act2.toolTip()
+    assert "FOLD" in act2.statusTip()
+
+
+# ---------------------------------------------------------------------------
+# fold-column tooltips (mark-fold clarity round)
+# ---------------------------------------------------------------------------
+def test_fold_header_tooltip_documents_the_toggle(qtbot):
+    project, _ = make_scene()
+    pane, _sel = make_pane(qtbot, project)
+    tip = pane.tree.headerItem().toolTip(COL_FOLD)
+    assert "fold" in tip.lower()
+    assert "straighten" in tip.lower()
+
+
+def test_fold_cell_tooltip_differs_for_plain_vs_fold_row(qtbot):
+    project, _ = make_scene()
+    project.set_chain("L1", {"ref": "SRC", "distance": "10"})
+    project.set_chain("FM", {"ref": "L1", "distance": "20", "fold": True,
+                             "folded": True, "tilt_ry": "-45"})
+    pane, _sel = make_pane(qtbot, project)
+
+    l1_item = next(it for it in pane._element_items()
+                   if it.data(COL_ELEMENT, ROLE_ELEMENT) == "L1")
+    fm_item = next(it for it in pane._element_items()
+                   if it.data(COL_ELEMENT, ROLE_ELEMENT) == "FM")
+
+    assert "make this mirror a fold" in l1_item.toolTip(COL_FOLD).lower()
+    fm_tip = fm_item.toolTip(COL_FOLD).lower()
+    assert "folded" in fm_tip or "unfolded" in fm_tip
+    assert "excludes" in fm_tip

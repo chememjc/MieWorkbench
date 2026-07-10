@@ -123,6 +123,128 @@ def test_unfold_pushes_exclusion_to_view(qtbot):
 
 
 # ---------------------------------------------------------------------------
+# Folds menu (Simulation menu + toolbar dropdown, shared QMenu instance)
+# ---------------------------------------------------------------------------
+def _chain_one_fold(window):
+    """L1 chained off SRC, FM a folded fold mirror off L1, DET off FM's
+    reflect port -- the same shape as test_unfold_pushes_exclusion_to_view
+    above."""
+    p = window.project
+    p.set_chain("L1", {"ref": "SRC", "distance": "10"})
+    p.set_chain("FM", {"ref": "L1", "distance": "20", "fold": True,
+                       "folded": True, "tilt_ry": "-45"})
+    p.set_chain("DET", {"ref": "FM", "port": "reflect", "distance": "15"})
+    window._refresh_train_indicators()
+
+
+def test_simulation_menu_contains_folds_menu(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    # PySide6 trap (see CLAUDE.md): never stash a submenu retrieved via
+    # QAction.menu() in a bare variable across a function boundary --
+    # ownership transfers to Python and GC deletes the C++ menu. Chain
+    # the .menu().actions() lookup in one expression instead.
+    found = False
+    for action in window.menuBar().actions():
+        if action.text().replace("&", "") == "Simulation":
+            found = window.folds_menu.menuAction() in action.menu().actions()
+            break
+    assert found
+    assert window.folds_menu.title().replace("&", "") == "Folds"
+
+
+def test_folds_toolbutton_exists_and_disabled_with_no_fold_elements(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    # no document open at all: still constructible, still disabled
+    assert not window.folds_toolbutton.isEnabled()
+    assert "No fold elements" in window.folds_toolbutton.toolTip()
+    assert [a for a in window.folds_menu.actions() if a.isCheckable()] == []
+
+    # a real scene with no fold-flagged elements (make_scene's default,
+    # unchained -- see train_test_support.make_scene) stays disabled too
+    _prime(window)
+    window._refresh_train_indicators()
+    assert not window.folds_toolbutton.isEnabled()
+    assert "No fold elements" in window.folds_toolbutton.toolTip()
+
+
+def test_folds_menu_one_checkable_action_per_fold_mirroring_folded_state(
+        qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _prime(window)
+    _chain_one_fold(window)
+
+    assert window.folds_toolbutton.isEnabled()
+    assert "Fold/unfold" in window.folds_toolbutton.toolTip()
+
+    checkable = [a for a in window.folds_menu.actions() if a.isCheckable()]
+    assert len(checkable) == 1
+    act = checkable[0]
+    assert act.text() == "FM"          # folded: no "(excluded)" suffix
+    assert act.isChecked()
+
+
+def test_folds_menu_unfolded_element_shows_excluded_suffix(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _prime(window)
+    _chain_one_fold(window)
+
+    window.project.set_fold_state("FM", False)
+    window._refresh_train_indicators()
+
+    checkable = [a for a in window.folds_menu.actions() if a.isCheckable()]
+    assert len(checkable) == 1
+    act = checkable[0]
+    assert act.text() == "FM (excluded)"
+    assert not act.isChecked()
+
+
+def test_folds_menu_triggering_action_flips_project_fold_state(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _prime(window)
+    _chain_one_fold(window)
+
+    act = next(a for a in window.folds_menu.actions() if a.isCheckable())
+    assert window.project.train().records()["FM"]["folded"] is True
+
+    act.trigger()      # checkable action: trigger() unchecks + fires (False)
+
+    assert window.project.train().records()["FM"]["folded"] is False
+
+    window._refresh_train_indicators()
+    act2 = next(a for a in window.folds_menu.actions() if a.isCheckable())
+    assert act2.text() == "FM (excluded)"
+    assert not act2.isChecked()
+
+
+def test_folds_menu_unfold_all_and_refold_all(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _prime(window)
+    _chain_one_fold(window)
+
+    def action(text):
+        return next(a for a in window.folds_menu.actions()
+                    if a.text() == text)
+
+    assert action("Unfold all") is not None
+    assert action("Refold all") is not None
+
+    action("Unfold all").trigger()
+    assert window.project.train().records()["FM"]["folded"] is False
+
+    window._refresh_train_indicators()
+    action("Refold all").trigger()
+    assert window.project.train().records()["FM"]["folded"] is True
+
+
+# ---------------------------------------------------------------------------
 # train indicators: chain links
 # ---------------------------------------------------------------------------
 def test_chain_links_computed_for_chained_pair(qtbot):
