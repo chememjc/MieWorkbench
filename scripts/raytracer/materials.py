@@ -226,6 +226,9 @@ class MaterialDB:
         # optprops.load_uniaxial via attach_uniaxial():
         #   {crystal_name_lower: {"o": Material, "e": Material, ...}}
         self._uniaxial = {}
+        # biaxial registry (optprops.load_biaxial via attach_biaxial):
+        #   {crystal_name_lower: {"x","y","z": Material, ...}}
+        self._biaxial = {}
 
     # -- uniaxial birefringence (opticalproperties/birefringence) ---------
     def attach_uniaxial(self, mapping):
@@ -241,6 +244,21 @@ class MaterialDB:
         name is not in the uniaxial registry (check is_birefringent)."""
         entry = self._uniaxial[name.strip().lower()]
         return entry["o"], entry["e"]
+
+    # -- biaxial birefringence ---------------------------------------------
+    def attach_biaxial(self, mapping):
+        """mapping: {crystal_name: {"x","y","z": Material, ...}}."""
+        self._biaxial = {k.strip().lower(): v for k, v in mapping.items()}
+
+    def is_biaxial(self, name):
+        return (isinstance(name, str)
+                and name.strip().lower() in self._biaxial)
+
+    def get_biaxial(self, name):
+        """(mat_x, mat_y, mat_z) principal-index Materials for a biaxial
+        crystal name. KeyError if not registered (check is_biaxial)."""
+        entry = self._biaxial[name.strip().lower()]
+        return entry["x"], entry["y"], entry["z"]
 
     @classmethod
     def load(cls, csv_path=None, nk_dir=None):

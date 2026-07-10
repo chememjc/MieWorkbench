@@ -10,14 +10,17 @@ by a live process, a QTimer polls progress.json + the images as they
 appear; editing/rerun affordances are the main window's job to disable -
 this pane only ever reads."""
 
+import csv
 import json
 import os
+import shutil
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QMenu,
+    QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 import sys
@@ -28,37 +31,156 @@ if _SCRIPTS not in sys.path:
 import common  # noqa: E402
 
 from ..core import paraview_launcher
+from ..widgets.table_export import export_table_csv
 
 _THUMB_W = 320
 
 
+# -- data-export context menu (shared by every image display: gallery ------
+# thumbnails, the lightbox, and Compare's galleries which reuse this module's
+# classes wholesale) --------------------------------------------------------
+
+def resolve_data_csv(png_path):
+    """Find the data CSV paired with a displayed PNG, per the pipeline's
+    data/index.csv contract (see the object-placer round's chain-API
+    docs / CLAUDE.md): walk up from the PNG's own directory looking for
+    a sibling ``data/`` directory (the first one found, going upward, is
+    treated as authoritative -- this is "the dir that contains data/",
+    the case dir for a results/<model>/<case> tree or a compare out-dir
+    alike). If that data/ has an index.csv, parse it (stdlib csv) and
+    match the ``image`` column against the PNG by path-relative-to-that-
+    dir or by basename; the matching row's ``file`` column gives the
+    CSV. Failing that, fall back to a same-basename CSV directly in that
+    data/ dir. Returns an absolute path (str) or None -- never raises on
+    a malformed/missing index.csv, since a missing pairing is just "no
+    CSV export available", not an error."""
+    png_path = os.path.abspath(str(png_path))
+    basename = os.path.basename(png_path)
+    stem, _ext = os.path.splitext(basename)
+
+    d = os.path.dirname(png_path)
+    prev = None
+    while d and d != prev:
+        data_dir = os.path.join(d, "data")
+        if os.path.isdir(data_dir):
+            index_path = os.path.join(data_dir, "index.csv")
+            if os.path.exists(index_path):
+                try:
+                    with open(index_path, newline="") as fh:
+                        for row in csv.DictReader(fh):
+                            image = (row.get("image") or "").strip()
+                            if not image:
+                                continue
+                            image_abs = os.path.normpath(
+                                os.path.join(d, image))
+                            if (image_abs == os.path.normpath(png_path)
+                                    or os.path.basename(image) == basename):
+                                csv_rel = (row.get("file") or "").strip()
+                                if csv_rel:
+                                    return os.path.normpath(
+                                        os.path.join(d, csv_rel))
+                except (OSError, csv.Error):
+                    pass
+            fallback = os.path.join(data_dir, stem + ".csv")
+            if os.path.exists(fallback):
+                return fallback
+            # A data/ dir exists at this level (the case-dir boundary) but
+            # nothing paired -- don't keep climbing past it.
+            return None
+        prev = d
+        d = os.path.dirname(d)
+    return None
+
+
+def _choose_save_path(parent, default_name):
+    """Dialog seam: the ONE place a save QFileDialog is shown. Tests
+    monkeypatch this module function so offscreen runs never open a real
+    modal (CLAUDE.md: never show an unguarded modal in a pane code
+    path)."""
+    path, _filt = QFileDialog.getSaveFileName(parent, "Save as…",
+                                              default_name)
+    return path or None
+
+
+def _copy_to_chosen_path(parent, src_path, status_cb=None):
+    """Prompt (via the dialog seam) and copy src_path there verbatim --
+    a file copy, never a pixmap re-encode, so a saved PNG is
+    bit-identical to the source."""
+    dest = _choose_save_path(parent, os.path.basename(src_path))
+    if not dest:
+        return
+    dest_dir = os.path.dirname(dest)
+    if dest_dir:
+        os.makedirs(dest_dir, exist_ok=True)
+    shutil.copyfile(src_path, dest)
+    if status_cb:
+        status_cb("Saved %s" % dest)
+
+
+def build_image_context_menu(png_path, parent, status_cb=None):
+    """Build (don't show) the right-click menu for a displayed image:
+    "Save image as…" (always enabled, copies the PNG) and "Export data
+    as CSV…" (enabled only when resolve_data_csv finds a pairing).
+    Dialog-free to build -- tests call this directly and assert action
+    texts/enabled states without ever invoking .exec()."""
+    menu = QMenu(parent)
+    save_act = menu.addAction("Save image as…")
+    save_act.triggered.connect(
+        lambda: _copy_to_chosen_path(parent, png_path, status_cb))
+    csv_path = resolve_data_csv(png_path)
+    export_act = menu.addAction("Export data as CSV…")
+    export_act.setEnabled(csv_path is not None)
+    if csv_path is not None:
+        export_act.triggered.connect(
+            lambda: _copy_to_chosen_path(parent, csv_path, status_cb))
+    return menu
+
+
 class _ClickableLabel(QLabel):
-    """QLabel that calls a handler when clicked."""
+    """QLabel that calls a handler when clicked and offers a right-click
+    save-image/export-data menu (build_image_context_menu)."""
 
     def __init__(self, path, parent=None):
         super().__init__(parent)
         self.path = path
         self._on_click = None
+        self._status_cb = None
 
     def set_click_handler(self, callback):
         """Set callback to invoke on click; callback receives path."""
         self._on_click = callback
+
+    def set_status_callback(self, callback):
+        """callback(msg) is invoked with a short "Saved <path>" string
+        after a successful save/export -- status-bar feedback, never a
+        modal."""
+        self._status_cb = callback
 
     def mousePressEvent(self, event):
         if self._on_click:
             self._on_click(self.path)
         super().mousePressEvent(event)
 
+    def build_context_menu(self):
+        """Dialog-free: build (don't show) the right-click menu -- the
+        seam tests exercise directly."""
+        return build_image_context_menu(self.path, self, self._status_cb)
+
+    def contextMenuEvent(self, event):
+        self.build_context_menu().exec(event.globalPos())
+
 
 class _LightboxDialog(QDialog):
     """Non-modal dialog for viewing gallery images full-size with arrow-key cycling."""
 
-    def __init__(self, paths, initial_index, parent=None):
+    def __init__(self, paths, initial_index, parent=None,
+                status_callback=None):
         super().__init__(parent)
         self.paths = paths
         self.current_index = max(0, min(initial_index, len(paths) - 1)) \
             if paths else 0
         self._original_pixmap = None
+        self._status_cb = status_callback
 
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
@@ -164,6 +286,19 @@ class _LightboxDialog(QDialog):
         else:
             super().keyPressEvent(event)
 
+    def build_context_menu(self):
+        """Dialog-free: build (don't show) the right-click menu for the
+        currently-displayed image, or None if there's nothing shown."""
+        if not self.paths:
+            return None
+        path = self.paths[self.current_index]
+        return build_image_context_menu(path, self, self._status_cb)
+
+    def contextMenuEvent(self, event):
+        menu = self.build_context_menu()
+        if menu is not None:
+            menu.exec(event.globalPos())
+
 
 class _Gallery(QScrollArea):
     def __init__(self, parent=None):
@@ -175,6 +310,14 @@ class _Gallery(QScrollArea):
         self._shown = {}
         self._paths = []  # sorted list of current paths
         self._lightbox = None  # reference to open lightbox dialog
+        self._status_cb = None
+
+    def set_status_callback(self, callback):
+        """Wire in a callable(msg) invoked after a thumbnail/lightbox
+        save-image or export-CSV action completes (e.g.
+        ResultsPane.statusChanged.emit or ComparePane's log strip) --
+        status-bar feedback only, never a modal."""
+        self._status_cb = callback
 
     def show_images(self, paths):
         changed = False
@@ -196,6 +339,7 @@ class _Gallery(QScrollArea):
             box = QVBoxLayout()
             label = _ClickableLabel(path)
             label.set_click_handler(self._thumbnail_clicked)
+            label.set_status_callback(self._status_cb)
             pm = QPixmap(path)
             if not pm.isNull():
                 label.setPixmap(pm.scaledToWidth(
@@ -220,7 +364,8 @@ class _Gallery(QScrollArea):
         if path not in self._paths:
             return
         index = self._paths.index(path)
-        self._lightbox = _LightboxDialog(self._paths, index, parent=self)
+        self._lightbox = _LightboxDialog(self._paths, index, parent=self,
+                                         status_callback=self._status_cb)
         self._lightbox.show()
 
     def clear(self):
@@ -271,6 +416,9 @@ class ResultsPane(QWidget):
              "Visibility"])
         self.summary.horizontalHeader().setStretchLastSection(True)
         self.summary.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.summary.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.summary.customContextMenuRequested.connect(
+            self._on_summary_context_menu)
         self.tabs.addTab(self.summary, "Summary")
 
         # per-element energy accounting from the trace ledger
@@ -286,16 +434,45 @@ class ResultsPane(QWidget):
             "losses inside/at the element, Detected = power recorded by "
             "detector faces. In − Out ≈ Absorbed; small shortfalls are "
             "rays truncated by the generation/power caps.")
+        self.power.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.power.customContextMenuRequested.connect(
+            self._on_power_context_menu)
         self.tabs.addTab(self.power, "Power")
 
         self.galleries = {}
         for name in ("images", "spectra", "plots", "viz"):
             g = _Gallery()
+            g.set_status_callback(self.statusChanged.emit)
             self.galleries[name] = g
             self.tabs.addTab(g, name.capitalize())
         lay.addWidget(self.tabs)
         self.audit = QLabel("")
         lay.addWidget(self.audit)
+
+    # -- table CSV export (right-click on summary/power) ----------------------
+    def _build_table_export_menu(self, table, default_name):
+        """Dialog-free: build (don't show) a table's right-click Export
+        CSV menu -- tests call this directly and assert on it."""
+        menu = QMenu(self)
+        act = menu.addAction("Export CSV…")
+        act.triggered.connect(lambda: self._export_table(table,
+                                                          default_name))
+        return menu
+
+    def _export_table(self, table, default_name):
+        dest = _choose_save_path(self, default_name)
+        if not dest:
+            return
+        export_table_csv(table, dest)
+        self.statusChanged.emit("Saved %s" % dest)
+
+    def _on_summary_context_menu(self, pos):
+        menu = self._build_table_export_menu(self.summary, "summary.csv")
+        menu.exec(self.summary.viewport().mapToGlobal(pos))
+
+    def _on_power_context_menu(self, pos):
+        menu = self._build_table_export_menu(self.power, "power.csv")
+        menu.exec(self.power.viewport().mapToGlobal(pos))
 
     # -- loading -------------------------------------------------------------
     def load_case(self, case_dir, monitor=False):

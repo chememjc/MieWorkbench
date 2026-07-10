@@ -37,12 +37,14 @@ import common  # noqa: E402  (stdlib-only shared contract hub)
 from PySide6.QtCore import Qt, QProcess, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit,
+    QComboBox, QFileDialog, QHBoxLayout, QLabel, QMenu, QPlainTextEdit,
     QPushButton, QSlider, QStackedWidget, QTableWidget, QTableWidgetItem,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
+from . import results
 from .results import _Gallery
+from ..widgets.table_export import export_table_csv
 
 REPO_DIR = Path(__file__).resolve().parent.parent.parent
 COMPARE_SWEEP_SCRIPT = REPO_DIR / "scripts" / "compare_sweep.py"
@@ -143,8 +145,12 @@ class ComparePane(QWidget):
             ["Variant", "Detector", "Values"] + METRIC_COLUMNS)
         self.metrics_table.horizontalHeader().setStretchLastSection(True)
         self.metrics_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.metrics_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.metrics_table.customContextMenuRequested.connect(
+            self._on_metrics_context_menu)
         lay.addWidget(self.metrics_table)
         self.metrics_gallery = _Gallery()
+        self.metrics_gallery.set_status_callback(self._append_log)
         lay.addWidget(self.metrics_gallery)
         self.tabs.addTab(w, "Metrics")
 
@@ -160,6 +166,7 @@ class ComparePane(QWidget):
         head.addStretch(1)
         lay.addLayout(head)
         self.images_gallery = _Gallery()
+        self.images_gallery.set_status_callback(self._append_log)
         lay.addWidget(self.images_gallery)
         self.tabs.addTab(w, "Images")
 
@@ -179,6 +186,7 @@ class ComparePane(QWidget):
         head.addStretch(1)
         lay.addLayout(head)
         self.diff_gallery = _Gallery()
+        self.diff_gallery.set_status_callback(self._append_log)
         lay.addWidget(self.diff_gallery)
         self.tabs.addTab(w, "Difference")
 
@@ -203,6 +211,10 @@ class ComparePane(QWidget):
         lay.addWidget(self.scrub_caption)
         self.scrub_image = QLabel()
         self.scrub_image.setAlignment(Qt.AlignCenter)
+        self.scrub_image.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.scrub_image.customContextMenuRequested.connect(
+            self._on_scrub_context_menu)
+        self._scrub_current_path = None
         lay.addWidget(self.scrub_image, 1)
         self.tabs.addTab(w, "Scrub")
 
@@ -320,6 +332,28 @@ class ComparePane(QWidget):
 
     def _append_log(self, line):
         self.log.appendPlainText(line)
+
+    # -- table CSV export (right-click on metrics_table) -------------------------
+    def _build_table_export_menu(self, table, default_name):
+        """Dialog-free: build (don't show) a table's right-click Export
+        CSV menu -- tests call this directly and assert on it."""
+        menu = QMenu(self)
+        act = menu.addAction("Export CSV…")
+        act.triggered.connect(lambda: self._export_table(table,
+                                                          default_name))
+        return menu
+
+    def _export_table(self, table, default_name):
+        dest = results._choose_save_path(self, default_name)
+        if not dest:
+            return
+        export_table_csv(table, dest)
+        self._append_log("Saved %s" % dest)
+
+    def _on_metrics_context_menu(self, pos):
+        menu = self._build_table_export_menu(self.metrics_table,
+                                             "metrics.csv")
+        menu.exec(self.metrics_table.viewport().mapToGlobal(pos))
 
     # -- loading summary.json ----------------------------------------------------
     def load_summary(self, out_dir):
@@ -477,11 +511,21 @@ class ComparePane(QWidget):
                      if e.get("stem") == variant.get("stem")), None)
         if entry is None:
             self.scrub_image.clear()
+            self._scrub_current_path = None
             return
-        pm = QPixmap(self._abs(entry["image"]))
+        path = self._abs(entry["image"])
+        self._scrub_current_path = path
+        pm = QPixmap(path)
         if not pm.isNull():
             self.scrub_image.setPixmap(pm.scaledToWidth(
                 480, Qt.SmoothTransformation))
+
+    def _on_scrub_context_menu(self, pos):
+        if not self._scrub_current_path:
+            return
+        menu = results.build_image_context_menu(self._scrub_current_path,
+                                                 self, self._append_log)
+        menu.exec(self.scrub_image.mapToGlobal(pos))
 
     # -- session reset -----------------------------------------------------------
     def clear(self):
@@ -500,6 +544,7 @@ class ComparePane(QWidget):
         self.scrub_detector_combo.clear()
         self.scrub_slider.setMaximum(0)
         self.scrub_image.clear()
+        self._scrub_current_path = None
         self.scrub_caption.setText("")
         self.log.clear()
         self.stack.setCurrentWidget(self.empty_label)

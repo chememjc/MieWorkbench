@@ -31,6 +31,7 @@ from .materials import (MaterialDB, MaterialError, load_coatings,
                         _swap_suffix)
 
 DEFAULT_BIREFRINGENCE_CSV = DEFAULT_OPTPROPS_DIR / "birefringence" / "uniaxial.miebrf"
+DEFAULT_BIAXIAL_CSV = DEFAULT_OPTPROPS_DIR / "birefringence" / "biaxial.mibiax"
 DEFAULT_POLARIZERS_CSV = DEFAULT_OPTPROPS_DIR / "polarizer" / "polarizers.miepol"
 DEFAULT_FILTERS_CSV = DEFAULT_OPTPROPS_DIR / "filter" / "filters.miefilt"
 DEFAULT_GRATINGS_CSV = DEFAULT_OPTPROPS_DIR / "grating" / "gratings.miegrat"
@@ -175,6 +176,38 @@ def load_uniaxial(csv_path=None, db=None):
         out[name] = {"o": db.get(o_name), "e": db.get(e_name),
                      "reference": (row.get("reference") or "").strip(),
                      "notes": (row.get("notes") or "").strip()}
+    return out
+
+
+def load_biaxial(csv_path=None, db=None):
+    """-> {crystal_name: {"x","y","z": Material, "reference": str,
+    "notes": str}}. All three principal-index material rows must exist in
+    `db`. Call db.attach_biaxial(result) to enable db.is_biaxial()."""
+    csv_path = Path(csv_path) if csv_path is not None \
+        else DEFAULT_BIAXIAL_CSV
+    if db is None:
+        raise MaterialError("load_biaxial requires a MaterialDB (db=...)")
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "n_x_material", "n_y_material",
+                       "n_z_material", "reference"},
+            "biaxial birefringence"):
+        axes = {ax: (row.get("n_%s_material" % ax) or "").strip()
+                for ax in ("x", "y", "z")}
+        for mn in axes.values():
+            if mn not in db:
+                raise MaterialError(
+                    "%s: references unknown material %r (must be a "
+                    "materials.csv row)" % (ctx, mn))
+        if name in db and name.lower() not in (
+                v.lower() for v in axes.values()):
+            # same shadowing rule as uniaxial crystal names
+            raise MaterialError(
+                "%s: crystal name collides with unrelated materials.csv "
+                "row %r" % (ctx, name))
+        out[name] = {ax: db.get(mn) for ax, mn in axes.items()}
+        out[name]["reference"] = (row.get("reference") or "").strip()
+        out[name]["notes"] = (row.get("notes") or "").strip()
     return out
 
 
@@ -459,10 +492,10 @@ class OpticalProperties:
     filters, gratings, uniaxial — shapes per the load_* docstrings."""
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
-                 "gratings", "uniaxial", "diffusers", "detectors")
+                 "gratings", "uniaxial", "biaxial", "diffusers", "detectors")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
-                 uniaxial, diffusers=None, detectors=None):
+                 uniaxial, diffusers=None, detectors=None, biaxial=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -470,6 +503,7 @@ class OpticalProperties:
         self.filters = filters
         self.gratings = gratings
         self.uniaxial = uniaxial
+        self.biaxial = biaxial if biaxial is not None else {}
         self.diffusers = diffusers if diffusers is not None else {}
         self.detectors = detectors if detectors is not None else {}
 
@@ -497,6 +531,9 @@ def load_optical_properties(root=None, db=None):
     uniaxial = optional(load_uniaxial,
                         root / "birefringence" / "uniaxial.miebrf", db=db)
     db.attach_uniaxial(uniaxial)
+    biaxial = optional(load_biaxial,
+                       root / "birefringence" / "biaxial.mibiax", db=db)
+    db.attach_biaxial(biaxial)
     return OpticalProperties(
         root=root, matdb=db, coatings=coatings,
         polarizers=optional(load_polarizers,
@@ -504,6 +541,7 @@ def load_optical_properties(root=None, db=None):
         filters=optional(load_filters, root / "filter" / "filters.miefilt"),
         gratings=optional(load_gratings, root / "grating" / "gratings.miegrat"),
         uniaxial=uniaxial,
+        biaxial=biaxial,
         diffusers=optional(load_diffusers,
                            root / "diffuser" / "diffusers.miedif"),
         detectors=optional(load_detectors,
@@ -523,5 +561,6 @@ if __name__ == "__main__":
     print("  filters   : %d" % len(props.filters))
     print("  gratings  : %d" % len(props.gratings))
     print("  uniaxial  : %d" % len(props.uniaxial))
+    print("  biaxial   : %d" % len(props.biaxial))
     print("  diffusers : %d" % len(props.diffusers))
     print("  detectors : %d" % len(props.detectors))

@@ -45,8 +45,33 @@
 #
 # Out of scope: absorbing crystals — any Im(n_o)/Im(n_e) is ignored (geometry
 # uses real indices only, exactly as fresnel.refract_dir does); dispersion is
-# supported by passing per-ray n_o/n_e. Biaxial crystals, optical activity, and
-# gyrotropy are not modelled.
+# supported by passing per-ray n_o/n_e. Optical activity and gyrotropy are not
+# modelled.
+#
+# BIAXIAL extension (n_x != n_y != n_z: KTP, LBO, ...) lives at the bottom of
+# this module. The o/e split becomes a slow/fast two-sheet split of the
+# quartic wave-normal surface
+#
+#     H(K) = u*P - Q + eps_x*eps_y*eps_z = 0,   u = |K|^2 (k0 units),
+#     P = sum_i eps_i K_i^2,   Q = sum_i eps_i (eps_j + eps_k) K_i^2
+#
+# (K components in the CRYSTAL principal frame, eps_i = n_i^2; derived from
+# the Fresnel equation of wave normals sum_i eps_i K_i^2/(eps_i - u) = 0 by
+# clearing denominators and dividing out the trivial factor u — pinned by
+# test_biaxial_normal_surface_residual). Interface refraction substitutes
+# K = t_vec + s*n_hat (t_vec the conserved tangential wavevector, t.n = 0)
+# giving a QUARTIC in s, solved batched via companion-matrix eigenvalues;
+# the <= 2 real inward roots are the slow (larger n_phase) and fast sheets.
+# D eigenvectors come from the 2x2 symmetric eigenproblem of the transverse
+# projection of the inverse permittivity (robust everywhere, including
+# principal planes where the k_i/(1/n^2 - 1/eps_i) form is 0/0), and the
+# ray/Poynting direction from grad_K H ~ K_i*(P + eps_i*u - w_i).
+#
+# Biaxial honest limits: near an optic axis the two sheets meet (conical
+# refraction) — eigenvectors degenerate there and the returned pair is an
+# arbitrary orthonormal transverse basis; internal reflection is treated
+# mode-preserving (cross-sheet coupling at internal reflections is ignored,
+# the same tier of approximation as the effective-index interface Fresnel).
 # =============================================================================
 import numpy as np
 
@@ -289,3 +314,309 @@ def refract_out(k_hat_int, mode_is_e, n_hat, c_axis, n_o, n_e, n2):
     K_out = K_t + s[:, None] * nh
     d_out = _unit(K_out)
     return d_out, tir
+
+
+# ===========================================================================
+# BIAXIAL crystals (slow/fast two-sheet split) — see module header
+# ===========================================================================
+def _bcast_frame(frame, n):
+    """Broadcast a (3,3) or (n,3,3) crystal frame to (n,3,3) float64.
+    Rows are the principal axes expressed in GLOBAL coordinates, so
+    v_crystal = frame @ v_global."""
+    f = np.asarray(frame, dtype=np.float64)
+    if f.ndim == 2:
+        f = np.broadcast_to(f, (n, 3, 3))
+    return np.ascontiguousarray(f)
+
+
+def _bcast_eps(eps, n):
+    """Broadcast (3,) or (n,3) principal permittivities (n_i^2) to (n,3)."""
+    e = np.asarray(eps, dtype=np.float64)
+    if e.ndim == 1:
+        e = np.broadcast_to(e, (n, 3))
+    return np.ascontiguousarray(e)
+
+
+def _to_crystal(v, frame):
+    return np.einsum("nij,nj->ni", frame, v)
+
+
+def _to_global(v, frame):
+    return np.einsum("nji,nj->ni", frame, v)
+
+
+def biaxial_modes_for_k(k_hat, frame, eps):
+    """Per-sheet phase indices + D eigenvectors for an internal wavevector
+    DIRECTION k_hat (unit, global coords).
+
+    Solves the 2x2 symmetric eigenproblem of the inverse permittivity
+    projected onto the plane transverse to k: eigenvalues are 1/n^2 of the
+    two sheets, eigenvectors the D directions. Robust everywhere the
+    k_i/(1/n^2 - 1/eps_i) closed form is 0/0 (principal planes); at an
+    optic axis the sheets meet and the returned basis is an arbitrary
+    orthonormal transverse pair (conical-refraction limitation).
+
+    Returns dict: n_slow >= n_fast (n,), D_slow, D_fast (n,3) unit, global.
+    """
+    k = _unit(k_hat)
+    n = k.shape[0]
+    fr = _bcast_frame(frame, n)
+    eta = 1.0 / _bcast_eps(eps, n)               # (n,3) inverse permittivity
+
+    # deterministic transverse basis (a, b) _|_ k (same trick as eigenbasis)
+    ax = np.zeros_like(k)
+    ax[np.arange(n), np.argmin(np.abs(k), axis=-1)] = 1.0
+    a = _unit(np.cross(k, ax))
+    b = np.cross(k, a)
+
+    ac = _to_crystal(a, fr)
+    bc = _to_crystal(b, fr)
+    Baa = _dot(ac * eta, ac)
+    Bbb = _dot(bc * eta, bc)
+    Bab = _dot(ac * eta, bc)
+
+    # closed-form symmetric 2x2 eigen: lam = mean +- r
+    mean = 0.5 * (Baa + Bbb)
+    diff = 0.5 * (Baa - Bbb)
+    r = np.sqrt(diff ** 2 + Bab ** 2)
+    lam_slow = mean - r                          # smaller 1/n^2 -> larger n
+    lam_fast = mean + r
+    # eigenvector for lam_slow in the (a,b) plane; guard the degenerate
+    # (optic-axis / isotropic) case r ~ 0 with the (1,0) fallback
+    va = np.where(np.abs(Bab) > _DEGEN * np.maximum(1.0, np.abs(mean)),
+                  Bab, np.where(diff <= 0.0, 1.0, 0.0))
+    vb = np.where(np.abs(Bab) > _DEGEN * np.maximum(1.0, np.abs(mean)),
+                  lam_slow - Baa, np.where(diff <= 0.0, 0.0, 1.0))
+    norm = np.sqrt(va ** 2 + vb ** 2)
+    norm = np.where(norm < _DEGEN, 1.0, norm)
+    va, vb = va / norm, vb / norm
+    D_slow = va[:, None] * a + vb[:, None] * b
+    D_fast = -vb[:, None] * a + va[:, None] * b  # orthogonal partner
+    return {
+        "n_slow": 1.0 / np.sqrt(lam_slow),
+        "n_fast": 1.0 / np.sqrt(lam_fast),
+        "D_slow": D_slow, "D_fast": D_fast,
+    }
+
+
+def biaxial_ray_from_k(K, frame, eps):
+    """Ray (Poynting) unit direction + n_ray for wavevectors K on the
+    normal surface (K in k0 units, global coords, |K| = n_phase).
+
+    grad_K H ~ K_i * (P + eps_i*u - w_i) componentwise in the crystal
+    frame (w_i = eps_i*(eps_j + eps_k)). Where the gradient vanishes
+    (isotropic degeneracy / conical point) the wave direction is returned.
+    """
+    K = np.asarray(K, dtype=np.float64)
+    n = K.shape[0]
+    fr = _bcast_frame(frame, n)
+    ep = _bcast_eps(eps, n)
+    Kc = _to_crystal(K, fr)
+    u = _dot(Kc, Kc)
+    P = _dot(ep * Kc, Kc)
+    w = ep * (np.sum(ep, axis=-1, keepdims=True) - ep)   # eps_i*(eps_j+eps_k)
+    grad_c = Kc * (P[:, None] + ep * u[:, None] - w)
+    gnorm = np.linalg.norm(grad_c, axis=-1)
+    k_hat = _unit(K)
+    bad = gnorm < _DEGEN * np.maximum(1.0, u)
+    grad_c[bad] = _to_crystal(k_hat[bad], fr[bad])
+    s_ray = _unit(_to_global(grad_c, fr))
+    # orient along propagation (grad points outward on the surface; make
+    # s.k >= 0 which is the physical energy-flow side)
+    flip = _dot(s_ray, k_hat) < 0.0
+    s_ray[flip] = -s_ray[flip]
+    n_phase = np.sqrt(u)
+    n_ray = n_phase * _dot(k_hat, s_ray)
+    return s_ray, n_phase, n_ray
+
+
+def _biaxial_quartic_roots(t_vec, n_hat, frame, eps):
+    """Real roots s of H(t_vec + s*n_hat) = 0, batched via companion-matrix
+    eigenvalues. Returns (roots (n,4) float64, real_mask (n,4) bool)."""
+    n = t_vec.shape[0]
+    fr = _bcast_frame(frame, n)
+    ep = _bcast_eps(eps, n)
+    tc = _to_crystal(t_vec, fr)
+    nc = _to_crystal(n_hat, fr)
+    A = _dot(tc, tc)
+    w = ep * (np.sum(ep, axis=-1, keepdims=True) - ep)
+    det = np.prod(ep, axis=-1)
+
+    P0 = _dot(ep * tc, tc)
+    P1 = 2.0 * _dot(ep * tc, nc)
+    P2 = _dot(ep * nc, nc)                       # > 0 always
+    Q0 = _dot(w * tc, tc)
+    Q1 = 2.0 * _dot(w * tc, nc)
+    Q2 = _dot(w * nc, nc)
+
+    # H(s) = (A + s^2)(P0 + P1 s + P2 s^2) - (Q0 + Q1 s + Q2 s^2) + det
+    c4 = P2
+    c3 = P1
+    c2 = P0 + A * P2 - Q2
+    c1 = A * P1 - Q1
+    c0 = A * P0 - Q0 + det
+
+    comp = np.zeros((n, 4, 4))
+    comp[:, 1, 0] = comp[:, 2, 1] = comp[:, 3, 2] = 1.0
+    comp[:, 0, 3] = -c0 / c4
+    comp[:, 1, 3] = -c1 / c4
+    comp[:, 2, 3] = -c2 / c4
+    comp[:, 3, 3] = -c3 / c4
+    roots = np.linalg.eigvals(comp)              # (n,4) complex
+
+    # Double real roots (isotropic limit, conical points) come back from
+    # the eigensolver as a complex pair with |Im| ~ sqrt(machine eps), so
+    # a strict imag cut misclassifies them. Newton-polish the real parts
+    # against the real quartic, then classify by residual: true real
+    # roots polish to ~1e-14, genuinely complex (evanescent/TIR) pairs
+    # leave an O(Im^2) residual.
+    s = roots.real.copy()
+    C = [c0[:, None], c1[:, None], c2[:, None], c3[:, None], c4[:, None]]
+
+    def _h(x):
+        return C[0] + x * (C[1] + x * (C[2] + x * (C[3] + x * C[4])))
+
+    def _dh(x):
+        return C[1] + x * (2 * C[2] + x * (3 * C[3] + x * 4 * C[4]))
+
+    # safeguarded Newton: at a double root H' ~ 0 and a raw h/dh step is
+    # float-noise/float-noise (diverges); only accept improving steps —
+    # eigenvalue-accurate double roots already satisfy the residual gate
+    for _ in range(3):
+        h = _h(s)
+        dh = _dh(s)
+        step = h / np.where(np.abs(dh) < 1e-300, 1.0, dh)
+        cand = s - np.where(np.abs(dh) < 1e-300, 0.0, step)
+        s = np.where(np.abs(_h(cand)) < np.abs(h), cand, s)
+    scale = (np.abs(C[0]) + np.abs(s) * (np.abs(C[1]) + np.abs(s) * (
+        np.abs(C[2]) + np.abs(s) * (np.abs(C[3]) + np.abs(s) * np.abs(C[4])))))
+    real = (np.abs(_h(s)) <= 1e-9 * np.maximum(scale, 1e-30)) \
+        & (np.abs(roots.imag) < 1e-2 * (1.0 + np.abs(roots.real)))
+    return s, real
+
+
+def refract_in_biaxial(d_in, n_hat, frame, n1, eps):
+    """Refract from an isotropic medium (real index n1) INTO a biaxial
+    crystal, splitting into slow and fast sheet waves.
+
+    d_in, n_hat : (n,3) unit vectors, fresnel convention (n_hat against the
+                  incident ray, cos_i = -d.n_hat >= 0).
+    frame       : (3,3) or (n,3,3), rows = principal axes in global coords.
+    n1          : scalar or (n,).
+    eps         : (3,) or (n,3) principal permittivities (n_x^2,n_y^2,n_z^2),
+                  per-ray for dispersion.
+
+    Returns dict of per-ray arrays, per sheet m in {slow, fast} (slow =
+    larger n_phase; when only one inward root survives it is assigned to
+    the slow sheet — the higher-index sheet supports the larger tangential
+    wavevector, so the fast sheet is the one that goes evanescent first):
+      k_<m> (n,3) unit wavevector, s_<m> (n,3) unit ray direction,
+      n_phase_<m>, n_ray_<m> (n,), D_<m> (n,3) unit D eigenvector,
+      tir_<m> (n,) bool.
+    """
+    d = _unit(d_in)
+    n = d.shape[0]
+    nh = _unit(_bcast_vec(n_hat, n))
+    n1 = _bcast_scalar(n1, n)
+    fr = _bcast_frame(frame, n)
+    ep = _bcast_eps(eps, n)
+
+    t_vec = n1[:, None] * (d - _dot(d, nh)[:, None] * nh)   # _|_ n_hat
+    roots, real = _biaxial_quartic_roots(t_vec, nh, fr, ep)
+
+    # inward branch: K.n_hat = s < 0 (n_hat points against the incident
+    # ray). Keep real inward roots, sorted by n_phase DESC (slow first).
+    inward = real & (roots < 1e-12)
+    A = _dot(t_vec, t_vec)
+    n_ph = np.sqrt(A[:, None] + roots ** 2)
+    n_ph_sort = np.where(inward, n_ph, -np.inf)
+    order = np.argsort(-n_ph_sort, axis=1)
+    idx = np.arange(n)
+    out = {}
+    for j, name in enumerate(("slow", "fast")):
+        pick = order[:, j]
+        ok = inward[idx, pick]
+        s = np.where(ok, roots[idx, pick], -1.0)   # placeholder when TIR
+        K = t_vec + s[:, None] * nh
+        k_hat = _unit(K)
+        s_ray, n_phase, n_ray = biaxial_ray_from_k(K, fr, ep)
+        modes = biaxial_modes_for_k(k_hat, fr, ep)
+        # the eigenvector belonging to THIS sheet: match by phase index
+        d_slow = np.abs(modes["n_slow"] - n_phase)
+        d_fast = np.abs(modes["n_fast"] - n_phase)
+        use_slow = (d_slow <= d_fast)[:, None]
+        D = np.where(use_slow, modes["D_slow"], modes["D_fast"])
+        out["k_%s" % name] = k_hat
+        out["s_%s" % name] = s_ray
+        out["n_phase_%s" % name] = n_phase
+        out["n_ray_%s" % name] = n_ray
+        out["D_%s" % name] = D
+        out["tir_%s" % name] = ~ok
+    return out
+
+
+def reflect_internal_biaxial(k_in, n_hat, frame, eps):
+    """Mode-preserving internal reflection of a biaxial wave: the
+    tangential wavevector is conserved and the reflected wave returns on
+    the SAME sheet (cross-sheet coupling ignored — see module header).
+
+    k_in  : (n,3) incident wavevector in k0 units (|k_in| = n_phase_in).
+    n_hat : (n,3) unit normal AGAINST the incident wave (cos_i > 0).
+    Returns (K_refl (n,3) k0 units, ok (n,) bool). ok=False marks rays
+    with no returning real root on the incident sheet (grazing/conical
+    corner cases); callers should kill those rays into the seam bucket.
+    """
+    k_in = np.asarray(k_in, dtype=np.float64)
+    n = k_in.shape[0]
+    nh = _unit(_bcast_vec(n_hat, n))
+    fr = _bcast_frame(frame, n)
+    ep = _bcast_eps(eps, n)
+
+    t_vec = k_in - _dot(k_in, nh)[:, None] * nh
+    roots, real = _biaxial_quartic_roots(t_vec, nh, fr, ep)
+    # the reflected wave travels back INTO the crystal: K.n_hat = s > 0
+    # (n_hat is against the incident wave). Sheet identity is NOT "nearest
+    # n_phase" (a large direction change moves both sheet indices): a root
+    # is on the slow/fast sheet iff its |K| matches that sheet's mode
+    # index for its own direction. Pick the returning root on the SAME
+    # sheet as the incident wave.
+    back = real & (roots > 1e-12)
+    n_in = np.linalg.norm(k_in, axis=-1)
+    in_modes = biaxial_modes_for_k(_unit(k_in), fr, ep)
+    in_is_slow = (np.abs(in_modes["n_slow"] - n_in)
+                  <= np.abs(in_modes["n_fast"] - n_in))
+    score = np.full(roots.shape, np.inf)
+    for j in range(4):
+        K_j = t_vec + roots[:, j][:, None] * nh
+        n_j = np.linalg.norm(K_j, axis=-1)
+        m_j = biaxial_modes_for_k(_unit(K_j), fr, ep)
+        n_same = np.where(in_is_slow, m_j["n_slow"], m_j["n_fast"])
+        score[:, j] = np.where(back[:, j], np.abs(n_j - n_same), np.inf)
+    pick = np.argmin(score, axis=1)
+    idx = np.arange(n)
+    best = score[idx, pick]
+    # a root genuinely on the sheet matches its own mode index to solver
+    # precision; anything worse means no same-sheet returning wave exists
+    ok = best < 1e-6 * np.maximum(1.0, n_in)
+    s = np.where(ok, roots[idx, pick], 1.0)
+    K_refl = t_vec + s[:, None] * nh
+    return K_refl, ok
+
+
+def refract_out_biaxial(K_int, n_hat, n2):
+    """Refract an internal biaxial wave OUT into an isotropic medium.
+    Pure tangential-wavevector continuity — needs only the internal K in
+    k0 units (|K_int| = n_phase), not the crystal tensor.
+
+    n_hat is against the internal wave (into the crystal), cos_i > 0.
+    Returns (d_out (n,3) unit, tir (n,) bool)."""
+    K = np.asarray(K_int, dtype=np.float64)
+    n = K.shape[0]
+    nh = _unit(_bcast_vec(n_hat, n))
+    n2 = _bcast_scalar(n2, n)
+    K_t = K - _dot(K, nh)[:, None] * nh
+    Kt2 = _dot(K_t, K_t)
+    s2 = n2 ** 2 - Kt2
+    tir = s2 < 0.0
+    s = -np.sqrt(np.maximum(s2, 0.0))
+    return _unit(K_t + s[:, None] * nh), tir
