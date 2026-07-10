@@ -598,12 +598,34 @@ class Tracer:
             A_spec = np.ones(m)
         sqrtA = np.sqrt(A_spec)
 
+        # ---- measured scatter (ABg/BSDF): reflected-side specular/scatter
+        # split. TIS(cos_i) leaves the specular direction; the specular
+        # reflection keeps sqrt(1-TIS) of its amplitude (REFLECTED side only —
+        # the transmitted child is untouched, v1 BRDF scope), the scattered
+        # remainder is emitted as sampled lobes below. Mutually exclusive
+        # with roughness/diffuser by the scene contract, so sqrtA == 1 here.
+        scat = self.scene.scatter.get(fid)
+        if scat is not None:
+            from . import scatter as scatter_mod
+            tis = scatter_mod.abg_tis(scat["A"], scat["B"], scat["g"], cos_i)
+            if scat["tis_cap"] is not None:
+                tis = np.minimum(tis, scat["tis_cap"])
+            tis = np.clip(tis, 0.0, 1.0)
+            refl_scale = np.sqrt(1.0 - tis)
+        else:
+            refl_scale = np.ones(m)
+
         # ---- reflected child ----
-        # power-exact amplitude, phase from the physical coefficient
-        amp_rs = np.sqrt(r_m + phys * np.abs(rs) ** 2) \
-            * np.exp(1j * np.angle(rs)) * sqrtA
-        amp_rp = np.sqrt(r_m + phys * np.abs(rp) ** 2) \
-            * np.exp(1j * np.angle(rp)) * sqrtA
+        # power-exact amplitude, phase from the physical coefficient.
+        # full_amp_r* is the UNSPLIT reflected amplitude (reused by the
+        # scatter lobes); the specular child additionally carries sqrtA
+        # (roughness) and refl_scale (scatter specular remainder).
+        full_amp_rs = np.sqrt(r_m + phys * np.abs(rs) ** 2) \
+            * np.exp(1j * np.angle(rs))
+        full_amp_rp = np.sqrt(r_m + phys * np.abs(rp) ** 2) \
+            * np.exp(1j * np.angle(rp))
+        amp_rs = full_amp_rs * sqrtA * refl_scale
+        amp_rp = full_amp_rp * sqrtA * refl_scale
         can_reflect = grp.generation < self.cfg.max_reflections
         refl = grp.select(np.ones(m, dtype=bool))
         refl.dir = fr.reflect_dir(grp.dir, n_hat)
@@ -797,6 +819,39 @@ class Tracer:
                 p_accounted += st.power * (~tir_j)
                 if np.any(okt):
                     out.append(st.select(okt))
+
+        # ---- measured scatter (ABg): scattered reflected lobes carry the
+        # TIS share of the reflected power, sampled around the specular
+        # direction (scatter_mod.sample_abg). k_lobe matches the roughness
+        # convention. Each lobe scales the FULL reflected amplitude by
+        # sqrt(TIS/k), so specular (1-TIS) + scattered TIS == full R exactly.
+        # Reflected side only (BRDF); transmission is not scattered in v1.
+        if scat is not None and np.any(tis > 0.0):
+            k_lobe = 2
+            d_spec = fr.reflect_dir(grp.dir, n_hat)
+            amp_lobe = np.sqrt(tis / k_lobe)
+            for _j in range(k_lobe):
+                sc = grp.select(np.ones(m, dtype=bool))
+                _kill_differentials(sc)
+                sc.dir = scatter_mod.sample_abg(
+                    self.rng, m, scat["A"], scat["B"], scat["g"],
+                    d_spec, n_hat)
+                sc.s_hat = s_new
+                sc.Es = Es * full_amp_rs * amp_lobe
+                sc.Ep = Ep * full_amp_rp * amp_lobe
+                sc.generation += 1
+                sc.scattered[:] = True
+                ok = ((np.sum(sc.dir * n_hat, axis=-1) > 0)
+                      & (sc.generation <= self.cfg.max_reflections)
+                      & (sc.power > 0))
+                below = ~ok & (sc.power > 0)
+                if np.any(below):
+                    self.ledger.credit("absorbed_surface",
+                                       sc.source_id[below],
+                                       sc.power[below], where=body.label)
+                p_accounted += sc.power
+                if np.any(ok):
+                    out.append(sc.select(ok))
 
         # ---- surface absorption = exact power difference ----
         # (generation-capped reflections were already credited above, so

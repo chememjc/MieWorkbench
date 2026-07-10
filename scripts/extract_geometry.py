@@ -1100,6 +1100,21 @@ def extract_one(fcstd_path, outdir, strict):
                         % (obj.Label, diffuser_raw, e))
                 body_dict["diffuser_faces"] = dmap
 
+            # scatter: per-face map (or whole-body) of ABg/BSDF registry
+            # names 'name' | 'FaceN=polished_bk7_glass;...' (validated
+            # against opticalproperties/scatter/ at scene build; measured
+            # reflected-side scatter at trace). Names only, no value grammar
+            # (like coating).
+            scatter_raw = str_prop_or_none(obj, "scatter")
+            if scatter_raw is not None:
+                try:
+                    smap = parse_facemap_value_safe(
+                        scatter_raw, obj.Name, tip_name)
+                except ValueError as e:
+                    die("%s: bad scatter spec %r: %s"
+                        % (obj.Label, scatter_raw, e))
+                body_dict["scatter_faces"] = smap
+
             # coating (schema v2): per-face map, {'__all__': name} for the
             # legacy "whole body, one coating" form.
             coating_raw = coating_value(obj)

@@ -24,11 +24,11 @@ FACEMAP_ALL = "__all__"     # matches common.FACEMAP_ALL (contract sentinel)
 class Body:
     __slots__ = ("index", "name", "label", "role", "material", "coating",
                  "mirror", "absorbance", "roughness_nm", "roughness_faces",
-                 "diffuser_faces", "grating_map", "source", "detector",
-                 "closed", "face_ids", "polarizer", "polarizer_axis",
-                 "filter", "crystal_axis", "birefringent", "filter_lam_um",
-                 "filter_alpha_per_m", "crystal_axis2", "crystal_frame",
-                 "biaxial")
+                 "diffuser_faces", "scatter_faces", "grating_map", "source",
+                 "detector", "closed", "face_ids", "polarizer",
+                 "polarizer_axis", "filter", "crystal_axis", "birefringent",
+                 "filter_lam_um", "filter_alpha_per_m", "crystal_axis2",
+                 "crystal_frame", "biaxial")
 
     def __init__(self, index, rec):
         self.index = index
@@ -52,6 +52,7 @@ class Body:
         self.roughness_nm = float(rec.get("roughness_nm") or 0.0)
         self.roughness_faces = rec.get("roughness_faces")   # dict or None
         self.diffuser_faces = rec.get("diffuser_faces")     # dict or None
+        self.scatter_faces = rec.get("scatter_faces")       # dict or None
         self.grating_map = rec.get("grating")               # dict or None
         self.polarizer = rec.get("polarizer") or None
         pa = rec.get("polarizer_axis")
@@ -385,6 +386,38 @@ class Scene:
                         "face": {"id": self.faces[fid].id},
                         "sigma_nm": sigma_nm, "lcorr_um": lcorr_um,
                         "diffuser": True}
+
+        # ---- measured-scatter (ABg/BSDF) faces: reflected-side lobe from
+        # a registry entry (opticalproperties/scatter/). Resolves to
+        # self.scatter = {fid: entry}. A face carrying scatter AND roughness
+        # OR diffuser is a contract error — they are alternative surface
+        # models (the roughness map already holds any diffuser entries).
+        self.scatter = {}
+        scatter_registry = (self.optprops.scatter
+                            if self.optprops is not None else {})
+        for body in self.bodies:
+            if not body.scatter_faces:
+                continue
+            for face_name, name in body.scatter_faces.items():
+                if name not in scatter_registry:
+                    raise ValueError(
+                        "body %s: unknown scatter entry %r "
+                        "(opticalproperties/scatter/bsdf.miebsdf has: %s)"
+                        % (body.label, name,
+                           ", ".join(sorted(scatter_registry)) or
+                           "<none loaded — pass optprops>"))
+                if face_name == FACEMAP_ALL:
+                    fids = list(body.face_ids)
+                else:
+                    fids = [self._face_id_or_die(face_name, "scatter")]
+                for fid in fids:
+                    if fid in self.roughness:
+                        raise ValueError(
+                            "body %s: face %s carries BOTH a scatter and a "
+                            "roughness/diffuser declaration — they are "
+                            "alternative models of one surface, pick one"
+                            % (body.label, self.faces[fid].id))
+                    self.scatter[fid] = scatter_registry[name]
 
         # per-face coating map: {int fid: coating name}
         self.face_coatings = {}

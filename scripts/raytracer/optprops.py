@@ -486,16 +486,75 @@ def load_diffusers(csv_path=None):
     return out
 
 
+# ---------------------------------------------------------------------------
+# scatter/bsdf.miebsdf  (ABg / Harvey-Shack measured-scatter surfaces)
+# ---------------------------------------------------------------------------
+SCATTER_MODELS = ("abg",)
+
+
+def load_scatter(csv_path=None):
+    """-> {name: {"model": "abg", "A": float, "B": float, "g": float,
+    "tis_cap": float|None, "reference": str, "notes": str}}.
+
+    ABg BSDF registry for polished optical surfaces (raytracer/scatter.py):
+    BSDF(u) = A/(B + u^g), u = |beta - beta0| the direction-cosine offset
+    from specular. Each row is validated: A > 0, B > 0, g > 0, and the total
+    integrated scatter at normal incidence (scatter.abg_tis, the fraction of
+    reflected power that leaves the specular direction) must not exceed 1
+    (energy). tis_cap, if given, is an OPTIONAL per-entry ceiling on the TIS
+    used by the tracer split (a measured scatter fraction the ABg fit may
+    over-integrate); it must itself be in (0, 1]."""
+    from .scatter import abg_tis
+    csv_path = Path(csv_path) if csv_path is not None \
+        else DEFAULT_OPTPROPS_DIR / "scatter" / "bsdf.miebsdf"
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "model", "A", "B", "g", "reference"},
+            "scatter"):
+        model = (row.get("model") or "").strip()
+        if model not in SCATTER_MODELS:
+            raise MaterialError("%s: model %r must be one of %s"
+                                % (ctx, model, ", ".join(SCATTER_MODELS)))
+        try:
+            A = float((row.get("A") or "").strip())
+            B = float((row.get("B") or "").strip())
+            g = float((row.get("g") or "").strip())
+        except ValueError:
+            raise MaterialError("%s: A, B, g must be numeric" % ctx)
+        if not A > 0.0:
+            raise MaterialError("%s: A must be > 0" % ctx)
+        if not B > 0.0:
+            raise MaterialError("%s: B must be > 0" % ctx)
+        if not g > 0.0:
+            raise MaterialError("%s: g must be > 0" % ctx)
+        cap_raw = (row.get("tis_cap") or "").strip()
+        tis_cap = float(cap_raw) if cap_raw else None
+        if tis_cap is not None and not 0.0 < tis_cap <= 1.0:
+            raise MaterialError("%s: tis_cap must be in (0, 1]" % ctx)
+        tis0 = abg_tis(A, B, g, 1.0)      # normal incidence = widest umax
+        if tis0 > 1.0 + 1e-9:
+            raise MaterialError(
+                "%s: total integrated scatter %.4g exceeds 1 (energy) — the "
+                "ABg fit scatters more than the incident power" % (ctx, tis0))
+        out[name] = {"model": model, "A": A, "B": B, "g": g,
+                     "tis_cap": tis_cap,
+                     "reference": (row.get("reference") or "").strip(),
+                     "notes": (row.get("notes") or "").strip()}
+    return out
+
+
 class OpticalProperties:
     """Everything loaded from an opticalproperties/ root. Attributes:
     matdb (MaterialDB, with uniaxial attached), coatings, polarizers,
     filters, gratings, uniaxial — shapes per the load_* docstrings."""
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
-                 "gratings", "uniaxial", "biaxial", "diffusers", "detectors")
+                 "gratings", "uniaxial", "biaxial", "diffusers", "detectors",
+                 "scatter")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
-                 uniaxial, diffusers=None, detectors=None, biaxial=None):
+                 uniaxial, diffusers=None, detectors=None, biaxial=None,
+                 scatter=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -506,6 +565,7 @@ class OpticalProperties:
         self.biaxial = biaxial if biaxial is not None else {}
         self.diffusers = diffusers if diffusers is not None else {}
         self.detectors = detectors if detectors is not None else {}
+        self.scatter = scatter if scatter is not None else {}
 
 
 def load_optical_properties(root=None, db=None):
@@ -545,7 +605,8 @@ def load_optical_properties(root=None, db=None):
         diffusers=optional(load_diffusers,
                            root / "diffuser" / "diffusers.miedif"),
         detectors=optional(load_detectors,
-                           root / "detector" / "detectors.miedet"))
+                           root / "detector" / "detectors.miedet"),
+        scatter=optional(load_scatter, root / "scatter" / "bsdf.miebsdf"))
 
 
 # ---------------------------------------------------------------------------
@@ -564,3 +625,4 @@ if __name__ == "__main__":
     print("  biaxial   : %d" % len(props.biaxial))
     print("  diffusers : %d" % len(props.diffusers))
     print("  detectors : %d" % len(props.detectors))
+    print("  scatter   : %d" % len(props.scatter))
