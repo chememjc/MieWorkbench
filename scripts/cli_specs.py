@@ -67,6 +67,15 @@ def _build_pipeline_parser():
     g.add_argument("--min", action="append", default=[], type=float)
     g.add_argument("--max", action="append", default=[], type=float)
     g.add_argument("--n", action="append", default=[], type=int)
+    g.add_argument("--sweep-mode", default="product",
+                   choices=["product", "zip"],
+                   help="how multiple --var combinations combine: "
+                        "'product' = cartesian, one variant per "
+                        "combination of every variable's values (default, "
+                        "historical behavior); 'zip' = variables advance "
+                        "together, one variant per index (value lists "
+                        "must have equal length, or length 1 to "
+                        "broadcast) — see common.sweep_combos")
 
     g = p.add_argument_group("physics options (stage: trace)")
     g.add_argument("--dry-run", action="store_true",

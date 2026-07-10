@@ -11,6 +11,7 @@
 #
 # Self-check:  python3 scripts/common.py
 # =============================================================================
+import itertools
 import json
 import math
 import os
@@ -438,6 +439,39 @@ def variant_name(stem, var, value):
     variant stem stays a clean filename."""
     sval = ("%g" % value).replace(".", "p").replace("-", "m")
     return "%s-%s%s" % (stem, str(var).replace(".", "_"), sval)
+
+def sweep_combos(value_lists, mode="product"):
+    """Combinations for a multi-variable sweep — the ONE place combination
+    order is defined (permute_model.py and run_pipeline.py's
+    variant_output_names() both call this so they can never drift apart).
+
+    value_lists: one list of swept values per variable (each from
+    sweep_values()), in --var order.
+
+    mode "product": cartesian (itertools.product order — the historical
+    behavior, one variant per combination of every variable's values).
+    mode "zip": variables advance together, one variant per index; every
+    list must have equal length, except length-1 lists which broadcast
+    (so a single-value var can ride along a longer sweep unchanged).
+
+    Returns a list of tuples. Raises ValueError on an unknown mode or a
+    zip length mismatch (names the offending lengths)."""
+    if mode == "product":
+        return list(itertools.product(*value_lists))
+    if mode != "zip":
+        raise ValueError(
+            "unknown sweep mode %r (must be 'product' or 'zip')" % mode)
+    if not value_lists:
+        return [()]
+    lengths = [len(vl) for vl in value_lists]
+    non_broadcast = [n for n in lengths if n != 1]
+    target = non_broadcast[0] if non_broadcast else 1
+    if any(n != target for n in non_broadcast):
+        raise ValueError(
+            "sweep-mode zip requires every value list to have equal "
+            "length (or length 1 to broadcast); got lengths %s" % lengths)
+    return [tuple(vl[i] if len(vl) > 1 else vl[0] for vl in value_lists)
+            for i in range(target)]
 
 def case_name(preset, tag=None, seed=None):
     parts = [preset]

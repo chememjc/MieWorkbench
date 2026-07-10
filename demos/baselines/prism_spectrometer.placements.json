@@ -1,0 +1,101 @@
+{
+ "bodies": {
+  "Camera": {
+   "group": "Camera",
+   "label": "Camera",
+   "placement": {
+    "pos_mm": [
+     30.736779879678128,
+     -32.066571470778435,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     -0.453805047206505,
+     0.8911009926657594
+    ]
+   },
+   "primitive": "lens_pcx"
+  },
+  "Prism": {
+   "group": "Prism",
+   "label": "Prism",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "prism"
+  },
+  "Screen": {
+   "group": "Screen",
+   "label": "Screen",
+   "placement": {
+    "pos_mm": [
+     90.13709766391825,
+     -113.75256933535303,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     -0.453805047206505,
+     0.8911009926657594
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Source": {
+   "group": "Source",
+   "label": "Source",
+   "placement": {
+    "pos_mm": [
+     -60.0,
+     6.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "source_broadband"
+  }
+ },
+ "demo": "prism_spectrometer",
+ "sheets": {
+  "dim": {},
+  "dim_Camera": {
+   "R_front": "=51.85223876 mm",
+   "aperture": "=22 mm",
+   "ct": "=4 mm"
+  },
+  "dim_Prism": {
+   "height": "=25 mm",
+   "rotation": "=-26.98807519 deg",
+   "side": "=25 mm"
+  },
+  "dim_Screen": {
+   "height": "=0 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=25 mm"
+  },
+  "dim_Source": {
+   "diameter": "=8 mm",
+   "length": "=10 mm",
+   "round_flag": "1"
+  }
+ }
+}

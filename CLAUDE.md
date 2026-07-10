@@ -23,9 +23,11 @@ Layout: `scripts/` engine + pipeline + tools · `scripts/fcserver/` headless
 FreeCAD worker · `mieworkbench/` the GUI package (`core/` logic, `panes/`
 dock widgets, `widgets/` VTK, `tests/`) · `opticalproperties/` property
 library · `primitives/` parametric element library · `basemodels/` test
-scenes · `demos/` ten classic-system `.MieWB` galleries (built by
-`scripts/make_demos.py` through the fcclient op path; `demos/README.md`
-has prescriptions+citations, `demos/UXNOTES.md` the shakedown log) · `demos/library_tests/`
+scenes · `demos/` eleven classic-system `.MieWB` galleries (built by
+`scripts/make_demos.py` through the Project/chain op path; `demos/README.md`
+has prescriptions+citations, `demos/UXNOTES.md` + `demos/UXNOTES_ROUND2.md`
+the shakedown logs; `demos/baselines/` committed placement+power oracles
+for `scripts/run_demo_equivalence.py`) · `demos/library_tests/`
 nine library-validation template scenes + automated sweep runner
 (`scripts/make_library_tests.py`, `scripts/run_library_tests.py`) ·
 `library_data/` sourced data for staged library entries · `env/` GUI venv
@@ -35,11 +37,11 @@ nine library-validation template scenes + automated sweep runner
 
 | Stack | Interpreter | Runs |
 |---|---|---|
-| FreeCAD embedded | `/home3/freecad/FreeCAD.AppImage -c <script> -- <args> < /dev/null` | `extract_geometry.py`, `permute_model.py`, `make_test_scenes.py`, `make_primitives.py`, `fcserver/` |
-| optics env (numpy/scipy/torch-CUDA/miepython/h5py) | `/home3/optics/env/bin/python` | `run_trace.py`, `post_process.py`, `compare_runs.py`, all `scripts/raytracer/`, engine pytest |
+| FreeCAD embedded | `/home3/freecad/FreeCAD.AppImage -c <script> -- <args> < /dev/null` | `extract_geometry.py`, `permute_model.py` (+ `train_fcstd.py` it imports), `make_test_scenes.py`, `make_primitives.py`, `fcserver/` |
+| optics env (numpy/scipy/torch-CUDA/miepython/h5py) | `/home3/optics/env/bin/python` | `run_trace.py`, `post_process.py`, `compare_runs.py`, `compare_sweep.py`, all `scripts/raytracer/`, engine pytest |
 | ParaView 6.1.1 | `/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython --force-offscreen-rendering` | `make_viz.py` |
-| system `python3` | stdlib only | `run_pipeline.py`, `sweep_variants.py`, `miewb_tool.py`, `common.py`, `cli_specs.py` |
-| GUI venv | `env/bin/python` (PySide6 6.11 + vtk 9.6 + numpy/scipy/h5py) | `python -m mieworkbench`, GUI pytest |
+| system `python3` | stdlib only | `run_pipeline.py`, `sweep_variants.py`, `miewb_tool.py`, `common.py`, `cli_specs.py`, `train_solver.py` (pure stdlib BY CONTRACT — shared with FreeCAD's numpy-less python) |
+| GUI venv | `env/bin/python` (PySide6 6.11 + vtk 9.6 + numpy/scipy/h5py) | `python -m mieworkbench`, GUI pytest, `make_demos.py` + `run_demo_equivalence.py` (they drive a full Project session; NO LONGER system python3) |
 
 All tool paths/dirs are env-overridable: `MIEWB_FREECAD`,
 `MIEWB_OPTICS_PYTHON`, `MIEWB_PVPYTHON`, `MIEWB_GEOMETRY_DIR`,
@@ -185,6 +187,67 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
 
 **Aperture scenes:** fill slit/hole openings with thin `material=air` bodies.
 
+## Optical train / chain model (object-placer round)
+
+Elements are **anchored** (absolute pose, the classic default) or
+**chained** ("d mm down-beam of element X's port"). ONE solver —
+`scripts/train_solver.py`, pure stdlib BY CONTRACT — is used by the GUI
+(`mieworkbench/core/train.py` TrainModel + Project chain API) AND by
+`permute_model.py` per variant (via `train_fcstd.py`), pinned to 1e-9 by
+the parity oracle `mieworkbench/tests/test_train_parity.py`. Chained
+placements are BAKED (files stay plain-FreeCAD editable); the recipe
+lives in dynamic props (FreeCAD group `MieTrain`, names `miewb_train_*`
+on the element's PRIMARY body): mode/ref/port/distance/decenter_x,y/
+tilt_rx,ry,rz (expressions over the globals allowed)/rot_order/
+pos_rot_order/pivot/flip/fold/folded/fold_deviation/fold_azimuth.
+Distances are VERTEX-TO-VERTEX along the beam (exit vertex → entry
+vertex); per-kind local port geometry = `primitivelib.port_frames`
+(exact, param-derived, never FaceN). Ports: `out`/`transmit`
+(pass-through: NEVER redirects the train, even for tilted/decentered
+elements), `reflect` (the element's actual placed mirror plane),
+`deviate` (explicit `fold_deviation`/`fold_azimuth` — gratings/prisms;
+non-specular, wins as the default port when set). Default-port
+heuristic: pure mirrors (entry==exit + reflect plane) default to
+`reflect`. `flip` = beam-side surface is the local exit (the "turn the
+lens around" affordance). Folds: `fold=True` elements toggle
+folded/unfolded (Project.set_fold_state / set_folds_all /
+insert_fold_mirror / fold_about_surface): unfolding re-collinearizes
+the downstream chain (pass-through frame at the SAME port origin, so
+distances keep meaning), stashes poses, and sets `miewb_exclude` on the
+mirror's bodies (extract_geometry classifies them `ignored`); refold is
+a bit-exact re-solve. Downstream ALWAYS follows rigidly (one undo macro;
+`Project.move_element`/`sync_chain_from_pose` re-derive edge fields from
+a spatial drag).
+
+**Global variables**: a `miewb_vars` Spreadsheet (UNITLESS value cells
+aliased `<name>`; sweep meta `<name>__min/__max/__n/__on`). Expressions
+(`+ - * /`, cycle-checked with the full path named) usable in chain
+fields, dim cells (FreeCAD expr `=<<miewb_vars>>.name * 1mm` — the
+`* 1mm` is REQUIRED), and float body props via `miewb_expr_<prop>`
+(baked by GUI and permute). Editing a variable rebuilds every primitive
+whose dim sheet references `miewb_vars` (GUI:
+`Project.apply_variable_cells`; headless:
+`permute_model.extend_touched_for_miewb_vars`). Sweeps: `--sweep-mode
+product|zip` (`common.sweep_combos` is the ONE combination-order
+authority); the GUI writes `results/<stem>/sweep-<case>.manifest.json`
+(RunController.write_sweep_manifest) consumed by
+`scripts/compare_sweep.py` + the Compare pane.
+
+**GUI surfaces**: Train editor dock (LDE-style indented tree; port
+combo, fold/flip toggles, expression cells showing `expr (= value)`),
+Variables dock (table + product/zip + pre-sweep summary dialog — ALWAYS
+shown), Compare dock (metric-vs-variable plots, gallery, signed diffs,
+scrub; also arbitrary-case comparisons), viewport ghosting
+(`set_excluded_bodies`) + dotted chain/fold linkage lines
+(`set_chain_links`), outliner badges (`set_train_info`), File→Export
+FCStd (current fold state, `save_copy`).
+
+**Demo equivalence**: `demos/baselines/*.json` are the pre-rebuild
+oracles; `env/bin/python scripts/run_demo_equivalence.py` rebuilds every
+demo and gates placements (≤1 µm; axis direction ≤0.01°, spin about a
+symmetric element's own axis allowed+reported) and 3-seed power
+(±max(3σ, 1%)) + michelson fringe visibility.
+
 ## Optical component library
 
 `opticalproperties/` uses self-describing extensions (content is still CSV):
@@ -276,6 +339,25 @@ promote entries to the repo (system) library.
   `np.trapezoid`.
 - Disk: `/` is chronically ~97% full; envs/tools/workspaces live on
   `/home3` (`env/`, `var/`); `--save-fields` off by default.
+- **`set_placement` must be addressed by the element GROUP** for
+  multi-body elements: `Project._flush_placement` resolves the body's
+  `miewb_group` and sends THAT (op_set_placement group-matches first).
+  Passing a member's internal name falls to the single-body path and
+  TEARS the element apart (found by the achromat: no member carries the
+  element label, the flint stayed behind while the crown moved 10 mm).
+- **FreeCAD cross-sheet expressions need a unit multiplication**:
+  `=<<miewb_vars>>.gap * 1mm` — bare `=<<sheet>>.alias mm` fails to
+  parse and silently becomes a literal STRING cell (leading `'`).
+- **Primitives' local origin is the FRONT vertex** (x=0) and SOURCES
+  EMIT FROM local x=0 (the body extends toward -x) — chain distances
+  from a source measure from its position, not position+length.
+- **Never show an unguarded modal in a pane code path** — a
+  `QMessageBox` in an offscreen test run blocks forever and looks like
+  a hang (found via faulthandler in the snap-error path; guard on
+  `isVisible()`, write to the status label otherwise).
+- **train_solver.py must stay pure stdlib** (FreeCAD's python has no
+  numpy) and `reflect_matrix` (det=-1) must NEVER touch a Placement —
+  fold placements use the proper `fold_rotation` about the fold line.
 
 ## Physics invariants pinned by tests (don't break them)
 

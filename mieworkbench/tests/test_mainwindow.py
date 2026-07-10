@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.normpath(
 
 from PySide6.QtWidgets import QDockWidget, QWidget  # noqa: E402
 
+from mieworkbench.core.settings import Settings  # noqa: E402
 from mieworkbench.mainwindow import MainWindow  # noqa: E402
 
 HOST_NAMES = (
@@ -28,7 +29,7 @@ def test_docks_and_hosts_exist(qtbot):
     # outliner, inspector, element editor, transform, library, console,
     # results, problems
     docks = window.findChildren(QDockWidget)
-    assert len(docks) == 8
+    assert len(docks) == 11   # +3: train editor, variables, compare
 
 
 def test_menu_actions_exist(qtbot):
@@ -276,11 +277,34 @@ def _restore_key(window, key, saved):
         window.settings._qs.setValue(key, saved)
 
 
+# MainWindow.__init__ -> _init_animation reads these four persisted keys
+# to seed the animation toolbar (speed/bead size/fps/enabled). A real
+# session's saved values would otherwise leak into the factory-default
+# assertions below, so they must be snapshotted and CLEARED before the
+# window is even constructed, then restored once the window (and its own
+# `settings` wrapper over the same QSettings store) exists.
+_ANIM_SETTINGS_KEYS = ("anim_speed_mm_s", "anim_bead_size", "anim_fps",
+                      "anim_enabled")
+
+
+def _clear_anim_settings():
+    """Snapshot + remove the four anim_* keys via a throwaway Settings()
+    (same QSettings("CurtisAnalytical", "MieWorkbench") store the app
+    uses) so a fresh MainWindow() sees factory defaults. Returns the
+    snapshot for restoration after the window is built."""
+    scratch = Settings()
+    saved = {k: scratch._qs.value(k, None) for k in _ANIM_SETTINGS_KEYS}
+    for k in _ANIM_SETTINGS_KEYS:
+        scratch._qs.remove(k)
+    scratch._qs.sync()
+    return saved
+
+
 def test_animation_toolbar_exists_and_gates_on_overlay(qtbot, tmp_path):
     from mieworkbench.tests.vtk_test_support import write_simple_vtp
+    saved = _clear_anim_settings()
     window = MainWindow()
     qtbot.addWidget(window)
-    saved = window.settings._qs.value("anim_enabled", None)
     try:
         toolbars = [tb.objectName() for tb in window.findChildren(
             type(window.addToolBar("x")))]
@@ -324,15 +348,16 @@ def test_animation_toolbar_exists_and_gates_on_overlay(qtbot, tmp_path):
         window.scene3d.set_rays_stale(True)
         assert not window.anim_controller.has_segments()
     finally:
-        _restore_key(window, "anim_enabled", saved)
+        for k in _ANIM_SETTINGS_KEYS:
+            _restore_key(window, k, saved[k])
         window.settings._qs.sync()
 
 
 def test_animation_step_updates_readout_and_beads(qtbot, tmp_path):
     from mieworkbench.tests.vtk_test_support import write_simple_vtp
+    saved = _clear_anim_settings()
     window = MainWindow()
     qtbot.addWidget(window)
-    saved = window.settings._qs.value("anim_enabled", None)
     try:
         timed = tmp_path / "rays.vtp"
         write_simple_vtp(timed, with_rgb=True, rel_power=[1.0],
@@ -352,7 +377,8 @@ def test_animation_step_updates_readout_and_beads(qtbot, tmp_path):
         window.anim_enable_action.setChecked(False)
         assert not window.scene3d.view.beads.actor.GetVisibility()
     finally:
-        _restore_key(window, "anim_enabled", saved)
+        for k in _ANIM_SETTINGS_KEYS:
+            _restore_key(window, k, saved[k])
         window.settings._qs.sync()
 
 

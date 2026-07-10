@@ -24,6 +24,10 @@ from PySide6.QtCore import QObject, Signal
 
 from .fcclient import FcClient
 from .geomcache import GeomCache
+from .train import (
+    TRAIN_GROUP, EDGE_FIELDS, FIELD_PROPS, TrainModel, edge_props,
+    variables_from_sheets,
+)
 from .transforms import (
     BodyState, Operation, Placement, ReferenceResolver, snap_to_axis_ops,
 )
@@ -36,6 +40,23 @@ class ProjectError(RuntimeError):
 
 _PTYPE_FROM_FC = {"App::PropertyFloat": "float", "App::PropertyBool": "bool",
                   "App::PropertyString": "string"}
+
+
+def _num_or_expr(value):
+    """Chain-field value -> stored string (floats canonicalized,
+    expressions verbatim)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return "%.17g" % float(value)
+    return str(value)
+
+
+def _subtract_expr(a, b):
+    """a - b for chain-distance fields; stays symbolic when either side
+    is a variable expression."""
+    try:
+        return "%.17g" % (float(a) - float(b))
+    except (TypeError, ValueError):
+        return "(%s) - (%s)" % (_num_or_expr(a), _num_or_expr(b))
 
 
 class Project(QObject):
@@ -228,11 +249,13 @@ class Project(QObject):
     # it through the undo stack. Undo/redo invoke _do_* directly, so they
     # never re-record. Panes keep calling the public methods unchanged.
 
-    def _do_set_property(self, body, name, value, ptype=None):
+    def _do_set_property(self, body, name, value, ptype=None, group=None):
         params = {"doc": self.doc, "body": body, "name": name,
                   "value": value}
         if ptype:
             params["ptype"] = ptype
+        if group:
+            params["group"] = group
         result = self._route_mutation(
             self.fc.request("set_property", params), body)
         if not str(name).startswith("miewb_"):
@@ -265,15 +288,18 @@ class Project(QObject):
         except ProjectError:
             return str(body)
 
-    def set_property(self, body, name, value, ptype=None):
+    def set_property(self, body, name, value, ptype=None, group=None):
         old = self._prop_preimage(body, name)
         if old is None:
             undo = lambda: self._do_remove_property(body, name)
         else:
-            undo = lambda: self._do_set_property(body, name, old[0], old[1])
+            undo = lambda: self._do_set_property(body, name, old[0], old[1],
+                                                 group=group)
         self.undo_stack.push_and_do(Command(
             "Set %s on %s" % (name, self._body_label(body)),
-            lambda: self._do_set_property(body, name, value, ptype), undo))
+            lambda: self._do_set_property(body, name, value, ptype,
+                                          group=group),
+            undo))
 
     def remove_property(self, body, name):
         old = self._prop_preimage(body, name)
@@ -500,20 +526,438 @@ class Project(QObject):
                 "vector_mm": [float(offset_mm) * float(a) for a in axis]}))
         if not ops:
             return []
+        element = self.element_group(body_name)
+        tm = self.train()
         self.begin_macro("Snap %s to axis" % self._body_label(body_name))
         try:
             for op in ops:
                 self.apply_operation(body_name, op)
+            # keep the optical train consistent, exactly like move_element
+            if element in tm.records():
+                if tm.is_chained(element):
+                    edge = {k: float(v) for k, v in self.train().derive_edge(
+                        element, self.train_variables()).items()
+                            if k in EDGE_FIELDS}
+                    body = tm.primary_body_name(element)
+                    for name, value in sorted(edge_props(edge).items()):
+                        self.set_property(body, name, value, ptype="string",
+                                          group=TRAIN_GROUP)
+                if tm.is_chained(element) or tm.downstream_of(element):
+                    self._push_ripple_moves()
         except Exception:
             self.abort_macro()
             raise
         self.end_macro()
         return ops
 
+    # -- optical train -----------------------------------------------------------
+    def train(self):
+        """A fresh TrainModel snapshot over the current structure (cheap;
+        build one per interaction, never cache across mutations)."""
+        return TrainModel(self.structure, self.body_states)
+
+    def train_variables(self):
+        """{name: float} from the miewb_vars sheet (FreeCAD-evaluated)."""
+        return variables_from_sheets(self.sheets())
+
+    def _push_ripple_moves(self, text_prefix="Ripple"):
+        """Re-solve the train and flush every chained element whose pose
+        changed, pushing one done-command per move. MUST be called inside
+        an open macro (the composite operators own the macro; nothing
+        here opens one). Returns the number of elements moved."""
+        tm = self.train()
+        moves = tm.solve_moves(self.train_variables())
+        for element, placement in moves.items():
+            body = tm.primary_body_name(element)
+            state = self.body_states.get(body)
+            pre = state.current.to_dict() if state else dict(placement)
+            self._do_apply_placement(body, placement)
+            self.undo_stack.push_done(Command(
+                "%s %s" % (text_prefix, element),
+                lambda b=body, p=placement: self._do_apply_placement(b, p),
+                lambda b=body, p=pre: self._do_apply_placement(b, p)))
+        return len(moves)
+
+    def _write_chain_props(self, element, edge):
+        """Write chain-edge fields as MieTrain properties on the
+        element's primary body — undoable children only; the CALLER owns
+        the macro. `edge` is written verbatim (no mode defaulting)."""
+        body = self.train().primary_body_name(element)
+        for name, value in sorted(edge_props(edge).items()):
+            ptype = "bool" if isinstance(value, bool) else "string"
+            self.set_property(body, name, value, ptype=ptype,
+                              group=TRAIN_GROUP)
+
+    def set_chain(self, element, edge, text=None):
+        """Chain an element / edit its chain edge, then ripple everything
+        downstream — one undo step. `edge` maps solver record fields
+        (mode, ref, port, distance, decenter_x/y, tilt_rx/ry/rz,
+        rot_order, pos_rot_order, pivot, fold, folded, fold_deviation,
+        fold_azimuth) to values; numeric fields accept variable
+        expressions ("2*gap+5"); mode defaults to "chained"."""
+        element = str(element)
+        tm = self.train()
+        body = tm.primary_body_name(element)
+        if self.body(body).get("placement_bound"):
+            raise ProjectError(
+                "%s's position is driven by a spreadsheet expression; "
+                "unbind it before chaining" % element)
+        edge = dict(edge)
+        edge.setdefault("mode", "chained")
+        self.begin_macro(text or "Chain %s" % element)
+        try:
+            self._write_chain_props(element, edge)
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+
+    def set_anchored(self, element):
+        """Freeze an element at its current pose (chain edge fields stay
+        behind, inert, for painless re-chaining). Undoable."""
+        element = str(element)
+        body = self.train().primary_body_name(element)
+        self.set_property(body, FIELD_PROPS["mode"], "anchored",
+                          ptype="string", group=TRAIN_GROUP)
+
+    def sync_chain_from_pose(self, element, text=None):
+        """After a spatial move of a CHAINED element: re-derive its
+        distance/decenter/tilt from the new pose (expressions are
+        replaced by literals) and ripple downstream. One undo step."""
+        element = str(element)
+        edge = self.train().derive_edge(element, self.train_variables())
+        edge = {k: float(v) for k, v in edge.items() if k in EDGE_FIELDS}
+        self.set_chain(element, edge,
+                       text=text or "Reposition %s" % element)
+
+    # -- global variables (miewb_vars sheet) ---------------------------------------
+    def variables_sheet(self):
+        """The miewb_vars sheet echo dict, or None."""
+        for sheet in self.sheets():
+            if sheet.get("label") == "miewb_vars" \
+                    or sheet.get("name") == "miewb_vars":
+                return sheet
+        return None
+
+    def ensure_variables_sheet(self):
+        """Create the miewb_vars sheet if absent (idempotent worker op;
+        an empty sheet is not undoable state worth tracking)."""
+        if self.variables_sheet() is None:
+            self.fc.request("create_sheet",
+                            {"doc": self.doc, "label": "miewb_vars"})
+            self._refetch_structure()
+            self.propertiesChanged.emit("")
+        return self.variables_sheet()
+
+    def _do_set_cell(self, cell, raw, alias=None):
+        params = {"doc": self.doc, "sheet": "miewb_vars",
+                  "cell": cell, "raw": raw}
+        if alias:
+            params["alias"] = alias
+        return self._route_mutation(self.fc.request("set_cell", params))
+
+    def _cell_preimage(self, cell):
+        """(raw, alias) currently in a miewb_vars cell ("" when empty —
+        the echo only lists aliased cells, so un-aliased comment cells
+        restore to empty on undo)."""
+        sheet = self.variables_sheet() or {}
+        for alias, entry in (sheet.get("aliases") or {}).items():
+            if entry.get("cell") == cell:
+                return (entry.get("raw") or "", alias)
+        return ("", None)
+
+    def _vars_referencing_groups(self):
+        """Primitive groups whose dim_* sheet has any raw cell content
+        mentioning miewb_vars — these must REBUILD when a variable
+        changes (the GUI-side twin of permute_model's
+        extend_touched_for_miewb_vars)."""
+        groups = []
+        for sheet in self.sheets():
+            label = sheet.get("label") or ""
+            if not label.startswith("dim_"):
+                continue
+            for entry in (sheet.get("aliases") or {}).values():
+                if "miewb_vars" in str(entry.get("raw") or ""):
+                    groups.append(label[len("dim_"):])
+                    break
+        return groups
+
+    def apply_variable_cells(self, cells, text="Edit variables"):
+        """Write miewb_vars cells (a core.variables.cell_plan list of
+        {cell, raw, alias?}), rebuild any variable-referencing primitive
+        groups, and ripple the train — ONE undo step."""
+        self.ensure_variables_sheet()
+        pre = {c["cell"]: self._cell_preimage(c["cell"]) for c in cells}
+        self.begin_macro(text)
+        try:
+            for c in cells:
+                old_raw, old_alias = pre[c["cell"]]
+                cell, raw = c["cell"], c["raw"]
+                alias = c.get("alias")
+                self.undo_stack.push_and_do(Command(
+                    "%s %s" % (text, cell),
+                    lambda cl=cell, r=raw, a=alias:
+                        self._do_set_cell(cl, r, a),
+                    lambda cl=cell, r=old_raw, a=old_alias:
+                        self._do_set_cell(cl, r, a)))
+            for group in self._vars_referencing_groups():
+                # rebuild is derived (not authored) state: replay on both
+                # undo and redo so geometry re-derives either way
+                self.undo_stack.push_and_do(Command(
+                    "Rebuild %s" % group,
+                    lambda g=group: self._do_rebuild_primitive(g),
+                    lambda g=group: self._do_rebuild_primitive(g)))
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        self.opticsChanged.emit()
+
+    # -- folds -------------------------------------------------------------------
+    def _fold_record(self, element):
+        rec = self.train().records().get(str(element))
+        if rec is None:
+            raise ProjectError("unknown element %r" % element)
+        if not rec.get("fold"):
+            raise ProjectError("%s is not a fold element" % element)
+        return rec
+
+    def _set_fold_state_children(self, element, folded):
+        """Macro children for one fold toggle (no macro management, no
+        ripple — the caller batches those)."""
+        import json as _json
+        element = str(element)
+        tm = self.train()
+        primary = tm.primary_body_name(element)
+        if not folded:
+            # stash current poses of the fold + its downstream as the
+            # exact-refold safety net (deterministic re-solve is primary)
+            stash = {}
+            for el in [element] + tm.downstream_of(element):
+                state = self.body_states.get(tm.primary_body_name(el))
+                if state is not None:
+                    stash[el] = state.current.to_dict()
+            self.set_property(primary, "miewb_train_unfold_stash",
+                              _json.dumps(stash), ptype="string",
+                              group=TRAIN_GROUP)
+        self._write_chain_props(element, {"folded": bool(folded)})
+        # sim exclusion rides on EVERY body of the fold mirror; the
+        # extractor skips excluded bodies entirely
+        for body in self.element_bodies(element):
+            self.set_property(body, "miewb_exclude", not folded,
+                              ptype="bool", group=TRAIN_GROUP)
+
+    def set_fold_state(self, element, folded):
+        """Unfold (straighten the downstream train, ghost + sim-exclude
+        the mirror) or refold. Pure re-solve either way; refolding
+        reproduces the folded placements exactly. One undo step."""
+        element = str(element)
+        rec = self._fold_record(element)
+        if bool(rec.get("folded", True)) == bool(folded):
+            return
+        self.begin_macro(("Refold %s" if folded else "Unfold %s")
+                         % element)
+        try:
+            self._set_fold_state_children(element, folded)
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        # exclusion changes the traced physics even though the props are
+        # miewb_* (normally preview-silent) — refresh the ray preview
+        self.opticsChanged.emit()
+
+    def set_folds_all(self, folded):
+        """Toggle every fold element at once (one undo step)."""
+        tm = self.train()
+        targets = [el for el in tm.folds()
+                   if bool(tm.records()[el].get("folded", True))
+                   != bool(folded)]
+        if not targets:
+            return []
+        self.begin_macro("%s all folds"
+                         % ("Refold" if folded else "Unfold"))
+        try:
+            for element in targets:
+                self._set_fold_state_children(element, folded)
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        self.opticsChanged.emit()
+        return targets
+
+    def insert_fold_mirror(self, after_element, distance, label=None,
+                           kind="mirror_flat", deviation_deg=90.0,
+                           azimuth_deg=0.0, port=None, params=None):
+        """Insert a fold mirror `distance` mm down-beam of
+        `after_element`'s exit port and re-anchor that port's existing
+        chained children onto the reflected beam (their along-beam
+        distances re-measure from the mirror plane, so path lengths are
+        preserved). deviation_deg is the beam deviation (90 = right
+        angle); azimuth_deg spins the fold plane about the incoming beam
+        (0 folds toward +u, 90 toward +v/up). One undo step; returns the
+        new element's label."""
+        import os.path as _osp
+        after_element = str(after_element)
+        tm = self.train()
+        parent_rec = tm.records().get(after_element)
+        if parent_rec is None:
+            raise ProjectError("unknown element %r" % after_element)
+        import train_solver
+        port = port or train_solver._default_port(parent_rec)
+        if label is None:
+            base, n = "Fold", 1
+            existing = set(tm.element_labels())
+            while "%s%d" % (base, n) in existing:
+                n += 1
+            label = "%s%d" % (base, n)
+        # children currently hanging off that port re-anchor to the mirror
+        children = []
+        for el, rec in tm.records().items():
+            if rec.get("mode") == "chained" and rec.get("ref") \
+                    == after_element:
+                child_port = rec.get("port") or train_solver._default_port(
+                    parent_rec)
+                if child_port == port:
+                    children.append((el, rec))
+        tilt = -(180.0 - float(deviation_deg)) / 2.0
+        prim_path = _osp.join(_osp.dirname(_osp.dirname(
+            _osp.dirname(_osp.abspath(__file__)))), "primitives",
+            "%s.FCStd" % kind)
+        self.begin_macro("Insert fold %s after %s" % (label, after_element))
+        try:
+            self.import_primitive(prim_path, label)
+            if params:
+                sheet = "dim_%s" % label
+                self.set_element_parameters(
+                    sheet, {k: "=%.10g mm" % float(v)
+                            for k, v in params.items()},
+                    rebuild_group=label)
+            self._write_chain_props(label, {
+                "mode": "chained", "ref": after_element, "port": port,
+                "distance": _num_or_expr(distance),
+                "fold": True, "folded": True,
+                "rot_order": "zyx",
+                "tilt_rz": "%.10g" % float(azimuth_deg),
+                "tilt_ry": "%.10g" % tilt,
+            })
+            for el, rec in children:
+                new_dist = _subtract_expr(rec.get("distance", "0"),
+                                          distance)
+                self._write_chain_props(el, {
+                    "ref": label, "port": "reflect",
+                    "distance": new_dist})
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        return label
+
+    def fold_about_surface(self, mirror_element, extra_elements=None):
+        """Turn an EXISTING chained mirror into a fold: mark it, switch
+        its chained children onto the reflect port, and (optionally)
+        rigidly rotate explicitly-listed anchored elements about the
+        mirror plane by the fold rotation. One undo step."""
+        import train_solver
+        mirror_element = str(mirror_element)
+        tm = self.train()
+        rec = tm.records().get(mirror_element)
+        if rec is None:
+            raise ProjectError("unknown element %r" % mirror_element)
+        if rec.get("mode") != "chained":
+            raise ProjectError(
+                "%s must be chained before it can fold the train (its "
+                "plane needs an incoming beam)" % mirror_element)
+        loc = rec.get("local") or {}
+        if not loc.get("reflect_plane"):
+            raise ProjectError("%s has no reflective surface"
+                               % mirror_element)
+        solved = tm.solve(self.train_variables())
+        frames = solved["frames"]
+        parent_frame = tm.parent_frame(mirror_element,
+                                       self.train_variables())
+        primary = tm.primary_body_name(mirror_element)
+        placement = self.body_states[primary].current.to_dict()
+        rp = loc["reflect_plane"]
+        pt_w = train_solver.transform_point(placement, rp["point"])
+        n_w = train_solver.transform_vector(placement, rp["normal"])
+        M, _ = train_solver.fold_rotation(parent_frame["dir"], pt_w, n_w)
+        children = [el for el, r in tm.records().items()
+                    if r.get("mode") == "chained"
+                    and r.get("ref") == mirror_element]
+        self.begin_macro("Fold train about %s" % mirror_element)
+        try:
+            self._write_chain_props(mirror_element,
+                                    {"fold": True, "folded": True})
+            for el in children:
+                self._write_chain_props(el, {"port": "reflect"})
+            for el in (extra_elements or []):
+                body = tm.primary_body_name(str(el))
+                cur = self.body_states[body].current.to_dict()
+                new_pl = train_solver.apply_to_placement(M, cur)
+                self.apply_operation(body, Operation("set_placement", {
+                    "pos_mm": new_pl["pos_mm"], "quat": new_pl["quat"]}))
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        self.opticsChanged.emit()
+
+    def move_element(self, body_name, operation):
+        """Pane-facing move that keeps the optical train consistent: a
+        chained element's edge fields re-derive from the new pose, and
+        everything chained downstream follows rigidly. One undo step.
+        (apply_operation stays the raw primitive — no ripple.)"""
+        element = self.element_group(body_name)
+        tm = self.train()
+        in_train = element in tm.records() and (
+            tm.is_chained(element) or tm.downstream_of(element))
+        if not in_train:
+            return self.apply_operation(body_name, operation)
+        self.begin_macro("Move %s" % self._body_label(body_name))
+        try:
+            placement = self.apply_operation(body_name, operation)
+            if tm.is_chained(element):
+                edge = {k: float(v) for k, v in self.train().derive_edge(
+                    element, self.train_variables()).items()
+                        if k in EDGE_FIELDS}
+                body = tm.primary_body_name(element)
+                for name, value in sorted(edge_props(edge).items()):
+                    self.set_property(body, name, value, ptype="string",
+                                      group=TRAIN_GROUP)
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        return placement
+
     def _flush_placement(self, body_name, placement):
+        # address the worker by the element GROUP whenever the body has
+        # one: op_set_placement's group-first match then moves EVERY
+        # member rigidly. Passing a member's internal name would fall to
+        # the single-body path and tear multi-body elements apart (found
+        # by the achromat: no member carries the element label, so the
+        # flint stayed behind while the crown moved).
+        target = body_name
+        try:
+            b = self.body(body_name)
+            group = (b.get("properties", {}).get("miewb_group") or {}) \
+                .get("value")
+            if group:
+                target = group
+        except ProjectError:
+            pass
         result = self.fc.request(
             "set_placement",
-            {"doc": self.doc, "body": body_name,
+            {"doc": self.doc, "body": target,
              "pos_mm": placement["pos_mm"], "quat": placement["quat"]})
         # set_placement moves the WHOLE miewb_group rigidly and returns
         # every member's new placement; consume them so sibling BodyStates
@@ -559,6 +1003,15 @@ class Project(QObject):
             self._set_dirty(False)
 
     # -- persistence ---------------------------------------------------------------
+    def export_fcstd(self, path):
+        """Write a standalone .FCStd copy of the CURRENT document state
+        (fold states, placements and MieTrain metadata as they stand).
+        The copy opens and edits in plain FreeCAD; the live document and
+        dirty state are untouched."""
+        path = os.path.abspath(path)
+        self.fc.request("save_copy", {"doc": self.doc, "path": path})
+        return path
+
     def save(self):
         self.fc.request("save", {"doc": self.doc})
         self.undo_stack.mark_clean()

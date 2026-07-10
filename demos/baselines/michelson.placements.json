@@ -1,0 +1,125 @@
+{
+ "bodies": {
+  "BS": {
+   "group": "BS",
+   "label": "BS",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.3826834323650898,
+     0.9238795325112867
+    ]
+   },
+   "primitive": "bs_plate"
+  },
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -60.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "M1": {
+   "group": "M1",
+   "label": "M1",
+   "placement": {
+    "pos_mm": [
+     60.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "mirror_flat"
+  },
+  "M2": {
+   "group": "M2",
+   "label": "M2",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     -60.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     -0.7070508291490297,
+     0.7071627287970356
+    ]
+   },
+   "primitive": "mirror_flat"
+  },
+  "Screen": {
+   "group": "Screen",
+   "label": "Screen",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     60.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.7071067811865475,
+     0.7071067811865476
+    ]
+   },
+   "primitive": "detector_plane"
+  }
+ },
+ "demo": "michelson",
+ "sheets": {
+  "dim": {},
+  "dim_BS": {
+   "round_flag": "1",
+   "thickness": "=3 mm",
+   "wedge_deg": "=0 deg",
+   "width": "=30 mm"
+  },
+  "dim_Laser": {
+   "diameter": "=8 mm",
+   "length": "=10 mm",
+   "round_flag": "1"
+  },
+  "dim_M1": {
+   "round_flag": "1",
+   "thickness": "=3 mm",
+   "width": "=15 mm"
+  },
+  "dim_M2": {
+   "round_flag": "1",
+   "thickness": "=3 mm",
+   "width": "=15 mm"
+  },
+  "dim_Screen": {
+   "height": "=0 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=12 mm"
+  }
+ }
+}

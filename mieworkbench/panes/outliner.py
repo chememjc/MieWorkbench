@@ -17,9 +17,20 @@ Signals (the main window owns the actual behavior):
 """
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QMenu, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
+
+# -- optical-train status badges (set_train_info) --------------------------
+_CHAIN_GLYPH = "\U0001F517"      # link
+_FOLD_GLYPH = "⤵"           # arrow-down-then-curving-right
+_EXCLUDED_COLOR = QColor(140, 140, 140)
+_PROBLEM_COLOR = QColor(200, 40, 40)
+# item data roles: UserRole/UserRole+1 are already body-name/element;
+# +2 stores the pristine (badge-free) label text captured the first time
+# a badge is applied, so repeated set_train_info calls never compound.
+_BASE_LABEL_ROLE = Qt.UserRole + 2
 
 
 def role_for_body(body):
@@ -47,6 +58,7 @@ class OutlinerPane(QWidget):
         super().__init__(parent)
         self._project = None
         self._updating = False
+        self._train_info = {}
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
@@ -120,8 +132,61 @@ class OutlinerPane(QWidget):
                 self.tree.resizeColumnToContents(c)
             if selected:
                 self.set_selected_body(selected)
+            self._apply_train_info()
         finally:
             self._updating = False
+
+    # -- optical-train status badges ----------------------------------------
+    def set_train_info(self, info):
+        """Status badges from TrainModel (mainwindow computes `info` and
+        calls this on project signals): {element_label: {"chained": bool,
+        "fold": bool, "folded": bool, "excluded": bool, "problem":
+        str|None}}. Idempotent -- every call re-derives each row's text
+        from its stored pristine label (_BASE_LABEL_ROLE), so calling
+        this twice with the same info never doubles a glyph."""
+        self._train_info = dict(info or {})
+        self._apply_train_info()
+
+    def _apply_train_info(self):
+        for item in self._walk():
+            element = item.data(0, Qt.UserRole + 1)
+            base = item.data(0, _BASE_LABEL_ROLE)
+            if base is None:
+                base = item.text(0)
+                item.setData(0, _BASE_LABEL_ROLE, base)
+            info = self._train_info.get(element) or {}
+
+            text = base
+            if info.get("chained"):
+                text += " " + _CHAIN_GLYPH
+            if info.get("fold"):
+                text += " " + _FOLD_GLYPH
+            excluded = bool(info.get("excluded"))
+            # a fold element currently bypassed (fold-capable but not
+            # deployed) reads the same as excluded: it isn't affecting
+            # the train right now either.
+            unfolded = bool(info.get("fold")) and not info.get(
+                "folded", True)
+            if excluded:
+                text += " (excluded)"
+            elif unfolded:
+                text += " (unfolded)"
+            item.setText(0, text)
+
+            font = item.font(0)
+            font.setItalic(excluded or unfolded)
+            item.setFont(0, font)
+
+            problem = info.get("problem")
+            if problem:
+                item.setForeground(0, _PROBLEM_COLOR)
+                item.setToolTip(0, str(problem))
+            elif excluded or unfolded:
+                item.setForeground(0, _EXCLUDED_COLOR)
+                item.setToolTip(0, "")
+            else:
+                item.setData(0, Qt.ForegroundRole, None)
+                item.setToolTip(0, "")
 
     # -- selection ------------------------------------------------------------
     def selected_body(self):

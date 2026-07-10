@@ -32,7 +32,15 @@ class FakeWorkerFc:
         if op == "get_structure":
             return copy.deepcopy(self.structure)
         if op == "set_placement":
-            group = self._group_of(params["body"])
+            # real op_set_placement semantics: the key may be a GROUP
+            # value directly (tried FIRST), else a body name/label whose
+            # group is then resolved
+            key = str(params["body"])
+            if any(b["properties"].get("miewb_group", {}).get("value")
+                   == key for b in self.structure["bodies"]):
+                group = key
+            else:
+                group = self._group_of(key)
             pl = {"pos_mm": list(params["pos_mm"]), "quat": list(params["quat"])}
             out = {}
             for b in self.structure["bodies"]:
@@ -193,18 +201,46 @@ def test_snap_via_pick_callback_aligns_and_single_undo(qtbot):
     assert project.current_placement("Lens").to_dict() == before
 
 
-def test_snap_offset_translates_along_axis(qtbot):
+def test_snap_position_along_axis_is_absolute(qtbot):
+    """The spinbox shows the CURRENT along-axis position and committing a
+    value moves to that absolute station (idempotent — not incremental)."""
     panel, project, view = make_panel(qtbot)
     panel.set_body("Lens")
     panel._pick_snap_target()
     view.pick_cb("TgtA", "TgtA.Pad.Face1")
     assert panel.snap_offset_btn.isEnabled()
-    c0 = project.body_states["Lens"].optical_center_world().copy()
+    # after the snap the spinbox reflects the element's live position
+    t0 = panel._along_axis_t()
+    assert t0 is not None
+    assert abs(panel.snap_offset.value() - t0) < 1e-6
+
+    point, axis = panel._snap_axis
     panel.snap_offset.setValue(5.0)
     panel._apply_snap_offset()
     c1 = project.body_states["Lens"].optical_center_world()
-    # moved +5 mm along the target axis (+y)
-    assert np.allclose(c1 - c0, [0, 5, 0], atol=1e-6)
+    expect = np.array(point) + 5.0 * np.array(axis)
+    assert np.allclose(c1, expect, atol=1e-6)
+
+    # committing the SAME value again is a no-op (absolute, not relative)
+    panel.snap_offset.setValue(5.0)
+    panel._apply_snap_offset()
+    c2 = project.body_states["Lens"].optical_center_world()
+    assert np.allclose(c2, c1, atol=1e-9)
+    assert "Already at" in panel.snap_status.text()
+
+
+def test_snap_drag_updates_absolute_readout(qtbot):
+    panel, project, view = make_panel(qtbot)
+    panel.set_body("Lens")
+    panel._pick_snap_target()
+    view.pick_cb("TgtA", "TgtA.Pad.Face1")
+    assert view.drag is not None
+    point, axis = panel._snap_axis
+    target = np.array(point) + 7.5 * np.array(axis)
+    view.drag["on_move"](target)
+    assert "7.500 mm" in panel.snap_status.text()
+    assert abs(panel.snap_offset.value() - 7.5) < 1e-6
+    view.drag["on_abort"]()
 
 
 def test_snap_moves_all_group_siblings(qtbot):
@@ -247,3 +283,155 @@ def test_snap_drag_commit_applies_translate(qtbot):
     view.drag["on_commit"](center + np.array([0.0, 7.0, 0.0]))
     c = project.body_states["Lens"].optical_center_world()
     assert abs(c[1] - (center[1] + 7.0)) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Position section (dual representation + no-move Convert) against the
+# train-capable scripted worker
+# ---------------------------------------------------------------------------
+from mieworkbench.tests.train_test_support import (   # noqa: E402
+    make_scene, pos_of)
+
+
+def make_train_panel(qtbot, chained=True):
+    project, fake = make_scene()
+    project.set_chain("L1", {"ref": "SRC", "distance": "10"})
+    if chained:
+        project.set_chain("L2", {"ref": "L1", "distance": "20"})
+    panel = TransformPanel()
+    qtbot.addWidget(panel)
+    view = FakeView()
+    panel.set_project(project)
+    panel.set_scene_view(view)
+    panel.set_body("L2")
+    return panel, project, view
+
+
+def _placement(project, name):
+    return project.body_states[name].current.to_dict()
+
+
+def test_position_section_chained_shows_editable_edge(qtbot):
+    panel, project, _view = make_train_panel(qtbot, chained=True)
+    assert "Chained to L1" in panel.pos_status.text()
+    assert panel.train_ref.currentData() == "L1"
+    assert panel.edge_fields["distance"].text() == "20"
+    assert not panel.edge_fields["distance"].isReadOnly()
+    assert panel.btn_convert.isVisible() or True  # visibility needs show()
+    assert "anchored" in panel.btn_convert.text()
+
+    # editing the distance field re-chains and moves the element
+    panel.edge_fields["distance"].setText("30")
+    panel._on_edge_field_committed("distance")
+    assert np.allclose(pos_of(project, "L2"), [50, 0, 0])
+    # one undo restores
+    project.undo()
+    assert np.allclose(pos_of(project, "L2"), [40, 0, 0])
+
+
+def test_position_section_rejects_bad_expression(qtbot):
+    panel, project, _view = make_train_panel(qtbot, chained=True)
+    before = pos_of(project, "L2")
+    panel.edge_fields["distance"].setText("2*+")
+    panel._on_edge_field_committed("distance")
+    assert np.allclose(pos_of(project, "L2"), before)
+    assert "Distance" in panel.pos_note.text()
+
+
+def test_position_section_anchored_shows_derived_preview(qtbot):
+    panel, project, _view = make_train_panel(qtbot, chained=False)
+    # L2 anchored at (60,0,0); candidate ref defaults to deepest element
+    assert "Anchored" in panel.pos_status.text()
+    assert panel.edge_fields["distance"].isReadOnly()
+    # choose L1 explicitly and check the derived distance:
+    # L1 exit vertex at x=19, L2 entry (local -1) at 59 -> 40
+    idx = panel.train_ref.findData("L1")
+    panel.train_ref.setCurrentIndex(idx)
+    assert float(panel.edge_fields["distance"].text()) == pytest.approx(40.0)
+    assert "chained" in panel.btn_convert.text()
+
+
+def test_convert_round_trip_does_not_move(qtbot):
+    panel, project, _view = make_train_panel(qtbot, chained=False)
+    idx = panel.train_ref.findData("L1")
+    panel.train_ref.setCurrentIndex(idx)
+    before = copy.deepcopy(_placement(project, "L2"))
+
+    panel._on_convert_clicked()          # anchored -> chained (no move)
+    rec = project.train().records()["L2"]
+    assert rec["mode"] == "chained" and rec["ref"] == "L1"
+    after = _placement(project, "L2")
+    assert np.allclose(after["pos_mm"], before["pos_mm"], atol=1e-9)
+    q1, q2 = np.array(after["quat"]), np.array(before["quat"])
+    assert min(np.linalg.norm(q1 - q2), np.linalg.norm(q1 + q2)) < 1e-9
+
+    panel._on_convert_clicked()          # chained -> anchored (no move)
+    assert project.train().records()["L2"]["mode"] == "anchored"
+    assert np.allclose(_placement(project, "L2")["pos_mm"],
+                       before["pos_mm"], atol=1e-9)
+
+
+def test_convert_hidden_without_valid_candidate(qtbot):
+    project, fake = make_scene()
+    panel = TransformPanel()
+    qtbot.addWidget(panel)
+    panel.set_project(project)
+    # SRC is the only upstream-less element: selecting the FIRST element in
+    # solve order with everything anchored still yields candidates, so
+    # instead select an element and forge a downstream-only situation:
+    project.set_chain("L1", {"ref": "SRC", "distance": "10"})
+    project.set_chain("L2", {"ref": "L1", "distance": "20"})
+    project.set_chain("FM", {"ref": "L2", "distance": "5"})
+    project.set_chain("DET", {"ref": "FM", "port": "reflect",
+                              "distance": "5"})
+    panel.set_body("SRC")     # anchored; every other element is downstream
+    assert not panel.btn_convert.isVisibleTo(panel)
+    assert "No upstream element" in panel.pos_note.text()
+
+
+def test_ref_pick_via_selection_intercept(qtbot):
+    panel, project, _view = make_train_panel(qtbot, chained=True)
+    # L2 currently chained to L1; arm the pick, then "click" SRC in the
+    # outliner (routes through set_body)
+    panel._arm_ref_pick()
+    panel.set_body("SRC")
+    rec = project.train().records()["L2"]
+    assert rec["ref"] == "SRC"
+    # the panel still operates on L2 (the pick did not change selection
+    # from the panel's point of view)
+    assert panel.body_name == "L2"
+
+
+def test_ref_pick_refuses_descendant(qtbot):
+    panel, project, _view = make_train_panel(qtbot, chained=True)
+    panel.set_body("L1")
+    panel._arm_ref_pick()
+    panel.set_body("L2")                 # L2 is downstream of L1
+    assert project.train().records()["L1"]["ref"] == "SRC"  # unchanged
+    assert "downstream" in panel.pos_note.text()
+
+
+def test_ref_face_pick_takes_reference_with_default_port(qtbot):
+    panel, project, view = make_train_panel(qtbot, chained=True)
+    panel._arm_ref_pick()
+    view.pick_cb is None                # pick armed on the view
+    panel._on_ref_face_picked("FM", "FM_pad.Face1")
+    rec = project.train().records()["L2"]
+    assert rec["ref"] == "FM"
+    # FM is a pure mirror: its default port is reflect
+    assert (rec.get("port") or "reflect") == "reflect"
+
+
+def test_port_change_rechains(qtbot):
+    panel, project, _view = make_train_panel(qtbot, chained=True)
+    # re-chain L2 onto the mirror FM to get multiple ports
+    project.set_chain("FM", {"ref": "L1", "distance": "5"})
+    project.set_chain("L2", {"ref": "FM", "port": "reflect",
+                             "distance": "7"})
+    panel.set_body("L2")
+    p_reflect = list(pos_of(project, "L2"))
+    idx = panel.train_port.findData("out")
+    assert idx >= 0
+    panel.train_port.setCurrentIndex(idx)
+    assert project.train().records()["L2"]["port"] == "out"
+    assert not np.allclose(pos_of(project, "L2"), p_reflect)

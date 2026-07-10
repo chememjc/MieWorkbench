@@ -1,0 +1,13 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "Exit.Exit_pad.Face5": {
+   "peak_irradiance_W_m2": 1907253.4491688532,
+   "power_seed_std_W": 7.059006815052782e-06,
+   "profile_visibility": 0.9998938944796624,
+   "total_power_W": 0.003949065113315595
+  }
+ },
+ "seeds": 3
+}

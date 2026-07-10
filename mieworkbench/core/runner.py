@@ -180,6 +180,53 @@ class RunController(QObject):
         return args
 
 
+    @staticmethod
+    def write_sweep_manifest(model_path, config, results_root=None):
+        """Predict a sweep's variants and write
+        <results_root>/<stem>/sweep-<case>.manifest.json for the Compare
+        pane / compare_sweep.py. Returns the manifest path, or None when
+        the config sweeps nothing. Prediction rides run_pipeline's own
+        variant_output_names, which shares common.sweep_combos with
+        permute_model — names cannot drift."""
+        sweep_vars = list(config.get("var") or [])
+        if not sweep_vars:
+            return None
+        import json
+        import run_pipeline as rp
+        stem = Path(model_path).stem
+        mode = config.get("sweep_mode") or "product"
+        varspecs = list(zip(sweep_vars,
+                            [float(v) for v in config.get("min") or []],
+                            [float(v) for v in config.get("max") or []],
+                            [int(v) for v in config.get("n") or []]))
+        if len({len(sweep_vars), len(config.get("min") or []),
+                len(config.get("max") or []),
+                len(config.get("n") or [])}) != 1:
+            raise ValueError("sweep var/min/max/n counts differ")
+        value_lists = [common.sweep_values(vmin, vmax, n)
+                       for (_, vmin, vmax, n) in varspecs]
+        combos = common.sweep_combos(value_lists, mode)
+        stems = rp.variant_output_names(stem, varspecs, mode)
+        case = common.case_name(config.get("preset") or "quick",
+                                config.get("tag"))
+        root = Path(results_root) if results_root else Path(
+            os.environ.get("MIEWB_RESULTS_DIR", common.RESULTS_DIR))
+        variants = []
+        for vstem, combo in zip(stems, combos):
+            variants.append({
+                "stem": vstem,
+                "values": {var: float(v)
+                           for var, v in zip(sweep_vars, combo)},
+                "case_dir": str(root / vstem / case),
+            })
+        manifest = {"model": stem, "case": case, "mode": mode,
+                    "order": sweep_vars, "variants": variants}
+        out = root / stem / ("sweep-%s.manifest.json" % case)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(manifest, indent=1, sort_keys=True))
+        return out
+
+
 def _fmt_value(value):
     if isinstance(value, float):
         return repr(value)

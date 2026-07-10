@@ -243,6 +243,20 @@ def apply_world(M, placement):
     return Placement.from_matrix(np.asarray(M, float) @ placement.matrix())
 
 
+def reflect_matrix(point, normal):
+    """Householder reflection about the plane through `point` with
+    `normal` (4x4, det = -1). Delegates to the shared stdlib train
+    solver so the GUI and the headless permute path share ONE
+    implementation. IMPROPER: reflect points/directions/planes with it,
+    never a Placement (use train_solver.fold_rotation for those)."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    import train_solver
+    return np.array(train_solver.reflect_matrix(
+        [float(v) for v in point], [float(v) for v in normal]))
+
+
 def project_point_on_axis(point, axis_point, axis_dir):
     """Foot of the perpendicular from `point` onto the line through
     `axis_point` with direction `axis_dir`, plus the signed distance

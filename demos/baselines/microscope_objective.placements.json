@@ -1,0 +1,146 @@
+{
+ "bodies": {
+  "Front_crown": {
+   "group": "Front",
+   "label": "Front_lens_achromat_crown",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  },
+  "Front_flint": {
+   "group": "Front",
+   "label": "Front_lens_achromat_flint",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  },
+  "Image": {
+   "group": "Image",
+   "label": "Image",
+   "placement": {
+    "pos_mm": [
+     80.64459694712352,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Object": {
+   "group": "Object",
+   "label": "Object",
+   "placement": {
+    "pos_mm": [
+     -22.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_divergent"
+  },
+  "Rear_crown": {
+   "group": "Rear",
+   "label": "Rear_lens_achromat_crown",
+   "placement": {
+    "pos_mm": [
+     10.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  },
+  "Rear_flint": {
+   "group": "Rear",
+   "label": "Rear_lens_achromat_flint",
+   "placement": {
+    "pos_mm": [
+     10.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  }
+ },
+ "demo": "microscope_objective",
+ "sheets": {
+  "dim": {},
+  "dim_Front": {
+   "R_back": "=-32.2485 mm",
+   "R_front": "=15.5 mm",
+   "R_iface": "=-10.978 mm",
+   "aperture": "=10 mm",
+   "ct_crown": "=3 mm",
+   "ct_flint": "=1.5 mm",
+   "gap": "=0.005 mm"
+  },
+  "dim_Image": {
+   "height": "=0 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=30 mm"
+  },
+  "dim_Object": {
+   "diameter": "=2 mm",
+   "length": "=6 mm",
+   "roc": "=5 mm",
+   "round_flag": "1"
+  },
+  "dim_Rear": {
+   "R_back": "=-64.497 mm",
+   "R_front": "=31 mm",
+   "R_iface": "=-21.956 mm",
+   "aperture": "=12 mm",
+   "ct_crown": "=6 mm",
+   "ct_flint": "=3 mm",
+   "gap": "=0.005 mm"
+  }
+ }
+}

@@ -35,12 +35,17 @@
 #   n=1   -> values = [min, max]
 #   n>1   -> n+1 evenly spaced values: min + i*(max-min)/n for i in 0..n
 #
+# --sweep-mode (common.sweep_combos, project-wide law):
+#   product (default) -> cross-product of every swept variable's values
+#   zip                -> variables advance together, one variant per
+#                         index (value lists must have equal length, or
+#                         length 1 to broadcast)
+#
 # Variant naming: common.variant_name() applied once per swept variable, in
 # --var order, chaining the previous name as the next stem, e.g.
 #   example -> example-lenspos2 -> example-lenspos2-sphered30
 # =============================================================================
 import argparse
-import itertools
 import os
 import sys
 from pathlib import Path
@@ -52,6 +57,7 @@ import FreeCAD
 # directory the way plain `python3 scripts/foo.py` does).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common   # noqa: E402
+import train_fcstd   # noqa: E402
 
 SPREADSHEET_LABEL = "dim"   # object label; internal name is usually "Spreadsheet"
 
@@ -106,6 +112,13 @@ def parse_args():
     p.add_argument("--outdir", default=None,
                     help="output directory (default: %s)" % common.BASEMODELS_DIR)
     p.add_argument("--unit", default="mm", help="dimension unit (default: %(default)s)")
+    p.add_argument("--sweep-mode", default="product",
+                    choices=["product", "zip"],
+                    help="how multiple --var combinations combine: "
+                         "'product' = cartesian (default); 'zip' = "
+                         "variables advance together (equal-length value "
+                         "lists, or length 1 to broadcast) — see "
+                         "common.sweep_combos")
     try:
         args = p.parse_args(rest)
     except SystemExit:
@@ -212,6 +225,43 @@ def rebuild_primitive_groups(doc, touched_sheets):
         log("rebuilt primitive group '%s' (%s)" % (group, kind))
 
 
+def extend_touched_for_miewb_vars(doc, touched_sheets):
+    """KNOWN BUG fix: a dim_<El> cell can read an EXPRESSION like
+    "=<<miewb_vars>>.gap * 1mm" instead of being directly swept, so its
+    owning dim_<El> sheet never lands in touched_sheets and
+    rebuild_primitive_groups() skips the primitive — the recompute updates
+    the cell's evaluated value, but the primitive's baked geometry (which
+    only tracks rebuild-on-edit, not recompute) goes stale.
+
+    When the sweep touched the miewb_vars sheet itself, scan every dim_*
+    sheet's raw cell CONTENT (not value) for a "miewb_vars" reference and
+    fold those sheets into touched_sheets too, so
+    rebuild_primitive_groups() rebuilds them in the same pass. Cheap: one
+    getUsedCells()/getContents() scan per dim_ sheet in the document, and
+    only when miewb_vars was actually part of this sweep."""
+    if not any(s.Label == train_fcstd.VARIABLES_SHEET for s in touched_sheets):
+        return
+    touched_names = {s.Name for s in touched_sheets}
+    found = []
+    for sheet in doc.Objects:
+        if sheet.TypeId != "Spreadsheet::Sheet":
+            continue
+        if not sheet.Label.startswith("dim_") or sheet.Name in touched_names:
+            continue
+        for cell in sheet.getUsedCells():
+            try:
+                content = sheet.getContents(cell)
+            except Exception:
+                continue
+            if content and train_fcstd.VARIABLES_SHEET in content:
+                found.append(sheet)
+                break
+    if found:
+        log("miewb_vars swept: expression-linked dim sheet(s) also "
+            "touched: %s" % ", ".join(s.Label for s in found))
+        touched_sheets.extend(found)
+
+
 def check_recompute(doc):
     """Warn (do not fail) if any object is left Invalid/Error after recompute."""
     bad = []
@@ -224,25 +274,25 @@ def check_recompute(doc):
              % (len(bad), "; ".join(bad)))
 
 
-def permute(model_path, varspecs, outdir, unit):
+def permute(model_path, varspecs, outdir, unit, sweep_mode="product"):
     """varspecs: list of (var, vmin, vmax, n) in --var order.
 
-    Writes one .FCStd per combination in the cross-product of
-    common.sweep_values() for each varspec.
+    Writes one .FCStd per combination of common.sweep_values() for each
+    varspec, combined via common.sweep_combos(value_lists, sweep_mode)
+    ("product" = cartesian, the historical default; "zip" = variables
+    advance together).
     """
     stem = model_path.stem
     outdir.mkdir(parents=True, exist_ok=True)
 
     value_lists = [common.sweep_values(vmin, vmax, n) for (_, vmin, vmax, n) in varspecs]
     names = [v[0] for v in varspecs]
-    total = 1
-    for vl in value_lists:
-        total *= len(vl)
-    log("permute_model.py: %s  vars=%s  -> %d combination(s) -> %s"
-        % (model_path.name, names, total, outdir))
+    combos = common.sweep_combos(value_lists, mode=sweep_mode)
+    log("permute_model.py: %s  vars=%s  sweep_mode=%s  -> %d combination(s) "
+        "-> %s" % (model_path.name, names, sweep_mode, len(combos), outdir))
 
     n_written = 0
-    for combo in itertools.product(*value_lists):
+    for combo in combos:
         out_name = stem
         for var, value in zip(names, combo):
             out_name = common.variant_name(out_name, var, value)
@@ -261,11 +311,25 @@ def permute(model_path, varspecs, outdir, unit):
                 else:
                     sheet = find_sheet(doc, sheet_label)
                 cell = resolve_alias_cell(sheet, alias)
-                sheet.set(cell, "=%.10g %s" % (value, unit))
+                # global-variables cells are UNITLESS by contract (they
+                # feed expressions and train fields that expect plain
+                # numbers); dim cells keep the length unit
+                if sheet.Label == train_fcstd.VARIABLES_SHEET:
+                    sheet.set(cell, "=%.10g" % value)
+                else:
+                    sheet.set(cell, "=%.10g %s" % (value, unit))
                 if sheet not in touched_sheets:
                     touched_sheets.append(sheet)
             doc.recompute()
+            extend_touched_for_miewb_vars(doc, touched_sheets)
             rebuild_primitive_groups(doc, touched_sheets)
+            # optical train: re-bake expression-driven props and re-solve
+            # every chained placement against the variant's variable
+            # values (the GUI's exact solver — see train_fcstd.py)
+            n_train = train_fcstd.apply_train(doc, log=log)
+            if n_train:
+                doc.recompute()
+                log("train: re-solved %d chained element(s)" % n_train)
             check_recompute(doc)
 
             doc.saveAs(str(out_path))
@@ -293,7 +357,8 @@ def main():
 
     outdir = Path(args.outdir) if args.outdir else common.BASEMODELS_DIR
 
-    n_written = permute(model_path, varspecs, outdir, args.unit)
+    n_written = permute(model_path, varspecs, outdir, args.unit,
+                        sweep_mode=args.sweep_mode)
 
     log("PERMUTE MODEL OK (%d file(s) written)" % n_written)
 

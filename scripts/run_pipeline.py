@@ -46,7 +46,6 @@ Logs: extract/permute (batch-level) log to results/log.<step>; trace/post/
 viz (per model) log to results/<model_stem>/<case>/log.<step>.
 """
 
-import itertools
 import json
 import subprocess
 import sys
@@ -133,17 +132,20 @@ def expand_models(patterns):
     return out
 
 
-def variant_output_names(stem, varspecs):
+def variant_output_names(stem, varspecs, sweep_mode="product"):
     """Replicate permute_model.py's naming loop EXACTLY (same
-    common.sweep_values / common.variant_name calls, same --var order,
-    same itertools.product order) so run_pipeline can predict the variant
-    .FCStd filenames permute_model.py will write without parsing its
-    stdout."""
+    common.sweep_values / common.variant_name calls, same --var order, and
+    combination order from common.sweep_combos(value_lists, sweep_mode))
+    so run_pipeline can predict the variant .FCStd filenames
+    permute_model.py will write without parsing its stdout. Because both
+    call sites route combination order through the single
+    common.sweep_combos function, the two can never drift out of sync
+    again — sweep_mode must match what was passed to permute_cmd()."""
     value_lists = [common.sweep_values(vmin, vmax, n)
                    for (_, vmin, vmax, n) in varspecs]
     names = [v[0] for v in varspecs]
     out = []
-    for combo in itertools.product(*value_lists):
+    for combo in common.sweep_combos(value_lists, mode=sweep_mode):
         out_name = stem
         for var, value in zip(names, combo):
             out_name = common.variant_name(out_name, var, value)
@@ -154,7 +156,7 @@ def variant_output_names(stem, varspecs):
 # ---------------------------------------------------------------------------
 # Per-stage command builders (single source of truth for flag forwarding)
 # ---------------------------------------------------------------------------
-def permute_cmd(model_path, varspecs):
+def permute_cmd(model_path, varspecs, sweep_mode="product"):
     cmd = [common.FREECAD_APPIMAGE, "-c",
            str(common.SCRIPTS_DIR / "permute_model.py"), "--",
            "--model", str(model_path)]
@@ -162,6 +164,8 @@ def permute_cmd(model_path, varspecs):
         cmd += ["--var", var, "--min", repr(vmin), "--max", repr(vmax),
                "--n", str(n)]
     cmd += ["--outdir", str(common.BASEMODELS_DIR)]
+    if sweep_mode != "product":
+        cmd += ["--sweep-mode", sweep_mode]
     return cmd
 
 
@@ -321,14 +325,14 @@ def resolve_models(args):
     final = []
     for model_path in models:
         stem = model_path.stem
-        cmd = permute_cmd(model_path, varspecs)
+        cmd = permute_cmd(model_path, varspecs, args.sweep_mode)
         log = common.RESULTS_DIR / ("log.permute-%s" % stem)
         if not _run_stage(cmd, log, "permute (%s)" % stem, failures,
                           stdin_devnull=True):
             if args.keep_going:
                 continue
             return final, failures, True
-        for name in variant_output_names(stem, varspecs):
+        for name in variant_output_names(stem, varspecs, args.sweep_mode):
             final.append(common.BASEMODELS_DIR / (name + ".FCStd"))
     return final, failures, False
 
@@ -453,9 +457,11 @@ def main():
         stems = [p.stem for p in models]
         if varspecs:
             for model_path in models:
-                print("+ " + " ".join(permute_cmd(model_path, varspecs)))
+                print("+ " + " ".join(
+                    permute_cmd(model_path, varspecs, args.sweep_mode)))
             stems = [n for p in models
-                    for n in variant_output_names(p.stem, varspecs)]
+                    for n in variant_output_names(p.stem, varspecs,
+                                                  args.sweep_mode)]
             model_paths = [common.BASEMODELS_DIR / (s + ".FCStd")
                           for s in stems]
             print("#   (permute produces variant model(s): %s)"

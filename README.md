@@ -364,6 +364,56 @@ you type in, or one of three element-relative points (**optical center**,
   the fix for the folded-beam placement pain (e.g. dropping an iris onto a
   prism's deviated beam without hand trig).
 
+A compact **Positioning** readout at the top of the panel shows whether
+the selected element is **anchored** (absolute pose) or **chained** into
+the optical train, with one-click Chain…/Anchor-here conversion.
+
+### 3.5.1 Optical Train (`panes/train_editor.py`)
+
+The LDE-style editable view of the scene as an **optical train**: every
+element is either anchored or chained a **vertex-to-vertex distance
+down the beam** from a reference element's exit port. One indented tree
+shows the whole train — beamsplitter arms nest under port rows
+(`transmit ↓` / `reflect ↳`), fold mirrors carry a folded/unfolded
+checkbox, and every numeric cell (distance, decenter, tilts) accepts
+**variable expressions** (`arm2 + screen_arm`) displayed with their
+evaluated value. Chaining is click-driven: select the new element,
+**Pick reference in 3D**, click the upstream element. Ports are a combo
+(transmit/reflect/deviate — gratings and prisms redirect by their
+deviation fields, not the mirror law), `flip` turns a lens end-for-end,
+and right-click offers Mark-as-fold / edge details (rotation order,
+pivot, deviate fields). Editing anything **ripples the whole downstream
+train rigidly in one undo step**; unfolding a fold straightens its
+downstream arm onto the incoming axis (path lengths preserved), ghosts
+the mirror in the viewport, and **excludes it from the simulation**;
+refolding restores bit-exactly. Dotted blue/orange linkage lines in the
+3D view trace the chain; File → Export FCStd writes a standalone copy
+in the current fold state that opens in plain FreeCAD.
+
+### 3.5.2 Variables (`panes/variables_pane.py`)
+
+The **global variables** table (stored in the model's `miewb_vars`
+spreadsheet, so files stay standalone): name, value (expressions over
+other variables allowed, cycles detected and named), sweep min/max/
+steps, and a per-row **Sweep** enable. Variables are usable in train
+fields, in element dimensions (FreeCAD expression
+`=<<miewb_vars>>.name * 1mm` — the iris opening in the camera_triplet
+demo works this way), and in float body properties via
+`miewb_expr_<prop>`. Editing a value re-solves the train and rebuilds
+any referencing primitives, one undo step. With sweeps enabled, Run
+Pipeline launches the **product or zipped** variant grid — always after
+a summary dialog showing the run count and calibrated time estimate.
+
+### 3.5.3 Compare (`panes/compare_pane.py`)
+
+Populates automatically when a sweep finishes (or via **Add case…** for
+any finished runs, e.g. michelson vs michelson_folded): scalar
+**metric-vs-variable plots** (detected power, peak irradiance, fringe
+visibility, centroid, RMS spot radius), a shared-scale detector-image
+gallery labeled by variable values, **signed difference maps** against a
+selectable reference variant, and a scrub slider through the sweep.
+Backend: `scripts/compare_sweep.py` under the optics env.
+
 ### 3.6 Library (`panes/library.py`)
 
 Dock **"Library"**, three tabs:
@@ -804,8 +854,12 @@ Composes and launches each pinned stage command as a subprocess; imports
 nothing beyond the standard library. `--steps extract,trace,post,viz`
 picks a subset (fixed order); `--var/--min/--max/--n` (repeatable, paired
 in order) sweep spreadsheet aliases through `permute_model.py` before
-extraction; `--print-only` prints the composed commands without running
-anything. Presets fill in rays/resolution/nlambda/spectral-bins/viz-rays:
+extraction — `--sweep-mode product|zip` chooses the full grid or
+lockstep advancement (`common.sweep_combos` is the single
+combination-order authority for both prediction and execution), and
+sweeping a `miewb_vars.<name>` global re-solves every chained placement
+and rebuilds every referencing primitive per variant; `--print-only`
+prints the composed commands without running anything. Presets fill in rays/resolution/nlambda/spectral-bins/viz-rays:
 `quick` = 1e5/512/5/16, `normal` = 1e6/2048/9/16, `detailed` =
 1e7/4096/17/32 (`common.PRESETS`).
 
@@ -917,6 +971,35 @@ compare_runs.py --cases DIR [DIR ...] [--out OUT]
 
 Overlays the detector results of several finished `results/<model>/<case>`
 directories; default output is `results/comparisons/<case names>`.
+
+### 5.8.1 `compare_sweep.py` — sweep comparison (optics env python)
+
+The Compare pane's backend: takes a sweep manifest (written by the GUI
+runner) or bare `--cases <dirs…>`, and emits metric-vs-variable plots,
+a shared-scale per-variant detector gallery, signed difference maps
+against `--ref`, `metrics.csv` and `summary.json` (which the pane
+renders). Metrics: detected power, peak irradiance, profile visibility,
+irradiance-weighted centroid and RMS spot radius (always computed in
+each detector's own `xhat`/`yhat` grid basis).
+
+### 5.8.2 `train_solver.py` / `train_fcstd.py` — the optical-train chain
+
+`train_solver.py` is the ONE chain solver (pure stdlib by contract —
+FreeCAD's embedded python has no numpy): expression evaluation with
+named-cycle detection, port-frame propagation, chained-placement
+construction and its inverse, fold rotations. The GUI uses it through
+`mieworkbench/core/train.py`; `permute_model.py` uses it through
+`train_fcstd.py` to re-solve every chained placement per sweep variant —
+`mieworkbench/tests/test_train_parity.py` pins both paths to 1e-9.
+
+### 5.8.3 `run_demo_equivalence.py` — the demo gate (GUI venv)
+
+Rebuilds every demo through the chain API and gates it against the
+committed `demos/baselines/`: positions ≤1 µm, optical-axis directions
+≤0.01° (spin about a symmetric element's axis allowed and reported),
+3-seed detected power within max(3σ, 1%), fringe visibility for the
+interferometers. Restartable (`results.csv`), `--skip-run` for a fast
+placements-only pass.
 
 ### 5.9 `miewb_tool.py` — the headless/remote path (system `python3`)
 

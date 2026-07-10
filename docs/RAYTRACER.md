@@ -265,6 +265,11 @@ fields on each `PartDesign::Body`:
 | `lambdamin`, `lambdamax` (nm, optional), `coherent` (bool, default False) | — | source-only, see §5.2 |
 
 Classification (`classify_body`, in this priority order):
+0. `miewb_exclude` truthy (a bool set by the GUI on unfolded fold
+   mirrors, or any user-excluded element) → **ignored**. The body stays
+   in the document — it is invisible to the physics only. All other
+   `miewb_*` properties (the GUI's optical-train metadata, group
+   `MieTrain`) are never read by the extractor at all.
 1. `power` **and** `lambdac` both present → **source**.
 2. `material` missing/empty or `"none"` (case-insensitive) → **ignored**
    (skipped entirely; extractor logs `"[Label] is ignored"`).

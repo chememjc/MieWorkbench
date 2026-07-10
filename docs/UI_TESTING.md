@@ -279,6 +279,25 @@ touches rendering, the ray-preview pipeline, or session lifecycle:
     3D view (Esc cancels; a click commits), or type an offset and **Apply
     offset**. A single **Undo** restores the iris to where it started
     (the validated pain case that used to need offline trigonometry).
+14. Optical train round-trip (open the `michelson_folded` demo): in the
+    **Optical Train** dock, uncheck FoldA's and FoldB's fold boxes — the
+    M1 arm re-collinearizes onto the straight michelson layout, both fold
+    mirrors ghost in the 3D view and gain "(excluded)" badges in the
+    outliner, and the ray preview straightens. Re-check both — the folded
+    layout restores EXACTLY. One **Undo** per toggle.
+15. Chain ripple: still in michelson_folded, edit M1's Distance cell
+    (e.g. `arm1 - fold_in - fold_up` → a plain number) — downstream
+    stays consistent and ONE Undo restores. Drag M2 in the 3D view — the
+    Screen follows rigidly and M2's chain fields re-derive to literals.
+16. Variables + sweep: in the **Variables** dock, tick `arm2`'s Sweep
+    box, then **Run Pipeline** — the pre-sweep summary dialog shows the
+    run count and time estimate (Cancel aborts cleanly). Run it; when
+    the sweep finishes the **Compare** dock populates (metric-vs-arm2
+    plots, per-variant gallery, signed difference maps, scrub slider).
+17. Export: **File → Export FCStd…** writes a standalone copy in the
+    CURRENT fold state; open it in plain FreeCAD — bodies, dim sheets,
+    the miewb_vars sheet and the MieTrain property group are all
+    visible/editable there.
 
 > This checklist grows as rounds land; add new manual steps here.
 
