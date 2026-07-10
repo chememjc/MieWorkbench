@@ -1106,6 +1106,12 @@ class VtkSceneView(QWidget):
 
     # -- rendering ------------------------------------------------------------
     def _render(self):
-        if is_offscreen():
+        # Once shutdown() has Finalize()d the render window a Render() call
+        # dereferences freed native resources and segfaults. A late
+        # sceneLoaded can still reach the view during teardown: closeEvent
+        # shuts the panes down BEFORE project.shutdown() closes the
+        # document, whose sceneLoaded then drives load_bodies -> _render on
+        # the dead window. Respect _shutdown_done exactly like is_offscreen.
+        if is_offscreen() or getattr(self, "_shutdown_done", False):
             return
         self.interactor.GetRenderWindow().Render()

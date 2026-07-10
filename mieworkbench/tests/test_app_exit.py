@@ -113,6 +113,45 @@ def test_view_shutdown_is_idempotent(qtbot):
     assert view._shutdown_done is True
 
 
+def test_render_is_a_noop_after_shutdown(qtbot, monkeypatch):
+    """Regression: closing a dirty model without saving segfaulted on exit.
+
+    MainWindow.closeEvent shuts the VTK panes down (shutdown() Finalize()s
+    the render window) BEFORE project.shutdown() closes the document; the
+    close then emits sceneLoaded, whose scene3d slot drives
+    load_bodies -> _render() on the now-dead render window -> segfault.
+    _render() must respect _shutdown_done just like is_offscreen (offscreen
+    it can't reproduce because _render short-circuits regardless, so force
+    the live branch with a recording stub interactor)."""
+    import mieworkbench.widgets.vtkview as vtkview
+
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(vtkview, "is_offscreen", lambda: False)
+
+    rendered = []
+
+    class _StubRenderWindow:
+        def Render(self):
+            rendered.append(True)
+
+    class _StubInteractor:
+        def GetRenderWindow(self):
+            return _StubRenderWindow()
+
+    view.interactor = _StubInteractor()
+
+    # live view: _render reaches the render window
+    view._render()
+    assert rendered == [True]
+
+    # after shutdown a late sceneLoaded must NOT touch the dead window
+    rendered.clear()
+    view._shutdown_done = True
+    view._render()
+    assert rendered == []
+
+
 # ---------------------------------------------------------------------------
 # contract: MainWindow.closeEvent releases every native resource
 # ---------------------------------------------------------------------------
