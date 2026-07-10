@@ -50,6 +50,10 @@ typedef struct {
      * — scene.py:454-477): */
     double *n_re, *n_im;
     double *filter_alpha;       /* additive bulk alpha [1/m]; NULL if none */
+    /* uniaxial birefringence (scene.py:137-144; biaxial is Python-routed) */
+    uint8_t birefringent;
+    kvec3 crystal_axis;         /* unit optic axis */
+    double *bir_n_o, *bir_n_e;  /* per-lam REAL indices (D1) */
     /* dichroic polarizer (tracer._apply_polarizer): applied on ENTRY */
     uint8_t has_polarizer;
     uint8_t pol_type;

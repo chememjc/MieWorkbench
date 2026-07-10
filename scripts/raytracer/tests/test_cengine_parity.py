@@ -228,6 +228,20 @@ def test_real_geometry_parity(name, tmp_path):
         rel_close(py_rep["detected_W"][label], c_rep["detected_W"][label],
                   0.03, "%s detected_W %s" % (name, label))
 
+    # spatial: irradiance-weighted centroid within ~2 px (catches e.g. a
+    # wrong calcite walk-off displacement that power totals would miss)
+    py_cube, _, _ = load_cube(py["case_dir"])
+    c_cube, _, _ = load_cube(cc["case_dir"])
+    py_img = py_cube.sum(axis=0)
+    c_img = c_cube.sum(axis=0)
+    if py_img.sum() > 0 and c_img.sum() > 0:
+        yy, xx = np.mgrid[0:py_img.shape[0], 0:py_img.shape[1]]
+        for ax, gr in (("x", xx), ("y", yy)):
+            pc = (py_img * gr).sum() / py_img.sum()
+            ccn = (c_img * gr).sum() / c_img.sum()
+            assert abs(pc - ccn) < 2.0, \
+                "%s centroid_%s %.2f vs %.2f px" % (name, ax, pc, ccn)
+
 
 _SURF_SPECS = {
     "sphere": ("sphere 0.01 0 0 0.006",

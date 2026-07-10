@@ -138,7 +138,7 @@ Python engine on synthetic feature scenes) plus the C unit tests.
 | C | scene-wide TLAS BVH + mesh BLAS (TLAS == linear scan pinned) | **done** |
 | D | coherent Huygens gather: fused CUDA kernel + CPU twin, occlusion, save-fields | **done** |
 | E | gratings (lamellar/dammann/table pre-resolved, Kogelnik per-ray), Beckmann roughness + diffusers, ABg scatter (g=2) | **done** |
-| F | birefringence (uniaxial, biaxial) | pending |
+| F | uniaxial birefringence (o/e split, walk-off, mode-preserving internal reflections); biaxial stays Python-routed | **done** |
 | G | particles/Mie | pending |
 | H | ray differentials, ghost analysis, export-rays, viz-pattern | pending |
 | I | importance aiming (opt-in), perf polish | pending |

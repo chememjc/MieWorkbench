@@ -50,6 +50,8 @@ PORTED = frozenset({
     "grating",                  # phase E (all models; kogelnik per-ray)
     "roughness",                # phase E (Beckmann lobes, micro Fresnel)
     "scatter",                  # phase E (ABg lobes, g == 2)
+    "birefringence",            # phase F (uniaxial o/e; biaxial stays
+                                #   Python-routed via its own feature)
 })
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -361,6 +363,16 @@ def build_request(args, scene, seed, lam_range, grids, out_dir):
         if body.filter_lam_um is not None:
             alpha = body.filter_alpha(lams)
             entry["filter_alpha"] = [float(x) for x in np.asarray(alpha)]
+        entry["birefringence"] = None
+        if body.birefringent:
+            n_o, n_e = scene.uniaxial_indices(body, lams)
+            entry["birefringence"] = {
+                "axis": [float(x) for x in body.crystal_axis],
+                "n_o": [float(x) for x in np.broadcast_to(n_o,
+                                                          lams.shape)],
+                "n_e": [float(x) for x in np.broadcast_to(n_e,
+                                                          lams.shape)],
+            }
         entry["polarizer"] = None
         if body.polarizer is not None:
             from .optprops import interp_hard

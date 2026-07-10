@@ -214,6 +214,10 @@ REAL_SCENES = {
     "mesh_freeform": "statistical",        # tessellated face -> BLAS (C)
     "scatter_plate": "statistical",        # ABg measured scatter (E)
     "bench": "statistical",                # diffuser + coherent source (E)
+    "calcite_displacer": "statistical",    # uniaxial o/e walk-off (F)
+    "waveplate_quartz": "statistical",     # quartz retarder + polarizer (F)
+    "wollaston": "statistical",            # crossed calcite prisms (F)
+    "pol_circular": "statistical",         # circular polarizer chain (F)
 }
 
 

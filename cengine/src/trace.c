@@ -25,6 +25,7 @@
 #include "kernels/thinfilm.h"
 #include "kernels/scatterk.h"
 #include "kernels/gratingk.h"
+#include "kernels/birefk.h"
 #include "rng.h"
 
 #include <omp.h>
@@ -306,6 +307,239 @@ static IfcCoef interface_coeffs(const SceneC *s, const FaceC *face,
     return c;
 }
 
+/* ------------------------------------------- birefringent children */
+/* Port of Tracer._birefringent_children (tracer.py:949-1200): uniaxial
+ * o/e double refraction. Entry: unitary o/e channel decomposition at the
+ * incident k, per-channel effective-index Fresnel, o child (Snell, D
+ * along e_o) + e child (normal-surface k, RAY along the walk-off
+ * Poynting direction, phase index in n_eff) + coherent reflected child.
+ * Exit: wavevector tangential continuity out; internal reflections are
+ * mode-preserving. Coating/roughness on birefringent faces are not
+ * modeled (same limitation as Python, which warns). */
+static void biref_children(const SceneC *s, const FaceC *face,
+                           const BodyC *body, const Ray *r, int entering,
+                           kvec3 n_hat, double cos_i, ThreadCtx *cx) {
+    double n_o = body->bir_n_o[r->lam_idx];
+    double n_e = body->bir_n_e[r->lam_idx];
+    kvec3 c = body->crystal_axis;
+    double r_m = body->mirror;
+    double a = body->absorbance;
+    double phys = (1.0 - r_m) * (1.0 - a);
+    double p_in = ray_power(r);
+    double p_accounted = 0.0;
+    int can_reflect = r->generation < s->max_reflections;
+
+    if (entering) {
+        /* ------------- ENTRY: outside -> crystal ------------- */
+        kcplx n1c = scene_medium_n(s, ray_current_medium(r), r->lam_idx);
+        double n1 = n1c.re;
+        BirefIn bi = biref_refract_in(r->dir, n_hat, c, n1, n_o, n_e);
+
+        kvec3 s_new, p_new;
+        fresnel_pol_basis(r->dir, n_hat, &s_new, &p_new);
+        kvec3 p_old = v3_cross(r->dir, r->s_hat);
+        kcplx Es_i, Ep_i;
+        fresnel_rotate_jones(r->Es, r->Ep, r->s_hat, p_old, s_new, p_new,
+                             &Es_i, &Ep_i);
+        /* unitary o/e channel decomposition at the incident k
+         * (tracer.py:1005-1019) */
+        kvec3 eo_i, ee_i;
+        biref_eigenbasis(r->dir, c, &eo_i, &ee_i);
+        kcplx Eo_i, Ee_i;
+        fresnel_rotate_jones(Es_i, Ep_i, s_new, p_new, eo_i, ee_i,
+                             &Eo_i, &Ee_i);
+        double cs_o = v3_dot(eo_i, s_new);
+        double sn_o = v3_dot(eo_i, p_new);
+
+        FresnelC Fo = fresnel_eval(cos_i, n1c, kc(n_o, 0.0));
+        FresnelC Fe = fresnel_eval(cos_i, n1c, kc(bi.n_phase_e, 0.0));
+        double Ts_o = Fo.Ts > 0.0 ? Fo.Ts : 0.0;
+        double Tp_o = Fo.Tp > 0.0 ? Fo.Tp : 0.0;
+        double Ts_e = Fe.Ts > 0.0 ? Fe.Ts : 0.0;
+        double Tp_e = Fe.Tp > 0.0 ? Fe.Tp : 0.0;
+
+        /* reflected child: coherent sum of both channels' reflections
+         * (tracer.py:1030-1054) */
+        Ray refl = *r;
+        refl.dir = fresnel_reflect_dir(r->dir, n_hat);
+        refl.s_hat = s_new;
+        kcplx ars_o = kc_scale(kc_cis(kc_arg(Fo.rs)),
+                               sqrt(r_m + phys * kc_abs2(Fo.rs)));
+        kcplx arp_o = kc_scale(kc_cis(kc_arg(Fo.rp)),
+                               sqrt(r_m + phys * kc_abs2(Fo.rp)));
+        kcplx ars_e = kc_scale(kc_cis(kc_arg(Fe.rs)),
+                               sqrt(r_m + phys * kc_abs2(Fe.rs)));
+        kcplx arp_e = kc_scale(kc_cis(kc_arg(Fe.rp)),
+                               sqrt(r_m + phys * kc_abs2(Fe.rp)));
+        refl.Es = kc_sub(kc_mul(kc_scale(Eo_i, cs_o), ars_o),
+                         kc_mul(kc_scale(Ee_i, sn_o), ars_e));
+        refl.Ep = kc_add(kc_mul(kc_scale(Eo_i, sn_o), arp_o),
+                         kc_mul(kc_scale(Ee_i, cs_o), arp_e));
+        refl.generation = (int16_t)(r->generation + 1);
+        refl.ray_key = rng_child_key(r->ray_key, r->event_ctr,
+                                     CHILD_SLOT_REFLECT);
+        refl.event_ctr = 0;
+        double p_refl = ray_power(&refl);
+        if (!can_reflect) {
+            ledger_credit(&cx->ledger, BK_TRUNCATED_GENERATION,
+                          r->source_id, p_refl);
+        } else if (p_refl > 0.0) {
+            flux_out_child(&cx->ledger, body, &refl);
+            push_child(s, cx, &refl);
+        }
+        p_accounted += p_refl;
+
+        /* ordinary transmitted child (tracer.py:1056-1079) */
+        if (!bi.tir_o) {
+            kvec3 eo_o, ee_o;
+            biref_eigenbasis(bi.k_o, c, &eo_o, &ee_o);
+            kcplx ats_o = kc_scale(kc_cis(kc_arg(Fo.ts)),
+                                   sqrt(phys * Ts_o));
+            kcplx atp_o = kc_scale(kc_cis(kc_arg(Fo.tp)),
+                                   sqrt(phys * Tp_o));
+            kcplx Eso, Epo;
+            fresnel_rotate_jones(kc_mul(kc_scale(Eo_i, cs_o), ats_o),
+                                 kc_mul(kc_scale(Eo_i, sn_o), atp_o),
+                                 s_new, v3_cross(bi.k_o, s_new),
+                                 eo_o, ee_o, &Eso, &Epo);
+            Ray och = *r;
+            och.dir = bi.k_o;
+            och.s_hat = eo_o;
+            och.Es = Eso;               /* o mode: D along e_o only */
+            och.Ep = kc(0.0, 0.0);
+            och.pol_mode = 0;
+            och.n_eff = 0.0;            /* medium table gives n_o */
+            push_medium(&och, (int16_t)body->index, s, face->id);
+            och.ray_key = rng_child_key(r->ray_key, r->event_ctr,
+                                        CHILD_SLOT_ORDINARY);
+            och.event_ctr = 0;
+            double p_o = ray_power(&och);
+            if (p_o > 0.0) {
+                flux_out_child(&cx->ledger, body, &och);
+                push_child(s, cx, &och);
+            }
+            p_accounted += p_o;
+        }
+
+        /* extraordinary transmitted child (tracer.py:1081-1105) */
+        if (!bi.tir_e) {
+            kvec3 eo_e, ee_e;
+            biref_eigenbasis(bi.k_e, c, &eo_e, &ee_e);
+            kcplx ats_e = kc_scale(kc_cis(kc_arg(Fe.ts)),
+                                   sqrt(phys * Ts_e));
+            kcplx atp_e = kc_scale(kc_cis(kc_arg(Fe.tp)),
+                                   sqrt(phys * Tp_e));
+            kcplx Ese, Epe;
+            fresnel_rotate_jones(
+                kc_mul(kc_scale(Ee_i, -sn_o), ats_e),
+                kc_mul(kc_scale(Ee_i, cs_o), atp_e),
+                s_new, v3_cross(bi.k_e, s_new), eo_e, ee_e, &Ese, &Epe);
+            Ray ech = *r;
+            ech.dir = bi.s_e;           /* RAY along the Poynting dir */
+            ech.s_hat = eo_e;
+            ech.Es = kc(0.0, 0.0);
+            ech.Ep = Epe;               /* e mode: D along e_e only */
+            ech.pol_mode = 1;
+            ech.n_eff = bi.n_ray_e;     /* OPL per metre ALONG the ray */
+            push_medium(&ech, (int16_t)body->index, s, face->id);
+            ech.ray_key = rng_child_key(r->ray_key, r->event_ctr,
+                                        CHILD_SLOT_EXTRAORD);
+            ech.event_ctr = 0;
+            double p_e = ray_power(&ech);
+            if (p_e > 0.0) {
+                flux_out_child(&cx->ledger, body, &ech);
+                push_child(s, cx, &ech);
+            }
+            p_accounted += p_e;
+        }
+    } else {
+        /* ------------- EXIT: crystal -> outside ------------- */
+        int far = (r->depth >= 2) ? r->medium[r->depth - 2] : AMBIENT;
+        kcplx n2c = scene_medium_n(s, far, r->lam_idx);
+        int is_e = r->pol_mode == 1;
+        kvec3 k_int = is_e ? biref_k_from_ray(r->dir, c, n_o, n_e)
+                           : r->dir;
+        double n_phase = is_e
+            ? biref_n_e_theta(v3_dot(k_int, c), n_o, n_e) : n_o;
+        double cos_k = -v3_dot(k_int, n_hat);
+        if (cos_k < 0.0) cos_k = 0.0;
+        if (cos_k > 1.0) cos_k = 1.0;
+        int tir;
+        kvec3 d_out = biref_refract_out(k_int, is_e, n_hat, c, n_o, n_e,
+                                        n2c.re, &tir);
+        FresnelC F = fresnel_eval(cos_k, kc(n_phase, 0.0), n2c);
+        double Ts = F.Ts > 0.0 ? F.Ts : 0.0;
+        double Tp = F.Tp > 0.0 ? F.Tp : 0.0;
+        kvec3 s_new, p_new;
+        fresnel_pol_basis(k_int, n_hat, &s_new, &p_new);
+        kvec3 p_old = v3_cross(r->dir, r->s_hat);
+        kcplx Es_i, Ep_i;
+        fresnel_rotate_jones(r->Es, r->Ep, r->s_hat, p_old, s_new, p_new,
+                             &Es_i, &Ep_i);
+
+        /* transmitted child: leaves the crystal, mode resets
+         * (tracer.py:1151-1165) */
+        if (!tir) {
+            Ray tr = *r;
+            tr.dir = d_out;
+            tr.s_hat = s_new;
+            tr.Es = kc_mul(Es_i, kc_scale(kc_cis(kc_arg(F.ts)),
+                                          sqrt(phys * Ts)));
+            tr.Ep = kc_mul(Ep_i, kc_scale(kc_cis(kc_arg(F.tp)),
+                                          sqrt(phys * Tp)));
+            tr.pol_mode = 0;
+            tr.n_eff = 0.0;
+            pop_medium(&tr, (int16_t)body->index, s, face->id);
+            tr.ray_key = rng_child_key(r->ray_key, r->event_ctr,
+                                       CHILD_SLOT_TRANSMIT);
+            tr.event_ctr = 0;
+            double p_t = ray_power(&tr);
+            if (p_t > 0.0) {
+                flux_out_child(&cx->ledger, body, &tr);
+                push_child(s, cx, &tr);
+            }
+            p_accounted += p_t;
+        }
+
+        /* internal reflection: mode-preserving (tracer.py:1167-1193) */
+        kvec3 k_r = fresnel_reflect_dir(k_int, n_hat);
+        Ray rf = *r;
+        rf.dir = k_r;
+        rf.s_hat = s_new;
+        rf.Es = kc_mul(Es_i, kc_scale(kc_cis(kc_arg(F.rs)),
+                                      sqrt(r_m + phys * kc_abs2(F.rs))));
+        rf.Ep = kc_mul(Ep_i, kc_scale(kc_cis(kc_arg(F.rp)),
+                                      sqrt(r_m + phys * kc_abs2(F.rp))));
+        rf.generation = (int16_t)(r->generation + 1);
+        rf.ray_key = rng_child_key(r->ray_key, r->event_ctr,
+                                   CHILD_SLOT_REFLECT);
+        rf.event_ctr = 0;
+        if (is_e) {
+            kvec3 s_ray;
+            double np_, n_ray;
+            biref_ray_from_k(k_r, c, n_o, n_e, &s_ray, &np_, &n_ray);
+            rf.dir = s_ray;
+            rf.n_eff = n_ray;
+        }
+        double p_rf = ray_power(&rf);
+        if (!can_reflect) {
+            ledger_credit(&cx->ledger, BK_TRUNCATED_GENERATION,
+                          r->source_id, p_rf);
+        } else if (p_rf > 0.0) {
+            flux_out_child(&cx->ledger, body, &rf);
+            push_child(s, cx, &rf);
+        }
+        p_accounted += p_rf;
+    }
+
+    double absorbed = p_in - p_accounted;
+    if (absorbed > 0.0) {
+        ledger_credit(&cx->ledger, BK_ABSORBED_SURFACE, r->source_id,
+                      absorbed);
+        cx->ledger.surf_by_body[body->index] += absorbed;
+    }
+}
+
 /* ----------------------------------------------------- optic children */
 /* Port of Tracer._optic_children (tracer.py:457-896), phase-A subset:
  * bare Fresnel + mirror/absorbance + medium stack + seam guard. Coatings/
@@ -336,6 +570,29 @@ static void optic_children(const SceneC *s, const FaceC *face,
 
     if (entering)
         cx->ledger.flux_in[body->index] += ray_power(r);
+
+    /* ---- uniaxial birefringence: dedicated o/e split path
+     * (tracer.py:491-494; biaxial is Python-routed) ---- */
+    if (body->birefringent) {
+        biref_children(s, face, body, r, entering, n_hat, cos_i, cx);
+        return;
+    }
+    /* mode-tagged crystal ray at a non-birefringent boundary (nested
+     * body inside a crystal): continue as ordinary (tracer.py:498-510) */
+    Ray fixed;
+    if (r->pol_mode != 0) {
+        static int warned_nested_mode = 0;
+        if (!warned_nested_mode) {
+            warned_nested_mode = 1;     /* benign race: warn-once flag */
+            LOGW("mode-tagged crystal ray hit non-birefringent face %s "
+                 "(nested body inside a crystal?) — continuing as "
+                 "ordinary index (documented approximation)", face->id);
+        }
+        fixed = *r;
+        fixed.pol_mode = 0;
+        fixed.n_eff = 0.0;
+        r = &fixed;
+    }
 
     /* media on both sides (tracer.py:512-536): entering -> far side is the
      * body; exiting -> the medium UNDER the top of the stack */

@@ -507,6 +507,16 @@ SceneC *request_load(const char *path) {
         b->filter_alpha = (fa && !yyjson_is_null(fa))
             ? need_dbl_array(bobj, "filter_alpha", ctx, (size_t)s->n_lams)
             : NULL;
+        /* uniaxial birefringence (optional) */
+        yyjson_val *bir = yyjson_obj_get(bobj, "birefringence");
+        if (bir && !yyjson_is_null(bir)) {
+            b->birefringent = 1;
+            b->crystal_axis = v3_unit(need_vec3(bir, "axis", ctx));
+            b->bir_n_o = need_dbl_array(bir, "n_o", ctx,
+                                        (size_t)s->n_lams);
+            b->bir_n_e = need_dbl_array(bir, "n_e", ctx,
+                                        (size_t)s->n_lams);
+        }
         /* dichroic polarizer (optional) */
         yyjson_val *pol = yyjson_obj_get(bobj, "polarizer");
         if (pol && !yyjson_is_null(pol)) {
@@ -817,6 +827,8 @@ void scene_free(SceneC *s) {
         free(s->bodies[i].filter_alpha);
         free(s->bodies[i].pol_T_par);
         free(s->bodies[i].pol_T_perp);
+        free(s->bodies[i].bir_n_o);
+        free(s->bodies[i].bir_n_e);
     }
     for (int i = 0; i < s->n_coatings; i++) {
         free(s->coatings[i].layer_n_re);
