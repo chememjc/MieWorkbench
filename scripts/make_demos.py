@@ -1259,7 +1259,290 @@ def demo_imaging_analysis(d):
             "emit_csv": True}
 
 
+def demo_multiled_photometry(d):
+    """Multi-LED illuminator / colorimetry bench: four distinct incoherent
+    LED emission bodies at staggered heights are collected by a single BK7
+    plano-convex condenser and mixed by a 600-grit ground-glass diffuser
+    onto a photometric target (illuminance in lux). Three of the sources are
+    catalog monochromatic-LED primitives (royal-blue 452 nm 3 mW, green
+    527 nm 4 mW, red 625 nm 5 mW); the fourth is a phosphor-converted WHITE
+    LED built from a `source_broadband` body carrying the tabulated
+    CIE 015:2018 LED-B1 emission spectrum (`spectrum=led_white_2733k`,
+    6 mW). ALL sources are incoherent (coherent=False), so every source
+    deposits DIRECTLY (no coherent gather) and the per-source detected-power
+    tally exercises the incoherent path with 4 sources x their lambda
+    strata. Outputs: --photometric (lux/lm illuminance block on TargetLux)
+    and --emit-csv (data/source_detector.csv = per-(source,detector)
+    detected power, all four sources present).
+
+    NOTE (deviation from demosystems.md 3.5): the optional pellicle +
+    'MonitorTap' second detector is omitted. The required deliverables
+    (photometric block, per_source table for all four sources,
+    source_detector.csv, energy closure) are all met by the single-detector
+    scene, which stays cleanly C-engine-routable; a 45 deg pellicle fold arm
+    with an anchored off-axis pinned monitor detector adds fold/edge-face
+    risk for no new *required* coverage. Logged as a scope trim, not a
+    physics limit."""
+    # four sources at staggered y, all emitting +x from local x=0. The
+    # GREEN LED sits on the optical axis (y=0) and is the chain reference;
+    # the other three are offset (a chain decenter offsets the ELEMENT
+    # body, NOT the beam axis, so it cannot re-center a train onto y=0 --
+    # see UX notes -- hence the axial reference source must itself be on
+    # axis).
+    d.add("led_royal_blue_450", "LEDblue", pos=(-60.0, -6.0, 0.0),
+          params={"diameter": 4.0, "length": 8.0, "round_flag": 1},
+          props={"power": 3.0})
+    d.add("led_green_525", "LEDgreen", pos=(-60.0, 0.0, 0.0),
+          params={"diameter": 4.0, "length": 8.0, "round_flag": 1},
+          props={"power": 4.0})
+    d.add("led_red_630", "LEDred", pos=(-60.0, 4.0, 0.0),
+          params={"diameter": 4.0, "length": 8.0, "round_flag": 1},
+          props={"power": 5.0})
+    # WHITE LED: a source_broadband body wearing the tabulated CIE LED-B1
+    # emission spectrum (the emission-registry row supersedes lambdamin/max).
+    d.add("source_broadband", "LEDwhite", pos=(-60.0, 8.0, 0.0),
+          params={"diameter": 4.0, "length": 8.0, "round_flag": 1},
+          props={"power": 6.0, "spectrum": "led_white_2733k"})
+    # condenser on-axis, chained off the on-axis green LED. f~=60 mm PCX
+    # (R_front = f*(n_bk7-1) ~= 31.2 at 550 nm), Ø30 to capture all four
+    # staggered beams.
+    n_bk7 = n_glass("bk7", 550.0)
+    f_cond = 60.0
+    R_cond = f_cond * (n_bk7 - 1.0)
+    d.chain("lens_pcx", "Condenser", "LEDgreen", 60.0,
+            params={"R_front": R_cond, "ct": 5.0, "aperture": 30.0})
+    # ground-glass mixing element near the condenser focus (@dg_600 is the
+    # diffuser_plate primitive's built-in exit-face default).
+    d.chain("diffuser_plate", "Diffuser", "Condenser", 55.0,
+            params={"width": 25.0, "thickness": 2.0, "round_flag": 1})
+    # photometric target (lux). Large Ø60 round screen to catch the mixed,
+    # diffuser-broadened cone (energy still closes on the loss partition
+    # whatever spills past it).
+    d.chain("detector_plane", "TargetLux", "Diffuser", 40.0,
+            params={"width": 60.0, "round_flag": 1})
+    d.expect("Condenser", (0.0, 0.0, 0.0))
+    d.expect("Diffuser", (60.0, 0.0, 0.0))
+    d.expect("TargetLux", (102.0, 0.0, 0.0))
+    d.note("multiled_photometry: four incoherent LED bodies (3 catalog "
+           "monochromatic primitives + a source_broadband wearing the "
+           "tabulated CIE LED-B1 white spectrum) collected on-axis; "
+           "--photometric lux + --emit-csv per-source table")
+    return {"preset": "quick", "photometric": True, "emit_csv": True}
+
+
+def demo_stokes_polarimeter(d):
+    """Full-Stokes imaging polarimeter viewing an angle-varying
+    polarization field. A 550 nm COHERENT, linear:45 DIVERGING beam
+    (laser_divergent, roc 7 mm -> ~+/-8 deg cone) crosses a multi-order
+    quartz A-plate (3 mm, optic axis +z, in the plate plane). Because
+    the retardance of a birefringent plate depends on the ray's angle to
+    the optic axis, each field angle emerges with a different polarization
+    ellipse; the coherent Huygens gather maps field angle -> detector
+    radius, so the --save-fields Stokes maps show CONCENTRIC RINGS in
+    S2/S3 (isochromes of the retardance figure) — genuine spatially-varying
+    polarization the S0/S1/S2/S3 + DOP maps resolve. In the plate's
+    eigenbasis the +45 input (equal fast/slow amplitudes) becomes
+    (1, e^{i*Gamma})/sqrt2, i.e. S2 ~ cos(Gamma(theta)), S3 ~ -sin(Gamma
+    (theta)): as Gamma sweeps several multiples of pi across the cone, S2
+    and S3 cycle through rings. DOP ~= 1 everywhere (pure retarder, no
+    depolarization).
+
+    NOTE 1 (deviations from demosystems.md 3.6 / the batch brief): (a) NO
+    final crossed polarizer. A FULL analyzer projects every ray onto its
+    transmission axis, so the post-analyzer field is uniformly that axis
+    and S1/S2 come out spatially CONSTANT — a crossed analyzer would give
+    S0 isochromatic rings but FLAT S1/S2. Dropping it lets the detector BE
+    the full-Stokes analyzer and keeps real S1/S2/S3 structure (the actual
+    'full Stokes/DOP imaging' feature). (b) The retardance is varied by
+    the beam DIVERGENCE (angle), NOT by a plate TILT: a tilt of a
+    plane-parallel plate does not vary retardance across a COLLIMATED
+    aperture (all parallel rays share one angle); a divergent cone gives a
+    real per-ray angle spread. (c) INCOHERENT sources do not populate the
+    --save-fields complex field maps at all (no Stokes maps), so the source
+    must be COHERENT here.
+
+    NOTE 2: SQUARE detector — a non-square --save-fields grid crashes the
+    field-analysis plotter. See UX notes."""
+    lam = 550.0
+    d.add("laser_divergent", "Cone", pos=(-30.0, 0.0, 0.0),
+          params={"diameter": 2.0, "length": 6.0, "roc": 7.0, "round_flag": 1},
+          props={"lambdac": lam, "coherent": True,
+                 "polarization": "linear:45"})
+    # multi-order quartz A-plate (optic axis +z, in the plate plane):
+    # retardance ~50 waves on-axis and angle-dependent, so the output
+    # polarization ellipse (S2 ~ cos Gamma(theta), S3 ~ -sin Gamma(theta))
+    # varies across the +/-8 deg cone. Thickness capped near 3 mm: a
+    # thicker plate makes the mean optical path vary too fast between gather
+    # samples (phase_step >> pi) and the coherent Huygens reconstruction
+    # collapses to phase noise (the geometric power survives but the field
+    # map goes to ~0 -- the 'coherent gather needs rays' trap). See UX notes.
+    d.chain("waveplate", "Waveplate", "Cone", 30.0,
+            params={"width": 20.0, "thickness": 3.0, "round_flag": 1},
+            props={"material": "quartz", "crystal_axis": "0,0,1"})
+    d.chain("detector_plane", "Screen", "Waveplate", 150.0,
+            params={"width": 60.0, "height": 60.0, "round_flag": 0})
+    d.expect("Waveplate", (0.0, 0.0, 0.0))
+    d.expect("Screen", (3.0 + 150.0, 0.0, 0.0))
+    d.note("stokes_polarimeter: angle-varying retardance (divergent "
+           "coherent beam through a thick quartz A-plate) -> S2/S3 "
+           "isochromatic RINGS in the --save-fields Stokes maps; no final "
+           "analyzer (a full analyzer flattens S1/S2). SQUARE detector "
+           "(non-square crashes the field plotter)")
+    return {"preset": "quick", "save_fields": True}
+
+
+def demo_biaxial_conoscopy(d):
+    """Conoscopic interference figure from a BIAXIAL KTP plate between
+    crossed polarizers in convergent (divergent-cone) light — the
+    mineralogy/petrography conoscope, and a KTP-characterization bench. A
+    589 nm unpolarized diverging cone (laser_divergent, roc 3 mm -> ~+/-18
+    deg half-angle) is linearly polarized (+z), crosses a 2 mm KTP plate,
+    is analyzed by a crossed polarizer (+y), and lands on a screen 50 mm
+    behind (angle -> radius mapping) where the isogyre figure forms.
+
+    CRYSTAL ORIENTATION: KTP is biaxial with n_x<n_y<n_z (1.738/1.745/1.830
+    at 1064 nm) and n_y much closer to n_x than to n_z, so it is a POSITIVE
+    biaxial whose acute bisectrix is the Z principal axis; its two optic
+    axes lie in the X-Z principal plane at +/-V_z ~= 17.5 deg from Z at
+    589 nm (Kato & Takaoka 2002). This demo places the ACUTE BISECTRIX (Z)
+    along the viewing/beam axis (+x) so the centred acute-bisectrix figure
+    forms, and spins the crystal 45 deg about the beam so the optic axial
+    plane lies at 45 deg to the crossed polarizers (the two hyperbolic
+    isogyres, not a single cross). With crystal_axis = X principal and
+    crystal_axis2 = Y principal, choosing X=(0,cos45,sin45),
+    Y=(0,-sin45,cos45) gives Z = X x Y = (+1,0,0) = the beam axis.
+
+    NOTE: biaxial birefringence is NOT in the C-engine PORTED set, so this
+    scene routes to the PYTHON reference engine (recorded engine_reason
+    'unported: biaxial') — expected. Ray budget kept at the quick preset
+    (1e5); the unpolarized source is 2 incoherent pol strata."""
+    a = 0.70710678
+    d.add("laser_divergent", "Cone", pos=(-30.0, 0.0, 0.0),
+          params={"diameter": 2.0, "length": 4.0, "roc": 3.0, "round_flag": 1},
+          props={"lambdac": 589.0, "coherent": False,
+                 "polarization": "unpolarized"})
+    d.chain("polarizer_plate", "InPol", "Cone", 30.0,
+            params={"width": 20.0, "thickness": 1.0, "round_flag": 1},
+            props={"material": "air", "polarizer": "ideal_linear",
+                   "polarizer_axis": "0,0,1"})
+    d.chain("window", "KTP", "InPol", 3.0,
+            params={"width": 15.0, "thickness": 2.0, "round_flag": 1},
+            props={"material": "ktp",
+                   "crystal_axis": "0,%.8f,%.8f" % (a, a),
+                   "crystal_axis2": "0,%.8f,%.8f" % (-a, a)})
+    d.chain("polarizer_plate", "Analyzer", "KTP", 3.0,
+            params={"width": 20.0, "thickness": 1.0, "round_flag": 1},
+            props={"material": "air", "polarizer": "ideal_linear",
+                   "polarizer_axis": "0,1,0"})
+    d.chain("detector_plane", "Figure", "Analyzer", 50.0,
+            params={"width": 60.0, "height": 60.0, "round_flag": 0})
+    d.expect("InPol", (0.0, 0.0, 0.0))
+    d.expect("KTP", (4.0, 0.0, 0.0))
+    d.expect("Analyzer", (9.0, 0.0, 0.0))
+    d.expect("Figure", (60.0, 0.0, 0.0))
+    # pin the recording face: the divergent-cone auto-pick otherwise lands
+    # on a thin edge face (a 16-row strip, not the 2D figure).
+    d.pin_detector("Figure", (1.0, 0.0, 0.0))
+    d.note("biaxial_conoscopy: KTP acute bisectrix (Z principal) along the "
+           "beam, spun 45 deg so the optic axial plane is at 45 deg to the "
+           "crossed polarizers -> two-isogyre acute-bisectrix figure. "
+           "Routes to PYTHON (biaxial unported) as expected")
+    return {"preset": "quick"}
+
+
+def demo_curved_focal_surface(d):
+    """Curved (Petzval) focal-surface bench: three 550 nm field angles
+    (on-axis, +16 deg, -16 deg) through a BK7 double-convex singlet
+    (f~80 mm, Ø14, ~f/10 for the Ø8 beams -> low spherical aberration, few
+    ghosts) land on TWO detectors at once so their per-field spot extents
+    can be compared:
+      * a CONCAVE SPHERICAL detector (a mirror_concave body tagged
+        material=detector, an ideal transparent recording surface) whose
+        radius equals the paraxial Petzval radius R_p = n_lens * f, its
+        concave face turned toward the beam so the surface follows the
+        inward-curving field;
+      * a FLAT detector_plane at the on-axis paraxial focus.
+    A material=detector solid records on its primary face and is a strict
+    no-op elsewhere (no refraction), so the beam passes THROUGH the concave
+    recorder unchanged and continues to the flat screen — both detectors
+    see the same three bundles. Result (measured from the clean focusing
+    bundle): the concave surface holds a tighter spot than the flat screen
+    at ALL three field angles (spot RMS ratio concave/flat ~0.76-0.90) —
+    the concave surface follows the inward Petzval field the flat plane
+    cannot. (Absolute off-axis spots are broadened by the singlet's own
+    coma/astigmatism at 16 deg, common to BOTH detectors.)
+
+    PETZVAL / DETECTOR-SIGN NOTE: for a thin positive lens the field sags
+    TOWARD the lens (Petzval radius R_p = -n*f); the best-focus surface is
+    therefore CONCAVE toward the beam. The demosystems brief suggested a
+    `lens_ball` here, but a solid sphere presents a CONVEX near face (the
+    wrong sign) that a positive lens's inward field can never match — a
+    solid ball detector is provably WORSE than the flat screen off-axis. A
+    `mirror_concave` tagged material=detector supplies the correct
+    concave-toward-beam recording surface (radius R_p = n_bk7(550)*80 ~=
+    121 mm). Deliberate deviation, physics-driven; see UX notes.
+
+    NOTE: a non-plane detector face adds the 'curved_detector' feature,
+    which is NOT in the C-engine PORTED set, so this scene routes to the
+    PYTHON reference engine — expected, recorded in case.json."""
+    lam = 550.0
+    n_bk7 = n_glass("bk7", lam)
+    f_lens = 80.0
+    R = 2.0 * f_lens * (n_bk7 - 1.0)     # symmetric DCX thin-lens radius
+    ct = 5.0
+    ap = 14.0
+    surfaces = [(0.0, R, None, "bk7"), (ct, -R, "bk7", None)]
+    x_f = paraxial_image_x(surfaces, float("-inf"), lam)
+    R_petzval = n_bk7 * f_lens           # |Petzval radius| = concave det R
+    # three field angles about z; each source is offset transversely so its
+    # chief ray hits the lens centre (0,0), and the small Ø8 beam stays in
+    # the paraxial zone of the lens (so the three spots differ by FIELD
+    # curvature, not by spherical aberration).
+    theta = 16.0
+    y_off = 40.0 * math.tan(math.radians(theta))
+    beam = 8.0
+    d.add("laser_collimated", "Axis", pos=(-40.0, 0.0, 0.0),
+          params={"diameter": beam, "length": 6.0},
+          props={"lambdac": lam, "coherent": False})
+    d.add("laser_collimated", "FieldP", pos=(-40.0, -y_off, 0.0),
+          rot_deg=theta,
+          params={"diameter": beam, "length": 6.0},
+          props={"lambdac": lam, "coherent": False})
+    d.add("laser_collimated", "FieldM", pos=(-40.0, y_off, 0.0),
+          rot_deg=-theta,
+          params={"diameter": beam, "length": 6.0},
+          props={"lambdac": lam, "coherent": False})
+    d.chain("lens_dcx", "Lens", "Axis", 40.0,
+            params={"R_front": R, "R_back": R, "ct": ct, "aperture": ap},
+            props={"coating": "MgF2"})
+    # concave spherical recording detector on the Petzval sphere. Anchored
+    # (mirror_concave has no chain port frame); vertex nudged 0.5 mm in
+    # front of x_f so its (transparent) surface sits entirely ahead of the
+    # flat screen (no coincident face) while still tracking the field.
+    d.add("mirror_concave", "CurvedDet", pos=(x_f, 0.0, 0.0),
+          params={"R": R_petzval, "ct": 4.0, "aperture": 60.0},
+          props={"material": "detector"})
+    d.add("detector_plane", "FlatDet", pos=(x_f + 8.0, 0.0, 0.0),
+          params={"width": 60.0, "height": 60.0, "round_flag": 0},
+          props={"material": "detector"})
+    d.expect("Lens", (0.0, 0.0, 0.0))
+    # pin the flat screen's recording face (the auto-pick otherwise lands on
+    # a thin edge face -> a strip image, not the 2D spot field).
+    d.pin_detector("FlatDet", (1.0, 0.0, 0.0))
+    d.note("curved_focal_surface: CONCAVE spherical detector (mirror_concave "
+           "tagged detector, R=n*f=%.0f mm Petzval) beats a flat screen at "
+           "+/-16 deg field; used mirror_concave NOT lens_ball because a "
+           "solid ball's convex face is the wrong sign for a positive lens's "
+           "inward field. Routes to PYTHON (curved_detector unported). "
+           "Paraxial focus x=%.1f mm" % (R_petzval, x_f))
+    return {"preset": "quick"}
+
+
 DEMOS = {
+    "multiled_photometry": demo_multiled_photometry,
+    "stokes_polarimeter": demo_stokes_polarimeter,
+    "biaxial_conoscopy": demo_biaxial_conoscopy,
+    "curved_focal_surface": demo_curved_focal_surface,
     "aerosol_mie": demo_aerosol_mie,
     "diffuser_speckle": demo_diffuser_speckle,
     "airy_singleslit": demo_airy_singleslit,

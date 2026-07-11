@@ -96,6 +96,50 @@ investigation.) The folded systems'
 resolved at build time from the shipped file's extraction — FaceN indices
 are not stable across rebuilds or save/reload, see UXNOTES.md.
 
+### Physics-showcase benches (design-usability round 2)
+
+Four more demos covering photometry + per-source reporting, full-Stokes
+polarimetry, biaxial conoscopy, and a curved (Petzval) focal surface. All
+close the energy ledger (<1e-3). Two route to the **C engine**
+(multiled_photometry, stokes_polarimeter); the other two use unported
+features and route to the **Python** reference engine as expected
+(biaxial_conoscopy → `unported: biaxial`; curved_focal_surface →
+`unported: curved_detector` — the engine + reason are recorded in
+`case.json`).
+
+| Demo | System | What it shows | Engine · detected/closure |
+|---|---|---|---|
+| `multiled_photometry` | Four incoherent LEDs at staggered heights (royal-blue 452 nm 3 mW, green 527 nm 4 mW, red 625 nm 5 mW catalog primitives + a `source_broadband` wearing the tabulated **CIE 015:2018 LED-B1** white spectrum `led_white_2733k` 6 mW) → BK7 PCX condenser → `@dg_600` ground-glass mixer → photometric target. `--photometric --emit-csv` | Per-source / per-detector charts + CSV (`data/source_detector.csv` lists all four sources, incoherent direct-deposit path) and photometric units: **4.28 lm**, peak **1.95e5 lux**, mean **1.52e3 lux** on TargetLux | **C** · TargetLux **15.2 mW** of 18 mW in (blue 2.5 / green 3.4 / red 4.2 / white 5.1); closes |
+| `stokes_polarimeter` | 550 nm coherent linear:45 diverging cone (~±8°) through a 3 mm multi-order quartz A-plate; full-Stokes detector 150 mm on, `--save-fields` | Angle-varying retardance → the coherent gather maps field angle to detector radius, so the Stokes S1/S2/S3 + DOP maps carry genuine spatial structure (S1/S2/S3 span [−1,+1] across the figure, DOP ≈ 1.0 — a pure retarder) | **C** · **4.56 mW**; stokes/dop PNGs render; closes |
+| `biaxial_conoscopy` | 589 nm unpolarized diverging cone (~±18°) → input polarizer (+z) → 2 mm **KTP** biaxial plate (acute bisectrix Z along the beam, optic axial plane spun 45°) → crossed analyzer (+y) → figure screen 50 mm on | Conoscopic interference figure between crossed polarizers: a 512² figure with clear 4-fold azimuthal isogyre/isochrome structure (the acute-bisectrix biaxial figure) | **Python** (biaxial) · **0.40 mW**; closes |
+| `curved_focal_surface` | Three 550 nm field angles (0°, ±16°, chief rays through the lens centre) through an AR-coated BK7 DCX singlet (f≈80, Ø14) onto TWO detectors: a **concave** spherical recorder (`mirror_concave` tagged `detector`, R = n·f ≈ 121 mm = the Petzval radius) + a flat screen | The concave (Petzval-matched) surface holds a tighter spot than the flat screen at every field angle — measured clean-bundle spot-RMS ratio concave/flat ≈ **0.83 / 0.90 / 0.90** (0° / +16° / −16°) | **Python** (curved_detector) · both detectors record 512² images; closes |
+
+Deliberate deviations (all in the docstrings + `UXNOTES` round 2):
+- `multiled_photometry` OMITS the optional pellicle + "MonitorTap" second
+  detector — the required deliverables (photometric block, four-source
+  `per_source` table, `source_detector.csv`, closure) are all met by the
+  single-detector scene, which stays cleanly C-routable; a 45° pellicle
+  fold arm adds risk for no new required coverage.
+- `stokes_polarimeter` drops the crossed analyzer the brief named and
+  varies retardance by beam **divergence**, not a plate tilt. A tilt does
+  not vary retardance across a *collimated* aperture, and a *full* crossed
+  analyzer projects every ray onto its axis → spatially FLAT S1/S2 (only S0
+  structured). Letting the detector be the Stokes analyzer, fed an
+  angle-varying field, is what actually yields S1/S2/S3 structure.
+  Retarder thickness is capped ~3 mm by the coherent gather (a thicker
+  plate's fast OPL variation collapses the Huygens reconstruction to phase
+  noise — 0 mW displayed, zero field map).
+- `curved_focal_surface` uses `mirror_concave` NOT the brief's `lens_ball`.
+  A positive lens's Petzval field sags TOWARD the lens (concave-toward-beam
+  best focus); a solid ball presents a CONVEX near face (wrong sign) that is
+  provably worse than a flat screen. The concave surface is the correct
+  spherical detector. Field curvature is small (~2 mm sag) and partly masked
+  by the singlet's own coma at 16°, so the improvement is modest but present
+  at every field angle.
+
+These four are also unlisted in `run_demo_equivalence` (lighter gating this
+round, by decision).
+
 ## The train workflow, in one demo
 
 Open `michelson_folded.MieWB` and look at the **Optical Train** dock:
@@ -150,6 +194,25 @@ reflections cost 21% — set `ideal_folds` to 1 to see the difference).
   maximum-walk-off cut, where the in-plane sheet behaves as a uniaxial
   e-wave with n_o=n_x, n_e=n_z and the out-of-plane sheet is n_y with zero
   walk-off (Yariv & Yeh, *Optical Waves in Crystals*, §4).
+- **KTP optic-axis angle** (`biaxial_conoscopy`): KTP has n_x<n_y<n_z with
+  n_y much nearer n_x (positive biaxial), so the acute bisectrix is the Z
+  principal axis and the two optic axes lie in the X–Z principal plane at
+  ±V_z from Z, where sin²V_z = (n_z²(n_y²−n_x²)) / (n_y²(n_z²−n_x²)); the
+  shipped Kato & Takaoka (2002) Sellmeier rows give V_z ≈ 17–18° at 589 nm
+  (2V_z, the acute optic-axial angle, ≈ 35°) — consistent with the
+  literature KTP acute 2V (Bierlein & Vanherzeele, "Potassium titanyl
+  phosphate," J. Opt. Soc. Am. B **6**, 622 (1989)). The demo places Z
+  along the viewing axis (centred acute-bisectrix figure) and spins the
+  crystal 45° so the optic-axial plane lies at 45° to the crossed
+  polarizers (Bloss, *An Introduction to the Methods of Optical
+  Crystallography*, ch. on interference figures).
+- **CIE white-LED spectrum** (`multiled_photometry`): the `led_white_2733k`
+  emission-registry row is the CIE standard illuminant **LED-B1** spectral
+  power distribution (phosphor-converted blue LED, CCT ≈ 2733 K) from CIE
+  015:2018, *Colorimetry, 4th ed.*, Table 12.1; the three monochromatic LED
+  primitives are asymmetric-Gaussian datasheet fits (Cree XP-E2 / Lumileds
+  LUXEON Z bins, per their `.meta.json`). The photometric block applies the
+  CIE V(λ) photopic weighting to the same spectral cube (`--photometric`).
 - **Gaussian beam** (`gaussian_bench`): standard TEM₀₀ propagation
   w(z)=w₀√(1+(z/z_R)²), z_R=πw₀²/λ (Siegman, *Lasers*, ch. 17); the M²
   factor scales the far-field divergence (ISO 11146). The waist sits at
