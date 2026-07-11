@@ -645,6 +645,26 @@ def _main_locked(args, case_dir):
                              case_dir=case_dir, status="estimated")
         return 0
 
+    # ---- engine routing (C engine, cengine/) ----
+    # choose_engine picks the compiled engine only when every feature this
+    # scene uses is ported+verified; the Python engine below remains the
+    # reference. A C-engine runtime failure under --engine auto falls
+    # back to Python with a loud warning (crash isolation: the C engine
+    # is a separate process).
+    from raytracer import cengine
+    engine, engine_reason = cengine.choose_engine(args, scene)
+    case["engine"] = engine
+    case["engine_reason"] = engine_reason
+    print("[trace] engine=%s (%s)" % (engine, engine_reason), flush=True)
+    if engine == "c":
+        rc = cengine.run_c_case(args, case_dir, scene, lam_range, case)
+        if rc is not None:
+            return rc
+        print("[trace] WARNING: C engine failed — falling back to the "
+              "Python engine for this case", flush=True)
+        case["engine"] = "python"
+        case["engine_reason"] = "c-engine runtime failure fallback"
+
     # wavelengths the particle tables must cover: all strata of all sources
     particle_lams = sorted({
         float(l) for _, src in scene.sources

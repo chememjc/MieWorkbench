@@ -242,3 +242,17 @@ A clean install should show all pytest suites passing and the pipeline
 run completing with a printed summary table and `results/example/quick/`
 populated with `case.json`, `audit.json`, `detectors/*.h5`, `images/`,
 `spectra/`, `plots/`, and (if ParaView is configured) `viz/`.
+
+## C engine (optional, recommended)
+
+The compiled trace/gather engine gives ~10x on trace-bound scenes and
+~6x on coherent scenes (see `cengine/BENCHMARKS.md`). Requirements:
+gcc >= 11, cmake >= 3.22, ninja, OpenMP; CUDA 13 for the GPU gather
+(`/usr/local/cuda-13`; without it the engine builds CPU-only).
+
+    cd cengine && ./build.sh          # -> cengine/build/miewb-trace
+    ./build.sh test                   # C unit tests
+
+Nothing else changes: `--engine auto` (the default) uses it whenever the
+scene's features are ported and falls back to the Python engine
+otherwise. Set `MIEWB_CENGINE` to override the binary path.

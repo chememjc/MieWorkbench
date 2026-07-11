@@ -399,6 +399,14 @@ class MainWindow(QMainWindow):
             lambda: self._on_delete_element())
 
         sim_menu = menubar.addMenu("&Simulation")
+        self.settings_action = sim_menu.addAction("Simulation &Settings…")
+        self.settings_action.setToolTip(
+            "View/edit the simulation settings (rays, resolution, engine, "
+            "…) without running. OK saves them into the open .MieWB so "
+            "they travel with the project.")
+        self.settings_action.triggered.connect(
+            self._on_simulation_settings_dialog)
+
         self.run_action = sim_menu.addAction("&Run Pipeline…")
         self.run_action.setToolTip(
             "Configure and run the extract/trace/post/viz pipeline")
@@ -2375,24 +2383,86 @@ class MainWindow(QMainWindow):
             self.compare_dock.show()
             self.compare_dock.raise_()
 
-    def _on_run_pipeline_dialog(self):
+    def _config_matrix_dialog(self, title, ok_label):
+        """Shared modal wrapper around the (single, shared) ConfigMatrix
+        widget — used by both Run Pipeline… and Simulation Settings…, so
+        the two views can never show different values."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Run Pipeline")
+        dialog.setWindowTitle(title)
         layout = QVBoxLayout(dialog)
         layout.addWidget(self.config_matrix)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Run")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(ok_label)
         layout.addWidget(buttons)
+        dialog.resize(720, 640)
+        return dialog, buttons
+
+    def persist_simparams(self):
+        """Write the current simulation settings into the open project:
+        the workspace's simparams.json AND the .MieWB archive (repacked
+        with the last-saved model, exactly like File->Save does). No-op
+        for bare .FCStd sessions (there is no project archive to carry
+        them). Best-effort: failures land in the status bar, never a
+        modal (offscreen-test discipline). Returns True when persisted."""
+        if not self.miewb_path:
+            return False
+        try:
+            values = self.config_matrix.values()
+            if self.workspace:
+                simparams_path = os.path.join(self.workspace,
+                                              "simparams.json")
+                with open(simparams_path, "w") as fh:
+                    json.dump(values, fh, indent=1)
+            miewb_tool.pack_miewb(
+                self.model_path, self.miewb_path,
+                optprops_dir=self._workspace_optprops(),
+                simparams=values)
+            self.statusBar().showMessage(
+                "Simulation settings saved into %s" % self.miewb_path,
+                5000)
+            return True
+        except Exception as exc:
+            self.statusBar().showMessage(
+                "Could not save simulation settings: %s" % exc, 8000)
+            return False
+
+    def _on_simulation_settings_dialog(self):
+        """Simulation menu > Simulation Settings…: view/edit the settings
+        WITHOUT running. OK persists them into the open .MieWB (settings
+        travel with the project); Cancel leaves the widget state as-is
+        (it is the shared matrix, so any edits made before Cancel remain
+        visible in the Run dialog but are not written to the archive)."""
+        dialog, buttons = self._config_matrix_dialog(
+            "Simulation Settings", "OK")
+
+        def on_ok():
+            if self.miewb_path:
+                self.persist_simparams()
+            else:
+                self.statusBar().showMessage(
+                    "Settings applied for this session (open/save a "
+                    ".MieWB to store them with the project)", 8000)
+            dialog.accept()
+
+        buttons.accepted.connect(on_ok)
+        buttons.rejected.connect(dialog.reject)
+        dialog.exec()
+
+    def _on_run_pipeline_dialog(self):
+        dialog, buttons = self._config_matrix_dialog("Run Pipeline", "Run")
 
         def on_run():
             if self._run_pipeline():
+                # a run's settings should stick with the project too —
+                # persist them so the .MieWB always reflects what was run
+                if self.miewb_path:
+                    self.persist_simparams()
                 dialog.accept()
 
         buttons.accepted.connect(on_run)
         buttons.rejected.connect(dialog.reject)
-        dialog.resize(720, 640)
         dialog.exec()
 
     def _on_estimate(self):
