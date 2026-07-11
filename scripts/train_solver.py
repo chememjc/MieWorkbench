@@ -50,7 +50,17 @@ Expressions
 -----------
 Every numeric edge field accepts `2*gap + 5`-style expressions over the
 global variables (miewb_vars). Grammar: numbers, variable names, + - * /,
-unary +/- and parentheses — nothing else (no calls, no attributes).
+unary +/- and parentheses, the constant `pi`, and a whitelisted set of
+math functions: sin cos tan asin acos atan atan2 sqrt abs radians
+degrees, plus radian-argument variants sinr cosr tanr asinr acosr atanr
+atan2r. TRIG IS DEGREES-NATIVE by project convention (the tilt / fold
+deviation / azimuth fields are all in degrees): `sin(30)` == 0.5 and
+asin/acos/atan/atan2 RETURN degrees; the `*r` variants take/return
+radians like Python's math module. A user variable named `pi` (or any
+function name) shadows the builtin — variables win. Nothing else: no
+other calls, no attributes, no keyword arguments. NOTE: dim-sheet cell
+expressions (`=<<miewb_vars>>.x * 1mm`) go through FreeCAD's own
+expression engine, NOT this grammar — the two diverge deliberately.
 Variables may reference each other; resolve_variables() evaluates them in
 dependency order and reports circular references by naming the full
 cycle path.
@@ -84,7 +94,7 @@ class CycleError(TrainError):
 
 
 # ---------------------------------------------------------------------------
-# Expression evaluation (+ - * / over variables)
+# Expression evaluation (+ - * / and whitelisted functions over variables)
 # ---------------------------------------------------------------------------
 _ALLOWED_BINOPS = {
     ast.Add: lambda a, b: a + b,
@@ -92,6 +102,39 @@ _ALLOWED_BINOPS = {
     ast.Mult: lambda a, b: a * b,
     ast.Div: lambda a, b: a / b,
 }
+
+# Degrees-native trig (project convention: every angle field in the chain
+# recipe is degrees); the `*r` variants are the plain-radian math calls.
+_ALLOWED_FUNCS = {
+    "sin": lambda x: math.sin(x * DEG),
+    "cos": lambda x: math.cos(x * DEG),
+    "tan": lambda x: math.tan(x * DEG),
+    "asin": lambda x: math.asin(x) / DEG,
+    "acos": lambda x: math.acos(x) / DEG,
+    "atan": lambda x: math.atan(x) / DEG,
+    "atan2": lambda y, x: math.atan2(y, x) / DEG,
+    "sinr": math.sin,
+    "cosr": math.cos,
+    "tanr": math.tan,
+    "asinr": math.asin,
+    "acosr": math.acos,
+    "atanr": math.atan,
+    "atan2r": math.atan2,
+    "sqrt": math.sqrt,
+    "abs": abs,
+    "radians": math.radians,
+    "degrees": math.degrees,
+}
+_FUNC_ARITY = {"atan2": 2, "atan2r": 2}   # everything else takes 1
+_CONSTANTS = {"pi": math.pi}
+
+# The ONE grammar description every GUI tooltip / error surface reuses.
+EXPR_HELP = (
+    "Expressions: numbers, variables, + - * / ( ), constant pi, and "
+    "functions sin cos tan asin acos atan atan2 sqrt abs radians degrees "
+    "— trig is in DEGREES (sin(30)=0.5; asin returns degrees); "
+    "sinr/cosr/tanr/asinr/acosr/atanr/atan2r take radians instead."
+)
 
 
 def _eval_node(node, variables, expr):
@@ -104,12 +147,40 @@ def _eval_node(node, variables, expr):
         raise ExprError("non-numeric constant %r in %r"
                         % (node.value, expr))
     if isinstance(node, ast.Name):
-        try:
+        # Variables first: a user variable shadows the builtin constants.
+        if node.id in variables:
             return float(variables[node.id])
-        except KeyError:
-            raise ExprError("unknown variable %r in %r (defined variables: "
-                            "%s)" % (node.id, expr,
-                                     ", ".join(sorted(variables)) or "none"))
+        if node.id in _CONSTANTS:
+            return _CONSTANTS[node.id]
+        raise ExprError("unknown variable %r in %r (defined variables: "
+                        "%s; constants: %s)"
+                        % (node.id, expr,
+                           ", ".join(sorted(variables)) or "none",
+                           ", ".join(sorted(_CONSTANTS))))
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name) \
+                or node.func.id not in _ALLOWED_FUNCS:
+            fname = (node.func.id if isinstance(node.func, ast.Name)
+                     else type(node.func).__name__)
+            raise ExprError("function %r not allowed in %r (allowed: %s)"
+                            % (fname, expr,
+                               " ".join(sorted(_ALLOWED_FUNCS))))
+        if node.keywords:
+            raise ExprError("keyword arguments not allowed in %r" % expr)
+        fname = node.func.id
+        arity = _FUNC_ARITY.get(fname, 1)
+        if len(node.args) != arity:
+            raise ExprError("%s() takes exactly %d argument%s in %r"
+                            % (fname, arity, "s" if arity != 1 else "",
+                               expr))
+        args = [_eval_node(a, variables, expr) for a in node.args]
+        try:
+            return float(_ALLOWED_FUNCS[fname](*args))
+        except (ValueError, OverflowError, ZeroDivisionError) as e:
+            # Wrap so GUI panes (which only catch TrainError) never see a
+            # raw ValueError from e.g. sqrt(-1) or asin(2).
+            raise ExprError("%s() domain error in %r: %s"
+                            % (fname, expr, e))
     if isinstance(node, ast.BinOp):
         for op_type, fn in _ALLOWED_BINOPS.items():
             if isinstance(node.op, op_type):
@@ -128,13 +199,15 @@ def _eval_node(node, variables, expr):
             return v
         raise ExprError("unary %s not allowed in %r"
                         % (type(node.op).__name__, expr))
-    raise ExprError("%s not allowed in %r (numbers, variables and + - * / "
-                    "only)" % (type(node).__name__, expr))
+    raise ExprError("%s not allowed in %r (numbers, variables, + - * / "
+                    "and whitelisted functions only)"
+                    % (type(node).__name__, expr))
 
 
 def eval_expr(expr, variables=None):
-    """Evaluate `expr` (a number, or a + - * / expression over variable
-    names) to a float. `variables`: {name: float}. Raises ExprError."""
+    """Evaluate `expr` (a number, or an expression over variable names —
+    see EXPR_HELP for the grammar) to a float. `variables`: {name: float}.
+    Raises ExprError."""
     if isinstance(expr, (int, float)) and not isinstance(expr, bool):
         return float(expr)
     text = str(expr).strip()
@@ -149,7 +222,11 @@ def eval_expr(expr, variables=None):
 
 def expr_names(expr):
     """The set of variable names an expression references ([] for plain
-    numbers). Raises ExprError on unparseable input."""
+    numbers). Function names in call position are NOT references (else
+    `sin(gap)` would report a phantom `sin` dependency); `pi` IS included
+    when used — harmless to dependency resolution (eval falls back to the
+    constant) and correct when a user defines their own `pi` variable.
+    Raises ExprError on unparseable input."""
     if isinstance(expr, (int, float)) and not isinstance(expr, bool):
         return set()
     text = str(expr).strip()
@@ -159,7 +236,10 @@ def expr_names(expr):
         tree = ast.parse(text, mode="eval")
     except SyntaxError as e:
         raise ExprError("cannot parse %r: %s" % (text, e))
-    return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    func_names = {id(n.func) for n in ast.walk(tree)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    return {n.id for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and id(n) not in func_names}
 
 
 def resolve_variables(raw):

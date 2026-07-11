@@ -83,6 +83,93 @@ def test_expr_names():
 
 
 # ---------------------------------------------------------------------------
+# whitelisted math functions (degrees-native trig) + pi constant
+# ---------------------------------------------------------------------------
+def test_func_trig_degrees_native():
+    assert ts.eval_expr("sin(90)") == pytest.approx(1.0)
+    assert ts.eval_expr("sin(30)") == pytest.approx(0.5)
+    assert ts.eval_expr("cos(60)") == pytest.approx(0.5)
+    assert ts.eval_expr("tan(45)") == pytest.approx(1.0)
+    assert ts.eval_expr("asin(0.5)") == pytest.approx(30.0)
+    assert ts.eval_expr("acos(0.5)") == pytest.approx(60.0)
+    assert ts.eval_expr("atan(1)") == pytest.approx(45.0)
+    assert ts.eval_expr("atan2(1, 1)") == pytest.approx(45.0)
+
+
+def test_func_radian_variants_and_misc():
+    assert ts.eval_expr("sinr(pi/2)") == pytest.approx(1.0)
+    assert ts.eval_expr("cosr(pi)") == pytest.approx(-1.0)
+    assert ts.eval_expr("atan2r(1, 1)") == pytest.approx(math.pi / 4)
+    assert ts.eval_expr("sqrt(2)") == pytest.approx(math.sqrt(2))
+    assert ts.eval_expr("abs(-3.5)") == 3.5
+    assert ts.eval_expr("radians(180)") == pytest.approx(math.pi)
+    assert ts.eval_expr("degrees(pi)") == pytest.approx(180.0)
+    assert ts.eval_expr("pi") == pytest.approx(math.pi)
+
+
+def test_func_nesting_and_variables():
+    v = {"gap": 10.0, "h": 5.0}
+    # tilt angle from a rise/run — the classic "trig in your head" case
+    assert ts.eval_expr("atan2(h, gap)", v) == pytest.approx(
+        math.degrees(math.atan2(5.0, 10.0)))
+    assert ts.eval_expr("sqrt(gap*gap + h*h)", v) == pytest.approx(
+        math.hypot(10.0, 5.0))
+    assert ts.eval_expr("degrees(radians(asin(sin(gap))))", v) \
+        == pytest.approx(10.0)
+
+
+def test_func_variable_shadows_constant_and_function_name():
+    # a user variable named pi wins over the constant
+    assert ts.eval_expr("pi", {"pi": 3.0}) == 3.0
+    # a variable literally named `sin` doesn't break calling sin(...)
+    assert ts.eval_expr("sin + sin(90)", {"sin": 1.0}) == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize("bad", [
+    "foo(1)",                    # unknown function
+    "math.sin(1)",               # attribute call
+    "sin()",                     # arity
+    "sin(1, 2)",                 # arity
+    "atan2(1)",                  # arity (2 required)
+    "sin(x=1)",                  # keyword args
+    "sqrt(-1)",                  # domain error must be ExprError
+    "asin(2)",                   # domain error must be ExprError
+    "sin(*a)",                   # starred args
+])
+def test_func_errors_are_expr_errors(bad):
+    with pytest.raises(ts.ExprError):
+        ts.eval_expr(bad, {"a": 1.0, "x": 1.0})
+
+
+def test_func_unknown_function_names_whitelist():
+    with pytest.raises(ts.ExprError, match="allowed:"):
+        ts.eval_expr("foo(1)")
+
+
+def test_expr_names_skips_call_position():
+    assert ts.expr_names("sin(gap) + pi") == {"gap", "pi"}
+    assert ts.expr_names("atan2(a, b) * sqrt(c)") == {"a", "b", "c"}
+    # a Name used both as variable and function keeps the variable use
+    assert ts.expr_names("sin + sin(x)") == {"sin", "x"}
+
+
+def test_resolve_variables_with_functions():
+    out = ts.resolve_variables({
+        "tilt": "atan2(rise, run)",
+        "rise": "5",
+        "run": "sqrt(100)",
+    })
+    assert out["run"] == pytest.approx(10.0)
+    assert out["tilt"] == pytest.approx(math.degrees(math.atan2(5.0, 10.0)))
+
+
+def test_resolve_variables_pi_not_a_phantom_dependency():
+    # `sin`/`pi` in expressions must not trip unknown-variable/cycle logic
+    out = ts.resolve_variables({"a": "sin(90) * pi"})
+    assert out["a"] == pytest.approx(math.pi)
+
+
+# ---------------------------------------------------------------------------
 # resolve_variables + circular references
 # ---------------------------------------------------------------------------
 def test_resolve_variables_chain():

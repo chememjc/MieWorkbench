@@ -122,6 +122,11 @@ class VariablesPane(QWidget):
 
         self.table = QTableWidget(0, len(_HEADERS))
         self.table.setHorizontalHeaderLabels(_HEADERS)
+        # Value column accepts expressions over the other variables --
+        # advertise the one authoritative grammar string.
+        self.table.horizontalHeaderItem(1).setToolTip(
+            "Value, or an expression over the other variables.\n\n%s"
+            % train_solver.EXPR_HELP)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.itemChanged.connect(self._on_item_changed)
         lay.addWidget(self.table)

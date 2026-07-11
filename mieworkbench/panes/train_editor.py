@@ -120,12 +120,18 @@ _BEAM_FRAME_NOTE = (
     "axes -- always the INCOMING beam's frame at this element, never the "
     "element's own local axes.")
 _HEADER_TOOLTIPS = {
-    COL_DECX: "Decenter X (mm) -- offset along u, the %s" % _BEAM_FRAME_NOTE,
-    COL_DECY: "Decenter Y (mm) -- offset along v, the %s" % _BEAM_FRAME_NOTE,
-    COL_TILTX: "Tilt X (deg) -- rotation about u, the %s" % _BEAM_FRAME_NOTE,
-    COL_TILTY: "Tilt Y (deg) -- rotation about v, the %s" % _BEAM_FRAME_NOTE,
+    COL_DIST: "Distance (mm) -- vertex-to-vertex along the beam, exit "
+              "vertex to entry vertex.\n\n%s" % train_solver.EXPR_HELP,
+    COL_DECX: "Decenter X (mm) -- offset along u, the %s\n\n%s"
+              % (_BEAM_FRAME_NOTE, train_solver.EXPR_HELP),
+    COL_DECY: "Decenter Y (mm) -- offset along v, the %s\n\n%s"
+              % (_BEAM_FRAME_NOTE, train_solver.EXPR_HELP),
+    COL_TILTX: "Tilt X (deg) -- rotation about u, the %s\n\n%s"
+               % (_BEAM_FRAME_NOTE, train_solver.EXPR_HELP),
+    COL_TILTY: "Tilt Y (deg) -- rotation about v, the %s\n\n%s"
+               % (_BEAM_FRAME_NOTE, train_solver.EXPR_HELP),
     COL_TILTZ: "Tilt Z (deg) -- rotation about the beam direction d, the "
-               "%s" % _BEAM_FRAME_NOTE,
+               "%s\n\n%s" % (_BEAM_FRAME_NOTE, train_solver.EXPR_HELP),
     COL_FOLD: "Fold state -- check to fold, uncheck to straighten the arm "
               "(mirror excluded). For a plain chained mirror, checking "
               "designates it a fold first.",

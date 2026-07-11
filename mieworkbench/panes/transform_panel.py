@@ -324,7 +324,7 @@ class TransformPanel(QWidget):
         for i, field in enumerate(self._EDGE_FIELDS):
             gl.addWidget(QLabel(self._EDGE_LABELS[field]), 3 + i, 0)
             e = QLineEdit()
-            e.setToolTip({
+            e.setToolTip("%s\n\n%s" % ({
                 "distance": "Along-beam distance from the reference port "
                             "(exit vertex) to this element's entry vertex, "
                             "mm. Expressions over the global variables "
@@ -333,7 +333,7 @@ class TransformPanel(QWidget):
                               "horizontal (u) axis, mm.",
                 "decenter_y": "Transverse offset along the beam frame's "
                               "vertical (v = up) axis, mm.",
-            }[field])
+            }[field], train_solver.EXPR_HELP))
             e.editingFinished.connect(
                 lambda f=field: self._on_edge_field_committed(f))
             gl.addWidget(e, 3 + i, 1, 1, 2)
