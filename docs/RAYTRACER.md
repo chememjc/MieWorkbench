@@ -221,23 +221,22 @@ and `fields/` HDF5 groups only appear when the trace was run with
     --case-dir results/example/quick --model-json geometry/example/model.json
 ```
 
-### 4.2 Note: `run_pipeline.py`'s viz stage always uses make_viz.py's defaults
+### 4.2 Note: `run_pipeline.py`'s viz stage still uses some of make_viz.py's defaults
 
-`run_pipeline.py`'s internal `viz_cmd()` builder passes only `--case-dir`
-and `--model-json` (plus `--dim-rays`/`--dim-rays-floor`) to
-`make_viz.py` — it does **not** forward `--views`/`--resolution`/
-`--smoke`. Driving the pipeline through `run_pipeline.py` therefore
-always renders all six views (`overview3d`, `top`, `side`,
-`detector_closeup`, `turntable`, `rays_polmode`) at 1920×1080 (2048×2048
-for `detector_closeup`). `post_cmd()` forwards a similarly small explicit
-set: `--dim-rays`/`--dim-rays-floor` (attenuation dimming: segment opacity
-= P/P_birth, linear or sqrt curve, optional percent floor — applies to
-`rays_xy.png` and the 3D ray renders), `--photometric`, `--spectrometer`,
-`--emit-csv`, and `--wavefront-point`; `post_process.py`'s
-`--viz-generations` remains reachable only by invoking that script
-directly. To pick a subset of views, a different resolution/smoke test,
-or a decluttered ray plot, invoke `make_viz.py`/`post_process.py` directly
-(§8) on an already-completed case directory.
+`run_pipeline.py`'s internal `viz_cmd()` builder forwards `--case-dir`,
+`--model-json`, `--dim-rays`/`--dim-rays-floor`, `--views`, and `--smoke`
+to `make_viz.py` — it does **not** forward `--resolution`/`--out`/
+`--skip-vtkexport`, so driving the pipeline through `run_pipeline.py`
+always renders at 1920×1080 (2048×2048 for `detector_closeup`) into
+`<case-dir>/viz/` and always reruns the vtkexport prep step (unless
+`--smoke` narrows the render to `overview3d` at 800×600). `post_cmd()`
+forwards `--dim-rays`/`--dim-rays-floor` (attenuation dimming: segment
+opacity = P/P_birth, linear or sqrt curve, optional percent floor —
+applies to `rays_xy.png` and the 3D ray renders), `--photometric`,
+`--spectrometer`, `--emit-csv`, `--wavefront-point`, and
+`--viz-generations`. To pick a different resolution or skip the vtkexport
+rerun, invoke `make_viz.py`/`post_process.py` directly (§8) on an
+already-completed case directory.
 
 ---
 
@@ -1605,7 +1604,8 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--spectral-bins N] [--max-reflections N]
     [--viz-rays N] [--viz-density F] [--backend {auto,torch,numpy}]
     [--rough-fresnel {micro,macro}] [--ray-differentials] [--gather-occlusion]
-    [--no-pol-scatter] [--mesh-flat-normals] [--save-fields] [--strict-analytic]
+    [--no-pol-scatter] [--mesh-flat-normals] [--save-fields]
+    [--save-fields-detectors LABEL[,LABEL...]] [--strict-analytic]
     [--optical-properties PATH]
     [--source-face SPEC]... [--detector-face SPEC]...
     [--grating SPEC]... [--rough SPEC]... [--particles SPEC]
@@ -1613,7 +1613,8 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--photometric] [--spectrometer]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--emit-csv] [--export-rays] [--export-rays-max N] [--ghost-analysis]
-    [--wavefront-point X,Y] [--keep-going] [--print-only] [--workers N]
+    [--wavefront-point X,Y] [--viz-generations N] [--views v1,v2,...] [--smoke]
+    [--keep-going] [--print-only] [--workers N]
 ```
 
 `--models` accepts globs and multiple files (bare names also resolve
@@ -1647,21 +1648,27 @@ behavior and its own `--export-rays-max` forwarding) additionally tracks
 each ray's face-id reflection history so **post** can rank multi-bounce
 stray-light ("ghost") paths by detected power (§8.2/§8.3). `--wavefront-
 point X_MM,Y_MM` (forwarded to **post**) overrides the wavefront fit's
-default power-weighted-centroid image point. `--workers N`
-(forwarded to **trace**; default `auto`) shards the trace loop across `N`
-spawned processes (§6.9) — `1` reproduces the exact single-process path.
-`--keep-going` turns a stage failure into a `FAILED: <tag>` notice and a
-skip to the next model (process still exits nonzero if anything failed).
-`--print-only` composes and prints every stage command **without running
-anything**. Extract runs **once** for the whole model batch (one FreeCAD
-launch handles every model); trace/post/viz then loop **sequentially** per
-model (a single trace can already saturate every core/GPU).
-**`post_cmd()`/`viz_cmd()` forward only the small explicit set of flags
-named in §4.2** — `post_process.py`'s `--viz-generations` and
-`make_viz.py`'s `--views`/`--resolution`/`--out`/`--smoke`/
-`--skip-vtkexport` are unreachable through `run_pipeline.py`; invoke those
-two scripts directly for that (§4.2, §8.3). Logs:
-`results/log.extract` (batch), `results/log.permute-<stem>` (if swept),
+default power-weighted-centroid image point. `--save-fields-detectors
+LABEL[,LABEL...]` (forwarded to **trace**; no effect without
+`--save-fields`) restricts the Ex/Ey field-map writes to those detector
+labels instead of every detector — an unknown label is a hard error
+naming the scene's available ones, and it forces the Python engine (the
+C engine doesn't support a per-detector subset yet; see §8.2/§13).
+`--viz-generations N` (forwarded to **post**) declutters `rays_xy.png`
+to reconstructed-generation `<= N` segments only. `--views v1,v2,...`
+and `--smoke` (forwarded to **viz**) pick a view subset / the fast
+`overview3d`-at-800×600 smoke render — `--resolution`/`--out`/
+`--skip-vtkexport` remain reachable only by invoking `make_viz.py`
+directly (§4.2). `--workers N` (forwarded to **trace**; default `auto`)
+shards the trace loop across `N` spawned processes (§6.9) — `1`
+reproduces the exact single-process path. `--keep-going` turns a stage
+failure into a `FAILED: <tag>` notice and a skip to the next model
+(process still exits nonzero if anything failed). `--print-only` composes
+and prints every stage command **without running anything**. Extract runs
+**once** for the whole model batch (one FreeCAD launch handles every
+model); trace/post/viz then loop **sequentially** per model (a single
+trace can already saturate every core/GPU). Logs: `results/log.extract`
+(batch), `results/log.permute-<stem>` (if swept),
 `results/<stem>/<case>/log.{trace,post,viz}` (per model/stage).
 
 ### 8.2 `run_trace.py` (optics env python — the solver)
@@ -1680,7 +1687,8 @@ two scripts directly for that (§4.2, §8.3). Logs:
     [--particles SPEC] [--particle-threshold F=2e5]
     [--suppress-body NAME]...
     [--min-eff-samples F=1000.0] [--no-gather-gate]
-    [--save-fields] [--gather-occlusion] [--optical-properties PATH]
+    [--save-fields] [--save-fields-detectors LABEL[,LABEL...]]
+    [--gather-occlusion] [--optical-properties PATH]
     [--strict-analytic] [--mesh-flat-normals] [--dry-run]
     [--export-rays] [--export-rays-max N=2000000] [--ghost-analysis]
 ```
@@ -1696,7 +1704,16 @@ is unaffected) capped at `--viz-rays-max` (default 20000) per source.
 `--ray-differentials`, `--no-pol-scatter`, `--rough-fresnel`,
 `--save-fields`, `--gather-occlusion`, `--strict-analytic`,
 `--mesh-flat-normals` are documented in §6/§5; all default off (or
-`micro` for `--rough-fresnel`) except where noted. `--particle-threshold`
+`micro` for `--rough-fresnel`) except where noted. `--save-fields-
+detectors LABEL[,LABEL...]` restricts `--save-fields`' complex Ex/Ey
+field-map writes (`detectors/<label>.h5`'s `fields/` groups) to the named
+detector labels (comma-separated face ids, e.g. `Body001.Pad.Face3`,
+matching `--detector-face`/`DetectorGrid.label`); omitted or empty means
+every detector (bare `--save-fields`' pre-existing behavior, unchanged),
+and an unknown label is a hard error naming the scene's available ones —
+never a silent no-op. It has no effect without `--save-fields`, and
+forces the Python engine when set together with `--save-fields` (the C
+engine always writes fields for every detector; §13). `--particle-threshold`
 default `2e5` is deliberately aligned with `ExplicitRealization.
 MAX_BRUTE` (§9) so the default can never land in the dead zone between
 "explicit mode selected" and "over the brute-force cap." `--optical-
@@ -2136,18 +2153,22 @@ run has completed).
 is **~33 MB** per detector (`spectral_cube_mean` at float64, plus `mask`);
 three detectors in that one run is ~100 MB. Every completed trace writes
 the full spectral cube for every active detector regardless of
-`--save-fields`; plan disk budget as `H * W * spectral_bins * 8 bytes *
-n_detectors * (2 if --seeds > 1 else 1)`
-(`case.json["estimates"]["fields_h5_GB"]` in the dry-run estimate covers
-this — note the estimator's `save_fields`/`n_pol_strata` parameters exist
-in `common.estimate()` but `run_pipeline.py`'s dry-run call does not yet
-thread `--save-fields`/actual polarization strata through to it, so
-treat `fields_h5_GB` as covering the always-written spectral cube, not
-an accurate prediction of `--save-fields`'s additional complex-field
-storage). `--save-fields` itself (§6.7) writes two more float64 complex
-(i.e. 16-byte) `H×W` arrays per `(source, lam, pol)` key on top of the
-spectral cube, seed 0 only — budget accordingly for polarization-heavy,
-high-resolution `--save-fields` runs.
+`--save-fields`; plan that part of the budget as `H * W * spectral_bins *
+8 bytes * n_detectors * (2 if --seeds > 1 else 1)` (not itself estimated
+in `case.json["estimates"]` — only the `--save-fields` addition below is).
+`--save-fields` itself (§6.7) writes two more float64-complex (16-byte)
+`H×W` arrays per `(source, lambda-stratum, pol-stratum)` gather key, on
+top of the spectral cube, seed 0 only, for every detector eligible under
+`--save-fields-detectors` (all of them if omitted) — budget accordingly
+for polarization-heavy, high-resolution `--save-fields` runs.
+`case.json["estimates"]["fields_h5_GB"]` in the dry-run estimate predicts
+exactly this: `common.estimate()` is wired to the actual `save_fields`/
+`--save-fields-detectors`-resolved detector count/gather-key count
+(`n_coherent_sources * nlambda * n_pol_strata`)/resolution (see its
+`field_bytes` comment for the exact formula) and is `0` whenever
+`--save-fields` is off; treat it as a ~2x disk-budget aid, not a
+byte-exact prediction (it ignores per-detector resolution/spectral-bin
+differences and gather-occlusion overhead).
 
 ---
 
@@ -2174,9 +2195,11 @@ TMM/table coatings, polarizers, spectral filters, the medium stack,
 gratings (all models), Beckmann roughness + diffusers, ABg scatter
 (g = 2), uniaxial birefringence, continuum-mode particle clouds, the
 coherent Huygens gather (fused CUDA kernel + CPU twin; same fp64-phase
-precision contract as the torch backend), gather occlusion, save-fields,
-export-rays, ghost analysis, viz-pattern overlays, multi-seed, and the
-opt-in `--importance-aim` variance reduction (unbiased birth culling).
+precision contract as the torch backend), gather occlusion, save-fields
+(every detector — `--save-fields-detectors` is a Python-engine-only
+subset restriction, §8.2), export-rays, ghost analysis, viz-pattern
+overlays, multi-seed, and the opt-in `--importance-aim` variance
+reduction (unbiased birth culling).
 
 Still Python-routed (auto fallback; candidates for later porting):
 biaxial crystals, explicit-realization particles, beam/apodization

@@ -803,6 +803,13 @@ def estimate(rays, resolution, nlambda, n_coherent_sources, backend,
 
     n_pol_strata: 2 when any source is unpolarized (two mutually-incoherent
     polarization populations), 1 for explicitly polarized sources.
+
+    n_detectors: for fields_h5_GB only — the number of detectors that will
+    ACTUALLY receive --save-fields Ex/Ey field maps (every detector by
+    default, or the smaller --save-fields-detectors subset; the caller
+    resolves that count and passes it here, e.g. run_trace.py's
+    n_field_dets). save_fields: whether --save-fields is set at all;
+    fields_h5_GB is exactly 0 when it is not, regardless of n_detectors.
     """
     npix = resolution * resolution
     # gather samples ~ surviving rays; assume half the primaries survive
@@ -815,7 +822,18 @@ def estimate(rays, resolution, nlambda, n_coherent_sources, backend,
         "gather_" + backend_key, FALLBACK_GATHER_OPS_PER_S[backend_key])
     acc_bytes = (npix * 2 * 8 * max(1, n_coherent_sources) * nlambda
                  * max(1, n_pol_strata))
-    field_bytes = acc_bytes * n_detectors if save_fields else 0
+    # fields_h5_GB formula (accurate to ~2x; a disk-budget aid, not a
+    # precise prediction — see docstring):
+    #   n_keys       = n_coherent_sources * nlambda * n_pol_strata
+    #                  (one gather.render_coherent key per (source,
+    #                  lambda-stratum, pol-stratum); --save-fields only
+    #                  applies to the coherent gather)
+    #   bytes/key/det = npix * 2 (Ex, Ey) * 16 B (complex128/element)
+    #   fields_h5_GB  = bytes/key/det * n_keys * n_detectors / 1e9
+    #                  , or 0 outright when save_fields is False.
+    n_keys = max(1, n_coherent_sources) * nlambda * max(1, n_pol_strata)
+    field_bytes = (npix * 2 * 16 * n_keys * max(0, n_detectors)
+                   if save_fields else 0)
     return {
         "trace_s": trace_s,
         "gather_s": gather_s,

@@ -185,10 +185,42 @@ def _viz_pattern_pass(scene, args, seed, pattern, result):
         result.viz = viz_tracer.run(viz_batches).viz
 
 
-def _do_gather(grids, args, scene, sample_area):
+def resolve_save_fields_detectors(args, available_labels):
+    """--save-fields-detectors LABEL[,LABEL...]: restrict --save-fields'
+    complex Ex/Ey field-map writes to these detector labels (matching
+    DetectorGrid.label / face.id, e.g. 'Body001.Pad.Face3' — the same
+    string --detector-face uses and post_process.py 'safes' into
+    det_<label>_*.png / detectors/<safe_label>.h5).
+
+    Returns None when the flag is absent (meaning "every detector" — the
+    pre-existing --save-fields behavior, unchanged) or the parsed set.
+    A label not present in `available_labels` is a HARD ERROR (never a
+    silent no-op) naming what IS available, so a typo doesn't quietly
+    produce zero field groups."""
+    if not args.save_fields_detectors:
+        return None
+    wanted = {s.strip() for s in args.save_fields_detectors.split(",")
+              if s.strip()}
+    unknown = wanted - set(available_labels)
+    if unknown:
+        raise SystemExit(
+            "run_trace.py: --save-fields-detectors unknown label(s): %s "
+            "— available detector labels: %s"
+            % (", ".join(sorted(unknown)),
+               ", ".join(sorted(available_labels))
+               or "(no detectors in this scene)"))
+    return wanted
+
+
+def _do_gather(grids, args, scene, sample_area, save_fields_labels=None):
     """Coherent Huygens gather over the (merged) detector grids. ALWAYS runs
     single-process in the parent — this is the only place `gather` (torch)
-    is imported, keeping the trace-shard workers torch-free / CUDA-safe."""
+    is imported, keeping the trace-shard workers torch-free / CUDA-safe.
+
+    save_fields_labels: None (every detector eligible, args.save_fields'
+    pre-existing behavior) or a set of detector labels (--save-fields-
+    detectors) — a detector not in the set is gathered normally but never
+    gets its complex Ex/Ey field maps recorded."""
     from raytracer import gather                          # lazy; parent-only
     occlusion = None
     if args.gather_occlusion:
@@ -198,11 +230,13 @@ def _do_gather(grids, args, scene, sample_area):
     gather_diags = {}
     t0 = time.time()
     for fid, det in grids.items():
+        want_fields = args.save_fields and (
+            save_fields_labels is None or det.label in save_fields_labels)
         d = gather.render_coherent(
             det, sample_area, backend=args.backend,
             enforce_gate=not args.no_gather_gate,
             min_eff_samples=args.min_eff_samples,
-            occlusion=occlusion, save_fields=args.save_fields)
+            occlusion=occlusion, save_fields=want_fields)
         if d:
             gather_diags[det.label] = {
                 "/".join(str(x) for x in k): v for k, v in d.items()}
@@ -396,13 +430,15 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
 
 
 def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag,
-                 export=False, workers=1, track_history=False):
+                 export=False, workers=1, track_history=False,
+                 save_fields_labels=None):
     """Trace one seed. workers<=1 keeps the exact pre-sharding single-process
     path (bit-identical); workers>1 shards the trace across spawned processes
     and merges. Either way the coherent gather runs ONCE in the parent.
     track_history allocates RayBatch.refl_hist (ghost/stray-light face-id
     history); it rides in the export ray records exactly like every other
-    field, so the --workers merge concatenates it too."""
+    field, so the --workers merge concatenates it too. save_fields_labels:
+    see _do_gather / resolve_save_fields_detectors."""
     pattern = (common.parse_viz_pattern_spec(args.viz_pattern)
                if args.viz_pattern else None)
     viz_caps = compute_viz_caps(scene, args, pattern)
@@ -421,7 +457,8 @@ def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag,
     if pattern is not None:
         _viz_pattern_pass(scene, args, seed, pattern, result)
 
-    gather_diags, gather_s = _do_gather(grids, args, scene, sample_area)
+    gather_diags, gather_s = _do_gather(grids, args, scene, sample_area,
+                                        save_fields_labels=save_fields_labels)
     return result, grids, gather_diags, {"trace_s": trace_s,
                                          "gather_s": gather_s}
 
@@ -634,9 +671,23 @@ def _main_locked(args, case_dir):
     lam_range = lam_range_nm(scene)
     n_coh = sum(1 for _, s in scene.sources if s.get("coherent"))
     n_pol_max = max((n_pol_strata(s) for _, s in scene.sources), default=1)
+    # every detector this case will build a grid for (build_detectors'
+    # exact set: the auto/pinned primary faces plus any --detector-face
+    # extras) — the universe --save-fields-detectors validates against and
+    # (absent a subset) the "all detectors get fields" default.
+    all_detector_fids = set(scene.detector_faces) | set(
+        scene.extra_detector_faces)
+    available_detector_labels = sorted(
+        scene.faces[fid].id for fid in all_detector_fids)
+    save_fields_labels = resolve_save_fields_detectors(
+        args, available_detector_labels)
+    n_field_dets = (len(save_fields_labels)
+                    if save_fields_labels is not None
+                    else len(available_detector_labels))
     est = common.estimate(args.rays, args.resolution, args.nlambda,
                           n_coh, args.backend,
-                          n_detectors=len(scene.detector_faces),
+                          n_detectors=n_field_dets,
+                          save_fields=args.save_fields,
                           n_pol_strata=n_pol_max)
     case = {
         "options": {k: v for k, v in vars(args).items()},
@@ -664,6 +715,20 @@ def _main_locked(args, case_dir):
     # is a separate process).
     from raytracer import cengine
     engine, engine_reason = cengine.choose_engine(args, scene)
+    if engine == "c" and args.save_fields and save_fields_labels is not None:
+        # the C engine always saves fields for every detector under
+        # --save-fields (no per-detector subset plumbed through its
+        # request/output contract yet) — --engine c is a hard error (never
+        # a silent wrong answer), --engine auto quietly falls back.
+        if (getattr(args, "engine", None) or "auto") == "c":
+            raise SystemExit(
+                "--engine c: --save-fields-detectors is not yet supported "
+                "by the C engine (it saves fields for every detector "
+                "under --save-fields) — use --engine auto/python")
+        engine = "python"
+        engine_reason = ("--save-fields-detectors requires the Python "
+                         "engine (C engine saves fields for every "
+                         "detector)")
     case["engine"] = engine
     case["engine_reason"] = engine_reason
     print("[trace] engine=%s (%s)" % (engine, engine_reason), flush=True)
@@ -705,7 +770,8 @@ def _main_locked(args, case_dir):
         result, grids, gdiags, times = run_one_seed(
             scene, args, seed, lam_range, particle_lams, case_diag,
             export=(export_on and s == 0), workers=workers,
-            track_history=(args.ghost_analysis and s == 0))
+            track_history=(args.ghost_analysis and s == 0),
+            save_fields_labels=save_fields_labels)
         grids_list.append(grids)
         rep = result.ledger.report(result.source_names)
         audits.append(rep)

@@ -888,9 +888,13 @@ prints the composed commands without running anything. Presets fill in rays/reso
 `quick` = 1e5/512/5/16, `normal` = 1e6/2048/9/16, `detailed` =
 1e7/4096/17/32 (`common.PRESETS`). Analysis/export flags
 (`--emit-csv`, `--export-rays[-max]`, `--ghost-analysis`,
-`--wavefront-point`) and `--workers N` (parallel trace sharding) are also
-accepted and forwarded to the appropriate stage — see
-docs/RAYTRACER.md §8.1/§6.9/§6.10 for the full contract.
+`--wavefront-point`), `--save-fields-detectors` (subset of `--save-fields`,
+§5.2), `--viz-generations` (post stage), `--views`/`--smoke` (viz stage),
+and `--workers N` (parallel trace sharding) are also accepted and
+forwarded to the appropriate stage — see docs/RAYTRACER.md
+§8.1/§6.9/§6.10 for the full contract (some `make_viz.py` options —
+`--resolution`/`--out`/`--skip-vtkexport` — stay reachable only by
+invoking that script directly, §5.6/RAYTRACER.md §4.2).
 
 ### 5.2 `run_trace.py` — the solver (optics env python)
 
@@ -918,6 +922,11 @@ always stays single-process). `--export-rays`/`--export-rays-max` and
 `--ghost-analysis` capture seed-0 per-ray landing/reflection-history
 records into `rays_full.npz` for `post_process.py`'s spot/ray-fan/
 Zernike/ghost-analysis products (docs/RAYTRACER.md §6.9/§6.10/§8.2).
+`--save-fields-detectors LABEL[,LABEL...]` restricts `--save-fields`'
+complex Ex/Ey field-map writes to the named detector labels instead of
+every detector (default); an unknown label is a hard error naming the
+scene's available ones, and it forces the Python engine when combined
+with `--save-fields` (docs/RAYTRACER.md §8.2/§13).
 
 One writer per case — see §6.
 
@@ -991,10 +1000,10 @@ their trace-stage prerequisite wasn't used.
 skips the optics-env `raytracer.vtkexport` prep sub-step if `.vtp` files
 already exist; `--dim-rays` fades ray segments by remaining/birth power
 (wavelength coloring preserved). `run_pipeline.py`'s internal viz step
-forwards only `--case-dir`/`--model-json` plus the `--dim-rays` options,
-so to pick views/resolution/smoke you invoke
-`make_viz.py` directly on an already-completed case (docs/RAYTRACER.md
-§4.2).
+forwards `--case-dir`/`--model-json`/the `--dim-rays` options plus
+`--views`/`--smoke`; `--resolution`/`--out`/`--skip-vtkexport` stay
+reachable only by invoking `make_viz.py` directly on an already-completed
+case (docs/RAYTRACER.md §4.2).
 
 ### 5.7 `sweep_variants.py` — batch jobs (system `python3`)
 

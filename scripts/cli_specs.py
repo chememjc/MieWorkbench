@@ -167,6 +167,16 @@ def _build_pipeline_parser():
     g.add_argument("--save-fields", action="store_true",
                    help="save complex Ex/Ey detector field maps "
                         "(enables Stokes polarization maps in post)")
+    g.add_argument("--save-fields-detectors", default=None,
+                   metavar="LABEL[,LABEL...]",
+                   help="restrict --save-fields to these detector labels "
+                        "(comma-separated; default: every detector). "
+                        "Labels are detector face ids, e.g. "
+                        "'Body001.Pad.Face3' (same string --detector-face "
+                        "uses and post_process.py safes into "
+                        "det_<label>_*.png); an unknown label is a hard "
+                        "error naming the scene's available detector "
+                        "labels. Forwarded to the trace stage verbatim")
     g.add_argument("--strict-analytic", action="store_true",
                    help="hard-error on mesh-type faces (v1 behavior)")
     g.add_argument("--optical-properties", default=None,
@@ -174,7 +184,18 @@ def _build_pipeline_parser():
     g.add_argument("--source-face", action="append", default=[],
                    metavar="Body.Feature.FaceN")
     g.add_argument("--detector-face", action="append", default=[],
-                   metavar="Body.Feature.FaceN")
+                   metavar="Body.Feature.FaceN",
+                   help="add an extra, transparent detector screen on any "
+                        "face without disturbing its physical interaction. "
+                        "Prefer the authoring-time `detector_face` BODY "
+                        "property (docs/RAYTRACER.md §5.1/§5.2) when you "
+                        "just need to retarget a detector body's own "
+                        "recorded primary face: it replaces that face in "
+                        "place (no extra screen) and keeps the scene "
+                        "C-engine-routable, whereas this CLI flag adds an "
+                        "extra screen on top of the auto-pick and forces "
+                        "the Python engine (extra_detector_faces is not "
+                        "in the C engine's ported feature set)")
     g.add_argument("--grating", action="append", default=[], metavar="SPEC")
     g.add_argument("--rough", action="append", default=[], metavar="SPEC")
     g.add_argument("--particles", default=None, metavar="SPEC")
@@ -205,6 +226,20 @@ def _build_pipeline_parser():
                         "map and a lambda(x) dispersion fit per detector "
                         "(det_<label>_lambda_map.png, "
                         "spectra/lambda_vs_x_<label>.png; post stage only)")
+    g.add_argument("--viz-generations", type=int, default=None,
+                   help="post stage: declutter rays_xy.png to "
+                        "reconstructed-generation <= N segments only "
+                        "(default: all generations, unchanged behavior; "
+                        "forwarded to post_process.py's --viz-generations)")
+    g.add_argument("--views", default=None,
+                   help="viz stage: comma-separated view names to render, "
+                        "e.g. overview3d,top,side,detector_closeup,"
+                        "turntable,rays_polmode (default: all views; "
+                        "forwarded to make_viz.py's --views)")
+    g.add_argument("--smoke", action="store_true",
+                   help="viz stage: render only the 'overview3d' view at "
+                        "800x600 for a fast end-to-end check (forwarded "
+                        "to make_viz.py's --smoke)")
 
     g = p.add_argument_group("analysis / export options")
     g.add_argument("--emit-csv", action="store_true",
@@ -333,7 +368,19 @@ def _build_trace_parser():
     p.add_argument("--source-face", action="append", default=[],
                    help="override: Body.Feature.FaceN (matched to the "
                         "source body owning that face)")
-    p.add_argument("--detector-face", action="append", default=[])
+    p.add_argument("--detector-face", action="append", default=[],
+                   help="add an extra, transparent detector screen on any "
+                        "face (Body.Feature.FaceN) without disturbing its "
+                        "physical interaction. Prefer the authoring-time "
+                        "`detector_face` BODY property (docs/RAYTRACER.md "
+                        "§5.1/§5.2) when you just need to retarget a "
+                        "detector body's own recorded primary face: it "
+                        "replaces that face in place (no extra screen) "
+                        "and keeps the scene C-engine-routable, whereas "
+                        "this CLI flag adds an extra screen on top of the "
+                        "auto-pick and forces the Python engine "
+                        "(extra_detector_faces is not in the C engine's "
+                        "ported feature set)")
     p.add_argument("--grating", action="append", default=[])
     p.add_argument("--rough", action="append", default=[])
     p.add_argument("--particles", default=None)
@@ -348,6 +395,18 @@ def _build_trace_parser():
                         "maps into detectors/<label>.h5 fields/ groups "
                         "(post_process renders Stokes maps from them; "
                         "seed0 only; large files at high resolution)")
+    p.add_argument("--save-fields-detectors", default=None,
+                   metavar="LABEL[,LABEL...]",
+                   help="restrict --save-fields' field-map writes to "
+                        "these detector labels (comma-separated; default: "
+                        "every detector — identical to bare --save-fields). "
+                        "Labels are detector face ids, e.g. "
+                        "'Body001.Pad.Face3' (matching DetectorGrid.label/ "
+                        "--detector-face); an unknown label is a hard "
+                        "error naming the scene's available detector "
+                        "labels. No effect without --save-fields. Forces "
+                        "the Python engine (the C engine always saves "
+                        "fields for every detector under --save-fields)")
     p.add_argument("--gather-occlusion", action="store_true",
                    help="ray-cast each gather sample->detector-tile segment "
                         "against scene bodies and shadow blocked pairs "

@@ -26,10 +26,14 @@ Key design decisions (cloned from the antenna project's run_pipeline.py):
     post/viz always look in the directory trace actually wrote to.
   * Physics options (--rays/--resolution/--nlambda/--seeds/--backend/
     --source-face/--detector-face/--grating/--rough/--particles/
-    --particle-threshold/--suppress-body/--dry-run) are forwarded to the
-    trace stage ONLY, verbatim; --preset fills rays/resolution/nlambda/
-    spectral-bins/viz-rays from common.PRESETS unless explicitly
-    overridden on this command line.
+    --particle-threshold/--suppress-body/--save-fields/
+    --save-fields-detectors/--dry-run) are forwarded to the trace stage
+    ONLY, verbatim; --preset fills rays/resolution/nlambda/spectral-bins/
+    viz-rays from common.PRESETS unless explicitly overridden on this
+    command line.
+  * --viz-generations forwards to the post stage; --views/--smoke forward
+    to the viz stage (post_process.py / make_viz.py's own options of the
+    same name — see their --help for exact semantics).
   * --dry-run means "trace estimates only, does not actually run": trace's
     case.json status then stays 'estimated' (never 'completed'), so post
     and viz are skipped for that model with a NOTICE — this is enforced
@@ -241,6 +245,8 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--mesh-flat-normals"]
     if args.save_fields:
         cmd += ["--save-fields"]
+    if args.save_fields_detectors:
+        cmd += ["--save-fields-detectors", args.save_fields_detectors]
     if args.export_rays:
         cmd += ["--export-rays"]
     if args.ghost_analysis:
@@ -281,15 +287,22 @@ def post_cmd(stem, case_dir, args):
     if args.wavefront_point is not None:
         cmd += ["--wavefront-point",
                 "%g,%g" % (args.wavefront_point[0], args.wavefront_point[1])]
+    if args.viz_generations is not None:
+        cmd += ["--viz-generations", str(int(args.viz_generations))]
     return cmd
 
 
 def viz_cmd(stem, case_dir, args):
     model_json = common.GEOMETRY_DIR / stem / "model.json"
-    return [common.PVPYTHON, "--force-offscreen-rendering",
-           str(common.SCRIPTS_DIR / "make_viz.py"),
-           "--case-dir", str(case_dir), "--model-json", str(model_json)] \
+    cmd = [common.PVPYTHON, "--force-offscreen-rendering",
+          str(common.SCRIPTS_DIR / "make_viz.py"),
+          "--case-dir", str(case_dir), "--model-json", str(model_json)] \
         + _dim_rays_args(args)
+    if args.views:
+        cmd += ["--views", args.views]
+    if args.smoke:
+        cmd += ["--smoke"]
+    return cmd
 
 
 STAGE_BUILDERS = {"trace": trace_cmd, "post": post_cmd, "viz": viz_cmd}
