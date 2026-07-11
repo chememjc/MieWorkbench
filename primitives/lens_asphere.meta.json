@@ -3,6 +3,11 @@
  "kind": "lens_asphere",
  "label": "Aspheric lens",
  "params": {
+  "A4_mm3": {
+   "default": 6.586562e-06,
+   "help": "even-asphere A4 coefficient, mm^-3",
+   "unit": ""
+  },
   "R": {
    "default": 20.6033,
    "help": "vertex radius of curvature",
@@ -19,13 +24,13 @@
    "unit": "mm"
   },
   "k": {
-   "default": -2.29547,
-   "help": "conic constant (k=-n^2 kills spherical aberration)",
+   "default": -1.0,
+   "help": "conic constant (full-lens-corrected design; wizards.solve_asphere supplies (k, A4) per focal length)",
    "unit": ""
   }
  },
  "props": {
   "material": "bk7"
  },
- "tooltip": "Plano-convex conic asphere (revolved exact-sag BSpline + surface_override; extractor verifies <1 um)."
+ "tooltip": "Plano-convex even asphere, conic + A4 r^4 (revolved exact-sag BSpline + surface_override; extractor verifies <1 um). Defaults are the f=40 BK7@633 design solved for the COMPLETE lens (front asphere + flat exit) by exact ray trace \u2014 the old k=-n^2 convention corrected only the front surface and over-corrected the full lens."
 }

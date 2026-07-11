@@ -135,12 +135,22 @@ def solve_ball(f, n):
     return {"diameter": D, "n": n, "efl": f, "bfl": f - D / 2.0}
 
 
+# the SCENES lens_asphere reference design (f=40, BK7@633, ct=6): (k, A4)
+# solved for the COMPLETE lens (front asphere + flat exit) by exact
+# meridional ray trace — k=-n^2 corrected only the front surface and the
+# flat exit re-added spherical aberration (see make_test_scenes.py).
+_ASPHERE_REF = {"f": 40.0, "k": -1.0, "A4_mm3": 6.586562e-06}
+
+
 def solve_asphere(f, n, d):
-    """Plano-convex conic asphere: vertex radius from the PCX solution,
-    conic k = -n^2 (kills on-axis spherical aberration for a collimated
-    beam; the original project's lens_asphere convention)."""
+    """Plano-convex asphere: vertex radius from the PCX solution, plus
+    the full-lens-corrected front profile (k, A4) scale-transferred from
+    the solved f=40 BK7 reference (aspheric sag is scale-invariant, so
+    A4 scales as (f_ref/f)^3; exact for BK7-like n with proportionally
+    scaled thickness, a good starting point otherwise)."""
     out = solve_pcx(f, n, d)
-    out["k"] = -(n * n)
+    out["k"] = _ASPHERE_REF["k"]
+    out["A4_mm3"] = _ASPHERE_REF["A4_mm3"] * (_ASPHERE_REF["f"] / f) ** 3
     return out
 
 
@@ -203,10 +213,10 @@ LENS_FORMS = {
              "primitive": "lens_meniscus",
              "map": lambda r: {"R_front": r["R_front"],
                                "R_back": r["R_back"], "ct": r["ct"]}},
-    "asphere": {"label": "Aspheric (conic)", "solver": solve_asphere,
+    "asphere": {"label": "Aspheric (conic + A4)", "solver": solve_asphere,
                 "primitive": "lens_asphere",
                 "map": lambda r: {"R": r["R_front"], "k": r["k"],
-                                  "ct": r["ct"]}},
+                                  "A4_mm3": r["A4_mm3"], "ct": r["ct"]}},
     "ball": {"label": "Ball lens", "solver": solve_ball,
              "primitive": "lens_ball",
              "map": lambda r: {"diameter": r["diameter"]}},

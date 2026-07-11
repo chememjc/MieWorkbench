@@ -82,10 +82,14 @@ def test_meniscus_solver_exact():
 
 def test_asphere_conic():
     out = wizards.solve_asphere(40.0, N_633, 6.0)
-    assert out["k"] == pytest.approx(-N_633 ** 2)
-    # matches the SCENES lens_asphere design intent
+    # matches the SCENES lens_asphere full-lens-corrected design
     assert out["k"] == pytest.approx(SCENES["lens_asphere"]["conic_k"],
                                      abs=0.001)
+    assert out["A4_mm3"] == pytest.approx(
+        SCENES["lens_asphere"]["asphere_A4_mm"], rel=1e-9)
+    # A4 scale transfer: half the focal length -> 8x the coefficient
+    out20 = wizards.solve_asphere(20.0, N_633, 3.0)
+    assert out20["A4_mm3"] == pytest.approx(8 * out["A4_mm3"], rel=1e-9)
 
 
 def test_achromat_scaling():

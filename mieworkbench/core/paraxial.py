@@ -386,14 +386,16 @@ def chain_path(train_model, variables=None):
 
 
 def system_summary(train_model, variables=None, index_fn=None, lam_nm=None,
-                   object_distance_mm=math.inf):
+                   object_distance_mm=math.inf, through_element=None):
     """Whole-train paraxial summary over the chain path.
 
     Returns {efl, bfl, image_distance_mm, magnification, fno_working, na,
     limiting_element, lambda_nm, n_optical_elements, warnings, path}.
     image_distance_mm is measured from the LAST optical element's exit
     vertex; object_distance_mm from the FIRST optical element's entry
-    vertex (inf = collimated input).
+    vertex (inf = collimated input). `through_element` truncates the
+    system after that element (the "image distance from element X"
+    building block for the insert-value menus).
     """
     if index_fn is None:
         matdb = wizards._default_matdb()
@@ -453,6 +455,9 @@ def system_summary(train_model, variables=None, index_fn=None, lam_nm=None,
             warnings.append("%s: thin-lens approximation"
                             % entry["element"])
         pending_gap = 0.0
+        if through_element is not None \
+                and entry["element"] == through_element:
+            break
 
     out["n_optical_elements"] = n_opt
     if n_opt == 0:

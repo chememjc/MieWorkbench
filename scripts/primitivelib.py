@@ -331,16 +331,24 @@ PRIMITIVES = {
     },
     "lens_asphere": {
         "category": "Lenses", "label": "Aspheric lens",
-        "tooltip": "Plano-convex conic asphere (revolved exact-sag "
-                   "BSpline + surface_override; extractor verifies "
-                   "<1 um).",
+        "tooltip": "Plano-convex even asphere, conic + A4 r^4 (revolved "
+                   "exact-sag BSpline + surface_override; extractor "
+                   "verifies <1 um). Defaults are the f=40 BK7@633 "
+                   "design solved for the COMPLETE lens (front asphere + "
+                   "flat exit) by exact ray trace — the old k=-n^2 "
+                   "convention corrected only the front surface and "
+                   "over-corrected the full lens.",
         "params": {"R": P(20.6033, "mm", "vertex radius of curvature"),
-                   "k": P(-2.29547, "", "conic constant (k=-n^2 kills "
-                                        "spherical aberration)"),
+                   "k": P(-1.0, "", "conic constant (full-lens-corrected "
+                                    "design; wizards.solve_asphere "
+                                    "supplies (k, A4) per focal length)"),
+                   # alias must not look like a cell address (A4 = cell!)
+                   "A4_mm3": P(6.586562e-06, "", "even-asphere A4 "
+                                                 "coefficient, mm^-3"),
                    "ct": P(6.0, "mm", "center thickness"),
                    "aperture": P(20.0, "mm", "clear aperture diameter")},
         "props": {"material": "bk7"},
-        # builder-owned, re-derived from R/k/aperture every rebuild
+        # builder-owned, re-derived from R/k/A4/aperture every rebuild
         "derived_props": ("surface_override",),
     },
     "lens_fresnel": {
@@ -1288,8 +1296,9 @@ def _build_lens_cyl(doc, group, p):
 def _build_lens_asphere(doc, group, p):
     sa = p["aperture"] / 2.0
     R, k, ct = p["R"], p["k"], p["ct"]
+    a4 = p.get("A4_mm3", 0.0)  # .get: pre-A4 saved sheets rebuild unchanged
     n_samp = 41
-    pts = [App.Vector(mts._asphere_sag(sa * i / (n_samp - 1), R, k),
+    pts = [App.Vector(mts._asphere_sag(sa * i / (n_samp - 1), R, k, a4),
                       sa * i / (n_samp - 1), 0)
            for i in range(n_samp)]
     bs = Part.BSplineCurve()
@@ -1300,9 +1309,11 @@ def _build_lens_asphere(doc, group, p):
              mts._line(ct, sa, ct, 0.0),
              mts._line(ct, 0.0, 0.0, 0.0)]
     body = mts.revolve_body(doc, group, edges)
-    mts.set_props(body, {"surface_override":
-                         "Face1=asphere:R=%.6f;k=%.6f;r_max=%.4f"
-                         % (R, k, sa)})
+    override = "Face1=asphere:R=%.6f;k=%.6f" % (R, k)
+    if a4:
+        override += ";A4=%.9g" % a4
+    override += ";r_max=%.4f" % sa
+    mts.set_props(body, {"surface_override": override})
     return [body]
 
 
