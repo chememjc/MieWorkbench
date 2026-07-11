@@ -448,6 +448,8 @@ int64_t gather_run(SceneC *s) {
             log_progress("trace", 0.96, "gather %s key %d/%d (%lld "
                          "samples, %s)", d->label, ki + 1, d->n_gkeys,
                          (long long)M, backend_name);
+            LOGI("gather %s key %d/%d: %lld samples (%s)", d->label,
+                 ki + 1, d->n_gkeys, (long long)M, backend_name);
             /* ---- E3 projection + amplitudes (gather.py:485-499) ---- */
             const SourceC *src = &s->sources[g->source_id];
             double dA = 1.0;
@@ -799,6 +801,8 @@ int64_t gather_run(SceneC *s) {
                     g->lam[0] / 1e-9, step, d->det_geom_W[key],
                     noise_floor, backend_name, occ_frac, popdiag);
             first_key = 0;
+            fflush(jf);     /* per-key flush: partial gather.json stays
+                             * readable for progress introspection */
 
             free(inten);
             free(pop_inten);

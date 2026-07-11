@@ -1438,9 +1438,20 @@ void trace_run(SceneC *s, TraceResultC *out) {
         vizvec_init(&ctxs[i].viz);
     }
 
-    /* hard iteration cap (tracer.py:156-158): with the generation cap the
-     * loop terminates naturally well before this */
-    int64_t max_iter = 64ll * (s->max_reflections + 2);
+    /* hard iteration cap (tracer.py:156-158): a SAFETY VALVE against
+     * pathological loops, not physics — with the generation cap the loop
+     * terminates naturally well before it. Python's formula assumes one
+     * batch pop per generation wave; when child batches SPLIT (children
+     * > batch_size), one wave costs several pops, so the same budget
+     * would drain legitimate deep ghost cascades (found by the
+     * microscope_objective benchmark: 1.9M-ray waves at 1e6 primaries
+     * burned 512 pops at ~1/3 of the true chain depth, silently killing
+     * 0.9 mW that the Python engine delivers). Scale the budget by the
+     * worst-case split factor (3x children-per-primary headroom); the
+     * valve stays bounded. */
+    int64_t split_factor = 1 + (3ll * (int64_t)s->n_sources * s->rays)
+                               / s->batch_size;
+    int64_t max_iter = 64ll * (s->max_reflections + 2) * split_factor;
     int64_t iter = 0;
     int64_t total_rays_est = (int64_t)s->n_sources * s->rays * 3;
     int64_t processed = 0;
@@ -1539,6 +1550,38 @@ void trace_run(SceneC *s, TraceResultC *out) {
     }
 
     /* drain leftovers at the iteration cap (tracer.py:174-178) */
+    if (q_len > 0) {
+        int64_t alive = 0;
+        for (int qi = 0; qi < q_len; qi++) alive += queue[qi].n;
+        LOGW("iteration cap (%lld pops) reached with %lld live rays in "
+             "%d batches — their power drains to truncated_generation "
+             "(tracer.py does the same, but hitting this in the C engine "
+             "means the pop accounting diverged; investigate)",
+             (long long)max_iter, (long long)alive, q_len);
+        /* drain diagnostics: what ARE these rays? */
+        {
+            int64_t gen_h[16] = {0};
+            int64_t face_h[64] = {0};
+            double pw = 0.0;
+            const RayVec *b0 = &queue[q_len - 1];
+            for (int64_t i = 0; i < b0->n; i++) {
+                const Ray *rr = &b0->rays[i];
+                int gg = rr->generation < 15 ? rr->generation : 15;
+                gen_h[gg]++;
+                if (rr->last_face >= 0 && rr->last_face < 64)
+                    face_h[rr->last_face]++;
+                pw += ray_power(rr);
+            }
+            LOGW("drain batch0: n=%lld power=%.3g", (long long)b0->n, pw);
+            for (int gg = 0; gg < 16; gg++)
+                if (gen_h[gg])
+                    LOGW("  gen %d: %lld rays", gg, (long long)gen_h[gg]);
+            for (int ff = 0; ff < 64; ff++)
+                if (face_h[ff] > b0->n / 20)
+                    LOGW("  last_face %d (%s): %lld rays", ff,
+                         s->faces[ff].id, (long long)face_h[ff]);
+        }
+    }
     for (int qi = 0; qi < q_len; qi++) {
         RayVec *b = &queue[qi];
         for (int64_t i = 0; i < b->n; i++)

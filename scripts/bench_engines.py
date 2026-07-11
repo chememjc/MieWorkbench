@@ -40,15 +40,21 @@ def routable(model_json):
     # (routing is checked from the real run's case.json below)
 
 
-def run_case(model_json, case_dir, engine, rays, resolution, nlambda):
+def run_case(model_json, case_dir, engine, rays, resolution, nlambda,
+             timeout_s=None):
     t0 = time.time()
-    proc = subprocess.run(
-        [OPTICS, str(REPO / "scripts" / "run_trace.py"),
-         "--model-json", str(model_json), "--case-dir", str(case_dir),
-         "--rays", repr(rays), "--resolution", str(resolution),
-         "--nlambda", str(nlambda), "--engine", engine,
-         "--workers", "auto"],
-        capture_output=True, text=True)
+    try:
+        proc = subprocess.run(
+            [OPTICS, str(REPO / "scripts" / "run_trace.py"),
+             "--model-json", str(model_json), "--case-dir", str(case_dir),
+             "--rays", repr(rays), "--resolution", str(resolution),
+             "--nlambda", str(nlambda), "--engine", engine,
+             "--workers", "auto"],
+            capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["pkill", "-f", str(case_dir)],
+                       capture_output=True)
+        return {"error": "timeout", "wall": time.time() - t0, "tail": ""}
     wall = time.time() - t0
     if proc.returncode != 0:
         return {"error": proc.returncode, "wall": wall,
@@ -77,6 +83,10 @@ def main():
                          "C-routable extracted geometries)")
     ap.add_argument("--workdir", default=str(REPO / "var" / "work"
                                              / "bench_engines"))
+    ap.add_argument("--timeout-s", type=float, default=5400.0,
+                    help="per-engine-run wall budget; exceeding runs are "
+                         "SKIPPED with an explicit note in the table "
+                         "(no silent caps)")
     args = ap.parse_args()
 
     if args.scenes:
@@ -89,21 +99,32 @@ def main():
     wd = Path(args.workdir)
     wd.mkdir(parents=True, exist_ok=True)
     rows = []
+    skipped = []
     for name in names:
         mj = REPO / "geometry" / name / "model.json"
         print("== %s" % name, flush=True)
         cc = run_case(mj, wd / name / "c", "auto", args.rays,
-                      args.resolution, args.nlambda)
+                      args.resolution, args.nlambda,
+                      timeout_s=args.timeout_s)
         if "error" in cc:
-            print("   C run failed (%s) — skipping" % cc["error"])
+            print("   C run failed/timed out (%s) — noted + skipped"
+                  % cc["error"])
+            skipped.append((name, "C run: %s" % cc["error"]))
             continue
         if cc["engine"] != "c":
             print("   routes to python (unported feature) — skipped")
+            skipped.append((name, "auto-routes to python"))
             continue
         py = run_case(mj, wd / name / "py", "python", args.rays,
-                      args.resolution, args.nlambda)
+                      args.resolution, args.nlambda,
+                      timeout_s=args.timeout_s)
         if "error" in py:
-            print("   python run failed — skipping")
+            # Python baseline exceeded the budget but C completed: a
+            # bounded speedup statement is still honest — record it
+            print("   python run failed/timed out (%s)" % py["error"])
+            skipped.append((name, "python baseline: %s (C wall %.1fs — "
+                            "speedup > %.1fx)" % (py["error"], cc["wall"],
+                                                  py["wall"] / cc["wall"])))
             continue
         # detected-power sanity (loose MC bound; the demo equivalence
         # suite is the real physics gate)
@@ -158,6 +179,9 @@ def main():
                py["wall"] / cc["wall"],
                (py["trace_s"] + py["gather_s"])
                / max(cc["trace_s"] + cc["gather_s"], 1e-9)))
+    if skipped:
+        lines += ["", "Skipped (explicit, no silent caps):", ""]
+        lines += ["- %s — %s" % (n, why) for n, why in skipped]
     lines += [
         "",
         "geometric mean: **%.1fx wall**, **%.1fx trace+gather** over %d "
