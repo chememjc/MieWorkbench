@@ -1,0 +1,29 @@
+{
+ "category": "Sources",
+ "kind": "led_white",
+ "label": "White LED (2733 K)",
+ "params": {
+  "diameter": {
+   "default": 10.0,
+   "help": "emit face diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 584.6,
+  "power": 5.0,
+  "spectrum": "led_white_2733k"
+ },
+ "tooltip": "Phosphor-converted warm-white LED source with a full tabulated emission spectrum (blue pump peak ~450 nm + broad phosphor hump; CIE 015:2018 Table 12.1 standard illuminant LED-B1, CCT ~2733 K). Samples the SPD table (spectrum=led_white_2733k); lambdac is the power-weighted mean wavelength."
+}
