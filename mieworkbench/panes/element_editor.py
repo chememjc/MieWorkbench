@@ -80,6 +80,7 @@ Contract property semantics (cribbed from scripts/extract_geometry.py's
                     asphere) in place of the tessellated mesh.
 """
 
+import math
 import os
 import re
 import sys
@@ -102,6 +103,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import facemaps
+from ..core import opticalvalues, paraxial, wizards
 from ..core.facemaps import (   # noqa: F401  (re-exported for back-compat)
     FACEMAP_PROPERTIES, active_face_index, merge_facemap,
     validate_facemap_value,
@@ -298,12 +300,14 @@ class ElementEditorPane(QWidget):
         self._refresh_timer.timeout.connect(self._deferred_refresh)
 
         self._build_properties_box()
+        self._build_paraxial_box()
         self._build_faces_box()
         self._build_sheet_box()
 
         body = QWidget()
         body_layout = QVBoxLayout(body)
         body_layout.addWidget(self.props_box)
+        body_layout.addWidget(self.paraxial_box)
         body_layout.addWidget(self.faces_box)
         body_layout.addWidget(self.sheet_box)
         body_layout.addStretch(1)
@@ -674,6 +678,7 @@ class ElementEditorPane(QWidget):
         if body_changed:
             self._refresh_properties()
             self._refresh_sheet_table()
+            self._refresh_paraxial()
         self._refresh_assignments_table()
 
     # -- assignment data helpers ----------------------------------------------
@@ -1055,15 +1060,164 @@ class ElementEditorPane(QWidget):
         if menu is not None:
             menu.exec(self.assign_table.viewport().mapToGlobal(pos))
 
+    # -- paraxial readout (read-only, between properties and faces) -----------
+    def _build_paraxial_box(self):
+        self.paraxial_box = QGroupBox("Paraxial")
+        self.paraxial_label = QLabel("")
+        self.paraxial_label.setWordWrap(True)
+        self.paraxial_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse)
+        layout = QVBoxLayout()
+        layout.addWidget(self.paraxial_label)
+        self.paraxial_box.setLayout(layout)
+        self.paraxial_box.setVisible(False)
+
+    def _element_label(self):
+        """The element (group) label the current body belongs to."""
+        if self._project is None or self._body_name is None:
+            return None
+        body = self._project.body(self._body_name)
+        props = body.get("properties", {}) or {}
+        group = (props.get("miewb_group") or {}).get("value")
+        return group or body.get("label")
+
+    def _paraxial_index_fn(self):
+        optprops = self._get_optprops()
+        if optprops is None:
+            return None
+        matdb = optprops.matdb
+
+        def index_fn(mat, lam):
+            return wizards.index_at(matdb, mat, lam)
+        return index_fn
+
+    def _refresh_paraxial(self):
+        """Element EFL/BFL/FFL + equivalent f-number (EFL / clear
+        aperture) and NA at the design wavelength. Hidden for
+        non-optical bodies; failures degrade to hidden with the reason
+        as tooltip — never a modal (offscreen-test trap)."""
+        try:
+            element = self._element_label()
+            if element is None or self._project is None:
+                self.paraxial_box.setVisible(False)
+                return
+            tm = self._project.train()
+            primary = tm.primary_body(element)
+            props = {n: (e or {}).get("value")
+                     for n, e in (primary.get("properties") or {}).items()}
+            kind = props.get("miewb_primitive")
+            params = tm._sheet_params(element)
+            index_fn = self._paraxial_index_fn()
+            if not kind or not params or index_fn is None:
+                self.paraxial_box.setVisible(False)
+                return
+            lam = paraxial.design_wavelength_nm(tm)
+            card = paraxial.element_cardinals(
+                kind, params, index_fn, lam,
+                material=props.get("material"))
+            if card.get("passthrough") or card.get("afocal"):
+                self.paraxial_box.setVisible(False)
+                return
+            ap = paraxial.element_aperture_mm(tm, element)
+            bits = ["EFL %.4g mm" % card["efl"],
+                    "BFL %.4g mm" % card["bfl"],
+                    "FFL %.4g mm" % card["ffl"]]
+            if ap and card["efl"] and math.isfinite(card["efl"]):
+                fno = abs(card["efl"]) / ap
+                bits.append("f/%.3g" % fno)
+                bits.append("NA %.3g" % (ap / (2.0 * abs(card["efl"]))))
+            flags = [k for k in ("cylindrical", "approximate", "mirror")
+                     if card.get(k)]
+            text = " · ".join(bits) + "   (λ = %.0f nm)" % lam
+            if flags:
+                text += "  [%s]" % ", ".join(flags)
+            self.paraxial_label.setText(text)
+            self.paraxial_box.setToolTip(
+                "Paraxial cardinal values from the dim sheet + material "
+                "at the design wavelength (first source's lambdac). "
+                "f-number = EFL / clear aperture; NA = aperture / 2 EFL. "
+                "BFL/FFL measured from the exit/entry vertex.")
+            self.paraxial_box.setVisible(True)
+        except Exception as exc:
+            self.paraxial_box.setVisible(False)
+            self.paraxial_box.setToolTip("paraxial readout: %s" % exc)
+
     # -- section (c): element parameters -------------------------------------
     def _build_sheet_box(self):
         self.sheet_box = QGroupBox("Element parameters")
         self.sheet_table = QTableWidget(0, 3)
         self.sheet_table.setHorizontalHeaderLabels(["Alias", "Value", "Unit"])
         self.sheet_table.verticalHeader().setVisible(False)
+        self.sheet_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sheet_table.customContextMenuRequested.connect(
+            self._on_sheet_context_menu)
         layout = QVBoxLayout()
         layout.addWidget(self.sheet_table)
         self.sheet_box.setLayout(layout)
+
+    def _on_sheet_context_menu(self, pos):
+        item_row = self.sheet_table.rowAt(pos.y())
+        if item_row < 0:
+            return
+        alias_item = self.sheet_table.item(item_row, 0)
+        if alias_item is None:
+            return
+        menu = self._build_sheet_context_menu(alias_item.text())
+        if menu is not None:
+            menu.exec(self.sheet_table.viewport().mapToGlobal(pos))
+
+    def _build_sheet_context_menu(self, alias):
+        """Build (no exec) the insert-optical-value menu for a dim-sheet
+        row. Returns None when no optical values apply. Literal insert
+        only — dim cells are FreeCAD expressions, not train_solver
+        grammar, so variable capture goes through the Variables dock's
+        `=<<miewb_vars>>.name * 1mm` pattern instead."""
+        element = self._element_label()
+        if element is None or self._project is None:
+            return None
+        try:
+            entries = opticalvalues.value_menu_model(
+                self._project.train(), element, alias,
+                variables=self._project.train_variables(),
+                index_fn=self._paraxial_index_fn(),
+                is_sheet_alias=True)
+        except Exception:
+            entries = []
+        if not entries:
+            return None
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        sub = menu.addMenu("Insert optical value")
+        menu.optical_value_submenu = sub
+        groups = {}
+        menu.optical_value_groups = groups
+        for e in entries:
+            g = groups.get(e["group"])
+            if g is None:
+                g = sub.addMenu(e["group"])
+                groups[e["group"]] = g
+            act = g.addAction(e["label"])
+            act.triggered.connect(
+                lambda checked=False, e=e, a=alias:
+                    self._insert_sheet_value(a, e["value"]))
+        return menu
+
+    def _insert_sheet_value(self, alias, value):
+        """Commit an optical value into the dim-sheet alias through the
+        same parse/format/rebuild path as a hand edit."""
+        if self._project is None or self._body_name is None:
+            return
+        sheet = self._project.sheet_for_body(self._body_name)
+        if sheet is None:
+            return
+        entry = (sheet.get("aliases") or {}).get(alias)
+        if entry is None:
+            return
+        try:
+            parsed = parse_sheet_raw(entry.get("raw", ""))
+        except ValueError:
+            return
+        self._on_sheet_edit(sheet["label"], alias, parsed, "%.6g" % value)
 
     def _refresh_sheet_table(self):
         self.sheet_table.setRowCount(0)
@@ -1146,8 +1300,10 @@ class ElementEditorPane(QWidget):
         self._refresh_properties()
         self._refresh_assignments_table()
         self._refresh_sheet_table()
+        self._refresh_paraxial()
 
     def _refresh_all(self):
         self._refresh_properties()
         self._refresh_assignments_table()
         self._refresh_sheet_table()
+        self._refresh_paraxial()

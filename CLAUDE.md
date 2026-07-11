@@ -223,9 +223,13 @@ a spatial drag).
 
 **Global variables**: a `miewb_vars` Spreadsheet (UNITLESS value cells
 aliased `<name>`; sweep meta `<name>__min/__max/__n/__on`). Expressions
-(`+ - * /`, cycle-checked with the full path named) usable in chain
-fields, dim cells (FreeCAD expr `=<<miewb_vars>>.name * 1mm` — the
-`* 1mm` is REQUIRED), and float body props via `miewb_expr_<prop>`
+(`+ - * /`, constant `pi`, functions sin cos tan asin acos atan atan2
+sqrt abs radians degrees — **trig is DEGREES-native** (matches tilt
+fields; `sinr`/`cosr`/… take radians); cycle-checked with the full path
+named; `train_solver.EXPR_HELP` is the one grammar string) usable in
+chain fields, dim cells (FreeCAD expr `=<<miewb_vars>>.name * 1mm` — the
+`* 1mm` is REQUIRED, and dim cells use FreeCAD's OWN expression engine,
+not this grammar), and float body props via `miewb_expr_<prop>`
 (baked by GUI and permute). Editing a variable rebuilds every primitive
 whose dim sheet references `miewb_vars` (GUI:
 `Project.apply_variable_cells`; headless:

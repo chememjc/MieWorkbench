@@ -757,3 +757,100 @@ def test_default_registry_value_prefers_known_entries():
     assert default_registry_value(
         "grating", ["vbg_1800", "amp_600"]) == "Face1=@amp_600"
     assert default_registry_value("grating", []).startswith("Face1=")
+
+
+# ---------------------------------------------------------------------------
+# paraxial readout + sheet insert-optical-value menu (no-side-math round)
+# ---------------------------------------------------------------------------
+def _paraxial_scene(tmp_path, chained=True):
+    structure, faces = make_two_body_scene(tmp_path)
+    lens = structure["bodies"][0]
+    lens["properties"]["miewb_primitive"]["value"] = "lens_pcx"
+    lens["properties"]["material"]["value"] = "bk7"
+    structure["sheets"].append({
+        "name": "dimlens", "label": "dim_lensgrp", "aliases": {
+            "R_front": {"cell": "B1", "raw": "=25 mm", "value": 25.0,
+                        "unit": "mm"},
+            "ct": {"cell": "B2", "raw": "=5 mm", "value": 5.0, "unit": "mm"},
+            "aperture": {"cell": "B3", "raw": "=20 mm", "value": 20.0,
+                         "unit": "mm"},
+        }})
+    if chained:
+        structure["bodies"].append({
+            "name": "SRC", "label": "SRC", "tip": "Pad",
+            "face_count": 1, "solid_closed": True, "volume_mm3": 1.0,
+            "center_of_mass_mm": [-30.0, 0.0, 0.0],
+            "bbox_mm": [-31, -1, -1, -29, 1, 1],
+            "placement": {"pos_mm": [-30.0, 0.0, 0.0],
+                          "quat": [0.0, 0.0, 0.0, 1.0]},
+            "placement_bound": False, "shape_key": "ksrc",
+            "properties": {
+                "power": {"type": "App::PropertyFloat", "group": "Base",
+                          "value": 5.0},
+                "lambdac": {"type": "App::PropertyFloat", "group": "Base",
+                            "value": 633.0},
+            },
+        })
+        lens["properties"]["miewb_train_mode"] = {
+            "type": "App::PropertyString", "group": "MieTrain",
+            "value": "chained"}
+        lens["properties"]["miewb_train_ref"] = {
+            "type": "App::PropertyString", "group": "MieTrain",
+            "value": "SRC"}
+        lens["properties"]["miewb_train_distance"] = {
+            "type": "App::PropertyString", "group": "MieTrain",
+            "value": "30"}
+    return structure, faces
+
+
+def test_paraxial_box_visible_for_lens(qtbot, tmp_path):
+    structure, faces = _paraxial_scene(tmp_path)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(FakeProject(structure, faces))
+    pane.set_face_selection("Lens", [])
+    assert pane.paraxial_box.isVisibleTo(pane)
+    text = pane.paraxial_label.text()
+    assert "EFL" in text and "f/" in text and "NA" in text
+    # equivalent f-number = EFL / aperture: EFL(pcx R=25, bk7) ~ 48.4 mm,
+    # aperture 20 -> f/2.4-ish
+    assert "f/2.4" in text
+
+
+def test_paraxial_box_hidden_for_detector(qtbot, tmp_path):
+    structure, faces = _paraxial_scene(tmp_path)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(FakeProject(structure, faces))
+    pane.set_face_selection("Screen", [])
+    assert not pane.paraxial_box.isVisibleTo(pane)
+
+
+def test_sheet_context_menu_offers_system_values(qtbot, tmp_path):
+    structure, faces = _paraxial_scene(tmp_path)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    project = FakeProject(structure, faces)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", [])
+    menu = pane._build_sheet_context_menu("ct")
+    assert menu is not None
+    groups = menu.optical_value_groups
+    assert "System" in groups
+    act = next(a for a in groups["System"].actions()
+               if a.text().startswith("System EFL"))
+    act.trigger()
+    sheet_calls = [c for c in project.calls if c[0] == "set_spreadsheet"]
+    assert sheet_calls and sheet_calls[-1][1] == "dim_lensgrp"
+    assert sheet_calls[-1][2] == "ct"
+    # primitive-built body: the edit triggers a rebuild
+    assert ("rebuild_primitive", "lensgrp") in project.calls
+
+
+def test_sheet_context_menu_none_for_non_length_alias(qtbot, tmp_path):
+    structure, faces = _paraxial_scene(tmp_path)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(FakeProject(structure, faces))
+    pane.set_face_selection("Lens", [])
+    assert pane._build_sheet_context_menu("wavelength") is None

@@ -394,8 +394,11 @@ in the current fold state that opens in plain FreeCAD.
 
 The **global variables** table (stored in the model's `miewb_vars`
 spreadsheet, so files stay standalone): name, value (expressions over
-other variables allowed, cycles detected and named), sweep min/max/
-steps, and a per-row **Sweep** enable. Variables are usable in train
+other variables allowed — `+ - * / ( )`, the constant `pi`, and math
+functions `sin cos tan asin acos atan atan2 sqrt abs radians degrees`;
+**trig takes/returns degrees** to match the tilt fields, with
+`sinr`/`cosr`/`tanr`/… radian variants; cycles detected and named),
+sweep min/max/steps, and a per-row **Sweep** enable. Variables are usable in train
 fields, in element dimensions (FreeCAD expression
 `=<<miewb_vars>>.name * 1mm` — the iris opening in the camera_triplet
 demo works this way), and in float body properties via

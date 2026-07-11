@@ -232,6 +232,15 @@ class FakeProject(QObject):
         b["properties"].pop(name, None)
         self.propertiesChanged.emit(body)
 
+    def train(self):
+        """Real TrainModel over the fake structure (paraxial readout +
+        insert-optical-value tests)."""
+        from mieworkbench.core.train import TrainModel
+        return TrainModel(self.structure, self.body_states)
+
+    def train_variables(self):
+        return {}
+
     def set_spreadsheet(self, sheet, alias, raw, rebuild_group=None):
         self.calls.append(("set_spreadsheet", sheet, alias, raw))
         for s in self.sheets():
