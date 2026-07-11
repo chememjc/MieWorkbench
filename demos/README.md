@@ -165,6 +165,50 @@ Hard-won notes baked into these three (full log: `UXNOTES_ROUND3.md`):
   negative doublets are cemented.
 - The afocal relay spacing is `bfl₁+bfl₂` (thick-lens), not `f₁+f₂`.
 
+## Feature-coverage matrix
+
+The gallery + the 25 validation scenes as a *covering set* over every
+shipped capability (absorbed from the retired `demosystems.md` working
+document, 2026-07-11). ✅ = exercised by a runnable demo/scene today;
+⏳ = the capability exists but its demo waits on the named backlog item;
+🔶 = future-roadmap capability (acceptance-target demos specified in
+`future.md`).
+
+| Feature | Exercised by |
+|--|--|
+| Refraction / dispersion | beam_expander, prism_spectrometer, camera_triplet, lens_* scenes |
+| Fresnel loss + energy audit | every demo (ledger < 1e-3 everywhere) |
+| Spherical / conic+A4 asphere surfaces | lens_ball, lens_asphere (full-lens-corrected), schmidt corrector |
+| Cylindrical / conical surfaces | lens_cyl, lens_rod, axicon |
+| Fresnel-facet surface | lens_fresnel |
+| Mesh / freeform fallback | mesh_freeform (no `--strict`) |
+| Mirrors + beam folding | newtonian, dobsonian, schmidt_cassegrain, czerny_turner, **folded_periscope** |
+| One-click fold operator + rigid refold | **folded_periscope** (bit-exact refold asserted) |
+| Coherence / interference | michelson, doubleslit |
+| Aperture diffraction (Airy) | **airy_singleslit** (disk scale ✅; ring nulls wash at quick budgets — honest limit) |
+| Diffraction gratings | czerny_turner |
+| Beamsplitter / dichroic TMM coatings | michelson, hot_mirror, pbs_cube (⚠ air-gap) |
+| Spectral filters | filter_bandpass |
+| Uniaxial birefringence + walk-off | calcite_displacer, wollaston, waveplate_quartz |
+| Biaxial birefringence | ktp_walkoff, **biaxial_conoscopy** |
+| Polarization (Jones, Malus, extinction) | pol_linear, pol_crossed, pol_circular (⚠ generator-only) |
+| Full Stokes/DOP imaging | **stokes_polarimeter** |
+| Mie particle scattering | **aerosol_mie** |
+| Roughness / diffuser / speckle | **diffuser_speckle**, scatter_plate (ABg) |
+| Ghost / stray-light analysis | ghost_doublet |
+| Gaussian beams / apodization | gaussian_bench |
+| TIR fiber guiding | fiber_coupler |
+| Multi-element imaging | camera_triplet, microscope_objective, **telephoto** |
+| Variable-driven prescriptions + expression placement | **telephoto** (efl/stop_d), **telephoto_zoom** (rational BFL(z) tracking) |
+| Aperture stop / iris + equivalent f-number | camera_triplet, **telephoto** (paraxial f/# readout) |
+| Named analysis products (PSF/MTF/EE/Zernike/spot/fans) | **imaging_analysis** |
+| Per-source/detector/element charts + CSV | **multiled_photometry** |
+| Photometric units (lux/lm) | **multiled_photometry** |
+| Tabulated emission spectra (white LED) | **multiled_photometry** (CIE LED-B1) |
+| Curved (Petzval) detector | curved_focal (cylinder), **curved_focal_surface** (sphere) |
+| Stress / photoelastic birefringence | ⏳ `future.md` backlog (a): stress birefringence + the photoelastic_stress demo spec |
+| Optimization / tolerancing / CAD import / illumination design | 🔶 `future.md` backlog (d) acceptance-target demos |
+
 ## The train workflow, in one demo
 
 Open `michelson_folded.MieWB` and look at the **Optical Train** dock:

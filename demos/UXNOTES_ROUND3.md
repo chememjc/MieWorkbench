@@ -122,6 +122,25 @@ OPEN (candidate for future.md).
    LED primitive name suffixes are bin nicknames, actual CWL in lambdac;
    model.json/rays_full.npz are METRES (1000× foot-gun) — doc lines.
 
+### From the offscreen GUI shakedown (real MainWindow over the 3 flagship demos)
+27. **PRODUCT BUG (FIXED-THIS-ROUND): a variable edit that rebuilt a
+   chained primitive dropped its miewb_train_* props** — editing the
+   telephoto's `efl` tore the train apart unrecoverably.
+   `primitivelib.rebuild_element` snapshotted only Base-group props; it
+   now preserves the MieTrain group too. Regression-pinned by
+   `test_design_usability_shakedown.py` (9 passing, incl. the flipped
+   xfail).
+28. Insert-value naming nuance: on a negative rear group, "BFL of X" is
+   the (negative) element BFL; the value that tracks the focus is the
+   "Paraxial image distance after X" / "System BFL" entry — correct but
+   worth knowing (OPEN: wording).
+29. A near-afocal train shows huge finite EFL/image numbers instead of
+   "afocal" (no threshold). OPEN: suppress conjugate fields when
+   |C| below a threshold.
+30. Panes read at the source lambdac (550), design oracles at the d-line
+   (587.6): readouts sit ~0.1% off the doc numbers — correct behavior,
+   documented here.
+
 ### Frictionless (credit where due)
 - `--photometric`/`--emit-csv`/per-source tables flowed with zero friction.
 - The expression grammar carried the zoom demo's rational BFL(z) tracking
