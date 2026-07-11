@@ -35,6 +35,7 @@ PROPERTY_UNITS = {
     "m2": None,                    # beam quality factor M^2 (unitless, >=1)
     "apodization": None,          # spec string ('gaussian:w0=<mm>[:order=<n>]')
     "scatter": None,               # ABg/BSDF registry name or per-face map
+    "detector_face": None,         # FaceN pin for the detector screen face
 }
 
 # Geometry/transform panels (values live in FreeCAD sheets / placements).
