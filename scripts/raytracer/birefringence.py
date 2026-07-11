@@ -152,6 +152,29 @@ def eigenbasis(k_hat, c_axis):
     return eo, ee
 
 
+def n_group_e_theta(cos_kc, mat_o, mat_e, lam_m, rel_step=1e-3):
+    """Directional GROUP index for the extraordinary wave at FIXED angle:
+    n_g,e(theta) = n_e(theta, lam) - lam * d n_e(theta, lam)/d lam, with the
+    lambda-derivative taken at constant cos_kc (central difference over the
+    materials' own dispersion).
+
+    First-cut limitation (documented in RAYTRACER.md): the angular-dispersion
+    term (d theta/d lam along a refracted ray) and the walk-off ray-vs-
+    wavevector path-length distinction are neglected -- both are second-order
+    for the mm-scale crystals in scope. mat_o / mat_e are Material objects
+    (MaterialDB.get_uniaxial pair); vectorized over per-ray cos_kc/lam_m."""
+    lam_m = np.asarray(lam_m, dtype=np.float64)
+    h = lam_m * rel_step
+
+    def ne(lm):
+        return n_e_theta(cos_kc,
+                         np.real(mat_o.n_complex(lm)),
+                         np.real(mat_e.n_complex(lm)))
+
+    d1 = (ne(lam_m + h) - ne(lam_m - h)) / (2.0 * h)
+    return ne(lam_m) - lam_m * d1
+
+
 def walkoff_angle(cos_kc, n_o, n_e):
     """Signed extraordinary walk-off angle rho (radians), cos_kc = k_hat.c_hat.
 

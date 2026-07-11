@@ -213,6 +213,104 @@ class Material:
         out = n.astype(np.complex128) + 1j * k.astype(np.complex128)
         return complex(out[0]) if scalar_in else out
 
+    # -- dispersion derivatives (group index / GDD support) ---------------
+    def _dn_dlam_um(self, lam_um):
+        """d Re(n)/d(lambda) per um. Analytic for sellmeier/cauchy, zero for
+        constant; for tabulated, the linear interpolant's knot-gradient
+        interpolated back onto lam_um (no extrapolation -- the table-range
+        check in _n_from_table applies to the same range)."""
+        if self.model == "sellmeier":
+            l2 = lam_um ** 2
+            n = self._n_from_model(lam_um)
+            p = self.params
+            acc = np.zeros_like(lam_um)
+            for b, c in ((p[0], p[3]), (p[1], p[4]), (p[2], p[5])):
+                acc = acc + (-2.0 * b * c * lam_um) / (l2 - c) ** 2
+            return acc / (2.0 * n)
+        if self.model == "cauchy":
+            b, c = self.params[1], self.params[2]
+            return -2.0 * b / lam_um ** 3 - 4.0 * c / lam_um ** 5
+        if self.model == "constant":
+            return np.zeros_like(lam_um)
+        # tabulated
+        self._n_from_table(lam_um)           # range check (hard-raises)
+        grad = np.gradient(self.nk_n, self.nk_lambda_um)
+        return np.interp(lam_um, self.nk_lambda_um, grad)
+
+    def _stencil_um(self, lam_um):
+        """(centre, h) for numeric second/third derivatives, clamped so the
+        centre +- h stencil stays inside a tabulated table's range."""
+        h = lam_um * 1e-3
+        if self.model == "tabulated":
+            lam_tab = self.nk_lambda_um
+            spacing = np.interp(lam_um, lam_tab[:-1], np.diff(lam_tab))
+            h = np.maximum(h, 2.0 * spacing)
+            lam_um = np.clip(lam_um, lam_tab[0] + h, lam_tab[-1] - h)
+        return lam_um, h
+
+    def dn_dlam(self, lam_m):
+        """First derivative d Re(n)/d(lambda) in 1/m (SI). Vectorized;
+        scalar in -> scalar out, like n_complex."""
+        lam_m = np.asarray(lam_m, dtype=np.float64)
+        scalar_in = (lam_m.ndim == 0)
+        lam_um = np.atleast_1d(lam_m).astype(np.float64) * 1e6
+        out = self._dn_dlam_um(lam_um) * 1e6
+        return float(out[0]) if scalar_in else out
+
+    def n_group(self, lam_m):
+        """Group index n_g = Re(n) - lambda * dn/dlambda (real; Im(n) does
+        not participate). Governs envelope/energy transport speed c/n_g."""
+        lam_m = np.asarray(lam_m, dtype=np.float64)
+        scalar_in = (lam_m.ndim == 0)
+        n = np.real(np.atleast_1d(self.n_complex(lam_m)))
+        out = n - np.atleast_1d(lam_m) * np.atleast_1d(self.dn_dlam(lam_m))
+        return float(out[0]) if scalar_in else out
+
+    def d2n_dlam2(self, lam_m):
+        """Second derivative d2 Re(n)/d(lambda)2 in 1/m^2, via central
+        difference of the (analytic where available) first derivative.
+        Tabulated models give a knot-scale approximation only."""
+        lam_m = np.asarray(lam_m, dtype=np.float64)
+        scalar_in = (lam_m.ndim == 0)
+        lam_um = np.atleast_1d(lam_m).astype(np.float64) * 1e6
+        lam_um, h = self._stencil_um(lam_um)
+        d2_um = (self._dn_dlam_um(lam_um + h)
+                 - self._dn_dlam_um(lam_um - h)) / (2.0 * h)
+        out = d2_um * 1e12
+        return float(out[0]) if scalar_in else out
+
+    def d3n_dlam3(self, lam_m):
+        """Third derivative d3 Re(n)/d(lambda)3 in 1/m^3 (second central
+        difference of the first derivative)."""
+        lam_m = np.asarray(lam_m, dtype=np.float64)
+        scalar_in = (lam_m.ndim == 0)
+        lam_um = np.atleast_1d(lam_m).astype(np.float64) * 1e6
+        lam_um, h = self._stencil_um(lam_um)
+        d3_um = (self._dn_dlam_um(lam_um + h)
+                 - 2.0 * self._dn_dlam_um(lam_um)
+                 + self._dn_dlam_um(lam_um - h)) / h ** 2
+        out = d3_um * 1e18
+        return float(out[0]) if scalar_in else out
+
+
+C_LIGHT_M_S = 299_792_458.0
+
+
+def gdd_per_length(mat, lam_m):
+    """Material group-delay dispersion per unit length, s^2/m:
+    phi2/L = lambda^3/(2 pi c^2) * d2n/dlambda2. Positive = normal
+    dispersion (red leads blue)."""
+    lam_m = np.asarray(lam_m, dtype=np.float64)
+    return lam_m ** 3 / (2.0 * np.pi * C_LIGHT_M_S ** 2) * mat.d2n_dlam2(lam_m)
+
+
+def tod_per_length(mat, lam_m):
+    """Material third-order dispersion per unit length, s^3/m:
+    phi3/L = -lambda^4/(4 pi^2 c^3) * (3 d2n/dlambda2 + lambda d3n/dlambda3)."""
+    lam_m = np.asarray(lam_m, dtype=np.float64)
+    return (-lam_m ** 4 / (4.0 * np.pi ** 2 * C_LIGHT_M_S ** 3)
+            * (3.0 * mat.d2n_dlam2(lam_m) + lam_m * mat.d3n_dlam3(lam_m)))
+
 
 # ---------------------------------------------------------------------------
 # MaterialDB
