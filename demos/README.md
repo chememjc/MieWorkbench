@@ -1,9 +1,10 @@
 # MieWorkbench demo gallery
 
-Twenty optical systems (eleven classic instruments, five single-physics
-benches, and four analysis/scattering benches), each a self-contained `.MieWB` workbench
-archive (double-click-open in the GUI, or run headlessly) plus the bare
-`.FCStd` scene. All are assembled as **optical trains** by
+Twenty-seven optical systems (eleven classic instruments, five
+single-physics benches, four analysis/scattering benches, four
+physics-showcase benches, the telephoto pair, and a folded periscope),
+each a self-contained `.MieWB` workbench archive (double-click-open in
+the GUI, or run headlessly) plus the bare `.FCStd` scene. All are assembled as **optical trains** by
 `scripts/make_demos.py` (the GUI's own Project/chain op path): every
 element chains a vertex-to-vertex distance down the beam from its
 reference, fold mirrors are live unfoldable folds, prisms/gratings are
