@@ -119,7 +119,9 @@ _HEADERS = ["Element", "Mode", "Reference", "Port", "Distance (mm)",
 _BEAM_FRAME_NOTE = (
     "beam-frame, not world/local: u = horizontal transverse (up x beam "
     "direction), v = up-ish transverse, tilts are about u/v/beam-direction "
-    "in that order. After one or more folds these diverge from world "
+    "in that order. Concretely, for a beam along +x with up +z: "
+    "decenter/tilt X act along/about world +y, decenter/tilt Y along/about "
+    "world +z. After one or more folds these diverge from world "
     "axes -- always the INCOMING beam's frame at this element, never the "
     "element's own local axes.")
 _HEADER_TOOLTIPS = {
@@ -393,6 +395,15 @@ class TrainEditorPane(QWidget):
             records = tm.records()
             labels = tm.element_labels()
             variables = self._variables()
+            # solved world positions for the Distance-cell echo ("this
+            # edge resolves to world (x,y,z)" -- removes the vertex-vs-
+            # plane guesswork, UXNOTES_ROUND3 #8-11)
+            try:
+                self._solved_pos = {
+                    el: p["pos_mm"]
+                    for el, p in tm.solve(variables)["placements"].items()}
+            except Exception:
+                self._solved_pos = {}
 
             children = {}          # ref label -> [(child label, port)]
             for el in labels:
@@ -511,6 +522,15 @@ class TrainEditorPane(QWidget):
             stored = rec.get(field)
             stored = "" if stored in (None, "") else str(stored)
             item.set_dual(col, stored, self._display_value(stored, variables))
+        # Distance-cell echo: where this edge actually puts the element
+        # (solved world position of its primary body) -- kills the
+        # vertex-vs-plane / thickness guesswork without opening the 3D view
+        pos = getattr(self, "_solved_pos", {}).get(el)
+        if chained and pos:
+            item.setToolTip(
+                COL_DIST,
+                "Resolves to world (%.4g, %.4g, %.4g) mm\n\n%s"
+                % (pos[0], pos[1], pos[2], _HEADER_TOOLTIPS[COL_DIST]))
 
         flags = item.flags() | Qt.ItemIsEditable
         if chained:

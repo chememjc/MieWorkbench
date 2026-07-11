@@ -197,6 +197,49 @@ def check_detector_face(v):
     return out
 
 
+@check("placement-traps")
+def check_placement_traps(v):
+    """Two placement conventions that silently zero a run (both found the
+    hard way in the demo shakedown, UXNOTES_ROUND3):
+      * a SOURCE anchored at/near the world origin — emit directions pick
+        the 'toward the origin' hemisphere, which degenerates AT the
+        origin (rays spray backwards; detected power reads ~0);
+      * a ROTATED detector without a detector_face pin — the closest-to-
+        origin face auto-pick tends to land on a thin edge face (a strip
+        image / 0 mW)."""
+    import math as _math
+    out = []
+    for b in v.bodies():
+        role = v.role(b)
+        pos = (b.get("placement") or {}).get("pos_mm") or [0.0, 0.0, 0.0]
+        quat = (b.get("placement") or {}).get("quat") or [0, 0, 0, 1]
+        if role == "source" \
+                and _math.sqrt(sum(c * c for c in pos)) < 1.0:
+            out.append(Finding(
+                WARNING, "%s: source sits at the world origin — the emit "
+                "direction convention ('toward the origin hemisphere') "
+                "degenerates there and rays can spray backwards"
+                % b["label"], body=b["name"],
+                fix_hint="move the source off the origin (any nonzero "
+                "position; downstream chained elements follow)",
+                check="placement-traps"))
+        if role == "detector" and v.prop(b, "detector_face") in (None, ""):
+            # rotation that tips the local +x axis off +/-x by > ~1 deg
+            qx, qy, qz, qw = [float(c) for c in quat]
+            # local +x in world coordinates
+            ax = 1.0 - 2.0 * (qy * qy + qz * qz)
+            if abs(abs(ax) - 1.0) > 1.5e-4:      # cos(1 deg) ~ 0.99985
+                out.append(Finding(
+                    WARNING, "%s: rotated detector without a "
+                    "detector_face pin — the closest-to-origin face "
+                    "auto-pick can land on a thin EDGE face (strip "
+                    "image / 0 mW)" % b["label"], body=b["name"],
+                    fix_hint="set detector_face to the recording face "
+                    "(element editor face combo)",
+                    check="placement-traps"))
+    return out
+
+
 @check("geometry")
 def check_geometry(v):
     out = []

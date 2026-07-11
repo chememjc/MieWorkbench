@@ -4,8 +4,8 @@
  "label": "Pinhole (rectangular mount)",
  "params": {
   "blackness": {
-   "default": 0.98,
-   "help": "fraction of incident power absorbed by the plate (0.95-1.0 typical)",
+   "default": 1.0,
+   "help": "fraction of incident power absorbed by the plate (default 1.0: a diffraction SCREEN must be opaque; lower for a real blackened part)",
    "unit": ""
   },
   "height": {

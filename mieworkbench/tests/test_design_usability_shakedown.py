@@ -199,14 +199,10 @@ def test_zoom_variable_edit_resolves_efl(mw, qapp):
         "zoom EFL did not revert on undo: %s" % efl_back
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "PRODUCT BUG: editing a miewb_vars variable that drives a chained "
-    "primitive's dim-sheet rebuild (telephoto efl/stop_d -> the achromats "
-    "and iris rebuild) drops that element's miewb_train_* dynamic props, so "
-    "the optical train falls apart (system EFL goes nonsense) and undo does "
-    "not restore them. Contrast test_zoom_variable_edit_resolves_efl, where "
-    "the edited variable moves only chain distances and re-solves fine. "
-    "Remove this xfail when the rebuild preserves MieTrain props."))
+# Was a strict xfail (PRODUCT BUG: a variable edit that rebuilt a chained
+# primitive dropped its miewb_train_* props and the train fell apart) —
+# fixed in primitivelib.rebuild_element, which now snapshots/restores the
+# MieTrain property group alongside Base.
 def test_telephoto_efl_edit_resolves_system(mw, qapp):
     open_demo(mw, "telephoto")
     front_primary = mw.project.train().primary_body_name("FrontGroup")

@@ -350,3 +350,53 @@ def test_deep_checks_with_errors():
     assert any("failed to recompute" in f.message for f in errors)
     assert any("not a closed solid" in f.message for f in errors)
     assert any("overlap" in f.message for f in warnings)
+
+
+# ---------------------------------------------------------------------------
+# placement traps (source at origin; rotated unpinned detector)
+# ---------------------------------------------------------------------------
+def _traps(findings):
+    return [f for f in findings if f.check == "placement-traps"]
+
+
+def test_source_at_origin_warns():
+    st = good_structure()
+    findings = run(st)
+    warns = _traps(findings)
+    assert any("origin" in f.message for f in warns)
+
+
+def test_source_off_origin_is_clean():
+    st = good_structure()
+    st["bodies"][0]["placement"]["pos_mm"] = [-40.0, 0.0, 0.0]
+    assert not any("origin" in f.message for f in _traps(run(st)))
+
+
+def test_rotated_detector_without_pin_warns():
+    import math
+    st = good_structure()
+    st["bodies"][0]["placement"]["pos_mm"] = [-40.0, 0.0, 0.0]
+    q = [0.0, 0.0, math.sin(math.radians(22.5)),
+         math.cos(math.radians(22.5))]           # 45 deg about z
+    st["bodies"][2]["placement"] = {"pos_mm": [50.0, 50.0, 0.0], "quat": q}
+    warns = _traps(run(st))
+    assert any("detector_face" in f.message for f in warns)
+
+
+def test_rotated_detector_with_pin_is_clean():
+    import math
+    st = good_structure()
+    st["bodies"][0]["placement"]["pos_mm"] = [-40.0, 0.0, 0.0]
+    q = [0.0, 0.0, math.sin(math.radians(22.5)),
+         math.cos(math.radians(22.5))]
+    st["bodies"][2]["placement"] = {"pos_mm": [50.0, 50.0, 0.0], "quat": q}
+    st["bodies"][2]["properties"]["detector_face"] = {
+        "type": "t", "group": "Base", "value": "Face3"}
+    assert not any("detector_face pin" in f.message or
+                   "EDGE face" in f.message for f in _traps(run(st)))
+
+
+def test_unrotated_detector_is_clean():
+    st = good_structure()
+    st["bodies"][0]["placement"]["pos_mm"] = [-40.0, 0.0, 0.0]
+    assert _traps(run(st)) == []

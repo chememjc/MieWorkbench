@@ -684,6 +684,14 @@ def _main_locked(args, case_dir):
     n_field_dets = (len(save_fields_labels)
                     if save_fields_labels is not None
                     else len(available_detector_labels))
+    if args.save_fields and n_coh == 0:
+        # complex Ex/Ey field maps only exist for the coherent gather —
+        # an all-incoherent scene writes EMPTY fields groups and the
+        # Stokes/PSF/MTF renderers silently no-op (UXNOTES_ROUND3 #21)
+        print("[trace] WARNING: --save-fields with NO coherent source: "
+              "the fields/ groups will be empty and no Stokes/PSF/MTF "
+              "products will render — set coherent=true on a source if "
+              "you want field maps", file=sys.stderr)
     est = common.estimate(args.rays, args.resolution, args.nlambda,
                           n_coh, args.backend,
                           n_detectors=n_field_dets,

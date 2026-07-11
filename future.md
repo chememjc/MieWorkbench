@@ -199,6 +199,45 @@ slow, readable parity reference.
   (check the design-usability round's status before starting new work
   here).
 
+### (a2) Placement/authoring affordances (design-usability round findings)
+
+From `demos/UXNOTES_ROUND3.md` — the pain points too large for that
+round's fix loop (each names its seam):
+
+- **Expressions/variables for ANCHORED placements.** Chain edges accept
+  the full expression grammar; anchored poses are literal xyz/quat only
+  (`Project.apply_operation` / `transform_panel`). The moment a pose
+  isn't a beam relationship (a 90° side-scatter detector, a field-source
+  fan) you drop to hand-computed literals that can't sweep. Natural
+  shape: `miewb_expr_*`-style expression baking for placement fields, or
+  a polar/spherical place-about-point operation in `core/transforms.py`.
+- **A `--particles` cloud is not a chain-referenceable body** — no way to
+  chain a detector "40 mm at 90° from the cloud center" (nephelometer
+  ring). Needs a lightweight non-solid "region anchor" element the train
+  solver can reference (`train_solver` port_frames + an extractor-ignored
+  marker body, or a virtual element in the recipe).
+- **Field-angle source fan helper.** N collimated sources at a common
+  pivot overlap as solids; they must be spread on an arc by hand
+  (y = L·tanθ). A wizard ("fan of field angles: N, ±θ, pivot") placing
+  them chained/anchored would remove the trig (`element_wizard.py`).
+- **Co-located transparent detectors** overlap-fail extraction — no
+  authoring path for "measure the same plane two ways" (needs either
+  zero-thickness detector sheets or an extractor exemption for
+  detector-detector overlap).
+- **Coherent-gather ray-budget preflight.** Aperture-diffraction scenes
+  have an implicit `rays >> (beam/aperture)² · 1000` requirement the
+  presets don't know about; the GatherError names the fix only AFTER a
+  failed trace. `core/validation.py` could estimate transmitted-fraction
+  × rays against the M_eff gate at check time (a coarse aperture-area
+  ratio suffices).
+- **`--particles` target-optical-depth knob.** phi is opaque (the
+  aerosol demo needed 4 orders of magnitude off the spec'd value to make
+  τ visible); `parse_particles_spec` + the Mie ensemble tables could
+  accept `tau=1.0` and solve phi for the box length.
+- **"Span N Airy zeros" detector-sizing intent** and other
+  diffraction-scale insert-values for the right-click menu
+  (`core/opticalvalues.py` — needs aperture+distance context).
+
 ### (b) Higher-fidelity physics (still open)
 
 - **Exact uniaxial Fresnel at a birefringent interface.** The current

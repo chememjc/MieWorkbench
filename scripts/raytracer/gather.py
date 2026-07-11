@@ -40,6 +40,8 @@
 # before the pedestal matters). Sources MUST jitter their sampling — a
 # regular grid would silently re-enable coherent aliasing.
 # =============================================================================
+import sys
+
 import numpy as np
 
 C_AMBIENT_N = 1.000272          # default ambient index for the free flight
@@ -499,6 +501,19 @@ def render_coherent(det_grid, sample_area_m2, backend="auto",
                   + s["Ep"][:, None] * p_hat) * np.sqrt(dA)[:, None]
         m_eff = effective_samples(E3_all)
         step = check_sampling(s["pos"], s["dir"], det_grid, s["lam"])
+        if step > np.pi:
+            # not gated (M_eff below is the enforcement) but the single
+            # most confusing failure mode deserves a loud line: the
+            # reconstructed field/power can collapse toward 0 while
+            # detected_geometric_W stays correct (e.g. a thick retarder
+            # whose OPL varies >> lambda between samples).
+            print("[gather] WARNING: %s key %s: sample-to-sample phase "
+                  "step ~%.0f rad > pi — the coherent reconstruction is "
+                  "unreliable (displayed power may read ~0 while "
+                  "detected_geometric_W in case.json stays correct). "
+                  "Increase --rays, thin the element, or use an "
+                  "incoherent source." % (det_grid.label, key, step),
+                  file=sys.stderr)
         if enforce_gate and m_eff < min_eff_samples:
             raise GatherError(
                 "gather undersampled on %s for source/stratum %s: "

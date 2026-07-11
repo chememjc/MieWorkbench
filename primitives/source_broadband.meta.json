@@ -26,5 +26,5 @@
   "lambdamin": 450.0,
   "power": 5.0
  },
- "tooltip": "Incoherent broadband disc (or box) emitter (set lambdamin / lambdamax in the properties)."
+ "tooltip": "Incoherent broadband disc (or box) emitter (set lambdamin / lambdamax in the properties). For a MEASURED emission shape, set the `spectrum` property to an opticalproperties/emission registry row instead (e.g. led_white_2733k -- or import the led_white primitive, which is exactly that)."
 }

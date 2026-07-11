@@ -95,7 +95,11 @@ PRIMITIVES = {
     "source_broadband": {
         "category": "Sources", "label": "Broadband source",
         "tooltip": "Incoherent broadband disc (or box) emitter (set "
-                   "lambdamin / lambdamax in the properties).",
+                   "lambdamin / lambdamax in the properties). For a "
+                   "MEASURED emission shape, set the `spectrum` property "
+                   "to an opticalproperties/emission registry row instead "
+                   "(e.g. led_white_2733k -- or import the led_white "
+                   "primitive, which is exactly that).",
         "params": {"diameter": P(10.0, "mm", "emit face diameter "
                                               "(circular) or edge length "
                                               "(rectangular, round_flag=0)"),
@@ -743,9 +747,11 @@ PRIMITIVES = {
                    "height": P(25.0, "mm", "plate height"),
                    "thickness": P(0.5, "mm", "plate thickness"),
                    "hole_diameter": P(0.5, "mm", "pinhole diameter"),
-                   "blackness": P(0.98, "", "fraction of incident power "
-                                           "absorbed by the plate "
-                                           "(0.95-1.0 typical)")},
+                   "blackness": P(1.0, "", "fraction of incident power "
+                                          "absorbed by the plate "
+                                          "(default 1.0: a diffraction "
+                                          "SCREEN must be opaque; lower "
+                                          "for a real blackened part)")},
         "props": {},   # plate: material/absorbance; plug: material=air --
                        # both set by the builder
         "derived_props": ("absorbance",),
@@ -762,9 +768,11 @@ PRIMITIVES = {
                    "thickness": P(0.5, "mm", "plate thickness"),
                    "slit_width": P(0.1, "mm", "slit opening width"),
                    "slit_height": P(10.0, "mm", "slit opening height"),
-                   "blackness": P(0.98, "", "fraction of incident power "
-                                           "absorbed by the plate "
-                                           "(0.95-1.0 typical)")},
+                   "blackness": P(1.0, "", "fraction of incident power "
+                                          "absorbed by the plate "
+                                          "(default 1.0: a diffraction "
+                                          "SCREEN must be opaque; lower "
+                                          "for a real blackened part)")},
         "props": {},   # plate: material/absorbance; plug: material=air --
                        # both set by the builder
         "derived_props": ("absorbance",),
@@ -2124,7 +2132,12 @@ def build_primitive(doc, kind, group=None, params=None):
 def rebuild_element(doc, sheet, kind, group):
     """Rebuild all bodies of `group` from the sheet's current parameter
     values, preserving each body's Label, Placement and any extra custom
-    props the user added since. Returns the new bodies."""
+    props the user added since — INCLUDING the MieTrain chain-recipe
+    props (miewb_train_*): a variable edit that rebuilds a chained
+    primitive must not tear the element out of the optical train (found
+    by the telephoto demo's efl edit — the old Base-group-only snapshot
+    silently dropped mode/ref/distance and the train fell apart).
+    Returns the new bodies."""
     params = read_params(sheet, kind)
     old = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"
            and getattr(o, "miewb_group", None) == group]
@@ -2144,7 +2157,8 @@ def rebuild_element(doc, sheet, kind, group):
             if pname in baseline:
                 continue
             try:
-                if b.getGroupOfProperty(pname) != "Base":
+                pgroup = b.getGroupOfProperty(pname)
+                if pgroup not in ("Base", "MieTrain"):
                     continue
                 ptype = b.getTypeIdOfProperty(pname)
             except Exception:
@@ -2152,7 +2166,7 @@ def rebuild_element(doc, sheet, kind, group):
             if ptype in ("App::PropertyString", "App::PropertyFloat",
                          "App::PropertyBool") \
                     and pname not in ("Label",):
-                extra[pname] = getattr(b, pname)
+                extra[pname] = (getattr(b, pname), pgroup)
         keep.append({"label": b.Label, "placement": b.Placement,
                      "extra": extra})
         # remove the body and its owned features
@@ -2169,6 +2183,13 @@ def rebuild_element(doc, sheet, kind, group):
     for b, k in zip(bodies, keep):
         b.Label = k["label"]
         b.Placement = k["placement"]
-        safe_set_props(b, k["extra"])
+        for pname, (val, pgroup) in k["extra"].items():
+            if pname not in b.PropertiesList:
+                fc_type = ("App::PropertyBool" if isinstance(val, bool)
+                           else "App::PropertyFloat"
+                           if isinstance(val, (int, float))
+                           else "App::PropertyString")
+                b.addProperty(fc_type, pname, pgroup)
+            setattr(b, pname, val)
     doc.recompute()
     return bodies
