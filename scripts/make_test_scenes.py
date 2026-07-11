@@ -137,14 +137,24 @@ SCENES = {
     },
     "lens_asphere": {
         "description": "plano-convex BK7 asphere, f~40mm at 633nm, convex side "
-                       "toward source with conic k=-n^2 (eliminates spherical "
-                       "aberration for a collimated on-axis beam), flat toward "
-                       "the focus. Authored via a revolved BSpline through "
-                       "exact sag samples + surface_override.",
+                       "toward source, flat toward the focus. The front "
+                       "conic+A4 profile is solved for the COMPLETE lens (front "
+                       "asphere + flat exit) — not just a front-surface "
+                       "stigmatic conic — minimizing best-focus RMS spot for "
+                       "the collimated on-axis 18mm beam; k=-2.29547 (=-n^2) "
+                       "corrected only the front surface and the flat exit "
+                       "re-added spherical aberration (over-corrected ~3x worse "
+                       "than the sphere control). Solved offline by exact "
+                       "meridional ray trace + Nelder-Mead on (k, A4); reaches "
+                       "~1um RMS (~83x better than the sphere control). Authored "
+                       "via a revolved BSpline through exact sag samples + a "
+                       "matching surface_override (verified <1um by the "
+                       "extractor).",
         "material": "bk7", "lambda_nm": 633.0,
         "R1_mm": 20.6033, "R2_mm": None, "thickness_mm": 6.0,
         "aperture_mm": 20.0, "beam_dia_mm": 18.0,
-        "n_633": 1.51508, "expected_efl_mm": 40.0, "conic_k": -2.29547,
+        "n_633": 1.51508, "expected_efl_mm": 40.0,
+        "conic_k": -1.0, "asphere_A4_mm": 6.586562e-06,   # A4 units mm^-3
         "detector_x_mm": 46.0,
         "faces": {"asphere": 1, "plane": 1, "cylinder": 1},
     },
@@ -210,14 +220,29 @@ SCENES = {
         "min_cone_faces": 8,
     },
     "prism_equilateral": {
-        "description": "60deg equilateral BK7 prism near minimum deviation for "
+        "description": "60deg equilateral BK7 prism at minimum deviation for "
                        "550nm; broadband incoherent source 420-680nm; detector "
-                       "off-axis to catch the dispersed fan.",
+                       "off-axis, face-on to the dispersed fan.",
         "material": "bk7", "apex_deg": 60.0,
         "lambdac_nm": 550.0, "lambdamin_nm": 420.0, "lambdamax_nm": 680.0,
         "n_550": 1.51852, "min_deviation_deg": 38.798,
         "entrance_aoi_deg": 49.399, "side_mm": 20.0, "height_z_mm": 20.0,
-        "prism_rotation_deg": 19.4,  # ~dmin/2, so +x beam hits near min-dev
+        # For min-deviation the +x beam must strike the entrance (left) face at
+        # AOI=(A+dmin)/2=49.399deg. The unrotated left face presents 30deg AOI
+        # to +x, so the prism is rotated by theta about z with normal angle
+        # 150+theta; -cos(150+theta)=cos(49.399) => theta=-19.399deg (the old
+        # +19.4 put the beam at ~10deg AOI, TIR at the exit). Solved offline by
+        # a 2D polygon-prism ray trace (brentq on AOI).
+        "prism_rotation_deg": -19.3991,
+        # Detector: face-on to the 550nm exit ray (exit dir (0.7794,-0.6266),
+        # deviation 38.798deg toward -y), centered 25mm downstream of the exit
+        # vertex. Its front broad face is the closest detector face to the world
+        # origin for ANY in-plane spin (33.37mm vs >=33.87mm for every edge
+        # face), so the extractor's closest-centroid auto-pick lands on the
+        # screen, not an edge (which is why the old rotated plate caught 0 W).
+        "detector_center_mm": [26.3987, -21.2226, 0.0],
+        "detector_normal": [-0.779387, 0.626542, 0.0],
+        "detector_half_mm": 10.0,
         "faces": {"plane": 5},
     },
     "pol_linear": {
@@ -743,9 +768,12 @@ def make_lens_achromat(outpath):
 # =============================================================================
 # lens_asphere — revolved BSpline through exact sag samples + surface_override
 # =============================================================================
-def _asphere_sag(r, R, k):
+def _asphere_sag(r, R, k, a4=0.0):
+    """Even asphere sag: conic + A4 r^4 (a4 in mm^-3, r in mm). Same sag
+    convention as extract_geometry.asphere_sag_m / the surface_override."""
     c = 1.0 / R
-    return c * r * r / (1.0 + math.sqrt(1.0 - (1.0 + k) * c * c * r * r))
+    conic = c * r * r / (1.0 + math.sqrt(1.0 - (1.0 + k) * c * c * r * r))
+    return conic + a4 * r ** 4
 
 
 def make_lens_asphere(outpath):
@@ -754,12 +782,13 @@ def make_lens_asphere(outpath):
     try:
         sa = s["aperture_mm"] / 2.0
         R, k, ct = s["R1_mm"], s["conic_k"], s["thickness_mm"]
+        a4 = s["asphere_A4_mm"]
         # convex front toward source: vertex at x=0, sag increases toward +x.
         n_samp = 41
         pts = []
         for i in range(n_samp):
             v = sa * i / (n_samp - 1)
-            u = _asphere_sag(v, R, k)     # >=0, vertex at u=0
+            u = _asphere_sag(v, R, k, a4)     # >=0, vertex at u=0
             pts.append(App.Vector(u, v, 0))
         bs = Part.BSplineCurve()
         bs.interpolate(pts)
@@ -771,7 +800,7 @@ def make_lens_asphere(outpath):
                  _line(xbv, 0.0, 0.0, 0.0)]        # axis closing segment
         # surface_override declares Face1 (the revolved BSpline) an analytic
         # asphere; the extractor verifies it against the geometry to <1um.
-        ov = "Face1=asphere:R=%.6f;k=%.6f;r_max=%.4f" % (R, k, sa)
+        ov = "Face1=asphere:R=%.6f;k=%.6f;A4=%.9g;r_max=%.4f" % (R, k, a4, sa)
         revolve_body(doc, "Lens", edges,
                      props={"material": s["material"], "surface_override": ov})
         add_source(doc, "Source", -30.0, s["beam_dia_mm"] / 2.0,
@@ -960,11 +989,15 @@ def make_prism_equilateral(outpath):
         add_source(doc, "Source", -40.0, 3.0,
                    {"power": 5.0, "lambdac": s["lambdac_nm"],
                     "lambdamin": s["lambdamin_nm"], "lambdamax": s["lambdamax_nm"]})
-        # dispersed fan bends toward the base (-y for this orientation); wide
-        # detector downstream and below the axis.
-        pl_det = App.Placement(App.Vector(45.0, -20.0, 0.0),
-                               App.Rotation(App.Vector(0, 1, 0), 90.0))
-        add_detector_plane(doc, "Screen", 30.0, 1.0, pl_det)
+        # Face-on screen for the dispersed fan (which bends toward -y). Normal
+        # anti-parallel to the 550nm exit ray; shortest-arc rotation from the
+        # plate's local +z. See SCENES for the placement derivation.
+        det_c = s["detector_center_mm"]
+        det_n = s["detector_normal"]
+        pl_det = App.Placement(App.Vector(*det_c),
+                               App.Rotation(App.Vector(0, 0, 1),
+                                            App.Vector(*det_n)))
+        add_detector_plane(doc, "Screen", s["detector_half_mm"], 1.0, pl_det)
         finalize(doc, outpath)
     finally:
         App.closeDocument(doc.Name)

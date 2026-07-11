@@ -386,14 +386,11 @@ def test_sphere_control_focuses():
 
 @requires("lens_asphere")
 @requires("lens_sphere_control")
-@pytest.mark.xfail(reason="SCENE: asphere conic k=-n^2 corrects only the FRONT "
-                          "surface (stigmatic in-glass); the flat exit re-adds "
-                          "spherical aberration so the full lens OVER-corrects "
-                          "and its best-focus RMS is ~3x WORSE than the "
-                          "spherical control, not 5x better. Needs a conic "
-                          "solved for the complete lens.",
-                   strict=True)
 def test_asphere_beats_sphere_5x():
+    # The front conic+A4 is solved for the COMPLETE lens (front asphere + flat
+    # exit), not just a front-surface stigmatic conic — see make_test_scenes
+    # SCENES["lens_asphere"]. Offline meridional trace predicts ~1 um RMS
+    # (~83x better than the sphere control); the >=5x gate has huge margin.
     sphere = _best_focus_rms("lens_sphere_control")
     asphere = _best_focus_rms("lens_asphere")
     assert asphere <= sphere / 5.0, \
@@ -530,15 +527,11 @@ def test_prism_energy_closes():
 
 
 @requires("prism_equilateral")
-@pytest.mark.xfail(reason="SCENE: prism_rotation_deg=19.4 puts the +x beam at "
-                          "~10 deg AOI on the entrance face (not the intended "
-                          "min-deviation 49.4 deg), so it TIRs at the exit and "
-                          "no dispersed fan forms; the rotated detector face is "
-                          "also edge-on (catches 0 W). Fix: rotate the prism so "
-                          "a face presents ~49.4 deg AOI, and fix detector "
-                          "auto-face selection for rotated planes.",
-                   strict=True)
 def test_prism_minimum_deviation():
+    # prism_rotation_deg=-19.3991 sets the entrance-face AOI to (A+dmin)/2 =
+    # 49.399 deg (true minimum deviation for 550nm), so the beam exits cleanly
+    # (no exit-face TIR) and disperses; blue deviates more than red. See
+    # make_test_scenes SCENES["prism_equilateral"].
     def dev_deg(lc):
         sc, _ = build_scene("prism_equilateral", mut_lam(lc))
         tr = Tracer(sc, TraceConfig(rays=3000, n_lambda=1, seed=3,
