@@ -111,7 +111,7 @@ features and route to the **Python** reference engine as expected
 |---|---|---|---|
 | `multiled_photometry` | Four incoherent LEDs at staggered heights (royal-blue 452 nm 3 mW, green 527 nm 4 mW, red 625 nm 5 mW catalog primitives + a `source_broadband` wearing the tabulated **CIE 015:2018 LED-B1** white spectrum `led_white_2733k` 6 mW) → BK7 PCX condenser → `@dg_600` ground-glass mixer → photometric target. `--photometric --emit-csv` | Per-source / per-detector charts + CSV (`data/source_detector.csv` lists all four sources, incoherent direct-deposit path) and photometric units: **4.28 lm**, peak **1.95e5 lux**, mean **1.52e3 lux** on TargetLux | **C** · TargetLux **15.2 mW** of 18 mW in (blue 2.5 / green 3.4 / red 4.2 / white 5.1); closes |
 | `stokes_polarimeter` | 550 nm coherent linear:45 diverging cone (~±8°) through a 3 mm multi-order quartz A-plate; full-Stokes detector 150 mm on, `--save-fields` | Angle-varying retardance → the coherent gather maps field angle to detector radius, so the Stokes S1/S2/S3 + DOP maps carry genuine spatial structure (S1/S2/S3 span [−1,+1] across the figure, DOP ≈ 1.0 — a pure retarder) | **C** · **4.56 mW**; stokes/dop PNGs render; closes |
-| `biaxial_conoscopy` | 589 nm unpolarized diverging cone (~±18°) → input polarizer (+z) → 2 mm **KTP** biaxial plate (acute bisectrix Z along the beam, optic axial plane spun 45°) → crossed analyzer (+y) → figure screen 50 mm on | Conoscopic interference figure between crossed polarizers: a 512² figure with clear 4-fold azimuthal isogyre/isochrome structure (the acute-bisectrix biaxial figure) | **Python** (biaxial) · **0.40 mW**; closes |
+| `biaxial_conoscopy` | 589 nm unpolarized diverging cone (~±18°) → input polarizer (+z) → 2 mm **KTP** biaxial plate (acute bisectrix Z along the beam, optic axial plane spun 45°) → crossed analyzer (+y) → figure screen 50 mm on | Conoscopic interference figure between crossed polarizers: a 512² figure with clear 4-fold azimuthal isogyre/isochrome structure (the acute-bisectrix biaxial figure) | **Python** (biaxial) · **1.95 mW** (figure bright — mean crossed-analyzer transmission ≈ 0.78 over the multi-order field; azimuthal isogyre contrast ≈ 0.96); closes |
 | `curved_focal_surface` | Three 550 nm field angles (0°, ±16°, chief rays through the lens centre) through an AR-coated BK7 DCX singlet (f≈80, Ø14) onto TWO detectors: a **concave** spherical recorder (`mirror_concave` tagged `detector`, R = n·f ≈ 121 mm = the Petzval radius) + a flat screen | The concave (Petzval-matched) surface holds a tighter spot than the flat screen at every field angle — measured clean-bundle spot-RMS ratio concave/flat ≈ **0.83 / 0.90 / 0.90** (0° / +16° / −16°) | **Python** (curved_detector) · both detectors record 512² images; closes |
 
 Deliberate deviations (all in the docstrings + `UXNOTES` round 2):
@@ -154,6 +154,26 @@ three route to the **C engine** and close the ledger (< 1e-3).
 | `telephoto_zoom` | The SAME two groups, prescriptions fixed; only the airspace `z` moves (zoom variable, 84…98 → **EFL 258…159, 1.62× zoom**). The sensor is chained at the expression `-(pA+qA·z)/(pC+qC·z)` — BFL as a rational function of the zoom gap, coefficients from the two group ABCD matrices — so dragging `z` moves the rear group AND the sensor exactly like a mechanically-compensated zoom | The chain expression grammar carrying a real optical design law (focus tracking without re-anchoring anything) | **C** · Sensor **3.31 mW**; closure 6.7e-13 |
 | `folded_periscope` | Unit-magnification afocal relay (two f=75 PCX, spacing = 2×thick-lens BFL — NOT the thin-lens f1+f2) folded TWICE at 90° by proper train folds: up the `arm` variable, back to horizontal. The L2 spacing self-corrects through `relay − 25 − arm` | The fold operator end-to-end: Unfold All → flat bench, Refold All → **bit-exact** restore (asserted at build time); throughput = 4 uncoated Fresnel surfaces × 2 aluminum mirrors ≈ 0.69 | **C** · Exit **3.44 mW** (5 mW × 0.688 predicted); closure 5.1e-13 |
 
+Verification sweeps (quick preset, `--var miewb_vars.<name>`, C engine;
+plots in `gallery/telephoto_*_sweep.png`):
+
+- **`stop_d` 11.25 → 45 mm** (telephoto, efl=200): the collimated-beam
+  diameter on the detector is linear in `stop_d` (Deq@20% = 4.0 / 8.3 /
+  13.3 / 18.3 mm, R² = 0.999), and detected power tracks the pupil **area**
+  — √(P/P₀) = 1.00 / 2.01 / 3.00 / 3.95 vs `stop_d` ratio 1 / 2 / 3 / 4
+  (P = 0.083 / 0.335 / 0.745 / 1.29 mW). Equivalent f-number f/16 → f/4.
+- **`efl` 150 → 300 mm** (telephoto, stop_d=44.98 fixed): every element x
+  is exactly linear in `efl` (R² = 1.00000) about the fixed Star anchor —
+  FrontGroup = 2.95·efl − 700 (−110 mm at efl=200), Stop/RearGroup/
+  Collimated all scale; the beam stays collimated (Deq ≈ 16–18 mm). With
+  `stop_d` held fixed the f-number grows with efl, so detected power falls
+  monotonically (1.96 / 1.29 / 0.84 / 0.59 mW) rather than staying flat —
+  the demo's stated behavior (`stop_d` sets f/# = efl/pupil).
+- **`z` 84 → 98 mm** (telephoto_zoom, EFL 258 → 159, 1.6× zoom): the
+  rational-BFL chain keeps the sensor at focus — spot EE50 radius is
+  constant at 41.4 / 41.5 / 41.5 µm across the zoom, detected power ≈ 3.3 mW
+  throughout.
+
 Hard-won notes baked into these three (full log: `UXNOTES_ROUND3.md`):
 - **Never anchor a source at the world origin** — emit directions choose
   the "toward the origin" hemisphere, which degenerates AT the origin
@@ -164,6 +184,27 @@ Hard-won notes baked into these three (full log: `UXNOTES_ROUND3.md`):
   overlaps solids (concave rim sag ~3.6 mm) — the same reason real
   negative doublets are cemented.
 - The afocal relay spacing is `bfl₁+bfl₂` (thick-lens), not `f₁+f₂`.
+
+## Rendered gallery
+
+Representative detector renders (quick preset) for the eleven
+design-usability demos live in [`gallery/`](gallery/), captured by the
+Phase-6 verification run:
+[aerosol_mie](gallery/aerosol_mie.png) ·
+[diffuser_speckle](gallery/diffuser_speckle.png) ·
+[airy_singleslit](gallery/airy_singleslit.png) ·
+[imaging_analysis](gallery/imaging_analysis.png) (+ [MTF](gallery/imaging_analysis_mtf.png)) ·
+[multiled_photometry](gallery/multiled_photometry.png) ·
+[stokes_polarimeter](gallery/stokes_polarimeter.png) ·
+[biaxial_conoscopy](gallery/biaxial_conoscopy.png) ·
+[curved_focal_surface](gallery/curved_focal_surface.png) ·
+[telephoto](gallery/telephoto.png) ·
+[telephoto_zoom](gallery/telephoto_zoom.png) ·
+[folded_periscope](gallery/folded_periscope.png) — plus the three
+telephoto verification sweeps
+[stop_d](gallery/telephoto_stopd_sweep.png),
+[efl](gallery/telephoto_efl_sweep.png),
+[zoom-z](gallery/telephoto_zoom_sweep.png).
 
 ## Feature-coverage matrix
 
