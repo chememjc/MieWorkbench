@@ -1538,7 +1538,304 @@ def demo_curved_focal_surface(d):
     return {"preset": "quick"}
 
 
+def _telephoto_solve(lam_nm=587.6):
+    """The classic achromatized 200 mm f/4 telephoto, solved LIVE with
+    core/paraxial + core/wizards (no magic numbers; the frozen oracle
+    values from the design study are asserted below).
+
+    Layout (all bk7/sf5, mm at the d-line, scale s = efl/200):
+      front:  lens_achromat  solve_achromat(120)      (positive doublet)
+      stop:   iris, 2 mm behind the front exit vertex (aperture stop)
+      rear:   CEMENTED negative doublet, also a lens_achromat primitive
+              but with a negative prescription: equiconcave bk7 crown
+              (R -30.85/+30.85) cemented to an sf5 flint whose back
+              radius (+75) is the chromatic tuning DOF. (A first attempt
+              as an AIR-SPACED dcv+dcx pair 0.5 mm apart failed
+              extraction: at aperture 30 the concave rim sag (~3.6 mm)
+              overlaps the next element -- real negative doublets are
+              cemented for exactly this reason. See UXNOTES_ROUND3.)
+              Residual dBFL(F-C) = -0.09 mm: genuine secondary-spectrum
+              territory for a 200/4 achromat.
+    Returns everything the two telephoto demos need: element params, the
+    solved iris->rear gap for EFL=200.000, system cardinals, the zoom
+    rational-expression coefficients A(z)/C(z) (BFL(z) = -(pA+qA z)/(pC+
+    qC z) -- directly expressible in the chain grammar), and the stop
+    diameter for exactly f/4."""
+    from mieworkbench.core import paraxial as px
+    from mieworkbench.core import wizards
+
+    matdb = wizards._default_matdb()
+
+    def idx(m, lam=lam_nm):
+        return wizards.index_at(matdb, m, lam)
+
+    ach = wizards.solve_achromat(120.0)
+    front = {"R_front": ach["R_front"], "R_iface": ach["R_iface"],
+             "R_back": ach["R_back"], "ct_crown": ach["ct_crown"],
+             "ct_flint": ach["ct_flint"], "gap": 0.005, "aperture": 56.0}
+    # rear cemented negative doublet: equiconcave crown from the nu-split
+    # power, flint back radius fixed at the chroma-tuned +75 (scanned:
+    # dBFL(F-C) monotone in R_back, -0.09 mm here = classic secondary
+    # spectrum; it never crosses zero for this glass pair/bending)
+    nu = {}
+    for glass in ("bk7", "sf5"):
+        nF, nC = idx(glass, 486.1), idx(glass, 656.3)
+        nu[glass] = (idx(glass) - 1.0) / (nF - nC)
+    phi2 = 1.0 / -60.0
+    phi_crown = phi2 * nu["bk7"] / (nu["bk7"] - nu["sf5"])
+    a_eq = 2.0 * (idx("bk7") - 1.0) / abs(phi_crown)
+    rear = {"R_front": -a_eq, "R_iface": a_eq, "R_back": 75.0,
+            "ct_crown": 2.5, "ct_flint": 3.5, "gap": 0.005,
+            "aperture": 30.0}
+
+    M_front, t_front, _ = px.element_matrix("lens_achromat", front, idx,
+                                            lam_nm)
+    M_rear, t_rear, _ = px.element_matrix("lens_achromat", rear, idx,
+                                          lam_nm)
+    M_iris = px.mmul(px.translate(2.0), M_front)       # front + 2mm to stop
+
+    def sys_of(z):
+        return px.mmul(M_rear, px.mmul(px.translate(z), M_iris))
+
+    # A(z)/C(z) are affine in z: coefficients from two evaluations
+    M0, M1 = sys_of(0.0), sys_of(1.0)
+    pA, qA = M0[0], M1[0] - M0[0]
+    pC, qC = M0[2], M1[2] - M0[2]
+    # solve z for EFL = 200 exactly: -1/(pC + qC z) = 200
+    z0 = (-1.0 / 200.0 - pC) / qC
+    card = px.cardinals_from_matrix(sys_of(z0), None)
+
+    # marginal ray (collimated) for the working f/# and the exact-f/4 stop
+    def fno_of(stop_d):
+        y, w = 1.0, 0.0
+        tight = None
+        for M, gap, ap in ((M_front, 0.0, front["aperture"]),
+                           (px.IDENT, 2.0, stop_d),
+                           (M_rear, z0, rear["aperture"])):
+            y = y + w * gap
+            r = (ap / 2.0) / abs(y) if abs(y) > 1e-12 else math.inf
+            if tight is None or r < tight:
+                tight = r
+            a, b, c, dd = M
+            y, w = a * y + b * w, c * y + dd * w
+        return 1.0 / (2.0 * abs(w) * tight)
+
+    # stop_d for exactly f/4 (fno scales ~1/stop_d while the iris limits)
+    stop_f4 = 50.0 * fno_of(50.0) / 4.0
+
+    out = {"front": front, "rear": rear,
+           "z0": z0, "efl": card["efl"], "bfl": card["bfl"],
+           "ffl": card["ffl"], "t_front": t_front, "t_rear": t_rear,
+           "coef": (pA, qA, pC, qC), "stop_f4": stop_f4,
+           "fno_check": fno_of(stop_f4)}
+    # frozen oracles (cemented-rear design study, 2026-07-11)
+    assert abs(out["efl"] - 200.0) < 1e-6, out["efl"]
+    assert abs(out["z0"] - 90.537) < 5e-3, out["z0"]
+    assert abs(out["bfl"] - 27.673) < 0.05, out["bfl"]
+    assert abs(out["fno_check"] - 4.0) < 1e-9, out["fno_check"]
+    return out
+
+
+def demo_telephoto(d):
+    """Classic achromatized telephoto, 200 mm f/4 (Kingslake-style front
+    positive achromat + separated negative doublet; telephoto ratio 0.74:
+    the lens is physically SHORTER than its focal length). The whole
+    prescription is driven by TWO global variables:
+
+      efl     (default 200, sweep 150..300) -- every radius, thickness,
+              aperture and airspace scales by s = efl/200 through dim-cell
+              and chain expressions, so the design stays literature-true
+              at every focal length;
+      stop_d  (default = the solved exactly-f/4 iris diameter, sweep to
+              ~f/16) -- the physical iris opening; equivalent f-number
+              f/# = efl / entrance-pupil(stop_d).
+
+    A divergent source sits at the FRONT FOCAL POINT, its position
+    expression-tied to efl (the divergent-cap virtual point is `roc`
+    behind the exit vertex, so the chain distance is |FFL| - roc, both
+    scaled) -> the output is COLLIMATED and the exit detector sees a
+    constant-diameter beam: change efl in the Variables dock and the
+    source tracks the focus. simparams carries importance_aim=True (the
+    diverging source overfills the pupil; birth culling is exactly
+    unbiased)."""
+    ts = _telephoto_solve()
+    s = "(<<miewb_vars>>.efl / 200)"          # FreeCAD dim-cell scale
+    d.variable("efl", 200.0, vmin=150.0, vmax=300.0, nstep=4,
+               comment="focal length, mm (whole prescription scales)")
+    d.variable("stop_d", round(ts["stop_f4"], 4), vmin=11.0, vmax=45.0,
+               nstep=4, comment="iris diameter, mm (f/4 at default)")
+
+    def sc(val):
+        """dim-cell expression: val * (efl/200), unit mm."""
+        return "%s * %.10g * 1mm" % (s, val)
+
+    roc = 50.0
+    # NEVER anchor a source at the world origin: the emit-direction sign
+    # convention is "toward the origin hemisphere", which degenerates for
+    # a source AT (0,0,0) (rays spray backwards; found the hard way --
+    # UXNOTES_ROUND3 #27). All positions below are relative to Star anyway.
+    d.add("laser_divergent", "Star", pos=(-700.0, 0.0, 0.0),
+          params={"diameter": sc(6.0), "roc": sc(roc), "length": 10.0,
+                  "round_flag": 1},
+          props={"power": 5.0, "lambdac": 550.0, "lambdamin": 486.1,
+                 "lambdamax": 656.3, "coherent": False})
+    front = ts["front"]
+    d.chain("lens_achromat", "FrontGroup", ref="Star",
+            distance="efl * %.10g" % ((-ts["ffl"] - roc) / 200.0),
+            params={"R_front": sc(front["R_front"]),
+                    "R_iface": sc(front["R_iface"]),
+                    "R_back": sc(front["R_back"]),
+                    "ct_crown": sc(front["ct_crown"]),
+                    "ct_flint": sc(front["ct_flint"]),
+                    "aperture": sc(front["aperture"])})
+    d.chain("iris", "Stop", ref="FrontGroup",
+            distance="efl * %.10g" % (2.0 / 200.0),
+            params={"hole_diameter": "<<miewb_vars>>.stop_d * 1mm",
+                    "outer_diameter": sc(64.0),
+                    "blackness": 1.0})
+    rear = ts["rear"]
+    d.chain("lens_achromat", "RearGroup", ref="Stop",
+            distance="efl * %.10g" % (ts["z0"] / 200.0),
+            params={"R_front": sc(rear["R_front"]),
+                    "R_iface": sc(rear["R_iface"]),
+                    "R_back": sc(rear["R_back"]),
+                    "ct_crown": sc(rear["ct_crown"]),
+                    "ct_flint": sc(rear["ct_flint"]),
+                    "aperture": sc(rear["aperture"])})
+    d.chain("detector_plane", "Collimated", ref="RearGroup", distance=300.0,
+            params={"width": 70.0, "height": 0.0, "round_flag": 0})
+    # build-time self-checks at efl=200 (s=1); world x is relative to
+    # the Star anchor at -700
+    x_front = -700.0 + (-ts["ffl"] - roc)
+    d.expect("FrontGroup", (x_front, 0.0, 0.0))
+    d.expect("Stop", (x_front + ts["t_front"] + 2.0, 0.0, 0.0))
+    d.expect("RearGroup", (x_front + ts["t_front"] + 2.0 + ts["z0"],
+                           0.0, 0.0))
+    length = ts["t_front"] + 2.0 + ts["z0"] + ts["t_rear"] + ts["bfl"]
+    d.note("telephoto: EFL=%.3f BFL=%.3f FFL=%.3f ratio=%.3f stop(f/4)="
+           "%.3f mm; front-vertex->focus %.1f mm << EFL (telephoto!)"
+           % (ts["efl"], ts["bfl"], ts["ffl"], length / 200.0,
+              ts["stop_f4"], length))
+    return {"preset": "quick", "importance_aim": True}
+
+
+def demo_telephoto_zoom(d):
+    """True two-group zoom built from the SAME telephoto prescription:
+    both groups keep their fixed 200-design radii/thicknesses; ONLY the
+    inter-group airspace z moves (the zoom variable), sweeping EFL from
+    ~258 mm (z=84) to ~159 mm (z=98), a 1.62x zoom. The sensor TRACKS the
+    moving focus through a chain expression: BFL(z) is the rational
+    function -(pA + qA*z)/(pC + qC*z) of the zoom gap (coefficients from
+    the two group ABCD matrices) -- directly expressible in the train
+    grammar, so dragging the z variable moves the rear group AND the
+    sensor exactly as a mechanically-compensated zoom would. Collimated
+    input -> the spot stays in focus on the tracked sensor across the
+    whole sweep."""
+    ts = _telephoto_solve()
+    pA, qA, pC, qC = ts["coef"]
+    d.variable("z", round(ts["z0"], 4), vmin=84.0, vmax=98.0, nstep=5,
+               comment="zoom gap stop->rear group, mm (EFL 258..159)")
+    bfl_expr = "-(%.10g + %.10g*z)/(%.10g + %.10g*z)" % (pA, qA, pC, qC)
+
+    d.add("laser_collimated", "Beam", pos=(-30.0, 0.0, 0.0),
+          params={"diameter": 24.0, "length": 10.0, "round_flag": 1},
+          props={"power": 5.0, "lambdac": 550.0, "coherent": False})
+    front = ts["front"]
+    d.chain("lens_achromat", "FrontGroup", ref="Beam", distance=30.0,
+            params=dict(front))
+    d.chain("iris", "Stop", ref="FrontGroup", distance=2.0,
+            params={"hole_diameter": 22.0, "outer_diameter": 60.0,
+                    "blackness": 1.0})
+    d.chain("lens_achromat", "RearGroup", ref="Stop", distance="z",
+            params=dict(ts["rear"]))
+    d.chain("detector_plane", "Sensor", ref="RearGroup",
+            distance=bfl_expr,
+            params={"width": 30.0, "height": 0.0, "round_flag": 0})
+    # the expression must equal the matrix BFL at the default z (zr = the
+    # rounded value actually stored in the variable)
+    zr = round(ts["z0"], 4)
+    d.expect("RearGroup", (ts["t_front"] + 2.0 + zr, 0.0, 0.0),
+             tol=1e-4)
+    d.expect("Sensor", (ts["t_front"] + 2.0 + zr + ts["t_rear"]
+                        + ts["bfl"], 0.0, 0.0), tol=2e-3)
+    d.note("telephoto_zoom: EFL(z)=-1/(%.6g%+.6g z); sensor tracked by "
+           "BFL(z)=%s; z=%.3f -> EFL 200/BFL %.3f"
+           % (pC, qC, bfl_expr, ts["z0"], ts["bfl"]))
+    return {"preset": "quick", "importance_aim": True}
+
+
+def demo_folded_periscope(d):
+    """Periscope: a unit-magnification afocal relay (two f=75 PCX lenses
+    spaced f1+f2) folded TWICE by 90 deg fold mirrors -- up the tube and
+    back to horizontal. Both folds are proper train FOLDS (fold=True):
+    Unfold All in the train editor straightens the whole relay to a
+    bench, Refold All restores it bit-exactly (asserted at build time).
+    The vertical arm length is the `arm` variable; the L1->L2 relay
+    spacing stays f1+f2 through the chain expression `150 - 25 - arm`
+    (change arm in the Variables dock and FM2 slides while the relay
+    spacing self-corrects). Detected power ~= source x 4 uncoated-lens
+    Fresnel surfaces x 2 aluminum mirrors."""
+    from mieworkbench.core import wizards
+    n633 = 1.51508
+    pcx = wizards.solve_pcx(75.0, n633, 5.0)      # R from the wizard, not
+    # a hand number; the AFOCAL relay spacing is bfl1 + bfl2 (thick-lens
+    # BFLs, both lenses convex-outward so each contributes its own bfl)
+    # -- NOT the thin-lens f1+f2 (which would be 6 mm long).
+    relay = 2.0 * pcx["bfl"]
+    d.variable("arm", 90.0, vmin=50.0, vmax=110.0, nstep=3,
+               comment="vertical periscope arm length, mm")
+    d.add("laser_collimated", "Beam", pos=(-20.0, 0.0, 0.0),
+          params={"diameter": 8.0, "length": 10.0, "round_flag": 1},
+          props={"power": 5.0, "lambdac": 633.0, "coherent": False})
+    lens_params = {"R_front": pcx["R_front"], "ct": 5.0, "aperture": 22.0}
+    d.chain("lens_pcx", "L1", ref="Beam", distance=20.0,
+            params=dict(lens_params))
+    # fold 1: 25mm past L1's exit vertex, deviation 90 -- azimuth picks
+    # the turn direction in 3D; verified by expect() below (doing this in
+    # one's head is exactly the pain the GUI preview/fold dialog removes).
+    d.fold_mirror("FM1", ref="L1", distance=25.0, deviation=90.0,
+                  azimuth=90.0, params={"width": 30.0, "thickness": 4.0})
+    d.fold_mirror("FM2", ref="FM1", distance="arm", deviation=90.0,
+                  azimuth=90.0, params={"width": 30.0, "thickness": 4.0})
+    d.chain("lens_pcx", "L2", ref="FM2",
+            distance="%.10g - 25 - arm" % relay,
+            params=dict(lens_params), flip=True)
+    d.chain("detector_plane", "Exit", ref="L2", distance=100.0,
+            params={"width": 30.0, "height": 0.0, "round_flag": 0})
+    d.pin_detector("Exit", (1.0, 0.0, 0.0))
+    # geometry self-checks at arm=90: L1 exit vertex at 20+5=25 -> FM1 at
+    # x=50 (25 past it); FM2 `arm` along the folded beam; L2 entry
+    # (relay-25-arm) past FM2 travelling +x again; Exit 100 past L2's
+    # beam-side (flipped: exit-vertex-forward) vertex + ct.
+    l2x = 30.0 + (relay - 25.0 - 90.0)   # L2 beam-side (entry) vertex x
+    d.expect("FM1", (30.0, 0.0, 0.0))
+    d.expect("FM2", (30.0, 0.0, 90.0))
+    # flipped element: the body ORIGIN (front vertex, local x=0) sits ct
+    # past the beam-side vertex (flip swaps the ports and the solver
+    # orients the body 180 deg about up)
+    d.expect("L2", (l2x + 5.0, 0.0, 90.0), tol=1e-3)
+    d.expect("Exit", (l2x + 5.0 + 100.0, 0.0, 90.0), tol=1e-3)
+    # unfold/refold round-trip must be bit-exact (the fold contract)
+    before = {n: st.current.to_dict()
+              for n, st in d.project.body_states.items()}
+    d.project.set_folds_all(False)
+    d.project.set_folds_all(True)
+    after = {n: st.current.to_dict()
+             for n, st in d.project.body_states.items()}
+    for n in before:
+        bp, ap = before[n]["pos_mm"], after[n]["pos_mm"]
+        if max(abs(b - a) for b, a in zip(bp, ap)) > 1e-9:
+            raise AssertionError("fold round-trip moved %s: %s -> %s"
+                                 % (n, bp, ap))
+    d.note("folded_periscope: afocal f75+f75 relay, two 90-deg folds, "
+           "arm variable; unfold/refold round-trip asserted bit-exact")
+    return {"preset": "quick"}
+
+
 DEMOS = {
+    "telephoto": demo_telephoto,
+    "telephoto_zoom": demo_telephoto_zoom,
+    "folded_periscope": demo_folded_periscope,
     "multiled_photometry": demo_multiled_photometry,
     "stokes_polarimeter": demo_stokes_polarimeter,
     "biaxial_conoscopy": demo_biaxial_conoscopy,

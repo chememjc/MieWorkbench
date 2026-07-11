@@ -69,8 +69,9 @@ IDENT = (1.0, 0.0, 0.0, 1.0)
 
 # dim-sheet aliases that name an element's clear aperture, in preference
 # order (primitivelib conventions: lenses use `aperture`, plates/sources
-# `width`/`diameter`, iris/pinhole `diameter`).
-_APERTURE_ALIASES = ("aperture", "diameter", "width")
+# `width`/`diameter`, iris/pinhole/annular the `hole_diameter` OPENING —
+# which must win over their outer/disc diameters).
+_APERTURE_ALIASES = ("hole_diameter", "aperture", "diameter", "width")
 
 # plane-parallel-slab kinds: flat both sides, real glass — modeled as a
 # slab (captures the t*(1-1/n) image shift); everything else unknown is

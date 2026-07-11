@@ -140,6 +140,31 @@ Deliberate deviations (all in the docstrings + `UXNOTES` round 2):
 These four are also unlisted in `run_demo_equivalence` (lighter gating this
 round, by decision).
 
+### The telephoto pair + folded periscope (design-usability round 3)
+
+Three demos whose POINT is the no-side-math workflow: every prescription
+number is solved live in the demo function by `core/paraxial` +
+`core/wizards` (asserted against the frozen design study), and the
+geometry is driven entirely by global variables + chain expressions. All
+three route to the **C engine** and close the ledger (< 1e-3).
+
+| Demo | System | What it shows | Engine · detected/closure |
+|---|---|---|---|
+| `telephoto` | Classic achromatized **200 mm f/4** telephoto (Kingslake layout): front positive achromat (`solve_achromat(120)`, Ø56) + iris stop + CEMENTED negative rear doublet (equiconcave BK7 crown R∓30.85 + SF5 flint, back radius +75 = the chromatic tuning DOF), telephoto ratio **0.739** (147.8 mm front-vertex→focus ≪ 200). A divergent source sits at the FRONT FOCAL POINT, its distance the expression `efl × 2.914` — change the `efl` variable (150…300) and *every* radius/thickness/airspace/aperture rescales via dim-cell expressions while the source tracks the focus; `stop_d` (44.98 = exactly f/4 by marginal-ray solve) sets the equivalent f-number = efl/pupil | Whole-prescription variable scaling, source-at-focus expression tracking, equivalent f/# from the paraxial engine, `importance_aim` (96% acceptance on the overfilled pupil), secondary spectrum dBFL(F−C) = −0.09 mm — real achromat territory | **C** · Collimated **1.29 mW**; closure 2.5e-12 |
+| `telephoto_zoom` | The SAME two groups, prescriptions fixed; only the airspace `z` moves (zoom variable, 84…98 → **EFL 258…159, 1.62× zoom**). The sensor is chained at the expression `-(pA+qA·z)/(pC+qC·z)` — BFL as a rational function of the zoom gap, coefficients from the two group ABCD matrices — so dragging `z` moves the rear group AND the sensor exactly like a mechanically-compensated zoom | The chain expression grammar carrying a real optical design law (focus tracking without re-anchoring anything) | **C** · Sensor **3.31 mW**; closure 6.7e-13 |
+| `folded_periscope` | Unit-magnification afocal relay (two f=75 PCX, spacing = 2×thick-lens BFL — NOT the thin-lens f1+f2) folded TWICE at 90° by proper train folds: up the `arm` variable, back to horizontal. The L2 spacing self-corrects through `relay − 25 − arm` | The fold operator end-to-end: Unfold All → flat bench, Refold All → **bit-exact** restore (asserted at build time); throughput = 4 uncoated Fresnel surfaces × 2 aluminum mirrors ≈ 0.69 | **C** · Exit **3.44 mW** (5 mW × 0.688 predicted); closure 5.1e-13 |
+
+Hard-won notes baked into these three (full log: `UXNOTES_ROUND3.md`):
+- **Never anchor a source at the world origin** — emit directions choose
+  the "toward the origin" hemisphere, which degenerates AT the origin
+  (rays spray backwards; the telephoto detected 0 mW until Star moved to
+  x=−700).
+- The rear negative doublet MUST be cemented (achromat primitive with a
+  negative prescription): an air-spaced dcv+dcx pair at aperture 30
+  overlaps solids (concave rim sag ~3.6 mm) — the same reason real
+  negative doublets are cemented.
+- The afocal relay spacing is `bfl₁+bfl₂` (thick-lens), not `f₁+f₂`.
+
 ## The train workflow, in one demo
 
 Open `michelson_folded.MieWB` and look at the **Optical Train** dock:
