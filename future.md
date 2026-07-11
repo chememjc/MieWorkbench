@@ -1,7 +1,10 @@
 # future.md — staged follow-ups with exact starting points
 
 Change-management notes in the pcbsim style: what to run/extend next and
-where the seams are. Nothing here blocks current use.
+where the seams are. Nothing here blocks current use. This is now the
+**single roadmap document**: the untracked `lowhanging.md` (highest-impact/
+lowest-effort backlog + the named-analysis-products and biaxial/stress
+birefringence design studies) was merged in here on 2026-07-11 and deleted.
 
 ## Delivered since the last pass (kept here only as a pointer to the flag/module)
 
@@ -38,7 +41,7 @@ where the seams are. Nothing here blocks current use.
 - **Gratings beyond scalar lamellar** — shipped: `bragg_kogelnik`
   (Kogelnik thin-hologram transmission, polarization-resolved), `dammann`
   (exact Fourier-order), `table` (measured per-order eta_s/eta_p), plus a
-  registry (`opticalproperties/grating/gratings.csv`, `@name` syntax).
+  registry (`opticalproperties/grating/gratings.miegrat`, `@name` syntax).
   RCWA is still explicitly out of scope (README §5.5).
 - **Aspheres** — shipped: `surface_override='FaceN=asphere:...'`,
   extract-time verification against the real FreeCAD face to 1um,
@@ -48,13 +51,155 @@ where the seams are. Nothing here blocks current use.
   `detectors/<label>.h5`'s `fields/<key>/{Ex,Ey}` groups (seed 0 only),
   and `post_process.py`'s `render_stokes_maps()`/`stokes_from_jones()`
   render `stokes_<label>_<key>.png` + `dop_<label>.png` from them
-  (README §6.5). Not yet done: no CLI flag caps `--save-fields` to a
-  subset of detectors/keys, and `common.estimate()`'s `fields_h5_GB`
-  dry-run prediction isn't wired to the actual `--save-fields`/pol-strata
-  state (README §12) — both are cheap follow-ups if disk budgeting for
-  `--save-fields` runs becomes a recurring pain point.
+  (README §6.5). As of the `lowhanging-improvements` round it also has a
+  prominent, always-visible GUI checkbox ("Save coherent fields (enables
+  Stokes/PSF/MTF)" in the Run Pipeline config matrix) — still opt-in, not
+  default-on. See below for the named-analysis-products this unlocked.
 
-## Higher-fidelity physics (still open)
+### `lowhanging-improvements` round (landed 2026-07-10) — named analysis products, CSV export, biaxial, and more
+
+Twelve of the 15 ranked items in the former `lowhanging.md` §1 landed this
+round (two more — photometric units, glass-catalog import — had already
+landed 2026-07-09 in the `library-expansion` round; one — the fold operator
+— in the `object-placer` round). Compact record, STATUS facts only (design
+prose is in git history / superseded by the shipped code):
+
+| # | Item | STATUS | Code seam |
+|--|--|--|--|
+|1|`--save-fields` GUI surfacing|**partial** — prominent checkbox, still opt-in|`run_trace.py` save gate; `mieworkbench/panes/config_matrix.py`|
+|2|Photometric units (lux/lm/cd via CIE V(λ))|**done** (`library-expansion`, 2026-07-09)|`post_process.py` post-multiply of `spectral_cube_mean`, `--photometric`|
+|3|Per-(source,detector) detected power|**done** (2026-07-10)|`case.json["detected"]` (coherent+incoherent) → `report.json` `per_source` + `data/source_detector.csv` + Results "Sources" tab|
+|4|Unified CSV data export|**done** (2026-07-10)|`post_process.CsvEmitter`, `--emit-csv`, `data/index.csv` (every library-derived CSV carries its registry `reference` column)|
+|5|PSF + FFT-MTF + encircled/ensquared energy|**done** (2026-07-10, needs `--save-fields`, seed-0 only)|`raytracer/analysis_field.py` + `post_process.render_field_analysis`|
+|6|Public glass-catalog import (Schott/Ohara Sellmeier)|**done** (`library-expansion`, 2026-07-09; 168 materials incl. 41 Schott/Ohara)|`opticalproperties/materials.miemat`|
+|7|Spot diagram + transverse/OPD ray fans|**done** (2026-07-10, needs `--export-rays`)|`run_trace.write_rays_full` → `rays_full.npz`; `post_process.render_spot_diagram`/`render_ray_fans`|
+|8|Gaussian-beam source + apodization|**done** (2026-07-10)|`scripts/raytracer/sources.py` (`beam_waist`/`m2`/`apodization`) + `element_wizard.py`|
+|9|Ghost/stray-light analysis|**done** (2026-07-10)|`RayBatch.refl_hist` → `post_process.render_ghost_analysis`, `--ghost-analysis` (implies `--export-rays`)|
+|10|BSDF/ABg measured-scatter import|**done** (2026-07-10), v1 BRDF-only|`raytracer/scatter.py` + `opticalproperties/scatter/bsdf.miebsdf`; BTDF (transmitted-side) not built|
+|11|Fold operator + relative optical-train chaining|**done** (`object-placer` round)|`mieworkbench/core/project.py`/`train.py`, `scripts/train_solver.py`|
+|12|Multi-process ray sharding (`--workers`)|**done** (2026-07-10)|`run_trace._run_sharded`, `SeedSequence.spawn`; `--workers 1` bit-identical, `N>1` statistically equivalent|
+|13|Zernike wavefront + Strehl|**done, v1 pupil model** (2026-07-10)|`raytracer/analysis.py` + `post_process.render_wavefront`; pupil is **source-referenced** (exact for collimated benches), not a true exit pupil — see backlog|
+|14|Biaxial-crystal birefringence|**done** (2026-07-10) — KTP/KTA/LBO/BiBO|`raytracer/birefringence.py` biaxial extension + `birefringence/biaxial.mibiax`; conical refraction not modeled (honest limit, README §5.6b)|
+|15|Stress/spatially-varying birefringence|**deferred** — see Backlog (a)|—|
+
+Also landed this round: curved (sphere/cylinder) detectors, incoherent path
+only (`CurvedDetectorGrid`, per-pixel `pixel_area_map`; coherent Huygens
+gather on a curved screen still raises — see Backlog (a)).
+
+**Reference obligation carried forward:** every `data/*.csv` emitted by
+`--emit-csv` that contains library-derived values (n/k, R/T, coating,
+filter, BSDF rows) MUST include the `reference` column copied from the
+source registry row — this is enforced project-wide, not just for the new
+CSVs.
+
+### C engine round (branch `c-engine`, in progress)
+
+A compiled OpenMP+CUDA trace/gather core (`cengine/`, binary
+`miewb-trace`) behind `--engine {auto,python,c}` (default `auto`: routes to
+C only when every scene feature is in `PORTED` in
+`scripts/raytracer/cengine.py`, else falls back to Python — the Python
+engine remains the PERMANENT reference, never behaviorally modified).
+Benchmark (`cengine/BENCHMARKS.md`, `scripts/bench_engines.py`, git
+`293ceb1`, RTX 4090 Laptop + 32-core CPU, 11 scenes, 1e6 rays/2048²/9λ):
+**8.3x wall-clock geomean, 10.6x trace+gather-stage geomean** vs the
+Python engine (`--workers auto` + torch-CUDA gather baseline); per-scene
+speedups range 2.8x (czerny_turner) to 24.8x (microscope_objective).
+Feature phases A-I are all **done** (plane/sphere/cylinder/cone/torus/
+asphere, TMM+table coatings, polarizers, scene-wide TLAS+mesh BLAS,
+coherent Huygens gather (CUDA+CPU), gratings, Beckmann roughness/
+diffusers, ABg scatter, uniaxial birefringence, continuum-mode particle
+clouds, export-rays/ghost-analysis/viz-pattern, `--importance-aim`) — see
+the `PORTED` feature table in `cengine/README.md` §Feature status for the
+authoritative per-phase status and what still Python-routes (biaxial
+birefringence, explicit particle realizations, `--ray-differentials`).
+`--workers` is Python-only; the C engine threads internally via OpenMP.
+Docs: `docs/RAYTRACER.md` §13, `cengine/README.md`, CLAUDE.md's C-engine
+section. **Torch-gather sunset roadmap** (`cengine/README.md` §Sunset
+roadmap): (1) through shakedown/merge, torch gather stays as the 100%
+fallback and three-way parity reference (numpy/torch/CUDA); (2) after a
+post-merge shakedown period, retire the torch gather backend and its ~5 GB
+dependency from the optics env; (3) eventually sunset the Python compute
+paths for day-to-day use — the numpy engine remains indefinitely as the
+slow, readable parity reference.
+
+## Backlog
+
+### (a) Near-term, carried forward from `lowhanging.md` §6
+
+- **Stress/spatially-varying birefringence** (was lowhanging.md §4.2/§15,
+  effort L-XL). Photoelastic/injection-molded/thermally-stressed
+  birefringence is a 2-D (or 3-D) retardance field that varies across the
+  element — reuses the *uniaxial* o/e machinery (physics per point is
+  still a small index anisotropy) but breaks the constant-per-body
+  assumption `scene.uniaxial_indices(body, lam)`/`body.crystal_axis` rely
+  on. Needed: index tensor and optic axis become functions of the hit
+  point `p` (`n(p)`, `c(p)` from a stress-optic model `Δn = C·(σ1−σ2)` with
+  a per-body stress field); the trace loop must re-evaluate the tensor per
+  segment (today fetched once per body — no mechanism carries a
+  spatially-varying tensor through the loop); needs a stress-field input
+  (analytic parametric map, or an imported FEA field coupling to the STOP
+  gap in `features.md` §7.8). **Recommended first cut** (closer to L):
+  an analytic parametric retardance map with **constant optic-axis
+  orientation, position-dependent Δn only** (e.g. radial/edge-load
+  formula) — demonstrates photoelastic fringes without the curved-ray
+  complication; hold the axis constant to avoid a GRIN-like curved walk-off
+  on a first pass. Full stress-optic + FEA-import path is XL. Hook points:
+  make `scene.uniaxial_indices`/`crystal_axis` accept `p` (or add
+  `scene.local_birefringence(body, p, lam)`), thread `p` into
+  `_birefringent_children`, add a `stress_optic` body property + a
+  stress-field model module; `birefringence.py`'s per-point math is reused
+  as-is. Acceptance target: the `photoelastic_stress` demo
+  (`demosystems.md` §3.8) — `source_broadband` (white, isochromatic color
+  fringes) or monochromatic (dark fringes), unpolarized, through
+  `polarizer_plate` → stressed window (new `stress_optic` property, e.g.
+  edge/point load) → crossed `polarizer_plate` (a circular-polariscope
+  variant adds `waveplate`s), imaged by `detector_plane` on the sample —
+  demonstrates position-dependent retardance + polariscope fringes; also
+  ties to `biaxial_conoscopy` (§3.7, already landed) as the sibling
+  crystal-optics demo.
+- **Exit-pupil/chief-ray search stage.** The Zernike/Strehl wavefront
+  analysis (`raytracer/analysis.py`, README §6.10) shipped with a
+  source-referenced pupil (each ray's normalized birth position on the
+  emitting face) — exact for the collimated/laser benches this tracer
+  models, but not a true exit pupil for finite-conjugate, field-point
+  imaging. A real exit-pupil/chief-ray search (reference sphere centered
+  on a field point's image, locate the chief ray, sample the pupil
+  relative to it) would also unlock a PSF-peak-ratio Strehl (measured PSF
+  peak vs. a diffraction-limited reference — needs the same missing
+  reference-sphere concept, cross-checking `--save-fields` against
+  `--export-rays`).
+- **BTDF (transmitted-side) measured scatter.** The shipped `scatter`
+  property (`raytracer/scatter.py`, README §5.4.2) is reflected-side
+  (BRDF) only, v1; a scattering lens/window exit face currently transmits
+  its Fresnel/TMM child unmodified.
+- **Coherent gather on curved detectors.** `CurvedDetectorGrid` (README
+  §5.12) shipped incoherent-only as scoped — the planar Huygens gather
+  kernel assumes a flat aperture; `add_gather_samples()` raises on a
+  curved screen. A curved-aperture gather needs per-pixel normals/
+  obliquity terms threaded through. Acceptance target: `curved_focal_surface`
+  demo (`demosystems.md` §3.9) — a fast wide-field singlet/Schmidt with
+  deliberate field curvature, several tilted `laser_collimated` field
+  angles @550, imaged onto a spherical `detector_plane` matching the
+  Petzval surface vs. a flat one for comparison.
+- **Materials `dn/dT` (thermo-optic) hook.** Noted since
+  `library-expansion`; needs a small temperature parameter threaded
+  through `materials.py`'s dispersion evaluation — data already compiled
+  in `library.md`. Shared with the thermal-lensing item below (§b) and
+  `features.md` §7.8 (STOP).
+- **`--save-fields` caps + estimator wiring** — *being addressed in the
+  design-usability round*: (1) no CLI flag caps `--save-fields` to a
+  subset of detectors/gather keys (currently all-or-nothing per completed
+  trace); (2) `common.estimate()`'s `fields_h5_GB` dry-run prediction
+  isn't wired to the actual `--save-fields`/pol-strata state (README §12).
+  Both were cheap-follow-up items in the Operational section below; see
+  that round for current status before picking this up independently.
+- **White-LED/blackbody/lamp tabulated spectra** — *continuous tabulated
+  spectra and white-LED sources are landing in the design-usability
+  round*; line-spectrum and blackbody/lamp source kinds are still open
+  (check the design-usability round's status before starting new work
+  here).
+
+### (b) Higher-fidelity physics (still open)
 
 - **Exact uniaxial Fresnel at a birefringent interface.** The current
   model decomposes the incident field into the o/e eigenbasis and applies
@@ -69,9 +214,16 @@ where the seams are. Nothing here blocks current use.
   own optic axis).** Not modeled at all today — `birefringence.py`'s
   header explicitly scopes this out. Needed for a physically complete
   quartz-along-axis scene (Babinet-Soleil compensators, saccharimetry).
-- **Biaxial crystals and gyrotropy.** Also explicitly out of scope in
-  `birefringence.py`; would need a genuinely different (non-uniaxial)
-  normal-surface solver.
+- **Biaxial crystals — conical refraction only.** Biaxial birefringence
+  itself LANDED 2026-07-10 (`raytracer/birefringence.py`
+  `refract_in_biaxial()`/`biaxial_modes_for_k()`, quartic normal-surface
+  root solve via companion-matrix eigenvalues; `birefringence/
+  biaxial.mibiax` registry; KTP/KTA/LBO/BiBO ship, 15 tests in
+  `test_biaxial.py`). The remaining open limit is **conical refraction
+  near an optic axis** — degenerate eigenvectors there return an
+  arbitrary transverse basis; documented as an honest limit rather than
+  solved (README §5.6b). A conical-refraction validation scene would be
+  the natural next increment.
 - **Absorbing (dichroic) uniaxial crystals.** `Im(n_o)`/`Im(n_e)` are
   currently ignored for geometry (real indices only); the o-ray's index
   stands in for bulk absorption of both modes. Needed for tourmaline-like
@@ -86,54 +238,53 @@ where the seams are. Nothing here blocks current use.
   `dammann` for sub-wavelength or highly non-sinusoidal groove profiles
   where the current closed-form/thin-element models break down.
 - **Ray-differential transport through gratings/scatter/birefringence.**
-  See "delivered" above — the differential machinery exists and is
-  correct for reflection/refraction/free-space transfer; extending it
-  through a diffraction order, a Beckmann-scattered lobe, or an o/e split
-  is the natural next increment (`tracer._kill_differentials`'s call
-  sites are the exact insertion points).
-- **Tile-quantized / opaque-only gather occlusion.** See "delivered"
-  above — a per-pixel (`tile=1`) mode already exists as an opt-in; a
-  translucent/partial occluder model (rather than always-fully-opaque)
-  would need a coupled-transmission accounting scheme to avoid
-  double-counting the tracer's own refracted-field samples.
-- **Stress birefringence.** Induced (not intrinsic) birefringence from
-  mechanical stress in an otherwise-isotropic material — would reuse the
-  existing uniaxial o/e machinery with a stress-optic-coefficient-derived
-  `n_o`/`n_e`/axis per body rather than a fixed crystal lookup.
+  The differential machinery exists and is correct for reflection/
+  refraction/free-space transfer; extending it through a diffraction
+  order, a Beckmann-scattered lobe, or an o/e split is the natural next
+  increment (`tracer._kill_differentials`'s call sites are the exact
+  insertion points).
+- **Tile-quantized / opaque-only gather occlusion.** A per-pixel
+  (`tile=1`) mode already exists as an opt-in; a translucent/partial
+  occluder model (rather than always-fully-opaque) would need a
+  coupled-transmission accounting scheme to avoid double-counting the
+  tracer's own refracted-field samples.
+- **Stress birefringence.** See Backlog (a) — carried forward with a
+  first-cut design now specified.
 - **GRIN (gradient-index) media.** Not modeled — every medium is currently
   homogeneous between interfaces; a GRIN element needs curved-ray
   propagation inside the bulk (a genuinely different integration scheme
-  from the current straight-segment-between-hits loop).
+  from the current straight-segment-between-hits loop; also named in
+  `features.md` §7.4/§7.8).
 - **Fluorescence / phosphors.** No wavelength-shifting absorption-then-
   reemission event exists; would need a new emission event type
   (isotropic, incoherent, at a shifted wavelength stratum) triggered by
   bulk or surface absorption in a fluorescent material.
-- **Measured BSDF scatter.** Roughness today is Beckmann-microfacet only;
-  a tabulated BRDF/BTDF (e.g. from a goniophotometer) would be a new
-  scattering-lobe sampler alongside `roughness.beckmann_sample`.
-- **Ghost-image analysis mode.** No dedicated tool exists to isolate and
-  rank specific reflection paths (e.g. Nth-surface ghosts in a lens
-  stack) by detected power; would consume the existing per-ray generation/
-  medium-stack history already carried on `RayBatch`, mostly a
-  post-processing feature rather than new physics.
+- **Measured BSDF scatter — BTDF half.** See Backlog (a); the BRDF half
+  landed 2026-07-10.
+- **Ghost-image analysis mode.** LANDED as `--ghost-analysis`
+  (`RayBatch.refl_hist` → `post_process.render_ghost_analysis`,
+  2026-07-10) — groups generation->=2 purely-specular detector hits by
+  ordered face-id path signature, ranks by summed detected power, emits a
+  top-12 bar chart + top-3 footprint images + `data/ghost_table_<label>.csv`.
 - **Thermal lensing.** No temperature-dependent index/absorption coupling
   exists; would need a coupled thermal (absorbed-power -> local
   temperature -> `dn/dT` -> refractive index) model, likely iterative.
-- **Curved detector faces.** `DetectorGrid` still hard-errors on a
-  non-Plane surface (README §5.11/§6.2); UV-parameterized grids on
-  spheres/cylinders are straightforward for the incoherent path, but the
-  coherent gather needs per-pixel normals and a non-planar obliquity term.
+  Shares the `dn/dT` hook in Backlog (a).
+- **Curved detector faces.** Incoherent path LANDED 2026-07-10
+  (`CurvedDetectorGrid`, sphere/cylinder, auto-chosen by face surface
+  type, per-pixel metric area map). Coherent Huygens gather on a curved
+  screen is still open — see Backlog (a).
 
-## Capability gaps (hard errors today, by design)
+### (c) Capability gaps (hard errors today, by design)
 
 - **Explicit particle clouds > `MAX_BRUTE` (200,000) spheres** are capped
   (brute-force chunked collision; `--particle-threshold` default is now
   aligned to this same cap, README §9). A numba DDA/uniform-grid traversal
   removes the cap; grid build is already cell-hashed in
-  `ExplicitRealization._place`.
-- **Multi-process tracing** (`--workers`): the loop is single-process
-  vectorized numpy; shard primary rays via `SeedSequence.spawn` and merge
-  ledgers/detector cubes (all accumulators already add linearly).
+  `ExplicitRealization._place`. Note: the C engine's continuum-mode
+  particle-cloud phase (G, `cengine/README.md`) is done for the
+  Mie-ensemble-table path; explicit realizations above the cap still
+  Python-route regardless of engine.
 - **Mesh-type source/detector faces** still hard-error unconditionally
   (README §5.8/§5.11) — both need a UV parameterization the incoherent/
   coherent paths don't have yet; the ordinary-optic mesh path (BVH tracing)
@@ -141,6 +292,62 @@ where the seams are. Nothing here blocks current use.
 - **Aspherical particles** (user goal): T-matrix (e.g. `pytmatrix`) drop-in
   behind the `MieEvaluator` interface — `efficiencies()` and `amplitudes()`
   are the only two entry points `particles.py` uses. Still open.
+
+Multi-process tracing (`--workers`) and multi-process ray sharding are no
+longer gaps — both landed 2026-07-10 (`run_trace._run_sharded`,
+`SeedSequence.spawn` + linear ledger/cube merge). The C engine round layers
+on top of that: `--engine c` gets its parallelism from OpenMP threading
+internally (`--threads`, 0 = all cores) and supersedes most of the
+raw-throughput story for `PORTED` scenes (8.3x wall geomean, see above);
+`--workers` remains the Python-engine-only sharding path for scenes that
+still Python-route.
+
+### (d) Big-roadmap acceptance-target demos (`demosystems.md` §4)
+
+Specified so the roadmap has concrete acceptance targets; each names the
+`features.md` gap it needs. `folded_periscope` (a straight relay, then
+one-click "insert fold mirror" twice → periscope, downstream train
+reflects rigidly) is **not** listed here — the fold operator landed
+(§11 above) and the demo itself is being built in the design-usability
+round.
+
+- **auto_designed_lens** (optimizer, `features.md` §7.2 — *the biggest
+  categorical gap*). Start from a poor doublet; a merit-function optimize
+  (spot RMS / encircled energy) + glass substitution converges to a
+  corrected design. Pragmatic path: wrap the existing FreeCAD
+  spreadsheet-parameter sweep (`permute_model.py`/`--var`) as an
+  optimization loop — scipy.optimize (least_squares/differential_evolution)
+  or nevergrad/CMA over a merit function built from the named analysis
+  products (spot RMS, encircled energy, detected power); start with a
+  headless `scripts/optimize.py`, add a GUI merit-function panel later.
+  Per-iteration cost is a full FreeCAD rebuild -> extract -> trace via
+  `permute_model.py` plus the coherent gather — mitigate with geometry
+  caching for unchanged bodies and a geometric-only fast mode
+  (`coherent=false`, direct deposit) for the inner loop, refining
+  coherently at the end. Effort: headless optimizer L; GUI M; global XL.
+- **tolerance_yield** (tolerancing, `features.md` §7.3). Take
+  `camera_triplet`; a Monte-Carlo tolerance run over radius/thickness/
+  decenter/tilt with a focus compensator -> yield histogram. Pragmatic
+  path: `scripts/tolerance.py` perturbs the FreeCAD model per a tolerance
+  table, runs the (geometric-fast) pipeline N times using the existing
+  `--seeds` + `permute_model.py` machinery, aggregates a merit-metric
+  distribution + sensitivity ranking; compensators = a nested §7.2
+  optimize call per draw. Effort: sensitivity M; MC tolerancing L;
+  compensators L.
+- **cad_import_scene** (CAD import, `features.md` §7.4). A STEP-imported
+  lens barrel + baffles traced as optomechanics (stray light) around an
+  existing optical train. FreeCAD already imports STEP/IGES; the missing
+  piece is the GUI exposing "Import STEP as element" through the
+  fc_server worker (`import_bodies`/`import_primitive` ops) and the
+  extractor canonicalizing imported faces (falling back to the existing
+  mesh-BVH path for non-canonical ones — already shipped, incoherent-
+  only). Effort: M for mesh-import; L for analytic-face recovery.
+- **freeform_illuminator** (illumination design, `features.md` §7.9). An
+  LED + freeform reflector/TIR lens optimized to a prescribed irradiance
+  target with photometric units. Non-imaging design (freeform tailoring)
+  rides on the §7.2 optimizer above; photometric units (lux/lumen/candela
+  via CIE V(λ)) already landed (item #2 above). Effort: L (depends on
+  §7.2 landing first).
 
 ## Operational
 
@@ -158,9 +365,11 @@ where the seams are. Nothing here blocks current use.
   accordingly for polarization-heavy, high-resolution `--save-fields` runs.
 - `run_pipeline.py` does not forward `--views`/`--smoke` (make_viz.py) or
   `--viz-generations` (post_process.py) — call those scripts directly to
-  use them (documented in README §4.2/§8).
+  use them (documented in README §4.2/§8). *Being addressed in the
+  design-usability round.*
 - No CLI flag caps `--save-fields` to a subset of detectors or gather
-  keys; it is currently all-or-nothing per completed trace.
+  keys; it is currently all-or-nothing per completed trace. See Backlog
+  (a) — being addressed in the design-usability round.
 
 ## Known cosmetics
 
@@ -172,33 +381,41 @@ where the seams are. Nothing here blocks current use.
 
 ## Scene-suite findings (test_scenes_e2e.py xfails — follow-up work)
 
-Five documented xfails in `test_scenes_e2e.py`; the tracer is faithful in
-each case, the follow-up is scene authoring / model extension:
+Four strict xfails remain in `test_scenes_e2e.py` (wollaston, previously
+xfail'd, now PASSES after the trim-loop head-to-tail orientation fix);
+the tracer is faithful in each case, the follow-up is scene authoring /
+model extension:
 
-- **lens_asphere design math**: `k = -n^2` on the convex front makes only
-  that surface stigmatic in-glass; the flat exit re-adds spherical
-  aberration and the full lens over-corrects (best-focus RMS ~3x worse
-  than the spherical control instead of >=5x better). Re-solve the conic
-  (or add A4/A6 terms) for the complete lens and update `SCENES`.
-- **prism_equilateral geometry**: `prism_rotation_deg=19.4` puts the beam
-  at ~10 deg AOI (not the intended 49.4 deg minimum-deviation entry), so
-  the exit face TIRs; the rotated detector's auto-picked screen face is
-  also edge-on. Fix the rotation + detector normal.
+- **lens_asphere design math** (*being addressed in the design-usability
+  round*): `k = -n^2` on the convex front makes only that surface
+  stigmatic in-glass; the flat exit re-adds spherical aberration and the
+  full lens over-corrects (best-focus RMS ~3x worse than the spherical
+  control instead of >=5x better). Re-solve the conic (or add A4/A6
+  terms) for the complete lens and update `SCENES`.
+- **prism_equilateral geometry** (*being addressed in the design-usability
+  round*): `prism_rotation_deg=19.4` puts the beam at ~10 deg AOI (not the
+  intended 49.4 deg minimum-deviation entry), so the exit face TIRs; the
+  rotated detector's auto-picked screen face is also edge-on. Fix the
+  rotation + detector normal.
 - **pol_circular is a GENERATOR, not an analyzer**: the polarizer model
   applies linear diattenuator -> retarder in propagation order, which
   cannot discriminate incident handedness (left/right transmit equally).
   Analyze circular light with a quartz waveplate body + linear polarizer
   body (fully supported, validated by waveplate_quartz). A future
-  `orientation` column in polarizers.csv could flip the stage order.
-- **pbs_cube / wollaston air gaps**: without optically-contacted solids,
-  the 5 um gaps Fresnel-split (PBS loses ~35% to seam/ghosts; the
-  Wollaston double-refracts at the gap into 4 beams instead of 2, split
-  angle off accordingly). Real fix = cemented/contact interface support:
-  paired coincident faces treated as a single material-to-material
-  boundary (no ambient hop). Until then the scenes document the physics
-  of *air-gapped* assemblies.
+  `orientation` column in polarizers.miepol could flip the stage order. Open.
+- **pbs_cube air gap**: without optically-contacted solids, the 5 um gap
+  Fresnel-splits (PBS loses ~35% to seam/ghosts; reflected-arm detector
+  also edge-on — see the detector_face item below). Real fix =
+  cemented/contact interface support: paired coincident faces treated as
+  a single material-to-material boundary (no ambient hop). Until then the
+  scene documents the physics of an *air-gapped* assembly. (The wollaston
+  scene's related anomaly turned out to be the multi-edge trim-loop bug,
+  fixed in `extract_geometry.trim_polylines_xyz` — its e2e test now
+  passes clean; nested/coated-plate builds are the shipped workaround for
+  45° cemented interfaces, see bs_cube/pbs_cube in CLAUDE.md.) Open.
 - **Rotated off-axis detector bodies** (prism/pbs/hot_mirror reflected
   arms) can auto-pick an edge-on screen face; the e2e tests read the
   deviated beams from ray directions instead. A `detector_face` body
   property (explicit screen-face override at authoring time, mirroring
-  the CLI --detector-face) would remove the ambiguity.
+  the CLI --detector-face) would remove the ambiguity — *being addressed
+  in the design-usability round*.
