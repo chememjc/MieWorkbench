@@ -2,12 +2,6 @@
  "case": "quick",
  "closure_ok": true,
  "detectors": {
-  "Eyepiece.Eyepiece_pad.Face4": {
-   "peak_irradiance_W_m2": 0.0,
-   "power_seed_std_W": 0.0,
-   "profile_visibility": null,
-   "total_power_W": 0.0
-  },
   "Eyepiece.Eyepiece_pad.Face5": {
    "peak_irradiance_W_m2": 384992.87175362697,
    "power_seed_std_W": 1.9022115342768833e-06,
