@@ -654,3 +654,90 @@ def test_fold_cell_tooltip_differs_for_plain_vs_fold_row(qtbot):
     fm_tip = fm_item.toolTip(COL_FOLD).lower()
     assert "folded" in fm_tip or "unfolded" in fm_tip
     assert "excludes" in fm_tip
+
+
+# ---------------------------------------------------------------------------
+# system paraxial summary + insert-optical-value submenu (no-side-math round)
+# ---------------------------------------------------------------------------
+PCX_ALIASES = {
+    "R_front": {"cell": "B1", "raw": "=25 mm", "value": 25.0, "unit": "mm"},
+    "ct": {"cell": "B2", "raw": "=5 mm", "value": 5.0, "unit": "mm"},
+    "aperture": {"cell": "B3", "raw": "=20 mm", "value": 20.0, "unit": "mm"},
+}
+
+
+def _lens_scene(two_lenses=True):
+    sheets = [{"name": "dimL1", "label": "dim_L1", "aliases": dict(PCX_ALIASES)}]
+    if two_lenses:
+        sheets.append({"name": "dimL2", "label": "dim_L2",
+                       "aliases": dict(PCX_ALIASES)})
+    project, fake = make_scene(extra_sheets=sheets)
+    # properties must go through the worker API: get_structure deep-copies,
+    # so direct project.body() mutation is lost on the next refresh
+    project.set_property("SRC", "power", 1.0)
+    project.set_property("SRC", "lambdac", 550.0)
+    for label in ("L1", "L2") if two_lenses else ("L1",):
+        project.set_property(label, "miewb_primitive", "lens_pcx")
+        project.set_property(label, "material", "bk7")
+    project.set_chain("L1", {"ref": "SRC", "distance": "30"})
+    if two_lenses:
+        project.set_chain("L2", {"ref": "L1", "distance": "40"})
+    return project, fake
+
+
+def test_system_summary_visible_for_powered_train(qtbot):
+    project, _ = _lens_scene(two_lenses=False)
+    pane, _sel = make_pane(qtbot, project)
+    assert pane.summary.isVisibleTo(pane)
+    text = pane.summary.text()
+    assert "EFL" in text and "f/" in text and "paraxial" in text
+
+
+def test_system_summary_hidden_without_optics(qtbot):
+    project, _ = make_scene()
+    _make_source(project, "SRC")
+    project.set_chain("L1", {"ref": "SRC", "distance": "10"})
+    pane, _sel = make_pane(qtbot, project)
+    assert not pane.summary.isVisibleTo(pane)
+
+
+def test_insert_optical_value_literal(qtbot):
+    from mieworkbench.core import paraxial as PX
+    project, _ = _lens_scene()
+    pane, _sel = make_pane(qtbot, project)
+    menu = pane._build_context_menu("L2", column=COL_DIST)
+    sub = getattr(menu, "optical_value_submenu", None)
+    assert sub is not None
+    prev = menu.optical_value_groups["Previous element (L1)"]
+    bfl_act = next(a for a in prev.actions()
+                   if a.text().startswith("BFL of L1"))
+    bfl_act.trigger()
+    rec = project.train().records()["L2"]
+    card = PX.element_cardinals(
+        "lens_pcx", {"R_front": 25.0, "ct": 5.0, "aperture": 20.0},
+        lambda m, l: 1.51680 if m == "bk7" else 1.5, 550.0)
+    # committed literal text equals the displayed %.6g of BFL (index from
+    # the real matdb differs slightly from the stand-in; just require a
+    # numeric distance in the right ballpark)
+    val = float(rec["distance"])
+    assert val == pytest.approx(card["bfl"], rel=0.02)
+
+
+def test_insert_optical_value_as_variable(qtbot):
+    project, _ = _lens_scene()
+    pane, _sel = make_pane(qtbot, project)
+    menu = pane._build_context_menu("L2", column=COL_DIST)
+    prev = menu.optical_value_groups["Previous element (L1)"]
+    var_act = next(a for a in prev.actions() if "as variable" in a.text())
+    var_act.trigger()
+    rec = project.train().records()["L2"]
+    assert rec["distance"] == "bfl_l1"
+    variables = project.train_variables()
+    assert "bfl_l1" in variables and variables["bfl_l1"] > 0
+
+
+def test_no_submenu_on_non_numeric_column(qtbot):
+    project, _ = _lens_scene()
+    pane, _sel = make_pane(qtbot, project)
+    menu = pane._build_context_menu("L2", column=COL_REF)
+    assert getattr(menu, "optical_value_submenu", None) is None

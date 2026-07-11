@@ -74,6 +74,7 @@ Public API the mainwindow wires:
 """
 
 import collections
+import math
 import re
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -85,6 +86,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import train as _trainmod  # noqa: F401  (puts scripts/ on sys.path)
+from ..core import opticalvalues, paraxial
+from ..core import variables as V
 from ..core.project import ProjectError
 import train_solver  # noqa: E402
 
@@ -278,6 +281,14 @@ class TrainEditorPane(QWidget):
 
         lay.addLayout(self._build_toolbar())
 
+        # whole-train paraxial readout (system EFL / f-number / image
+        # distance / magnification) — refreshed by every _do_rebuild
+        self.summary = QLabel("")
+        self.summary.setWordWrap(True)
+        self.summary.setStyleSheet("color: gray;")
+        self.summary.setVisible(False)
+        lay.addWidget(self.summary)
+
         self.tree = QTreeWidget()
         self.tree.setColumnCount(len(_HEADERS))
         self.tree.setHeaderLabels(_HEADERS)
@@ -435,10 +446,53 @@ class TrainEditorPane(QWidget):
             self._apply_problem_highlights(tm, labels)
             for c in range(self.tree.columnCount()):
                 self.tree.resizeColumnToContents(c)
+            self._refresh_summary(tm, variables)
         finally:
             self._updating = False
         if self._selection is not None:
             self._select_body_row(self._selection.body)
+
+    def _refresh_summary(self, tm, variables):
+        """System paraxial line under the toolbar. Hidden when there is
+        no resolvable powered train; failures degrade to hidden with the
+        reason in the tooltip (never a modal)."""
+        try:
+            s = paraxial.system_summary(tm, variables)
+        except Exception as exc:
+            self.summary.setVisible(False)
+            self.summary.setToolTip(str(exc))
+            return
+        if not s.get("n_optical_elements") or s.get("efl") is None:
+            self.summary.setVisible(False)
+            self.summary.setToolTip(
+                "; ".join(s.get("warnings") or []) if s else "")
+            return
+        bits = []
+        if s["efl"] is not None and math.isfinite(s["efl"]):
+            bits.append("EFL %.4g mm" % s["efl"])
+        else:
+            bits.append("afocal")
+        if s.get("fno_working") and math.isfinite(s["fno_working"]):
+            bits.append("f/%.3g" % s["fno_working"])
+        if s.get("na"):
+            bits.append("NA %.3g" % s["na"])
+        img = s.get("image_distance_mm")
+        if img is not None and math.isfinite(img):
+            bits.append("image %.4g mm past %s"
+                        % (img, s["path"][-1]["element"]
+                           if s.get("path") else "last element"))
+        if s.get("limiting_element"):
+            bits.append("stop: %s" % s["limiting_element"])
+        self.summary.setText(
+            "System: %s   (paraxial, λ = %.0f nm)"
+            % (" · ".join(bits), s.get("lambda_nm") or 0.0))
+        tip = ("Paraxial ABCD over the chained train — tilts/decenters "
+               "ignored, folds traversed straightened.")
+        warn = s.get("warnings") or []
+        if warn:
+            tip += "\nWarnings: " + "; ".join(warn[:6])
+        self.summary.setToolTip(tip)
+        self.summary.setVisible(True)
 
     def _make_element_item(self, el, rec, variables):
         item = _ElementItem()
@@ -1048,14 +1102,16 @@ class TrainEditorPane(QWidget):
         element = item.data(COL_ELEMENT, ROLE_ELEMENT)
         if element is None:
             return
-        menu = self._build_context_menu(element)
+        column = self.tree.columnAt(pos.x())
+        menu = self._build_context_menu(element, column=column)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
-    def _build_context_menu(self, element):
+    def _build_context_menu(self, element, column=None):
         """Build (but do not exec) the right-click menu for `element`'s
         row -- split out from _on_context_menu so tests can exercise the
         menu construction/actions without an event-loop-blocking exec()
-        call."""
+        call. `column` (the clicked column) adds the cell-aware "Insert
+        optical value" submenu on numeric edge columns."""
         rec = self._project.train().records().get(element, {})
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
@@ -1086,7 +1142,79 @@ class TrainEditorPane(QWidget):
             act = menu.addAction("Set absolute pose…")
             act.triggered.connect(
                 lambda: self.editAnchorRequested.emit(element))
+        self._add_optical_value_submenu(menu, element, column)
         return menu
+
+    def _add_optical_value_submenu(self, menu, element, column):
+        """Cell-aware 'Insert optical value' submenu on numeric edge
+        columns. Submenu references are stored ON the menu object
+        (menu.optical_value_submenu / .optical_value_groups) — never
+        retrieve a submenu back through QAction.menu(), the PySide6
+        ownership-transfer GC trap."""
+        field = _COL_FIELD.get(column) if column is not None else None
+        if not field:
+            return
+        try:
+            entries = opticalvalues.value_menu_model(
+                self._project.train(), element, field,
+                variables=self._variables())
+        except Exception:
+            entries = []
+        if not entries:
+            return
+        menu.addSeparator()
+        sub = menu.addMenu("Insert optical value")
+        sub.setToolTipsVisible(True)
+        menu.optical_value_submenu = sub
+        groups = {}
+        menu.optical_value_groups = groups
+        for e in entries:
+            g = groups.get(e["group"])
+            if g is None:
+                g = sub.addMenu(e["group"])
+                groups[e["group"]] = g
+            act = g.addAction(e["label"])
+            act.setToolTip("Insert the literal value %.6g" % e["value"])
+            act.triggered.connect(
+                lambda checked=False, e=e:
+                    self._insert_optical_value(element, field, e, False))
+            if e.get("suggest_var"):
+                act2 = g.addAction("    … as variable %s = %.6g"
+                                   % (e["suggest_var"], e["value"]))
+                act2.setToolTip(
+                    "Create/update miewb_vars '%s' with this value and "
+                    "insert the variable name — the design stays "
+                    "re-tunable from the Variables dock"
+                    % e["suggest_var"])
+                act2.triggered.connect(
+                    lambda checked=False, e=e:
+                        self._insert_optical_value(element, field, e, True))
+
+    def _insert_optical_value(self, element, field, entry, as_variable):
+        """Commit an opticalvalues entry into (element, field) — either
+        the literal number or via a created/updated miewb_vars variable."""
+        text = "%.6g" % entry["value"]
+        if as_variable and entry.get("suggest_var"):
+            name = entry["suggest_var"]
+            try:
+                self._project.ensure_variables_sheet()
+                sheet = self._project.variables_sheet()
+                rows = V.parse_sheet(sheet)
+                if name in rows and rows[name].row:
+                    plan = V.cell_plan(name, row=rows[name].row, value=text)
+                else:
+                    plan = V.cell_plan(
+                        name, row=V.next_free_row(sheet), value=text,
+                        vmin=entry["value"], vmax=entry["value"], nstep=0,
+                        enabled=False,
+                        comment="inserted: %s" % entry["label"])
+                self._project.apply_variable_cells(
+                    plan, text="Insert optical value %s" % name)
+            except (ProjectError, TrainError, ValueError) as exc:
+                self.status.setText("insert as variable failed: %s" % exc)
+                return
+            text = name
+        self.commit_field(element, field, text)
 
     def _open_insert_fold_dialog(self):
         if self._project is None or not getattr(self._project, "structure",
