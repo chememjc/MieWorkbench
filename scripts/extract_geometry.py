@@ -50,6 +50,11 @@
 #   emitted for every optic body (default local +x) since the tracer's own
 #   local-+x default is ambiguous without the body's placement.
 #   filter (string, registry name, optics only).
+#   detector_face (string, detector bodies only, optional) - bare "FaceN"
+#   (this body) or a full "Body.Tip.FaceN" id pinning the detector's PRIMARY
+#   sensing face, overriding the closest-to-world-origin auto-pick. Replaces
+#   the primary face in place (no extra screen), so the scene stays
+#   C-engine-routable (unlike the additive CLI --detector-face).
 #   grating (string, per-face map "FaceN=600:v;...", optics only, must name
 #   faces -- no "apply to every face" form).
 #   surface_override (string, per-face map) - currently supports
@@ -1273,6 +1278,30 @@ def extract_one(fcstd_path, outdir, strict):
                     "face": closest_face_id,
                     "autodetected": True,
                 }
+                # detector_face (string): pin the detector's PRIMARY face,
+                # overriding the closest-to-world-origin auto-pick (which
+                # lands on a thin edge face on rotated/off-axis detectors and
+                # silently detects 0 mW). Accepts a bare 'FaceN' (resolved
+                # against THIS body's extracted faces, same id form as
+                # extract_faces: Body.Tip.FaceN) or an already-full face id.
+                # Unlike the CLI --detector-face this replaces the primary
+                # face in place (no extra transparent screen), so the scene
+                # stays C-engine-routable.
+                det_face_raw = str_prop_or_none(obj, "detector_face")
+                if det_face_raw is not None:
+                    face_ids = [f["id"] for f in faces]
+                    df = det_face_raw.strip()
+                    if re.match(r"^Face\d+$", df):
+                        resolved = "%s.%s.%s" % (obj.Name, tip_name, df)
+                    else:
+                        resolved = df
+                    if resolved not in face_ids:
+                        die("%s: detector_face %r resolves to %r which is "
+                            "not one of this body's faces: %s"
+                            % (obj.Label, det_face_raw, resolved,
+                               ", ".join(face_ids)))
+                    det_dict["face"] = resolved
+                    det_dict["autodetected"] = False
                 qe_curve = str_prop_or_none(obj, "qe_curve")
                 if qe_curve is not None:
                     det_dict["qe_curve"] = qe_curve
@@ -1298,6 +1327,12 @@ def extract_one(fcstd_path, outdir, strict):
             if role != "source" and str_prop_or_none(obj, "spectrum") is not None:
                 warn("%s: spectrum property is only meaningful on "
                      "source bodies (role=%s); ignoring"
+                     % (obj.Label, role), warnings)
+
+            if role != "detector" and \
+                    str_prop_or_none(obj, "detector_face") is not None:
+                warn("%s: detector_face property is only meaningful on "
+                     "detector bodies (role=%s); ignoring"
                      % (obj.Label, role), warnings)
 
             bodies_out.append(body_dict)

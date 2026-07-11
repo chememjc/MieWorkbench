@@ -297,9 +297,14 @@ promote entries to the repo (system) library.
   detector `.h5` attrs.
 - **Emit/detector face auto-pick = closest face centroid to the WORLD
   origin** — on a rotated off-axis detector (folded telescope eyepiece)
-  that's a thin EDGE face and the run silently detects 0 mW. Pin
-  `--detector-face` (simparams `detector_face` list) in folded scenes;
-  the demos do.
+  that's a thin EDGE face and the run silently detects 0 mW. The
+  authoring-time fix is the **`detector_face` body property** (bare
+  `FaceN` or full `Body.Tip.FaceN`): it REPLACES the detector's primary
+  face at extract time (no extra screen), so the scene stays
+  C-engine-routable — unlike the additive CLI `--detector-face`
+  (simparams `detector_face` list), whose `extra_detector_faces` screen
+  is NOT in the C engine's ported set and silently forces Python. The
+  demos bake `detector_face` pins (`make_demos.resolve_detector_pins`).
 - **`set_placement` resolves miewb_group BEFORE label** (an imported
   multi-body element's primary body carries the element label itself —
   label-first lookup moved only that body and tore elements apart).

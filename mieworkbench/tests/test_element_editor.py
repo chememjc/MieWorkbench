@@ -232,6 +232,64 @@ def test_spectrum_property_renders_as_registry_combo(qtbot):
     assert editor.currentText() == "led_white_2733k"
 
 
+def _two_face_detector_scene(tmp_path):
+    """make_two_body_scene, but the Screen detector gets a 2nd face so the
+    detector_face combo has something to choose between."""
+    import os
+    from mieworkbench.tests.vtk_test_support import write_triangle_stl
+    structure, faces = make_two_body_scene(tmp_path)
+    f2 = os.path.join(str(tmp_path), "screen_face2.stl")
+    write_triangle_stl(f2, base=(0.0, 0.0, 0.02), size=0.02)
+    faces["Screen"]["faces"].append({
+        "id": "Screen.Pad.Face2", "stl": f2, "area_m2": 4e-4,
+        "centroid_m": [0.0, 0.0, 0.02], "normal_hint": [1.0, 0.0, 0.0]})
+    for body in structure["bodies"]:
+        if body["name"] == "Screen":
+            body["face_count"] = 2
+    return structure, faces
+
+
+def test_detector_face_combo_lists_faces_with_auto_default(qtbot, tmp_path):
+    from PySide6.QtWidgets import QComboBox
+    structure, faces = _two_face_detector_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Screen", set())
+
+    editor = pane._make_property_editor("detector_face", None)
+    assert isinstance(editor, QComboBox)
+    assert editor.isEditable()
+    items = [editor.itemText(i) for i in range(editor.count())]
+    assert items == ["(auto)", "Face1", "Face2"]
+    # empty/None value shows the '(auto)' entry
+    assert editor.currentText() == "(auto)"
+
+    # a full-id stored value collapses to its bare FaceN entry
+    editor2 = pane._make_property_editor(
+        "detector_face", "Screen.Pad.Face2")
+    assert editor2.currentText() == "Face2"
+
+
+def test_detector_face_combo_commits_the_pin(qtbot, tmp_path):
+    structure, faces = _two_face_detector_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Screen", set())
+
+    # picking Face2 commits the bare 'Face2' string
+    pane._commit_detector_face("detector_face", "Face2")
+    props = project.body("Screen")["properties"]
+    assert props["detector_face"]["value"] == "Face2"
+
+    # choosing '(auto)' clears it back to empty (extract treats as auto-pick)
+    pane._commit_detector_face("detector_face", "(auto)")
+    assert project.body("Screen")["properties"]["detector_face"]["value"] == ""
+
+
 def _assignment_rows(pane):
     """[(prop_text, value_text, faces_text), ...] from the Active
     Properties table (cell widgets included)."""

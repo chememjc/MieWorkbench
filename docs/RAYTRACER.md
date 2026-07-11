@@ -274,6 +274,7 @@ fields on each `PartDesign::Body`:
 | `roughness` | Float or String, optional | whole-body RMS nm, or a per-face map `'Face1=200:lcorr=5;Face2=50'` (§5.4) |
 | `diffuser` | String, optional | ground glass: `'grit:120'` \| `'slope:0.08'` \| `'@dg_600'`, whole-body or per-face map `'Face2=@dg_600'` (§5.4.1) — mutually exclusive with `roughness` on the same face |
 | `grating` | String, optional | a per-face map `'Face2=600:v:orders=-1..1'` or `'Face2=@registryname'` (§5.5) — must name specific faces, not the whole body |
+| `detector_face` | String, optional | detector-only: pin the recorded PRIMARY face — a bare `'FaceN'` (this body) or a full `'Body.Tip.FaceN'` id — overriding the closest-to-origin auto-pick (§5.2). Replaces the primary face in place (no extra screen), so the scene stays C-engine-routable, unlike the additive CLI `--detector-face` |
 | `polarization` | String, optional | source-only: `'unpolarized'` (default) `'linear:<deg>'` `'circular:left|right'` `'elliptical:<psi>:<chi>'` (§5.2) |
 | `lambdamin`, `lambdamax` (nm, optional), `coherent` (bool, default False) | — | source-only, see §5.2 |
 | `spectrum` | String, optional | source-only: `emission/emitters.miesrc` registry row naming a tabulated emission spectrum (§5.2); supersedes `lambdamin`/`lambdamax` |
@@ -332,6 +333,17 @@ Body.Feature.FaceN` adds an *extra*, transparent zero-effect detector
 screen on any face (including an optical element's own face) without
 disturbing its physical interaction — the field is recorded, then the
 ray continues to interact with the surface normally.
+
+To retarget a detector body's own recorded PRIMARY face (rather than add
+an extra screen), set the `detector_face` **body property** (§5.1):
+a bare `'FaceN'` or a full `'Body.Tip.FaceN'` id, resolved and validated
+against that body's extracted faces at extract time (`autodetected:false`
+in `model.json`). This is the authoring-time fix for the "auto-pick lands
+on a thin edge face → detects 0 mW" trap on rotated/off-axis detectors
+(the folded-telescope eyepiece). Unlike the additive `--detector-face`
+CLI flag, it does not add a screen (`extra_detector_faces` is NOT in the
+C engine's ported feature set — it silently forces the Python engine),
+so a scene pinned via the body property stays C-engine-routable.
 
 **Emission direction** (`sources.py`):
 - **flat emitting face** → collimated beam along the face normal, with
@@ -2236,6 +2248,18 @@ segfaults: every failure carries context, a log
   same design equations used to build the face, or loosen `r_max` if the
   mismatch is only at the aperture edge. This check runs in
   `extract_geometry.py`, well before any trace-time error would surface.
+- **A detector reports 0 mW (or a tiny fraction of the expected power)
+  on a rotated / off-axis detector**: the recorded face is auto-picked as
+  the one whose centroid is closest to the world origin, which on a
+  tilted or decentered detector (a folded-telescope eyepiece screen) is a
+  thin *edge* face nearly parallel to the beam — so almost nothing lands
+  on it. Pin the real sensing face with the **`detector_face` body
+  property** (a bare `'FaceN'` or a full `'Body.Tip.FaceN'` id, §5.1/§5.2):
+  it replaces the primary face at extract time, needs no extra screen, and
+  keeps the scene C-engine-routable. The additive CLI `--detector-face`
+  works too but forces the Python engine (`extra_detector_faces` is not a
+  ported feature). The demos that fold (`newtonian`, `dobsonian`, …) bake
+  a `detector_face` pin via `make_demos.resolve_detector_pins`.
 - **Seam warnings on cemented interfaces (e.g. an achromat doublet or a
   Wollaston prism)**: this project's cemented-interface scenes model the
   cement layer as a thin (typically 5 µm) air (or matched-index) gap

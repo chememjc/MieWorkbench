@@ -66,6 +66,46 @@ def test_unknown_material():
     assert any("unknown material 'unobtanium'" in m for m in errs)
 
 
+def test_detector_face_out_of_range_is_an_error():
+    s = good_structure()
+    # Screen has face_count 6; Face9 doesn't exist
+    s["bodies"][2] = body("Screen",
+                          {"material": "detector", "detector_face": "Face9"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("detector_face names Face9" in m for m in errs)
+
+
+def test_detector_face_valid_index_is_clean():
+    s = good_structure()
+    s["bodies"][2] = body("Screen",
+                          {"material": "detector", "detector_face": "Face3"})
+    assert not validation.has_errors(run(s))
+
+
+def test_detector_face_full_id_valid_is_clean():
+    s = good_structure()
+    s["bodies"][2] = body(
+        "Screen",
+        {"material": "detector", "detector_face": "Screen.Pad.Face3"})
+    assert not validation.has_errors(run(s))
+
+
+def test_detector_face_bad_syntax_is_an_error():
+    s = good_structure()
+    s["bodies"][2] = body("Screen",
+                          {"material": "detector", "detector_face": "top"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("bad detector_face" in m for m in errs)
+
+
+def test_detector_face_on_non_detector_warns():
+    s = good_structure()
+    s["bodies"][1] = body("Lens",
+                         {"material": "bk7", "detector_face": "Face1"})
+    warns = messages(run(s), validation.WARNING)
+    assert any("only" in m and "detector" in m for m in warns)
+
+
 def test_uniaxial_material_is_known():
     s = good_structure()
     s["bodies"][1] = body("Xtal", {"material": "calcite",

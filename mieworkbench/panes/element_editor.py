@@ -115,7 +115,7 @@ CONTRACT_PROPERTIES = (
     "spectrum", "polarization", "beam_waist", "m2", "apodization", "coating",
     "roughness", "diffuser", "scatter", "filter", "polarizer",
     "polarizer_axis", "crystal_axis", "crystal_axis2", "grating",
-    "surface_override", "mirror", "absorbance", "qe_curve",
+    "surface_override", "mirror", "absorbance", "qe_curve", "detector_face",
 )
 REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating",
                        "grating", "diffuser", "scatter", "qe_curve",
@@ -149,6 +149,7 @@ PROPERTY_DEFAULTS = {
     "beam_waist": 1.0,
     "m2": 1.0,
     "apodization": "gaussian:w0=1",
+    "detector_face": "",   # empty = '(auto)' closest-to-origin auto-pick
 }
 # Registry-valued properties default to a well-known entry when the
 # library has it, else the first name alphabetically.
@@ -222,6 +223,9 @@ TOOLTIPS = {
                "curve; adds a photocurrent to the detector's report).",
     "spectrum": "emission/emitters registry name (tabulated source emission "
                "spectrum; source-only, supersedes lambdamin/lambdamax).",
+    "detector_face": "Detector-only: pin the sensing face (FaceN), overriding "
+                    "the closest-to-origin auto-pick. '(auto)' restores it. "
+                    "Keeps the scene C-engine-routable.",
 }
 
 
@@ -506,7 +510,44 @@ class ElementEditorPane(QWidget):
                 self._commit_property(n, c.currentText()))
         return combo
 
+    _AUTO_FACE_LABEL = "(auto)"
+
+    def _make_detector_face_combo(self, name, value):
+        """Editable face-combo for detector_face: '(auto)' (empty ->
+        closest-to-origin auto-pick) plus Face1..FaceN off the body's faces.
+        The stored value may be a bare 'FaceN' or a full 'Body.Tip.FaceN'
+        id; either is shown as its bare 'FaceN' entry."""
+        combo = QComboBox()
+        combo.setEditable(True)
+        items = [self._AUTO_FACE_LABEL]
+        for f in self._faces_meta():
+            idx = common.parse_face_spec(f["id"])["face_index"]
+            items.append("Face%d" % idx)
+        combo.addItems(items)
+        cur = "" if value is None else str(value).strip()
+        if not cur:
+            combo.setCurrentText(self._AUTO_FACE_LABEL)
+        else:
+            bare = cur.rsplit(".", 1)[-1]   # full id -> bare FaceN
+            combo.setCurrentText(bare if bare.startswith("Face") else cur)
+        combo.activated.connect(
+            lambda _idx, n=name, c=combo:
+                self._commit_detector_face(n, c.currentText()))
+        combo.lineEdit().editingFinished.connect(
+            lambda n=name, c=combo:
+                self._commit_detector_face(n, c.currentText()))
+        return combo
+
+    def _commit_detector_face(self, name, text):
+        """'(auto)'/blank -> empty (extract treats as auto-pick); else the
+        typed FaceN passes straight to the detector_face property."""
+        text = str(text).strip()
+        self._commit_property(
+            name, "" if text in ("", self._AUTO_FACE_LABEL) else text)
+
     def _make_property_editor(self, name, value):
+        if name == "detector_face":
+            return self._make_detector_face_combo(name, value)
         if name == "material":
             return self._make_registry_combo(name, value,
                                              self._material_names())

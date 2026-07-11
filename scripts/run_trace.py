@@ -613,6 +613,10 @@ def build_scene(args):
     props = load_optical_properties(root=args.optical_properties)
     return Scene(model, props.matdb, props.coatings,
                  suppress_bodies=args.suppress_body,
+                 # extra_detector_faces adds transparent screens on top of the
+                 # scene (NOT in the C engine's PORTED set -> forces Python).
+                 # To pin a detector's PRIMARY face while staying C-routable,
+                 # set the detector_face BODY PROPERTY (baked at extract time).
                  extra_detector_faces=args.detector_face,
                  grating_specs=[common.parse_grating_spec(g)
                                 for g in args.grating],

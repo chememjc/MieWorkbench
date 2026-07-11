@@ -1091,7 +1091,11 @@ def resolve_detector_pins(fcstd_path, pins):
         model_path = outdir / Path(fcstd_path).stem / "model.json"
         model = json.loads(model_path.read_text())
         detector_pins, grating_pins = pins
-        det = [_resolve_front_face(model, label, beam_dir)
+        # detector pins are BAKED as detector_face body properties (see
+        # bake_detector_faces) rather than passed via simparams, so each
+        # pinned detector stays C-engine-routable; grating pins still flow
+        # through simparams (CLI --grating spec form).
+        det = [(label, _resolve_front_face(model, label, beam_dir))
                for label, beam_dir in detector_pins]
         grat = ["%s:%s" % (_resolve_front_face(model, label, beam_dir),
                            value)
@@ -1099,6 +1103,22 @@ def resolve_detector_pins(fcstd_path, pins):
         return det, grat
     finally:
         shutil.rmtree(str(outdir), ignore_errors=True)
+
+
+def bake_detector_faces(fcstd_path, det_pins):
+    """Write each resolved (label, face_id) pin back onto the detector body
+    as the `detector_face` string property, in place of a simparams pin, so
+    extract_geometry replaces the detector's PRIMARY face (C-routable)."""
+    args = [str(FREECAD), "-c",
+            str(REPO / "scripts" / "tools" / "bake_detector_faces.py"), "--",
+            "--model", str(fcstd_path)]
+    for label, face_id in det_pins:
+        args += ["--pin", "%s=%s" % (label, face_id)]
+    result = subprocess.run(args, stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True)
+    if "BAKE OK" not in (result.stdout + result.stderr):
+        raise RuntimeError("bake_detector_faces failed:\n%s\n%s"
+                           % (result.stdout[-2000:], result.stderr[-500:]))
 
 
 def add_corrector(fcstd_path):
@@ -1133,7 +1153,9 @@ def build_demo(name, outdir, pack=True):
         det, grat = resolve_detector_pins(
             fcstd, (demo.detector_pins, demo.grating_pins))
         if det:
-            simparams["detector_face"] = det
+            # bake as detector_face body properties (C-routable) instead of a
+            # simparams["detector_face"] extra-screen pin
+            bake_detector_faces(fcstd, det)
         if grat:
             simparams["grating"] = grat
     if pack:

@@ -14,7 +14,7 @@ import common  # noqa: E402  (stdlib-only shared contract hub)
 import pytest  # noqa: E402
 
 from mieworkbench.core.facemaps import (  # noqa: E402
-    FACEMAP_PROPERTIES, Assignment, assignment_is_invalid,
+    FACEMAP_PROPERTIES, Assignment, active_face_index, assignment_is_invalid,
     assignments_for_body, face_label, filter_assignments, menu_model,
     merge_facemap, remove_faces, sorted_face_ids, value_check_state,
 )
@@ -270,6 +270,47 @@ def test_menu_model_skips_invalid_rows_values():
 def test_face_label_and_sort():
     assert face_label("Body.Pad.Face12") == "Face12"
     assert sorted_face_ids([F5, F1, F3]) == [F1, F3, F5]
+
+
+# ---------------------------------------------------------------------------
+# active_face_index: detector_face override vs closest-to-origin heuristic
+# ---------------------------------------------------------------------------
+_DET_FACES = [
+    {"id": F1, "centroid_m": [0.01, 0.0, 0.0]},   # closest to origin
+    {"id": F2, "centroid_m": [0.05, 0.0, 0.0]},
+    {"id": F3, "centroid_m": [0.09, 0.0, 0.0]},   # farthest
+]
+
+
+def test_active_face_defaults_to_closest_origin():
+    props = _props(material="detector")
+    assert active_face_index(props, _DET_FACES) == 1
+
+
+def test_active_face_honors_bare_detector_face_pin():
+    props = _props(material="detector", detector_face="Face3")
+    assert active_face_index(props, _DET_FACES) == 3
+
+
+def test_active_face_honors_full_id_detector_face_pin():
+    props = _props(material="detector", detector_face=F3)
+    assert active_face_index(props, _DET_FACES) == 3
+
+
+def test_active_face_pin_naming_missing_face_falls_back_to_closest():
+    props = _props(material="detector", detector_face="Face9")
+    assert active_face_index(props, _DET_FACES) == 1
+
+
+def test_active_face_blank_pin_falls_back_to_closest():
+    props = _props(material="detector", detector_face="")
+    assert active_face_index(props, _DET_FACES) == 1
+
+
+def test_active_face_pin_ignored_on_source_body():
+    # detector_face is detector-only; a source still uses the closest face
+    props = _props(power="5", lambdac="633", detector_face="Face3")
+    assert active_face_index(props, _DET_FACES) == 1
 
 
 def test_element_editor_reexports_survive():

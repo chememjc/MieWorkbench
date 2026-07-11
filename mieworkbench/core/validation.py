@@ -159,6 +159,44 @@ def check_roles(v):
     return out
 
 
+@check("detector-face")
+def check_detector_face(v):
+    """A detector body's detector_face pin must name a face that exists on
+    the body (bare 'FaceN' or a full 'Body.Tip.FaceN' id)."""
+    out = []
+    for b in v.bodies():
+        raw = v.prop(b, "detector_face")
+        if raw is None or str(raw).strip().lower() in ("", "none"):
+            continue
+        if v.role(b) != "detector":
+            out.append(Finding(WARNING, "%s: detector_face is only "
+                               "meaningful on detector bodies (material="
+                               "'detector'); it will be ignored" % b["label"],
+                               body=b["name"], check="detector-face"))
+            continue
+        bare = str(raw).strip().rsplit(".", 1)[-1]
+        try:
+            idx = common.parse_face_spec(
+                "B.T.%s" % bare if bare.startswith("Face") else str(raw).strip()
+            )["face_index"]
+        except ValueError:
+            out.append(Finding(ERROR, "%s: bad detector_face %r (expected "
+                               "'FaceN' or 'Body.Tip.FaceN')"
+                               % (b["label"], raw), body=b["name"],
+                               check="detector-face"))
+            continue
+        n = int(b.get("face_count", 0) or 0)
+        if n and not 1 <= idx <= n:
+            out.append(Finding(ERROR, "%s: detector_face names Face%d but "
+                               "the body has %d face%s"
+                               % (b["label"], idx, n,
+                                  "s" if n != 1 else ""), body=b["name"],
+                               fix_hint="pick an existing FaceN or clear "
+                               "detector_face to restore the auto-pick",
+                               check="detector-face"))
+    return out
+
+
 @check("geometry")
 def check_geometry(v):
     out = []

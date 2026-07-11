@@ -142,6 +142,42 @@ def test_placement_edit_moves_extracted_geometry(fc, tmp_path_factory):
     assert dx == pytest.approx(0.005, abs=1e-9)  # metres
 
 
+def test_detector_face_property_lands_in_extract(fc, tmp_path_factory):
+    """Setting `detector_face` on a detector body through the worker must
+    make extract_geometry bake it into the detector dict as the recorded
+    face with autodetected=False (in place of the closest-to-origin
+    auto-pick)."""
+    tmp = tmp_path_factory.mktemp("detface")
+    orig = extract_model_json(EXAMPLE, tmp / "g_orig")
+    dets = [b for b in orig["bodies"] if b.get("role") == "detector"]
+    assert dets, "example.FCStd should have at least one detector body"
+    det = dets[0]
+    label = det["label"]
+    face_ids = [f["id"] for f in det["faces"]]
+    auto_id = det["detector"]["face"]
+    assert det["detector"].get("autodetected") is True
+    # pick a face DIFFERENT from the auto-pick when the body has more than
+    # one face, so the override is observably distinct
+    target_id = next((fid for fid in face_ids if fid != auto_id), auto_id)
+    target_faceN = target_id.rsplit(".", 1)[-1]   # bare 'FaceN'
+
+    st = fc.open_document(EXAMPLE)
+    doc = st["doc"]
+    fc.request("set_property", {"doc": doc, "body": label,
+                                "name": "detector_face",
+                                "value": target_faceN})
+    edited_path = str(tmp / "example_detface.FCStd")
+    fc.request("save_copy", {"doc": doc, "path": edited_path})
+    fc.request("remove_property", {"doc": doc, "body": label,
+                                   "name": "detector_face"})
+    fc.close(doc)
+
+    model = extract_model_json(edited_path, tmp / "g_edit")
+    edited = [b for b in model["bodies"] if b["label"] == label][0]
+    assert edited["detector"]["autodetected"] is False
+    assert edited["detector"]["face"] == target_id
+
+
 def test_geomcache_full_stack(fc, tmp_path_factory):
     """GeomCache against the real worker: tessellate, hit, selective refresh."""
     tmp = tmp_path_factory.mktemp("cache")

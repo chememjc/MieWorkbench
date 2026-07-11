@@ -251,6 +251,24 @@ def active_face_index(properties, faces_meta):
     is_detector = (props.get("material", {}).get("value") == "detector")
     if not (is_source or is_detector) or not faces_meta:
         return None
+    # explicit detector_face pin wins over the closest-to-origin heuristic
+    # (mirrors extract_geometry): a bare 'FaceN' or a full 'Body.Tip.FaceN'
+    # id whose named face exists on the body.
+    if is_detector:
+        pin = (props.get("detector_face", {}) or {}).get("value")
+        pin = "" if pin is None else str(pin).strip()
+        if pin and pin.lower() != "none":
+            bare = pin.rsplit(".", 1)[-1]
+            try:
+                idx = common.parse_face_spec(
+                    "B.T.%s" % bare if bare.startswith("Face") else pin
+                )["face_index"]
+            except (ValueError, KeyError):
+                idx = None
+            if idx is not None and any(
+                    common.parse_face_spec(f["id"])["face_index"] == idx
+                    for f in faces_meta):
+                return idx
     best_id, best_d = None, None
     for f in faces_meta:
         c = f.get("centroid_m")
