@@ -186,18 +186,20 @@ slow, readable parity reference.
   through `materials.py`'s dispersion evaluation — data already compiled
   in `library.md`. Shared with the thermal-lensing item below (§b) and
   `features.md` §7.8 (STOP).
-- **`--save-fields` caps + estimator wiring** — *being addressed in the
-  design-usability round*: (1) no CLI flag caps `--save-fields` to a
-  subset of detectors/gather keys (currently all-or-nothing per completed
-  trace); (2) `common.estimate()`'s `fields_h5_GB` dry-run prediction
-  isn't wired to the actual `--save-fields`/pol-strata state (README §12).
-  Both were cheap-follow-up items in the Operational section below; see
-  that round for current status before picking this up independently.
-- **White-LED/blackbody/lamp tabulated spectra** — *continuous tabulated
-  spectra and white-LED sources are landing in the design-usability
-  round*; line-spectrum and blackbody/lamp source kinds are still open
-  (check the design-usability round's status before starting new work
-  here).
+- **`--save-fields` caps + estimator wiring** — **DONE
+  (design-usability round, 2026-07-11)**: `--save-fields-detectors
+  LABEL[,...]` restricts field writes per detector (hard error on unknown
+  labels; a real subset Python-routes since the C engine writes all), and
+  `common.estimate()`'s `fields_h5_GB` now reflects save-fields state,
+  the detector subset, and (source, lambda, pol) key count. One follow-up:
+  incoherent-only scenes now WARN that fields groups will be empty.
+- **White-LED/blackbody/lamp tabulated spectra** — continuous tabulated
+  spectra + the CIE 015:2018 LED-B1 white LED **LANDED (design-usability
+  round)**: `spectrum` body property → `opticalproperties/emission/`
+  registry, equal-power quantile strata in `sources.wavelength_strata`
+  (zero C-engine changes, scenes stay C-routable), `led_white` primitive.
+  Line-spectrum and blackbody/lamp source kinds are still open (the
+  loader rejects those `kind`s with "needs engine support").
 
 ### (a2) Placement/authoring affordances (design-usability round findings)
 
@@ -402,13 +404,12 @@ round.
   `--save-fields` adds two more full-resolution complex float64 arrays per
   `(source, lam, pol)` key on top of that (seed 0 only) — budget
   accordingly for polarization-heavy, high-resolution `--save-fields` runs.
-- `run_pipeline.py` does not forward `--views`/`--smoke` (make_viz.py) or
-  `--viz-generations` (post_process.py) — call those scripts directly to
-  use them (documented in README §4.2/§8). *Being addressed in the
-  design-usability round.*
-- No CLI flag caps `--save-fields` to a subset of detectors or gather
-  keys; it is currently all-or-nothing per completed trace. See Backlog
-  (a) — being addressed in the design-usability round.
+- `run_pipeline.py` forwarding of `--views`/`--smoke`/`--viz-generations`
+  — **DONE (design-usability round)**: all three now flow through the
+  pipeline; only `--resolution`/`--out`/`--skip-vtkexport` remain
+  direct-call-only (README §4.2/§8).
+- `--save-fields-detectors` (design-usability round) caps field writes
+  to named detectors; per-KEY capping is still all-or-nothing.
 
 ## Known cosmetics
 
@@ -425,17 +426,18 @@ xfail'd, now PASSES after the trim-loop head-to-tail orientation fix);
 the tracer is faithful in each case, the follow-up is scene authoring /
 model extension:
 
-- **lens_asphere design math** (*being addressed in the design-usability
-  round*): `k = -n^2` on the convex front makes only that surface
-  stigmatic in-glass; the flat exit re-adds spherical aberration and the
-  full lens over-corrects (best-focus RMS ~3x worse than the spherical
-  control instead of >=5x better). Re-solve the conic (or add A4/A6
-  terms) for the complete lens and update `SCENES`.
-- **prism_equilateral geometry** (*being addressed in the design-usability
-  round*): `prism_rotation_deg=19.4` puts the beam at ~10 deg AOI (not the
-  intended 49.4 deg minimum-deviation entry), so the exit face TIRs; the
-  rotated detector's auto-picked screen face is also edge-on. Fix the
-  rotation + detector normal.
+- **lens_asphere design math — FIXED (design-usability round)**: the
+  front profile was re-solved for the COMPLETE lens (k=-1 + A4, exact
+  meridional trace + Nelder-Mead); the scene now beats the spherical
+  control 17x and the test is un-xfailed. `wizards.solve_asphere` and the
+  `lens_asphere` primitive (new `A4_mm3` param — `A4` is a spreadsheet
+  CELL ADDRESS, rejected as an alias) carry the corrected design.
+- **prism_equilateral geometry — FIXED (design-usability round)**: the
+  rotation had the wrong SIGN (-19.399 deg gives the 49.4 deg
+  minimum-deviation entry); deviation now matches delta_min analytics
+  (38.76 vs 38.80 deg) with blue>red ordering, the detector sits face-on,
+  and the test is un-xfailed. Two strict xfails remain in the suite
+  (pol_circular, pbs_cube — below).
 - **pol_circular is a GENERATOR, not an analyzer**: the polarizer model
   applies linear diattenuator -> retarder in propagation order, which
   cannot discriminate incident handedness (left/right transmit equally).
@@ -452,9 +454,11 @@ model extension:
   fixed in `extract_geometry.trim_polylines_xyz` — its e2e test now
   passes clean; nested/coated-plate builds are the shipped workaround for
   45° cemented interfaces, see bs_cube/pbs_cube in CLAUDE.md.) Open.
-- **Rotated off-axis detector bodies** (prism/pbs/hot_mirror reflected
-  arms) can auto-pick an edge-on screen face; the e2e tests read the
-  deviated beams from ray directions instead. A `detector_face` body
-  property (explicit screen-face override at authoring time, mirroring
-  the CLI --detector-face) would remove the ambiguity — *being addressed
-  in the design-usability round*.
+- **Rotated off-axis detector bodies — ADDRESSED (design-usability
+  round)**: the `detector_face` body property pins the recording face at
+  authoring time and (unlike the CLI flag, which adds an extra screen)
+  keeps scenes C-engine-routable; demo pins are BAKED by make_demos, a
+  pre-run validation check warns on rotated unpinned detectors, and the
+  GUI exposes a face combo. The e2e prism/pbs scenes could now be
+  migrated from direction-based readouts to pinned faces (small
+  follow-up).
