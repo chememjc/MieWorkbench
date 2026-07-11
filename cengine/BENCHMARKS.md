@@ -29,3 +29,21 @@ Skipped (explicit, no silent caps):
 geometric mean: **8.3x wall**, **10.6x trace+gather** over 11 scenes
 
 Gate (plan): >= 1.5x geometric-mean stage speedup — PASS.
+
+## Michelson supplemental (@2e5 rays)
+
+The two michelson-family scenes are coherent-gather-dominated and exceed
+the 5400 s per-engine budget at 1e6 rays (the "timeout" rows above), so
+they were re-measured at 2e5 rays, resolution/nlambda unchanged (git
+`e14125f`, GPU verified healthy for both engines' runs):
+
+| scene | py wall | py trace | py gather | C wall | C trace | C gather | wall speedup |
+|---|---|---|---|---|---|---|---|
+| michelson_folded | 4662.4s | 24.4s | 4635.1s | 716.8s | 1.60s | 713.42s | **6.5x** |
+| michelson | timeout (>5400s) | — | — | 1122.7s | — | — | **>4.8x** |
+
+michelson's Python baseline exceeds the budget even at 2e5 rays; its C
+wall of 1122.7 s bounds the speedup below at >4.8x. Both scenes clear
+the >=1.5x gate. (michelson routes to Python under `auto` today —
+`extra_detector_faces` is unported — so these rows are `--engine`-forced
+measurements of the same geometry.)
