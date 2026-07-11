@@ -1,7 +1,7 @@
 # MieWorkbench demo gallery
 
-Sixteen optical systems (eleven classic instruments plus five
-single-physics benches), each a self-contained `.MieWB` workbench
+Twenty optical systems (eleven classic instruments, five single-physics
+benches, and four analysis/scattering benches), each a self-contained `.MieWB` workbench
 archive (double-click-open in the GUI, or run headlessly) plus the bare
 `.FCStd` scene. All are assembled as **optical trains** by
 `scripts/make_demos.py` (the GUI's own Project/chain op path): every
@@ -53,6 +53,36 @@ physically real": solids with real materials, one source, one screen.
 | `ghost_doublet` | Two uncoated N-BK7 windows (4 mm thick, 8 mm spacing), collimated 633 nm, `--ghost-analysis` on | Natural double-bounce Fresnel ghosts: the strongest gen-2 path carries direct·R² (R≈4.2 %); enumerated by the ghost report | **4.25 mW** direct + ghosts |
 | `scatter_plate` | BK7 window at 45° with a measured ABg finish (`scatter=polished_bk7_glass`); the reflection folds to +y | Diffuse stray light: the reflected arm catches the specular spot plus the ABg scatter lobe (TIS ~2 %), reflected split conserving R | **0.48 mW** in the reflected arm |
 | `curved_focal` | 633 nm Ø10 beam → BK7 PCX lens (f≈48.5) → cylindrical detector (`material=detector`, axis ‖ z) at the focus | A curved focal-surface screen: the cylindrical (`CurvedDetectorGrid`) face catches >90 % of the focused cone | **4.59 mW** (92 % of the focus) |
+
+### Analysis & scattering benches (design-usability round)
+
+Four demos exercising the exact-Mie particle clouds, ground-glass
+diffuser/speckle, coherent aperture diffraction, and the named
+imaging-analysis products (PSF/MTF/Strehl/Zernike/EE/spot/fans). All four
+route to the **C engine** on the quick preset and close the energy ledger
+(<1e-3). Several carry deliberate deviations from the original
+`demosystems.md §3` prescription so the physics is actually visible at the
+quick budget — each is noted in the demo docstring and below.
+
+| Demo | System | What it shows | Detected (of 5 mW, quick preset) |
+|---|---|---|---|
+| `aerosol_mie` | 532 nm coherent Ø2 probe through a 40 mm cube of log-normal water droplets (2 µm median, `--particles` continuum mode), forward + 90° side detectors | Exact-Mie aerosol scattering: Beer–Lambert extinction of the ballistic beam (τ≈1.14 → ~32% transmitted) plus a forward halo, and the single-scatter phase-function lobe on the side detector | **3.19 mW** forward (attenuated ballistic + forward halo) + **0.057 mW** side scatter |
+| `diffuser_speckle` | 633 nm coherent Ø4 beam through a 600-grit ground-glass diffuser (`@dg_600`, ~5° cone), far-field screen 150 mm on, `--save-fields` | Ground-glass scatter cone + coherent speckle; the Stokes/DOP map shows the diffuser's partial depolarization | **4.60 mW** (scatter cone within the 80 mm screen) |
+| `airy_singleslit` | 633 nm coherent Ø0.6 beam floods a Ø0.2 mm pinhole (air-filled plug), screen 250 mm on | Circular-aperture Fraunhofer diffraction: the central Airy disk forms at the right scale (EE-83.8% radius ~1.3 mm vs the ideal 1.22 λL/D = **0.966 mm** first null); the ring nulls are NOT resolved at the quick coherent-gather budget (smooth profile) | **0.28 mW** through the pinhole |
+| `imaging_analysis` | Cooke triplet (reused from `camera_triplet`) fed an on-axis coherent 550 nm Ø5 wavefront, 0.5 mm sensor at paraxial focus, `--save-fields --export-rays --emit-csv` | Every named analysis product renders: PSF + FFT-MTF + encircled energy (from fields) and Strehl + Zernike wavefront + spot/OPD fans (from exported rays). The BK7/SF5-substituted triplet is aberrated (RMS ~38 waves, Strehl ~0, MTF50 ~10.5 cy/mm, EE50 ~18 µm) — the bench demonstrates the analysis **pipeline** on a real imperfect lens | **3.69 mW** at the sensor |
+
+Deliberate deviations (physics-vs-preset, all in the docstrings):
+`aerosol_mie` raises `phi` from the prescribed 1e-6 to **2e-2** (at 1e-6
+the optical depth is ~5e-5 — forward unattenuated, side detector 0 mW; the
+headline Mie physics is invisible). `airy_singleslit` shrinks the beam from
+Ø6 to **Ø0.6** (Ø6 passes only ~0.1% of the rays through the Ø0.2 pinhole
+→ the coherent gather hard-errors `undersampled M_eff=28`); it also sets
+`blackness=1.0` (opaque screen) and `nlambda=1` (one coherent-gather
+stratum). `imaging_analysis` uses a Ø5 input pupil and a 0.5 mm square
+sensor rather than `camera_triplet`'s Ø14 / 36×24 mm frame (Ø14 is
+spherical-aberration-dominated — 2.8 mm spot, PV ~2000 waves; a non-square
+sensor also crashes the field-analysis MTF plotter). These are unlisted in
+`run_demo_equivalence` (lighter gating this round, by decision).
 
 Every run closes the energy ledger (<1e-3). The five imaging demos use
 WHITE-LIGHT (450–650 nm) sources: their preview fans emit a red/green/
@@ -142,6 +172,31 @@ reflections cost 21% — set `ideal_folds` to 1 to see the difference).
   `CurvedDetectorGrid` accumulates per-pixel power on the analytic
   Sphere/Cylinder face with the exact area element (R·du·dv), so total
   detected power is curvature-invariant.
+- **Mie aerosol** (`aerosol_mie`): exact Mie scattering (validated vs
+  Wiscombe, MiePlot/Bohren & Huffman) off a log-normal water-droplet
+  ensemble carried on the `--particles` continuum medium; extinction is
+  Beer–Lambert with the ensemble-averaged cross-section, in-scattering
+  samples the polarized differential cross-section (Bohren & Huffman,
+  *Absorption and Scattering of Light by Small Particles*). Water n(λ) from
+  the shipped registry; the geometry (LIDAR/nephelometer probe + forward +
+  90° detectors) follows the classic single-scatter chamber.
+- **Ground-glass diffuser** (`diffuser_speckle`): the `@dg_600` scatter is
+  the deep-rough Beckmann/ground-glass limit (§5.4.1 of docs/RAYTRACER.md);
+  the ~5° FWHM cone and grit→angle mapping follow standard ground-glass
+  diffuser data (Edmund/Thorlabs diffuser notes). Coherent speckle and
+  partial depolarization are the single-scatter model's honest outputs.
+- **Airy diffraction** (`airy_singleslit`): circular-aperture Fraunhofer
+  pattern, first dark ring at 1.22 λL/D (Airy 1835; Hecht, *Optics* §10.2);
+  the pinhole primitive's air-filled plug implements the aperture contract
+  (docs/RAYTRACER.md §5.10). Complements the existing `doubleslit` fringe
+  bench.
+- **Imaging analysis** (`imaging_analysis`): reuses the Cooke-triplet
+  prescription (see camera_triplet above); the analysis products (PSF,
+  FFT-MTF tangential/sagittal, Strehl via Maréchal, encircled energy,
+  Standard/Fringe Zernike wavefront, spot + transverse/OPD ray fans) are
+  the standard image-quality metrics (Born & Wolf; Mahajan, *Optical
+  Imaging and Aberrations*). Products render from `--save-fields` (PSF/MTF/
+  EE) and `--export-rays` (Strehl/Zernike/spot/fans).
 
 ## Physics caveats (honest limits)
 
@@ -152,3 +207,19 @@ reflections cost 21% — set `ideal_folds` to 1 to see the difference).
   substituted for the design glasses); the paraxial focus is exact.
 - Detector quick-preset images are Monte-Carlo: expect noise, and expect
   zero-mean negative pixels in coherent scenes (clip only for display).
+- `aerosol_mie` runs at a dense fog loading (phi=2e-2, ~24 g/m³ liquid
+  water) so the single-scatter physics is visible in one 40 mm pass; a
+  realistic atmospheric aerosol (phi~1e-6) is optically negligible over
+  this path (τ~5e-5). The continuum medium is single-scatter (no multiple
+  scattering between droplets), which is accurate at τ≈1 but would
+  under-count the diffuse halo at much higher τ.
+- `airy_singleslit` reproduces the Airy central-disk SCALE (~1.22 λL/D) but
+  not the resolved ring nulls: the coherent gather yields a smooth
+  azimuthal profile at the quick budget (adding rays only reduces speckle,
+  not the null depth). Treat it as an aperture-diffraction / disk-scale
+  demo, not a ring-metrology reference.
+- `imaging_analysis` characterizes an ABERRATED lens (BK7/SF5 substituted
+  for the Cooke design glasses → Strehl ~0, ~38 waves RMS at Ø5); it
+  demonstrates that the full analysis pipeline runs and produces finite,
+  self-consistent PSF/MTF/Strehl/Zernike/EE/spot/fan products, not a
+  diffraction-limited wavefront.

@@ -1029,7 +1029,241 @@ def demo_curved_focal(d):
     return {"preset": "quick"}
 
 
+def demo_aerosol_mie(d):
+    """Mie aerosol chamber: a 532 nm coherent, linearly polarized Ø2
+    collimated probe crosses a 40 mm cube of log-normal water droplets
+    (2 um median, gsd 1.5) carried on the `--particles` CLI as a numeric
+    coordinate box (independent of any scene body). A FORWARD detector
+    downstream sees the Beer-Lambert attenuated ballistic beam; a SIDE
+    detector at 90 deg sees the single-scatter phase-function lobe. The
+    ~1.8e8 droplet count is far above the 2e5 `particle_threshold`, so the
+    cloud runs in CONTINUUM mode (C-engine ported); an EXPLICIT
+    frozen-sphere realization (count under the threshold) would route to
+    Python instead. NOTE (deviation from the demosystems.md §3.1
+    prescription): phi is raised from 1e-6 to 2e-2 mass fraction. At the
+    prescribed 1e-6 the optical depth across the 40 mm cell is only
+    ~5e-5 (mu_ext ~ 1e-3/m: the forward beam is unattenuated and the side
+    detector reads 0 mW), so the headline Mie physics is invisible. At
+    2e-2 the measured mu_ext at 532 nm is 28.5/m => tau ~ 1.14, so the
+    forward beam transmits ~32% (clear Beer-Lambert extinction) and,
+    because water is non-absorbing at 532 nm (single-scatter albedo 1.0),
+    the ~68% extinguished power all scatters -> a real lobe on the 90 deg
+    detector."""
+    box_half = 20.0
+    d.variable("fwd_gap", 20.0, 5.0, 60.0, 5,
+               comment="box exit face (x=+20) to forward detector, mm")
+    d.add("laser_collimated", "Probe", pos=(-40.0, 0, 0),
+          params={"diameter": 2.0, "length": 8.0},
+          props={"lambdac": 532.0, "coherent": True,
+                 "polarization": "linear:0"})
+    # forward detector: probe origin (-40) -> box exit (+20) is 60 mm,
+    # then fwd_gap; a plain-arithmetic chain distance (expression math)
+    d.chain("detector_plane", "Forward", "Probe",
+            "%.10g + fwd_gap" % (40.0 + box_half),
+            params={"width": 30.0, "round_flag": 1})
+    # side-scatter detector at 90 deg, viewing the cloud from +y. This is
+    # ANCHORED (hand-computed polar pose): the particle box is a numeric
+    # CLI region, not a chain-referenceable scene body, and there is no
+    # beam-chain relationship between the probe and a transverse scatter
+    # detector. add() also takes only literal xyz (no variable refs / no
+    # trig), so a polar (r, 90 deg) placement can't be expressed. See UX
+    # notes. quat rot_z(90) faces the recording plane back toward -y.
+    d.add("detector_plane", "SideScatter", pos=(0.0, 40.0, 0.0),
+          quat=rot_z(90.0),
+          params={"width": 40.0, "round_flag": 0})
+    # Forward: probe origin -40 + distance 80 = +40 (box exit +20 +fwd_gap)
+    d.expect("Forward", (box_half + 20.0, 0, 0))
+    d.expect("SideScatter", (0.0, 40.0, 0.0))
+    d.pin_detector("SideScatter", (0.0, 1.0, 0.0))
+    d.note("aerosol_mie: the 90 deg side-scatter detector had to be "
+           "ANCHORED at a hand-computed pose — the particle cloud is a "
+           "CLI-numeric box (not a scene body the chain can reference), "
+           "and a transverse scatter arm is not a beam-chain relationship")
+    return {"preset": "quick",
+            "particles": "box=-20,-20,-20:40,40,40;material=water;"
+                         "phi=2e-2;median_um=2.0;gsd=1.5"}
+
+
+def demo_diffuser_speckle(d):
+    """Ground-glass speckle bench: a 633 nm coherent, linearly polarized
+    Ø4 collimated beam through a 600-grit diffuser plate (@dg_600, the
+    primitive default, ~5 deg FWHM cone) onto a far-field screen 150 mm
+    downstream. With --save-fields the detector's Stokes/DOP map shows the
+    diffuser's partial depolarization; the coherent gather resolves
+    speckle."""
+    d.variable("screen_L", 150.0, 80.0, 250.0, 5,
+               comment="diffuser exit face to far-field screen, mm")
+    d.add("laser_collimated", "Laser", pos=(-30.0, 0, 0),
+          params={"diameter": 4.0, "length": 8.0},
+          props={"lambdac": 633.0, "coherent": True,
+                 "polarization": "linear:0"})
+    # diffuser_plate ships @dg_600 on its exit (+x) face by default
+    d.chain("diffuser_plate", "Diffuser", "Laser", 30.0,
+            params={"width": 20.0, "thickness": 2.0, "round_flag": 1})
+    d.chain("detector_plane", "Screen", "Diffuser", "screen_L",
+            params={"width": 80.0, "round_flag": 1})
+    d.expect("Diffuser", (0, 0, 0))
+    # screen_L is measured from the diffuser EXIT vertex (+2 = its 2 mm
+    # thickness), so the screen lands at 152 mm, i.e. 150 mm past the plate
+    d.expect("Screen", (152.0, 0, 0))
+    d.note("diffuser_speckle: linear chain; the @dg_600 scatter is the "
+           "primitive's built-in exit-face default (no side math needed)")
+    return {"preset": "quick", "save_fields": True}
+
+
+def demo_airy_singleslit(d):
+    """Circular-aperture Fraunhofer diffraction (Airy pattern): a 633 nm
+    coherent collimated beam floods a Ø0.2 mm pinhole (the pinhole
+    primitive carries the air-filled plug per the aperture contract), and
+    the coherent Huygens gather reconstructs the Airy rings on a screen
+    250 mm downstream. First dark ring at 1.22 lambda L / D =
+    1.22 * 633e-6 mm * 250 / 0.2 = 0.966 mm radius; a 6 mm square screen at
+    512^2 gives ~11.7 um pixels (~82 px to the first zero).
+
+    NOTE 1 (deviation from demosystems.md §3.3, Ø6 beam): the beam is
+    Ø0.6, not Ø6. A Ø0.6 flat-top collimated beam still uniformly floods
+    the Ø0.2 pinhole 3x over (same plane-wave-through-a-circular-aperture
+    Airy physics), but passes ~11% of the rays instead of ~0.1%. At Ø6 on
+    the quick preset (1e5 rays) only ~28 rays clear the pinhole and the
+    coherent gather hard-errors 'undersampled (M_eff=28 < 1000, increase
+    --rays ~36x)' — the classic coherent-gather-needs-rays trap. Ø0.6
+    keeps the demo on the quick preset and C-engine-routable.
+
+    NOTE 2 (honest limit): at the quick coherent-gather budget the DISK
+    forms with the right scale (measured EE-83.8% radius ~1.3 mm vs the
+    ideal 1.22 lambda L/D = 0.966 mm first null, an effective aperture
+    ~0.15 mm) but the ring NULLS do not resolve — the azimuthal profile
+    comes out smooth (no dark rings). More rays only smooth the speckle,
+    they do not sharpen the nulls, so this is a gather characteristic, not
+    MC noise. The demo still demonstrates aperture diffraction (a Ø0.2
+    aperture spreads a collimated beam to a ~mm-scale spot at 250 mm)."""
+    lam_mm = 633e-6
+    D = 0.2
+    L = 250.0
+    airy_r = 1.22 * lam_mm * L / D
+    d.variable("screen_L", L, 150.0, 400.0, 5,
+               comment="pinhole to screen, mm (Airy first zero scales L/D)")
+    # nlambda=1 (simparams) collapses the source to a single coherent-gather
+    # lambda stratum -> 5x more effective samples per gather than the quick
+    # preset's 5-way split (a zero-width lambdamin=lambdamax band divides by
+    # zero in sources.wavelength_strata, so we collapse the strata instead)
+    d.add("laser_collimated", "Laser", pos=(-30.0, 0, 0),
+          params={"diameter": 0.6, "length": 8.0},
+          props={"lambdac": 633.0, "coherent": True})
+    # blackness->1.0: a fully opaque screen (the default 0.98 leaks ~2% of
+    # the blocked beam as a broad pedestal that fills the Airy ring nulls)
+    d.chain("pinhole", "Pinhole", "Laser", 30.0,
+            params={"hole_diameter": D, "width": 20.0, "height": 20.0,
+                    "thickness": 0.3, "blackness": 1.0})
+    d.chain("detector_plane", "Screen", "Pinhole", "screen_L",
+            params={"width": 6.0, "height": 6.0, "round_flag": 0})
+    d.expect("Pinhole", (0, 0, 0))
+    d.expect("Screen", (L, 0, 0))
+    d.note("airy_singleslit: pinhole primitive provides the air-fill plug; "
+           "Airy first zero 1.22 lambda L/D = %.3f mm radius (D=%.1f mm, "
+           "L=%.0f mm, 633 nm) — sized the 6 mm screen from that number "
+           "on the Python side (a detector can't be told 'span N Airy "
+           "zeros' in the chain). Beam reduced Ø6->Ø0.6 so the coherent "
+           "gather has enough rays through the pinhole on the quick preset "
+           "(Ø6 -> M_eff=28, undersampled hard-error). Measured EE-83.8%% "
+           "radius ~1.3 mm (rings unresolved at quick preset)"
+           % (airy_r, D, L))
+    # nlambda=1 collapses the (mono) source's strata into ONE coherent
+    # gather key -> ~5x the effective samples per key vs the quick preset's
+    # 5-way lambda split, for the cleanest envelope the quick budget allows.
+    # Still C-engine-routable.
+    return {"preset": "quick", "save_fields": True, "nlambda": 1}
+
+
+def demo_imaging_analysis(d):
+    """Named-analysis-product bench: the camera_triplet (Cooke, ~50 mm EFL)
+    reused as the system under test, but fed an ON-AXIS COHERENT 550 nm
+    collimated wavefront so the post stage renders the full imaging-quality
+    suite — PSF + FFT-MTF + encircled energy (from --save-fields) and
+    Strehl + Zernike wavefront + spot/ray fans (from --export-rays). Element
+    prescription copied verbatim from demo_camera_triplet (same BK7/SF5
+    lenses, iris, sensor at the paraxial focus).
+
+    NOTE (deviation from the camera_triplet 36x24 sensor): the sensor here
+    is a 0.5 mm SQUARE at best focus, not the full 36x24 frame. (1) The
+    on-axis PSF is a few um across; a 36 mm/512 = 70 um pixel leaves it
+    sub-pixel, whereas 0.5 mm/512 ~ 1 um samples the PSF/MTF. (2) A
+    NON-square detector (36x24 -> 512x341 grid) currently crashes the
+    field-analysis MTF plotter (freq axis length W//2 vs profile length
+    H//2 mismatch, post_process._field_key_metrics) — a square grid is
+    required for the analysis renders. Logged as a robustness gap."""
+    lam = 550.0
+    L1 = {"R_front": 20.115, "R_back": 269.375, "ct": 3.010, "ap": 15.0}
+    L2 = {"R_front": 23.577, "R_back": 20.065, "ct": 0.502, "ap": 10.0}
+    L3 = {"R_front": 117.632, "R_back": 19.012, "ct": 2.960, "ap": 12.5}
+    air12, air23 = 5.016, 5.418
+    x1 = 0.0
+    x2 = x1 + L1["ct"] + air12
+    x3 = x2 + L2["ct"] + air23
+    surfaces = [
+        (x1, 20.115, None, "bk7"), (x1 + L1["ct"], -269.375, "bk7", None),
+        (x2, -23.577, None, "sf5"), (x2 + L2["ct"], 20.065, "sf5", None),
+        (x3, 117.632, None, "bk7"), (x3 + L3["ct"], -19.012, "bk7", None),
+    ]
+    x_img = paraxial_image_x(surfaces, float("-inf"), lam)
+
+    d.variable("air12", air12, 3.0, 8.0, 5,
+               comment="L1 back vertex to L2 front vertex, mm")
+    d.variable("air23", air23, 3.0, 8.0, 5,
+               comment="L2 back vertex to L3 front vertex, mm")
+    d.variable("stop_d", 6.94, 3.0, 12.0, 6,
+               comment="iris opening diameter, mm (~f/5.6 at 6.94)")
+    # on-axis COHERENT monochromatic wavefront (contrast the white-light
+    # incoherent scene in demo_camera_triplet) — required for a wavefront
+    # OPD fit and a coherent PSF/MTF. The input beam is Ø5 (not the
+    # camera_triplet's Ø14): at full Ø14 the triplet is spherical-
+    # aberration-dominated (2.8 mm geometric spot, PV ~2000 waves, Strehl
+    # 0, EE50 ~1.5 mm — the analysis products render but describe a
+    # hopelessly aberrated pupil), whereas Ø5 works the near-paraxial zone
+    # so the products are finite and meaningful (RMS ~38 waves, EE50
+    # ~18 um, MTF50 ~10.5 cy/mm, spot RMS ~85 um). It is still an ABERRATED
+    # lens, not diffraction-limited: the BK7/SF5 glass substitution
+    # (demos/README) breaks the Cooke triplet's designed aberration
+    # balance, so Strehl stays ~0 — the bench demonstrates the analysis
+    # PIPELINE on a real imperfect lens (a valid MTF-bench use), not a
+    # perfect wavefront.
+    d.add("laser_collimated", "Scene", pos=(-40, 0, 0),
+          params={"diameter": 5.0},
+          props={"lambdac": lam, "coherent": True})
+    d.chain("lens_dcx", "L1", "Scene", 40.0,
+            params={"R_front": L1["R_front"], "R_back": L1["R_back"],
+                    "ct": L1["ct"], "aperture": L1["ap"]})
+    d.chain("lens_dcv", "L2", "L1", "air12",
+            params={"R_front": L2["R_front"], "R_back": L2["R_back"],
+                    "ct": L2["ct"], "aperture": L2["ap"]},
+            props={"material": "sf5"})
+    d.chain("iris", "Stop", "L2", 0.95,
+            params={"outer_diameter": 18.0, "thickness": 0.4,
+                    "hole_diameter": "<<miewb_vars>>.stop_d * 1mm"})
+    d.chain("lens_dcx", "L3", "Stop", "air23 - 0.95",
+            params={"R_front": L3["R_front"], "R_back": L3["R_back"],
+                    "ct": L3["ct"], "aperture": L3["ap"]})
+    d.chain("detector_plane", "Sensor", "L3",
+            "%.10g" % (x_img - (x3 + L3["ct"])),
+            params={"width": 0.5, "height": 0.5, "round_flag": 0})
+    d.expect("L1", (x1, 0, 0))
+    d.expect("L2", (x2, 0, 0))
+    d.expect("Stop", (x2 + L2["ct"] + 0.95, 0, 0))
+    d.expect("L3", (x3, 0, 0))
+    d.expect("Sensor", (x_img, 0, 0))
+    d.note("imaging_analysis: reused the camera_triplet prescription; the "
+           "paraxial focus (%.2f mm) still comes from the offline "
+           "paraxial_image_x solve (the chain can't place the sensor at "
+           "'the system's paraxial image plane' directly)" % x_img)
+    return {"preset": "quick", "save_fields": True, "export_rays": True,
+            "emit_csv": True}
+
+
 DEMOS = {
+    "aerosol_mie": demo_aerosol_mie,
+    "diffuser_speckle": demo_diffuser_speckle,
+    "airy_singleslit": demo_airy_singleslit,
+    "imaging_analysis": demo_imaging_analysis,
     "beam_expander": demo_beam_expander,
     "ktp_walkoff": demo_ktp_walkoff,
     "gaussian_bench": demo_gaussian_bench,
