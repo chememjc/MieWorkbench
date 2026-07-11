@@ -16,6 +16,7 @@ PROPERTY_UNITS = {
     "lambdamin": "nm",
     "lambdamax": "nm",
     "coherent": None,             # bool
+    "spectrum": None,             # emission-registry name (tabulated SPD)
     "polarization": None,         # spec string
     "coating": None,              # registry name or per-face map
     "roughness": "nm RMS",

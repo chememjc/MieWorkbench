@@ -28,7 +28,8 @@ MAT_HEADER = ("name,class,model,p1,p2,p3,p4,p5,p6,nk_file,density_kg_m3,"
 def optroot(tmp_path):
     root = tmp_path / "opticalproperties"
     for sub in ("nk", "birefringence", "polarizer/tables", "filter/tables",
-                "coating/tables", "grating/tables", "detector/tables"):
+                "coating/tables", "grating/tables", "detector/tables",
+                "emission/tables"):
         (root / sub).mkdir(parents=True)
     (root / "materials.csv").write_text(
         MAT_HEADER
@@ -77,6 +78,15 @@ def optroot(tmp_path):
         "wavelength_nm,qe\n"
         "400,0.60\n"
         "700,0.85\n")
+    (root / "emission" / "emitters.csv").write_text(
+        'name,kind,table_csv,reference,notes\n'
+        'led_test,continuous,led_test.csv,"synthetic","test SPD"\n')
+    (root / "emission" / "tables" / "led_test.csv").write_text(
+        "wavelength_nm,relative_power\n"
+        "400,0.0\n"
+        "500,10.0\n"
+        "600,5.0\n"
+        "700,0.0\n")
     return root
 
 
@@ -96,6 +106,7 @@ def test_full_tree_loads(props):
     assert set(props.gratings) == {"vbg", "dmn", "tbl"}
     assert set(props.uniaxial) == {"calcite"}
     assert set(props.detectors) == {"det_test"}
+    assert set(props.emission) == {"led_test"}
 
 
 def test_uniaxial_attached_to_db(props):
@@ -176,6 +187,53 @@ def test_detector_missing_reference_rejected(optroot):
         'noref,det_test.csv,,"x"\n')
     with pytest.raises(MaterialError, match="reference"):
         optprops.load_detectors(optroot / "detector" / "detectors.csv")
+
+
+def test_emission_registry(props):
+    e = props.emission["led_test"]
+    assert e["kind"] == "continuous"
+    assert e["lam_um"].tolist() == pytest.approx([0.4, 0.5, 0.6, 0.7])  # nm->um
+    assert e["lam_nm"].tolist() == pytest.approx([400.0, 500.0, 600.0, 700.0])
+    assert e["relative_power"].tolist() == [0.0, 10.0, 5.0, 0.0]
+    assert e["reference"] == "synthetic"
+    assert e["notes"] == "test SPD"
+
+
+def test_emission_missing_reference_rejected(optroot):
+    (optroot / "emission" / "emitters.csv").write_text(
+        'name,kind,table_csv,reference,notes\n'
+        'noref,continuous,led_test.csv,,"x"\n')
+    with pytest.raises(MaterialError, match="reference"):
+        optprops.load_emission(optroot / "emission" / "emitters.csv")
+
+
+def test_emission_negative_power_rejected(optroot):
+    (optroot / "emission" / "tables" / "led_test.csv").write_text(
+        "wavelength_nm,relative_power\n400,1.0\n500,-2.0\n700,1.0\n")
+    with pytest.raises(MaterialError, match="relative_power must be >= 0"):
+        optprops.load_emission(optroot / "emission" / "emitters.csv")
+
+
+def test_emission_zero_integral_rejected(optroot):
+    (optroot / "emission" / "tables" / "led_test.csv").write_text(
+        "wavelength_nm,relative_power\n400,0.0\n700,0.0\n")
+    with pytest.raises(MaterialError, match="integrates to <= 0"):
+        optprops.load_emission(optroot / "emission" / "emitters.csv")
+
+
+def test_emission_unknown_kind_rejected(optroot):
+    (optroot / "emission" / "emitters.csv").write_text(
+        'name,kind,table_csv,reference,notes\n'
+        'bb,blackbody,led_test.csv,"ref","x"\n')
+    with pytest.raises(MaterialError, match="needs engine support"):
+        optprops.load_emission(optroot / "emission" / "emitters.csv")
+
+
+def test_emission_too_few_rows_rejected(optroot):
+    (optroot / "emission" / "tables" / "led_test.csv").write_text(
+        "wavelength_nm,relative_power\n500,1.0\n")
+    with pytest.raises(MaterialError, match="fewer than 2 rows"):
+        optprops.load_emission(optroot / "emission" / "emitters.csv")
 
 
 def test_optional_categories_absent(optroot):
@@ -302,6 +360,21 @@ def test_shipped_hamamatsu_s1223_loads(shipped_props):
     assert d["qe"].tolist() == [0.845, 0.826, 0.807, 0.775]
     assert np.all((d["qe"] > 0) & (d["qe"] <= 1))
     assert "Hamamatsu S1223" in d["reference"]
+
+
+def test_shipped_led_white_2733k_loads(shipped_props):
+    e = shipped_props.emission["led_white_2733k"]
+    assert e["kind"] == "continuous"
+    assert e["lam_nm"].min() == pytest.approx(400.0)
+    assert e["lam_nm"].max() == pytest.approx(700.0)
+    assert np.all(e["relative_power"] >= 0)
+    assert np.trapezoid(e["relative_power"], e["lam_um"]) > 0
+    assert "CIE 015:2018" in e["reference"]
+    # power-weighted mean lambda matches the primitive's baked lambdac (584.6)
+    lam = e["lam_nm"]
+    p = e["relative_power"]
+    mean_lam = np.trapezoid(lam * p, lam) / np.trapezoid(p, lam)
+    assert mean_lam == pytest.approx(584.6, abs=0.1)
 
 
 def test_nd_od10_filter_thickness_scaling(shipped_props):

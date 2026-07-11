@@ -46,6 +46,8 @@ Contract property semantics (cribbed from scripts/extract_geometry.py's
   lambdamin/lambdamax (nm)
                     optional source spectral bounds.
   coherent          bool, default False (source only).
+  spectrum          source-only registry name (emission/emitters.miesrc);
+                    tabulated emission spectrum, supersedes lambdamin/max.
   coating           per-face registry name (coating/coatings.csv) or a
                     whole-body value; 'none' omits it.
   mirror, absorbance
@@ -110,13 +112,14 @@ DEFAULT_OPTPROPS_ROOT = "/home3/raytracegui/opticalproperties"
 
 CONTRACT_PROPERTIES = (
     "material", "power", "lambdac", "lambdamin", "lambdamax", "coherent",
-    "polarization", "beam_waist", "m2", "apodization", "coating",
+    "spectrum", "polarization", "beam_waist", "m2", "apodization", "coating",
     "roughness", "diffuser", "scatter", "filter", "polarizer",
     "polarizer_axis", "crystal_axis", "crystal_axis2", "grating",
     "surface_override", "mirror", "absorbance", "qe_curve",
 )
 REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating",
-                       "grating", "diffuser", "scatter", "qe_curve")
+                       "grating", "diffuser", "scatter", "qe_curve",
+                       "spectrum")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
                       "absorbance", "beam_waist", "m2")
 BOOL_PROPERTIES = ("coherent",)
@@ -155,6 +158,7 @@ _REGISTRY_PREFERRED = {
     "filter": ("bp_550_40",),
     "polarizer": ("ideal_linear",),
     "qe_curve": ("hamamatsu_s1223",),
+    "spectrum": ("led_white_2733k",),
 }
 
 
@@ -216,6 +220,8 @@ TOOLTIPS = {
     "absorbance": "Absorbed fraction in [0, 1].",
     "qe_curve": "detector/detectors registry name (quantum-efficiency "
                "curve; adds a photocurrent to the detector's report).",
+    "spectrum": "emission/emitters registry name (tabulated source emission "
+               "spectrum; source-only, supersedes lambdamin/lambdamax).",
 }
 
 
@@ -427,11 +433,13 @@ class ElementEditorPane(QWidget):
             "gratings": list(props.gratings),
             "diffusers": list(getattr(props, "diffusers", {}) or {}),
             "detectors": list(getattr(props, "detectors", {}) or {}),
+            "emission": list(getattr(props, "emission", {}) or {}),
         }
 
     _REGISTRY_CATEGORY = {"polarizer": "polarizers", "filter": "filters",
                           "coating": "coatings", "grating": "gratings",
-                          "diffuser": "diffusers", "qe_curve": "detectors"}
+                          "diffuser": "diffusers", "qe_curve": "detectors",
+                          "spectrum": "emission"}
 
     def _material_names(self):
         return list(self._library_categories().get("materials", []))

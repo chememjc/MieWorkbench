@@ -215,6 +215,23 @@ def test_scatter_value_options_tolerate_missing_registry(qtbot, tmp_path):
     assert pane._facemap_value_options("scatter") == []
 
 
+def test_spectrum_property_renders_as_registry_combo(qtbot):
+    from PySide6.QtWidgets import QComboBox
+    from mieworkbench.panes.element_editor import default_registry_value
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    # the emission registry feeds the spectrum property's value options
+    names = pane._registry_names("spectrum")
+    assert "led_white_2733k" in names
+    assert default_registry_value("spectrum", names) == "led_white_2733k"
+    # and it renders as an (editable) registry dropdown listing the emitter
+    editor = pane._make_property_editor("spectrum", "led_white_2733k")
+    assert isinstance(editor, QComboBox)
+    items = [editor.itemText(i) for i in range(editor.count())]
+    assert "led_white_2733k" in items
+    assert editor.currentText() == "led_white_2733k"
+
+
 def _assignment_rows(pane):
     """[(prop_text, value_text, faces_text), ...] from the Active
     Properties table (cell widgets included)."""

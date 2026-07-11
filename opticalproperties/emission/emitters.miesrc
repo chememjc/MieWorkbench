@@ -1,0 +1,2 @@
+name,kind,table_csv,reference,notes
+led_white_2733k,continuous,led_white_2733k.mietab,"CIE 015:2018 Table 12.1 std illuminant LED-B1 (phosphor-converted-blue, CCT~2733K); corroborated vs Cree XLamp XP-G3","phosphor-converted white LED SPD; colour-science dataset grep-verified"

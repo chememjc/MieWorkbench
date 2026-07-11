@@ -33,6 +33,8 @@
 #   power (mW), lambdac (nm) (floats) - presence of BOTH marks a source body
 #                          (sources typically carry no material property).
 #   lambdamin, lambdamax (nm, optional), coherent (bool, default False).
+#   spectrum (string, source bodies only, optional) - emission-registry row
+#   naming a tabulated emission spectrum; supersedes lambdamin/lambdamax.
 #   coating (string, optional -> per-face map, "none" -> omitted),
 #   mirror/absorbance (float, optional, clamped to [0,1] with a loud
 #   warning), roughness (float RMS nm -> legacy whole-body, OR string
@@ -1242,6 +1244,18 @@ def extract_one(fcstd_path, outdir, strict):
                     except ValueError as e:
                         die("%s: bad apodization spec %r: %s"
                             % (obj.Label, apod_raw, e))
+                spectrum_raw = str_prop_or_none(obj, "spectrum")
+                if spectrum_raw is not None:
+                    source_dict["spectrum"] = spectrum_raw
+                    # a tabulated emission spectrum defines the full lambda
+                    # distribution; a lambdamin/lambdamax Gaussian would
+                    # contradict it -- the table wins, drop the bounds.
+                    if lambdamin is not None or lambdamax is not None:
+                        warn("%s: spectrum %r takes precedence over "
+                             "lambdamin/lambdamax (dropping the Gaussian "
+                             "bounds)" % (obj.Label, spectrum_raw), warnings)
+                        source_dict["lambdamin_nm"] = None
+                        source_dict["lambdamax_nm"] = None
                 if hasattr(obj, "beam_waist"):
                     waist_mm = float(obj.beam_waist)
                     if waist_mm <= 0:
@@ -1278,6 +1292,11 @@ def extract_one(fcstd_path, outdir, strict):
 
             if role != "source" and hasattr(obj, "beam_waist"):
                 warn("%s: beam_waist property is only meaningful on "
+                     "source bodies (role=%s); ignoring"
+                     % (obj.Label, role), warnings)
+
+            if role != "source" and str_prop_or_none(obj, "spectrum") is not None:
+                warn("%s: spectrum property is only meaningful on "
                      "source bodies (role=%s); ignoring"
                      % (obj.Label, role), warnings)
 

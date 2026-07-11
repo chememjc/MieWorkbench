@@ -108,11 +108,36 @@ def jones_for(pol, pol_stratum):
 
 
 def wavelength_strata(src, n_lambda):
-    """Deterministic per-stratum wavelengths [m] (equal probability each)."""
+    """Deterministic per-stratum wavelengths [m] (equal probability each).
+
+    Three regimes, each placing strata at CDF centers (k+0.5)/n so every
+    stratum carries the same probability mass (equal-power stratified
+    sampling; per-ray birth_power is untouched):
+      * a tabulated emission spectrum (_spectrum_lam_nm/_spectrum_pdf, from
+        the emission registry): inverse-CDF of the piecewise-linear PDF —
+        densify each linear segment x16, cumulative-trapezoid CDF, invert;
+      * an asymmetric-Gaussian line (lambdamin/lambdamax bracket lambdac):
+        two glued half-normals;
+      * a single bound: a symmetric uniform band around lambdac."""
     lam_c = src["lambdac_nm"]
     lam_lo = src.get("lambdamin_nm")
     lam_hi = src.get("lambdamax_nm")
     q = (np.arange(n_lambda) + 0.5) / n_lambda      # stratum centers in CDF
+    lam_tab = src.get("_spectrum_lam_nm")
+    if lam_tab is not None:
+        # inverse-CDF sampling of a tabulated piecewise-linear PDF: densify
+        # each segment (x16 points) so the trapezoid CDF is smooth, then map
+        # the stratum-center quantiles through cdf^-1.
+        lam_tab = np.asarray(lam_tab, dtype=np.float64)
+        pdf_tab = np.asarray(src["_spectrum_pdf"], dtype=np.float64)
+        segs = [np.linspace(lam_tab[i], lam_tab[i + 1], 16, endpoint=False)
+                for i in range(lam_tab.size - 1)]
+        lam_dense = np.concatenate(segs + [lam_tab[-1:]])
+        pdf_dense = np.interp(lam_dense, lam_tab, pdf_tab)
+        cdf = np.concatenate([[0.0], np.cumsum(
+            0.5 * (pdf_dense[1:] + pdf_dense[:-1]) * np.diff(lam_dense))])
+        cdf /= cdf[-1]
+        return np.interp(q, cdf, lam_dense) * 1e-9
     if lam_lo is None and lam_hi is None:
         return np.full(1, lam_c * 1e-9)             # monochromatic: 1 stratum
     if lam_lo is not None and lam_hi is not None:

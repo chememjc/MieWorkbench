@@ -53,7 +53,7 @@ def box_faces(name, x0, x1, half):
 def source_body(name="Src", x=-0.02, half=0.001, power_mW=1.0,
                 lambdac_nm=633.0, coherent=False, polarization=None,
                 lambdamin_nm=None, lambdamax_nm=None, apodization=None,
-                beam_waist_mm=None, m2=1.0):
+                beam_waist_mm=None, m2=1.0, spectrum=None):
     """Source with a single square emitting plane at x (normal +x; the
     toward-origin policy sends rays along +x). apodization: already-parsed
     dict (common.parse_apodization_spec). beam_waist_mm: sets source.beam
@@ -76,6 +76,8 @@ def source_body(name="Src", x=-0.02, half=0.001, power_mW=1.0,
         src["apodization"] = apodization
     if beam_waist_mm is not None:
         src["beam"] = {"waist_mm": beam_waist_mm, "m2": m2}
+    if spectrum is not None:
+        src["spectrum"] = spectrum
     return {"name": name, "label": name, "role": "source",
             "source": src, "faces": [face]}
 
@@ -127,6 +129,10 @@ def trace_scene(model, rays=20000, n_lambda=1, seed=3, power_floor=1e-12,
             lam_lo = min(lam_lo, s["lambdamin_nm"] - 50.0)
         if s.get("lambdamax_nm"):
             lam_hi = max(lam_hi, s["lambdamax_nm"] + 50.0)
+        lam_tab = s.get("_spectrum_lam_nm")     # tabulated spectrum: cover it
+        if lam_tab is not None:
+            lam_lo = min(lam_lo, float(np.min(lam_tab)) - 20.0)
+            lam_hi = max(lam_hi, float(np.max(lam_tab)) + 20.0)
     grids = {fid: DetectorGrid(scene.faces[fid], resolution, 16,
                                (lam_lo * 1e-9, lam_hi * 1e-9),
                                label=scene.faces[fid].id)

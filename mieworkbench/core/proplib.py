@@ -34,7 +34,7 @@ from raytracer.optprops import load_optical_properties        # noqa: E402
 from raytracer.materials import MaterialError, resolve_prop_path  # noqa: E402
 
 CATEGORIES = ("materials", "coatings", "polarizers", "filters", "gratings",
-              "uniaxial", "diffusers", "detectors")
+              "uniaxial", "diffusers", "detectors", "emission")
 
 # subdir=None means the registry lives directly at <root>/<filename>.
 CATEGORY_INFO = {
@@ -83,6 +83,12 @@ CATEGORY_INFO = {
     "detectors": {
         "registry_rel": "detector/detectors.miedet",
         "file_dir": "detector/tables",
+        "file_cols": ("table_csv",),
+        "file_alt_ext": ".mietab",
+    },
+    "emission": {
+        "registry_rel": "emission/emitters.miesrc",
+        "file_dir": "emission/tables",
         "file_cols": ("table_csv",),
         "file_alt_ext": ".mietab",
     },
@@ -152,6 +158,7 @@ class PropLibrary:
             "uniaxial": list(props.uniaxial.keys()),
             "diffusers": list(getattr(props, "diffusers", {}) or {}),
             "detectors": list(getattr(props, "detectors", {}) or {}),
+            "emission": list(getattr(props, "emission", {}) or {}),
         }
 
     def material_names(self):

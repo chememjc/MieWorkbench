@@ -169,7 +169,9 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   photocurrent_A/coverage_frac; absent → no QE block (power report unchanged)
 - sources: `power` (mW) + `lambdac` (nm) [+ `lambdamin`/`lambdamax` nm,
   `coherent` bool, `polarization` = `unpolarized` | `linear:<deg>` |
-  `circular:left|right` | `elliptical:<psi>:<chi>`]
+  `circular:left|right` | `elliptical:<psi>:<chi>`, `spectrum` =
+  `emission/emitters.miesrc` row = tabulated emission SPD (continuous only;
+  supersedes lambdamin/max, inverse-CDF equal-power strata)]
 - optic extras (stackable): `coating` (whole-body or `Face3=MgF2;...`),
   `roughness`, `diffuser` (`grit:120`|`slope:0.08`|`@dg_600`, per-face ok;
   NEVER with roughness on one face — deep-rough Beckmann limit, §5.4.1),
@@ -255,7 +257,8 @@ symmetric element's own axis allowed+reported) and 3-seed power
 (38), `polarizer/polarizers.miepol` (17), `filter/filters.miefilt` (56),
 `grating/gratings.miegrat` (8), `birefringence/uniaxial.miebrf` (13 uniaxial
 crystals), `detector/detectors.miedet` (detector QE curves, 1 entry: hamamatsu_s1223),
-per-item tables `*/tables/*.mietab`. Loaders prefer the new names and **fall back to
+`emission/emitters.miesrc` (tabulated source emission spectra, 1 entry:
+led_white_2733k; continuous kind only), per-item tables `*/tables/*.mietab`. Loaders prefer the new names and **fall back to
 legacy `.csv`** (external all-.csv libraries keep working). `reference`
 (citation) column is REQUIRED everywhere; loaders hard-validate
 (`raytracer/optprops.py`). Override root: `--optical-properties DIR`.

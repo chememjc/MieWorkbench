@@ -221,6 +221,26 @@ PRIMITIVES = {
                   "lambdamin": 380.33, "lambdamax": 389.67,
                   "coherent": False},
     },
+    "led_white": {
+        "category": "Sources", "label": "White LED (2733 K)",
+        "tooltip": "Phosphor-converted warm-white LED source with a full "
+                   "tabulated emission spectrum (blue pump peak ~450 nm + "
+                   "broad phosphor hump; CIE 015:2018 Table 12.1 standard "
+                   "illuminant LED-B1, CCT ~2733 K). Samples the SPD table "
+                   "(spectrum=led_white_2733k); lambdac is the power-weighted "
+                   "mean wavelength.",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        # lambdac = 584.6 nm: power-weighted mean lambda of the LED-B1 table
+        # (trapezoid integral of lambda*P over the piecewise-linear PDF).
+        # Required by classify_body (power+lambdac mark a source); the
+        # `spectrum` table supersedes it for actual wavelength sampling.
+        "props": {"power": 5.0, "lambdac": 584.6,
+                  "spectrum": "led_white_2733k", "coherent": False},
+    },
     # -- detectors ----------------------------------------------------------
     "detector_plane": {
         "category": "Detectors", "label": "Detector plane",
@@ -1968,6 +1988,7 @@ def builders():
             "led_royal_blue_450": _build_laser_collimated,
             "led_uv_365": _build_laser_collimated,
             "led_uv_385": _build_laser_collimated,
+            "led_white": _build_laser_collimated,
             "detector_plane": _build_detector_plane,
             "lens_ball": _build_lens_ball,
             "lens_rod": _build_lens_rod,

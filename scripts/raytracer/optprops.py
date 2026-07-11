@@ -36,9 +36,14 @@ DEFAULT_POLARIZERS_CSV = DEFAULT_OPTPROPS_DIR / "polarizer" / "polarizers.miepol
 DEFAULT_FILTERS_CSV = DEFAULT_OPTPROPS_DIR / "filter" / "filters.miefilt"
 DEFAULT_GRATINGS_CSV = DEFAULT_OPTPROPS_DIR / "grating" / "gratings.miegrat"
 DEFAULT_DETECTORS_CSV = DEFAULT_OPTPROPS_DIR / "detector" / "detectors.miedet"
+DEFAULT_EMISSION_CSV = DEFAULT_OPTPROPS_DIR / "emission" / "emitters.miesrc"
 
 POLARIZER_TYPES = ("linear", "circular_left", "circular_right")
 GRATING_MODELS = ("lamellar", "bragg_kogelnik", "dammann", "table")
+# Emitter kinds with engine support THIS round. 'blackbody' (analytic Planck)
+# and 'line' (discrete point-mass lines) are staged in library_data/ but need
+# their own source models — rejected here rather than silently mis-sampled.
+EMISSION_KINDS = ("continuous",)
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +330,51 @@ def load_detectors(csv_path=None):
 
 
 # ---------------------------------------------------------------------------
+# emission/emitters.miesrc + tables/  (tabulated source emission spectra)
+# ---------------------------------------------------------------------------
+def load_emission(csv_path=None):
+    """-> {name: {"kind": str, "lam_um": arr, "lam_nm": arr,
+    "relative_power": arr, "reference": str, "notes": str}}.
+
+    Each row references a per-emitter table wavelength_nm,relative_power
+    giving the RELATIVE spectral power density P(lambda) of a source's
+    emission (arbitrary units — the sampler in sources.wavelength_strata
+    normalizes it to a PDF and places equal-power quantile strata, so only
+    the SHAPE matters). Only kind='continuous' (piecewise-linear PDF) is
+    supported this round; other staged kinds (blackbody, line) are rejected
+    naming the kind. Validation: relative_power >= 0 everywhere, integral of
+    P over lambda > 0, >= 2 rows (via _read_table)."""
+    csv_path = Path(csv_path) if csv_path is not None \
+        else DEFAULT_EMISSION_CSV
+    tables_dir = csv_path.parent / "tables"
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "kind", "table_csv", "reference"}, "emission"):
+        kind = (row.get("kind") or "").strip()
+        if kind not in EMISSION_KINDS:
+            raise MaterialError(
+                "%s: kind %r needs engine support (only %s supported this "
+                "round)" % (ctx, kind, ", ".join(EMISSION_KINDS)))
+        table = _read_table(tables_dir / (row.get("table_csv") or "").strip(),
+                            ("relative_power",), ctx)
+        rel = table["relative_power"]
+        if np.any(rel < 0):
+            raise MaterialError(
+                "%s: relative_power must be >= 0 everywhere (a spectral "
+                "power density is non-negative)" % ctx)
+        if np.trapezoid(rel, table["lam_um"]) <= 0:
+            raise MaterialError(
+                "%s: relative_power integrates to <= 0 — the table carries no "
+                "power" % ctx)
+        out[name] = {"kind": kind, "lam_um": table["lam_um"],
+                     "lam_nm": table["lam_um"] * 1e3,
+                     "relative_power": rel,
+                     "reference": (row.get("reference") or "").strip(),
+                     "notes": (row.get("notes") or "").strip()}
+    return out
+
+
+# ---------------------------------------------------------------------------
 # grating/gratings.csv + tables/
 # ---------------------------------------------------------------------------
 def load_gratings(csv_path=None):
@@ -550,11 +600,11 @@ class OpticalProperties:
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
                  "gratings", "uniaxial", "biaxial", "diffusers", "detectors",
-                 "scatter")
+                 "scatter", "emission")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
                  uniaxial, diffusers=None, detectors=None, biaxial=None,
-                 scatter=None):
+                 scatter=None, emission=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -566,6 +616,7 @@ class OpticalProperties:
         self.diffusers = diffusers if diffusers is not None else {}
         self.detectors = detectors if detectors is not None else {}
         self.scatter = scatter if scatter is not None else {}
+        self.emission = emission if emission is not None else {}
 
 
 def load_optical_properties(root=None, db=None):
@@ -606,7 +657,9 @@ def load_optical_properties(root=None, db=None):
                            root / "diffuser" / "diffusers.miedif"),
         detectors=optional(load_detectors,
                            root / "detector" / "detectors.miedet"),
-        scatter=optional(load_scatter, root / "scatter" / "bsdf.miebsdf"))
+        scatter=optional(load_scatter, root / "scatter" / "bsdf.miebsdf"),
+        emission=optional(load_emission,
+                          root / "emission" / "emitters.miesrc"))
 
 
 # ---------------------------------------------------------------------------
@@ -626,3 +679,5 @@ if __name__ == "__main__":
     print("  diffusers : %d" % len(props.diffusers))
     print("  detectors : %d" % len(props.detectors))
     print("  scatter   : %d" % len(props.scatter))
+    print("  emission  : %d  (%s)" % (len(props.emission),
+                                      ", ".join(sorted(props.emission))))

@@ -276,6 +276,7 @@ fields on each `PartDesign::Body`:
 | `grating` | String, optional | a per-face map `'Face2=600:v:orders=-1..1'` or `'Face2=@registryname'` (§5.5) — must name specific faces, not the whole body |
 | `polarization` | String, optional | source-only: `'unpolarized'` (default) `'linear:<deg>'` `'circular:left|right'` `'elliptical:<psi>:<chi>'` (§5.2) |
 | `lambdamin`, `lambdamax` (nm, optional), `coherent` (bool, default False) | — | source-only, see §5.2 |
+| `spectrum` | String, optional | source-only: `emission/emitters.miesrc` registry row naming a tabulated emission spectrum (§5.2); supersedes `lambdamin`/`lambdamax` |
 | `apodization` | String, optional | source-only: `'gaussian:w0=<mm>[:order=<n>]'` transverse field-amplitude taper across the emitting face (§5.2) |
 | `beam_waist` (mm) + `m2` (optional, default 1.0) | Float | source-only: Gaussian-beam mode — position sampled from the waist intensity profile plus a per-ray angular divergence (§5.2); requires a planar emitting face |
 
@@ -356,6 +357,17 @@ ray continues to interact with the surface normally.
 - **exactly one bound given** → uniform on `[lambdac - w, lambdac + w]`
   where `w` is the given half-width (whichever of `lambdamin`/`lambdamax`
   was set).
+- **`spectrum` set** (`emission/emitters.miesrc` registry row) → inverse-CDF
+  of the tabulated piecewise-linear PDF: each stratum sits at a quantile
+  center `(k+0.5)/n` so every stratum carries equal power (the strata cluster
+  where the spectrum is bright). The table's own `[min, max]` sets the source
+  wavelength range (detector spectral bins cover it); `spectrum` supersedes
+  `lambdamin`/`lambdamax` (both dropped with a warning if also present), but
+  `lambdac` must still be present (it marks the body a source and is the
+  power-weighted mean λ). **Honest limit:** only `kind=continuous` tables are
+  supported — `blackbody` (analytic Planck) and `line` (discrete line lamps)
+  rows are staged in the library but rejected at load with a "needs engine
+  support" error until their source models land.
 
 Sampling is **stratified**: `--nlambda` equal-probability wavelength
 strata, one deterministic wavelength per stratum, equal power weight per

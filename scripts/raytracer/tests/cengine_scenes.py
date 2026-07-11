@@ -82,6 +82,20 @@ def scene_c_filter():
     ])
 
 
+def scene_c_spectrum():
+    """Tabulated-emission white-LED source (spectrum=led_white_2733k) through
+    a glass plate: the C engine derives its lambda union from the SAME
+    wavelength_strata inverse-CDF call as Python (equal-power quantile
+    strata), so the per-stratum wavelengths and detected power must match.
+    Deterministic (collimated normal incidence)."""
+    return make_model([
+        source_body("Src", x=-0.02, half=0.004, power_mW=2.0,
+                    lambdac_nm=584.6, spectrum="led_white_2733k"),
+        slab_body("Plate", "bk7", 0.0, 0.003, half=0.02),
+        detector_body("Det", x=0.03, half=0.025),
+    ])
+
+
 def scene_c_ball_lens():
     """Full-sphere ball lens (untrimmed sphere trim regime, curved-surface
     refraction). Statistical: refraction depends on the sampled position."""
@@ -188,6 +202,7 @@ SCENES = {
     "c_plate": (scene_c_plate, "deterministic"),
     "c_mirror_screen": (scene_c_mirror_screen, "deterministic"),
     "c_filter": (scene_c_filter, "deterministic"),
+    "c_spectrum": (scene_c_spectrum, "deterministic"),         # feature D5
     "c_ball_lens": (scene_c_ball_lens, "statistical"),
     "c_coating_ar": (scene_c_coating_ar, "deterministic"),         # phase B
     "c_polarizer_malus": (scene_c_polarizer_malus, "deterministic"),

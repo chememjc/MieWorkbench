@@ -106,6 +106,7 @@ class Scene:
         polarizers = optprops.polarizers if optprops is not None else {}
         filters = optprops.filters if optprops is not None else {}
         grating_registry = optprops.gratings if optprops is not None else {}
+        emission = optprops.emission if optprops is not None else {}
         self.polarizers = polarizers
         self.ambient = matdb.get(model.get("ambient_material", "air"))
         suppress = set(suppress_bodies)
@@ -202,7 +203,22 @@ class Scene:
             self.bodies.append(body)
 
             if body.role == "source":
-                self.sources.append((body.index, rec["source"]))
+                src = rec["source"]
+                spec_name = src.get("spectrum")
+                if spec_name is not None:
+                    if spec_name not in emission:
+                        raise ValueError(
+                            "source %s: unknown spectrum %r (emission "
+                            "registry has: %s)"
+                            % (body.label, spec_name,
+                               ", ".join(sorted(emission)) or
+                               "<none loaded — pass optprops>"))
+                    entry = emission[spec_name]
+                    src["_spectrum_lam_nm"] = np.asarray(entry["lam_nm"],
+                                                         dtype=np.float64)
+                    src["_spectrum_pdf"] = np.asarray(entry["relative_power"],
+                                                      dtype=np.float64)
+                self.sources.append((body.index, src))
                 # source bodies contribute no intersectable geometry (the
                 # housing is not traced), but the emitting face itself is
                 # built for area sampling and kept OUT of self.faces

@@ -410,6 +410,37 @@ def test_tlas_matches_linear_scan(tmp_path, monkeypatch):
                 "%s.%s" % (sname, k)
 
 
+def test_spectrum_scene_strata_parity(tmp_path):
+    """Feature D5: a tabulated-emission source routes to C automatically
+    (spectrum is no gate feature) and the C request's lambda union is the
+    SAME inverse-CDF equal-power quantile strata that Python's
+    wavelength_strata produces — so the two engines sample identical
+    wavelengths, and detected power matches to the deterministic bar."""
+    model_json = cengine_scenes.write_scene("c_spectrum", tmp_path / "geo")
+    cc = run_engine(model_json, tmp_path / "case_c", "c")
+    assert cc["case"]["engine"] == "c", cc["case"].get("engine_reason")
+
+    # Python reference strata for the same source at NLAMBDA
+    import common
+    from raytracer.scene import Scene
+    from raytracer.sources import wavelength_strata
+    from raytracer.optprops import load_optical_properties
+    model = json.loads(model_json.read_text())
+    common.validate_model(model)
+    op = load_optical_properties()
+    scene = Scene(model, op.matdb, op.coatings, optprops=op)
+    _, src = scene.sources[0]
+    ref = wavelength_strata(src, NLAMBDA)
+
+    req = json.loads(
+        (tmp_path / "case_c" / "cengine" / "request_seed42.json").read_text())
+    lams_c = np.asarray(req["lams_m"])
+    assert lams_c.shape == ref.shape
+    assert np.allclose(lams_c, ref, rtol=0, atol=1e-15), (lams_c, ref)
+    # strata land inside the LED-B1 table range (400-700 nm)
+    assert lams_c.min() * 1e9 >= 400.0 and lams_c.max() * 1e9 <= 700.0
+
+
 def test_routing_reasons(tmp_path):
     """--engine auto routes deterministically and records the reason."""
     model_json = cengine_scenes.write_scene("c_plate", tmp_path / "g")

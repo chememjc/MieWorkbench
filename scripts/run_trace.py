@@ -79,11 +79,18 @@ def apply_source_overrides(model, overrides):
 def lam_range_nm(scene):
     lo, hi = 1e9, 0.0
     for _, src in scene.sources:
-        lc = src["lambdac_nm"]
-        lmin = src.get("lambdamin_nm") or lc
-        lmax = src.get("lambdamax_nm") or lc
-        span_lo = lc - 3.0 * max(lc - lmin, 0.0)
-        span_hi = lc + 3.0 * max(lmax - lc, 0.0)
+        lam_tab = src.get("_spectrum_lam_nm")
+        if lam_tab is not None:
+            # a tabulated spectrum defines its own full range; detector
+            # spectral bins must cover the whole table.
+            span_lo = float(np.min(lam_tab))
+            span_hi = float(np.max(lam_tab))
+        else:
+            lc = src["lambdac_nm"]
+            lmin = src.get("lambdamin_nm") or lc
+            lmax = src.get("lambdamax_nm") or lc
+            span_lo = lc - 3.0 * max(lc - lmin, 0.0)
+            span_hi = lc + 3.0 * max(lmax - lc, 0.0)
         lo = min(lo, span_lo)
         hi = max(hi, span_hi)
     pad = max(5.0, 0.02 * (hi - lo))

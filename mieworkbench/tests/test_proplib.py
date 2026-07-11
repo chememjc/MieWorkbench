@@ -27,6 +27,7 @@ REGISTRY_RELPATHS = {
     "uniaxial": "birefringence/uniaxial.miebrf",
     "diffusers": "diffuser/diffusers.miedif",
     "detectors": "detector/detectors.miedet",
+    "emission": "emission/emitters.miesrc",
 }
 
 
