@@ -176,3 +176,13 @@ def test_end_to_end_profile_and_closure(optprops, table):
     ratio_tab = red_tab / blue_tab
     assert ratio_det == pytest.approx(ratio_tab, rel=0.30), \
         (ratio_det, ratio_tab)
+
+
+def test_zero_width_band_is_monochromatic():
+    """lambdamin == lambdamax == lambdac is a valid spelling of
+    'monochromatic' (used to divide by zero in the half-normal split)."""
+    src = {"lambdac_nm": 633.0, "lambdamin_nm": 633.0,
+           "lambdamax_nm": 633.0}
+    lam = wavelength_strata(src, 5)
+    assert lam.shape == (1,)
+    assert lam[0] == pytest.approx(633e-9)

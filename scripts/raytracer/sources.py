@@ -146,6 +146,10 @@ def wavelength_strata(src, n_lambda):
         if sig_m < 0 or sig_p < 0:
             raise ValueError("source %r: lambdamin/lambdamax must bracket "
                              "lambdac" % src)
+        if sig_m + sig_p == 0.0:
+            # lambdamin == lambdamax == lambdac: a zero-width band is a
+            # valid way to spell "monochromatic" (used to divide by zero)
+            return np.full(1, lam_c * 1e-9)
         # two half-normals glued at lambda_c with weights sig-/sig+
         from scipy.stats import norm
         w_m = sig_m / (sig_m + sig_p)

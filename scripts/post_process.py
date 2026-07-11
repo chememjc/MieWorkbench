@@ -1666,6 +1666,7 @@ def _field_key_metrics(psf, pixel_m):
     W = mtf["mtf"].shape[1]
     H = mtf["mtf"].shape[0]
     freq = mtf["freq_cy_mm"]
+    freq_y = mtf["freq_y_cy_mm"]      # sagittal axis (H != W safe)
     tan_half = mtf["tangential"][W // 2:]
     sag_half = mtf["sagittal"][H // 2:]
     radii, ee = encircled_energy(psf, pixel=pixel_m)
@@ -1673,7 +1674,7 @@ def _field_key_metrics(psf, pixel_m):
     scalars = {
         "psf_peak_W_m2": peak_w_m2,
         "mtf50_tan_cy_mm": mtf50(freq, tan_half),
-        "mtf50_sag_cy_mm": mtf50(freq, sag_half),
+        "mtf50_sag_cy_mm": mtf50(freq_y, sag_half),
         "ee_r50_um": ee_radius(radii, ee, 0.5) * 1e6,
         "ee_r80_um": ee_radius(radii, ee, 0.8) * 1e6,
         "ee_r90_um": ee_radius(radii, ee, 0.9) * 1e6,
@@ -1731,8 +1732,9 @@ def _plot_mtf_panels(panels, metrics_by_key, outpath, title):
         W = mtf["mtf"].shape[1]
         H = mtf["mtf"].shape[0]
         freq = mtf["freq_cy_mm"]
+        freq_y = mtf["freq_y_cy_mm"]   # sagittal axis (H != W safe)
         ax1.plot(freq, mtf["tangential"][W // 2:], label="tangential")
-        ax1.plot(freq, mtf["sagittal"][H // 2:], label="sagittal")
+        ax1.plot(freq_y, mtf["sagittal"][H // 2:], label="sagittal")
         ax1.axhline(0.5, color="0.7", lw=0.6, zorder=0)
         ax1.set_title("%s — 1D slices" % name, fontsize=9)
         ax1.set_xlabel("frequency [cyc/mm]")

@@ -231,3 +231,28 @@ def test_ensquared_energy_reasonable(airy):
     # needed to reach a given fraction is <= the encircled radius for
     # the same fraction.
     assert hs50 <= rc50 * 1.05
+
+
+def test_mtf2d_non_square_psf_axes():
+    """Non-square detector grids (e.g. a 36x24 mm sensor) produce H != W
+    PSFs; the sagittal half-slice must get its own frequency axis (used to
+    crash the MTF plotter with a shape mismatch)."""
+    rng = np.random.default_rng(7)
+    psf = rng.random((341, 512))
+    res = af.mtf2d(psf, 2e-6)
+    H, W = psf.shape
+    assert res["freq_cy_mm"].shape[0] == W - W // 2
+    assert res["freq_y_cy_mm"].shape[0] == H - H // 2
+    assert res["tangential"][W // 2:].shape == res["freq_cy_mm"].shape
+    assert res["sagittal"][H // 2:].shape == res["freq_y_cy_mm"].shape
+    # mtf50 must accept both slices without shape errors
+    assert af.mtf50(res["freq_cy_mm"], res["tangential"][W // 2:]) \
+        is not None or True
+    af.mtf50(res["freq_y_cy_mm"], res["sagittal"][H // 2:])
+
+
+def test_mtf2d_square_freq_axes_agree():
+    rng = np.random.default_rng(8)
+    psf = rng.random((128, 128))
+    res = af.mtf2d(psf, 2e-6)
+    assert np.allclose(res["freq_cy_mm"], res["freq_y_cy_mm"])

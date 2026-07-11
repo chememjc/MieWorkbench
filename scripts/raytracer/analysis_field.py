@@ -122,10 +122,12 @@ def mtf2d(psf, pixel_m):
       fy_cy_mm     (H,) full (signed) frequency axis, cycles/mm
       tangential   (W,) mtf's DC ROW (the x-frequency slice at fy=0)
       sagittal     (H,) mtf's DC COLUMN (the y-frequency slice at fx=0)
-      freq_cy_mm   the positive-frequency half of fx_cy_mm (from DC to
-                   Nyquist) -- for a square psf this indexes both
-                   tangential and sagittal identically (isotropic square
-                   pixels), the usual case this module targets.
+      freq_cy_mm   the positive-frequency half of fx_cy_mm (DC to Nyquist)
+                   -- indexes the TANGENTIAL half-slice
+      freq_y_cy_mm the positive-frequency half of fy_cy_mm -- indexes the
+                   SAGITTAL half-slice (== freq_cy_mm only when H == W; a
+                   non-square detector grid has different half-lengths,
+                   which used to crash the MTF plotter)
     DC-normalization divides by the DC bin (psf.sum(), i.e. total energy)
     rather than assuming it is exactly 1, so an un-normalized PSF works.
     """
@@ -142,6 +144,7 @@ def mtf2d(psf, pixel_m):
     tangential = mtf[H // 2, :]
     sagittal = mtf[:, W // 2]
     freq_cy_mm = fx_cy_mm[W // 2:]
+    freq_y_cy_mm = fy_cy_mm[H // 2:]
     return {
         "mtf": mtf,
         "fx_cy_mm": fx_cy_mm,
@@ -149,6 +152,7 @@ def mtf2d(psf, pixel_m):
         "tangential": tangential,
         "sagittal": sagittal,
         "freq_cy_mm": freq_cy_mm,
+        "freq_y_cy_mm": freq_y_cy_mm,
     }
 
 
