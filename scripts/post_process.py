@@ -499,6 +499,255 @@ def _render_spectrometer(cube, lam_lo, lam_hi, pixel_m, extent_mm,
 
 
 # =============================================================================
+# Time products (pulsed-optics P4) -- DATA-DRIVEN: renders whatever
+# time_* datasets run_trace's finalize_time wrote into the detector .h5
+# (present only when --time-products / the pulsed-source auto-rule was
+# active); a case with none is a silent per-detector no-op. All products
+# are stored as arrival-power DENSITIES [W/s] along t, so integrating any
+# of them over the window reproduces the detected in-window power
+# (time_total_W attr).
+# =============================================================================
+_TIME_UNITS = (("fs", 1e-15), ("ps", 1e-12), ("ns", 1e-9),
+               ("us", 1e-6), ("ms", 1e-3), ("s", 1.0))
+
+
+def _time_axis_unit(span_s):
+    """(scale, label) for a time-axis span [s]: the largest unit that keeps
+    the span >= 1 unit (floor: fs). Small local equivalent of the GUI's
+    beadanim.format_sim_time — scripts/ must not import from the
+    mieworkbench package."""
+    for lab, sc in reversed(_TIME_UNITS):
+        if span_s >= sc:
+            return sc, lab
+    return 1e-15, "fs"
+
+
+def _fwhm_interp(t, y):
+    """FWHM of a sampled curve via linearly-interpolated half-maximum
+    crossings around the global peak -> (fwhm, t_left, t_right), or
+    (None, None, None) when either crossing is missing (curve clipped by
+    the window edge / all-zero)."""
+    y = np.asarray(y, dtype=float)
+    if len(y) < 3 or not np.any(y > 0):
+        return None, None, None
+    ipk = int(np.argmax(y))
+    half = y[ipk] / 2.0
+    left = right = None
+    for i in range(ipk, 0, -1):
+        if y[i - 1] < half <= y[i]:
+            f = (half - y[i - 1]) / (y[i] - y[i - 1])
+            left = t[i - 1] + f * (t[i] - t[i - 1])
+            break
+    for i in range(ipk, len(y) - 1):
+        if y[i + 1] < half <= y[i]:
+            f = (y[i] - half) / (y[i] - y[i + 1])
+            right = t[i] + f * (t[i + 1] - t[i])
+            break
+    if left is None or right is None:
+        return None, None, None
+    return right - left, left, right
+
+
+def render_time_products(h5path, outdir_img, outdir_spec, report, case,
+                         csv_emitter=None):
+    """Render the time products present in this detector's .h5:
+      time_profile            -> images/det_<safe>_time_profile.png
+                                 (I(t) line, per-source overlay when >1
+                                 source, FWHM + per-pulse-energy annotation)
+      time_spectrogram        -> images/det_<safe>_time_spectrogram.png
+                                 (lambda vs t pcolormesh + marginals)
+      time_streak             -> images/det_<safe>_time_streak.png
+      time_cube               -> images/det_<safe>_time_cube.png
+                                 (max-projection + 8 equal-energy-quantile
+                                 frames)
+    plus report['detectors'][label]['time_products'] and (under
+    --emit-csv) a CSV per product: full curves for profile/spectrogram,
+    marginals for streak/cube (the full matrices would be huge)."""
+    with h5py.File(h5path) as h:
+        names = [n for n in ("time_profile", "time_profile_by_source",
+                             "time_spectrogram", "time_streak", "time_cube")
+                 if n in h]
+        if not names:
+            return
+        data = {n: h[n][...] for n in names}
+        attrs = dict(h.attrs)
+    label = attrs["label"]
+    safe = label.replace(".", "_")
+    t_lo, t_hi = float(attrs["t_lo_s"]), float(attrs["t_hi_s"])
+    n_t = int(attrs["time_bins"])
+    dt = float(attrs["time_dt_s"])
+    tc = t_lo + (np.arange(n_t) + 0.5) * dt          # bin centers [s]
+    scale, unit = _time_axis_unit(t_hi - t_lo)
+    tp = tc / scale
+    t_edges = (t_lo + np.arange(n_t + 1) * dt) / scale
+    src_names = case.get("sources", [])
+    block = {
+        "products": str(attrs.get("time_products", "")),
+        "envelope": str(attrs.get("time_envelope", "")),
+        "t_lo_s": t_lo, "t_hi_s": t_hi, "time_bins": n_t,
+        "t_p001_s": float(attrs.get("t_p001_s", t_lo)),
+        "t_p999_s": float(attrs.get("t_p999_s", t_hi)),
+        "total_W": float(attrs.get("time_total_W", 0.0)),
+        "excluded_W": float(attrs.get("time_excluded_W", 0.0)),
+    }
+
+    # ---- pulse profile ----
+    if "time_profile" in data:
+        prof = data["time_profile"]
+        by_src = data.get("time_profile_by_source")
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        ax.plot(tp, prof, lw=1.4, color="C0", label="total")
+        if by_src is not None and by_src.shape[0] > 1:
+            for i in range(by_src.shape[0]):
+                nm = src_names[i] if i < len(src_names) else "source %d" % i
+                ax.plot(tp, by_src[i], lw=0.8, alpha=0.85, label=nm)
+            ax.legend(fontsize=8)
+        anno = []
+        fwhm, tl, tr = _fwhm_interp(tc, prof)
+        if fwhm is not None:
+            block["fwhm_s"] = float(fwhm)
+            fsc, fun = _time_axis_unit(fwhm)
+            anno.append("FWHM = %.4g %s" % (fwhm / fsc, fun))
+            ax.axvspan(tl / scale, tr / scale, color="C0", alpha=0.08)
+        # per-pulse detected energy: defined when every pulsed source
+        # shares one rep rate (case.json source_pulse, P3)
+        rates = {p["rep_rate_Hz"] for p in
+                 (case.get("source_pulse") or {}).values()
+                 if p and p.get("rep_rate_Hz")}
+        if len(rates) == 1:
+            rep = float(next(iter(rates)))
+            block["per_pulse_energy_J"] = block["total_W"] / rep
+            anno.append("per-pulse detected = %.4g J @ %.4g Hz"
+                        % (block["per_pulse_energy_J"], rep))
+        if anno:
+            ax.text(0.98, 0.95, "\n".join(anno), transform=ax.transAxes,
+                    ha="right", va="top", fontsize=9,
+                    bbox=dict(boxstyle="round", fc="white", alpha=0.75))
+        ax.set_xlabel("t [%s]" % unit)
+        ax.set_ylabel("detected power density [W/s]")
+        ax.set_title("%s — pulse profile I(t)" % label)
+        fig.savefig(outdir_img / ("det_%s_time_profile.png" % safe),
+                    bbox_inches="tight")
+        plt.close(fig)
+        if csv_emitter is not None:
+            hdr = ["t_s", "total_W_per_s"]
+            cols = [tc, prof]
+            if by_src is not None:
+                for i in range(by_src.shape[0]):
+                    nm = src_names[i] if i < len(src_names) \
+                        else "source_%d" % i
+                    hdr.append("%s_W_per_s" % _safe_name(nm))
+                    cols.append(by_src[i])
+            csv_emitter.emit(
+                "time_profile_%s.csv" % safe, hdr, zip(*cols),
+                entity=label, chart="time_profile", units="W/s",
+                image="images/det_%s_time_profile.png" % safe)
+
+    # ---- spectrogram (lambda vs t) ----
+    if "time_spectrogram" in data:
+        sg = np.maximum(data["time_spectrogram"], 0.0)
+        lam_edges = np.linspace(float(attrs["lam_lo_m"]),
+                                float(attrs["lam_hi_m"]),
+                                sg.shape[0] + 1) / 1e-9
+        lam_c = 0.5 * (lam_edges[:-1] + lam_edges[1:])
+        fig = plt.figure(figsize=(9.5, 6.5))
+        gs = fig.add_gridspec(2, 2, width_ratios=[4, 1],
+                              height_ratios=[1, 3],
+                              hspace=0.06, wspace=0.06)
+        ax = fig.add_subplot(gs[1, 0])
+        pcm = ax.pcolormesh(t_edges, lam_edges, sg, cmap="magma")
+        ax.set_xlabel("t [%s]" % unit)
+        ax.set_ylabel("wavelength [nm]")
+        axt = fig.add_subplot(gs[0, 0], sharex=ax)
+        axt.plot(tp, sg.sum(axis=0), lw=0.9, color="C0")
+        axt.tick_params(labelbottom=False)
+        axt.set_ylabel("I(t)")
+        axr = fig.add_subplot(gs[1, 1], sharey=ax)
+        axr.plot(sg.sum(axis=1) * dt * 1e3, lam_c, lw=0.9, color="C1")
+        axr.tick_params(labelleft=False)
+        axr.set_xlabel("mW")
+        fig.colorbar(pcm, ax=axr, fraction=0.15, pad=0.35,
+                     label="W/s per bin")
+        fig.suptitle("%s — spectrogram" % label)
+        fig.savefig(outdir_img / ("det_%s_time_spectrogram.png" % safe),
+                    bbox_inches="tight")
+        plt.close(fig)
+        if csv_emitter is not None:
+            rows = [(tc[j], lam_c[b], sg[b, j])
+                    for b in range(sg.shape[0]) for j in range(n_t)]
+            csv_emitter.emit(
+                "time_spectrogram_%s.csv" % safe,
+                ["t_s", "lambda_nm", "power_density_W_per_s"], rows,
+                entity=label, chart="time_spectrogram", units="W/s",
+                image="images/det_%s_time_spectrogram.png" % safe)
+
+    # ---- streak (x vs t) ----
+    if "time_streak" in data:
+        st = np.maximum(data["time_streak"], 0.0)      # (n_t, W)
+        x_mm = st.shape[1] * float(attrs["pixel_m"]) / 1e-3
+        fig, ax = plt.subplots(figsize=(9, 5.5))
+        im = ax.imshow(st.T, origin="lower", aspect="auto", cmap="magma",
+                       extent=[t_lo / scale, t_hi / scale, 0.0, x_mm])
+        fig.colorbar(im, ax=ax, fraction=0.046, label="W/s per pixel row")
+        ax.set_xlabel("t [%s]" % unit)
+        ax.set_ylabel("x [mm]")
+        ax.set_title("%s — streak (x vs t)" % label)
+        fig.savefig(outdir_img / ("det_%s_time_streak.png" % safe),
+                    bbox_inches="tight")
+        plt.close(fig)
+        if csv_emitter is not None:
+            xs = (np.arange(st.shape[1]) + 0.5) \
+                * float(attrs["pixel_m"])
+            csv_emitter.emit(
+                "time_streak_xmarginal_%s.csv" % safe,
+                ["x_m", "power_W"], zip(xs, st.sum(axis=0) * dt),
+                entity=label, chart="time_streak_x_marginal", units="W",
+                image="images/det_%s_time_streak.png" % safe)
+
+    # ---- cube (max-projection + equal-energy-quantile frames) ----
+    if "time_cube" in data:
+        cu = np.maximum(data["time_cube"], 0.0)        # (n_t, H', W')
+        frame_e = cu.sum(axis=(1, 2)) * dt             # W per frame
+        n_frames = 8
+        if float(frame_e.sum()) > 0.0:
+            cw = np.cumsum(frame_e) / frame_e.sum()
+            idx = np.searchsorted(cw, (np.arange(n_frames) + 0.5)
+                                  / n_frames)
+            idx = np.minimum(idx, len(frame_e) - 1)
+        else:
+            idx = np.linspace(0, len(frame_e) - 1, n_frames).astype(int)
+        maxproj = cu.max(axis=0)
+        vmax = float(maxproj.max()) or 1.0
+        fig, axes = plt.subplots(3, 3, figsize=(10.5, 10.5))
+        axes = axes.ravel()
+        axes[0].imshow(maxproj, origin="lower", cmap="magma",
+                       vmin=0.0, vmax=vmax)
+        axes[0].set_title("max projection", fontsize=9)
+        for k in range(n_frames):
+            j = int(idx[k])
+            axes[k + 1].imshow(cu[j], origin="lower", cmap="magma",
+                               vmin=0.0, vmax=vmax)
+            axes[k + 1].set_title("t = %.4g %s" % (tp[j], unit),
+                                  fontsize=9)
+        for a in axes:
+            a.set_xticks([])
+            a.set_yticks([])
+        fig.suptitle("%s — time cube (%d frames at equal energy "
+                     "quantiles)" % (label, n_frames))
+        fig.savefig(outdir_img / ("det_%s_time_cube.png" % safe),
+                    bbox_inches="tight")
+        plt.close(fig)
+        if csv_emitter is not None:
+            csv_emitter.emit(
+                "time_cube_frames_%s.csv" % safe,
+                ["t_s", "frame_power_W"], zip(tc, frame_e),
+                entity=label, chart="time_cube_frame_energy", units="W",
+                image="images/det_%s_time_cube.png" % safe)
+
+    report["detectors"].setdefault(label, {})["time_products"] = block
+
+
+# =============================================================================
 # Polarization-state (Stokes) maps -- DATA-DRIVEN, currently always a no-op.
 #
 # detector.py does not save per-(source,lam_stratum,pol_stratum) complex
@@ -2507,6 +2756,10 @@ def main(argv=None):
                         detector_registry=detector_registry,
                         csv_emitter=csv_emitter)
         render_stokes_maps(h5path, img)
+        # time products (pulsed-optics P4): no-op unless this .h5 carries
+        # time_* datasets (run_trace --time-products / pulsed auto-rule)
+        render_time_products(h5path, img, spec, report, case,
+                             csv_emitter=csv_emitter)
 
     # per-(source, detector) detected power: promotes case.json["detected"]
     # into report.json regardless of --emit-csv (deliverable independent of

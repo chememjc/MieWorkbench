@@ -88,6 +88,101 @@ def parse_imaging_products(s):
     return tuple(n for n in IMAGING_PRODUCTS if n in names)
 
 
+TIME_PRODUCTS = ("pulse", "spectrogram", "streak", "cube")
+
+# --time-bins preset scaling (pulsed-optics P4): applied by run_pipeline's
+# trace_cmd when --time-bins is not given (common.PRESETS itself is
+# unchanged; the trace parser's own default covers direct run_trace.py use).
+TIME_BINS_PRESET = {"quick": 128, "normal": 256, "detailed": 512}
+
+
+def parse_time_products(s):
+    """Comma list -> validated tuple for --time-products (trace stage's
+    time-binned detector products). 'all' = every product, 'none' = the
+    empty tuple (explicitly suppresses the pulsed-scene auto-default).
+    argparse type=."""
+    names = [t.strip() for t in s.split(",") if t.strip()]
+    if not names:
+        raise argparse.ArgumentTypeError(
+            "--time-products got an empty list (expected a comma list of "
+            "%s, or 'all'/'none')" % ",".join(TIME_PRODUCTS))
+    if names == ["all"]:
+        return TIME_PRODUCTS
+    if names == ["none"]:
+        return ()
+    bad = [n for n in names if n not in TIME_PRODUCTS]
+    if bad:
+        raise argparse.ArgumentTypeError(
+            "unknown --time-products entr%s %s (know: %s, or 'all'/'none')"
+            % ("y" if len(bad) == 1 else "ies", ",".join(bad),
+               ",".join(TIME_PRODUCTS)))
+    # de-duplicate, keep the canonical order
+    return tuple(n for n in TIME_PRODUCTS if n in names)
+
+
+def parse_time_window(s):
+    """'T0,T1' (ns, floats, T0 < T1) -> (float, float). argparse type= for
+    --time-window."""
+    parts = s.split(",")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            "invalid --time-window %r (expected T0,T1 in ns)" % s)
+    try:
+        t0, t1 = float(parts[0]), float(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "invalid --time-window %r (expected T0,T1 in ns)" % s)
+    if not t1 > t0:
+        raise argparse.ArgumentTypeError(
+            "--time-window %r: T1 must be > T0" % s)
+    return t0, t1
+
+
+def _add_time_product_args(g, bins_default):
+    """The five pulsed-optics time-product flags, shared verbatim by the
+    pipeline and trace parsers (bins_default None on the pipeline parser:
+    run_pipeline preset-scales it via TIME_BINS_PRESET before forwarding)."""
+    g.add_argument("--time-products", default=None,
+                   type=parse_time_products, metavar="LIST",
+                   help="comma list of time-binned detector products to "
+                        "compute: %s, or 'all'/'none'. Default: "
+                        "'pulse,spectrogram' when the scene has a pulsed "
+                        "source (pulse_duration set), nothing otherwise; "
+                        "'none' suppresses the auto-default. Any active "
+                        "product tracks per-ray group delay and forces "
+                        "the Python engine (reason recorded in case.json)"
+                        % ",".join(TIME_PRODUCTS))
+    g.add_argument("--time-bins", type=int, default=bins_default,
+                   metavar="N",
+                   help="time bins per product (default: preset-scaled "
+                        "%s via run_pipeline; %s when run_trace.py is "
+                        "invoked directly)"
+                        % ("/".join("%s=%d" % kv
+                                    for kv in sorted(TIME_BINS_PRESET.items())),
+                           TIME_BINS_PRESET["normal"]))
+    g.add_argument("--time-window", default=None, type=parse_time_window,
+                   metavar="T0,T1",
+                   help="explicit time window in ns (floats, T0<T1); "
+                        "default: auto — the exact record arrival span "
+                        "padded by 3x the widest envelope kernel width. "
+                        "Kernels clipped by the window edge are "
+                        "renormalized over the in-window bins (energy "
+                        "conserving); fully-out-of-window power is "
+                        "reported in the .h5 time_excluded_W attr")
+    g.add_argument("--time-cube-res", type=int, default=256, metavar="N",
+                   help="spatial cap for the 'cube' product: the (t, y, x) "
+                        "cube is binned down to at most NxN pixels "
+                        "(default 256; binning factor recorded in attrs)")
+    g.add_argument("--time-envelope", default="analytic",
+                   choices=["analytic", "histogram"],
+                   help="arrival-record envelope: 'analytic' (default) "
+                        "deposits a per-record Gaussian whose FWHM "
+                        "combines the source pulse duration with the "
+                        "record's accumulated GDD x stratum bandwidth; "
+                        "'histogram' is a plain weighted histogram of "
+                        "arrival times")
+
+
 # ---------------------------------------------------------------------------
 # pipeline  (scripts/run_pipeline.py)
 # ---------------------------------------------------------------------------
@@ -226,6 +321,10 @@ def _build_pipeline_parser():
     g.add_argument("--particle-threshold", type=float, default=None)
     g.add_argument("--suppress-body", action="append", default=[],
                    metavar="BODY")
+
+    g = p.add_argument_group("time-domain products (pulsed optics; "
+                             "stage: trace)")
+    _add_time_product_args(g, bins_default=None)
 
     g = p.add_argument_group("display options (stages: post, viz)")
     g.add_argument("--dim-rays", default="off",
@@ -462,6 +561,9 @@ def _build_trace_parser():
                    help="flat facet normals on mesh faces (default: "
                         "angle-weighted smoothed vertex normals)")
     p.add_argument("--dry-run", action="store_true")
+
+    g = p.add_argument_group("time-domain products (pulsed optics)")
+    _add_time_product_args(g, bins_default=TIME_BINS_PRESET["normal"])
 
     g = p.add_argument_group("analysis / export options")
     g.add_argument("--export-rays", action="store_true",

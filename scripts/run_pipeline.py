@@ -257,6 +257,23 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--strict-analytic"]
     if args.optical_properties:
         cmd += ["--optical-properties", args.optical_properties]
+    # pulsed-optics time products: forward the selection verbatim (the
+    # empty tuple round-trips as 'none'); --time-bins is preset-scaled
+    # when not given explicitly (cli_specs.TIME_BINS_PRESET — the flags
+    # are inert on a CW scene with no --time-products, so forwarding the
+    # bins default unconditionally never changes existing physics).
+    if args.time_products is not None:
+        cmd += ["--time-products", ",".join(args.time_products) or "none"]
+    cmd += ["--time-bins", str(int(
+        args.time_bins if args.time_bins is not None
+        else cli_specs.TIME_BINS_PRESET[args.preset]))]
+    if args.time_window is not None:
+        cmd += ["--time-window",
+                "%g,%g" % (args.time_window[0], args.time_window[1])]
+    if args.time_cube_res != 256:
+        cmd += ["--time-cube-res", str(int(args.time_cube_res))]
+    if args.time_envelope != "analytic":
+        cmd += ["--time-envelope", args.time_envelope]
     if args.dry_run:
         cmd += ["--dry-run"]
     return cmd

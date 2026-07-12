@@ -146,22 +146,71 @@ def jones_for(pol, pol_stratum):
     raise ValueError("unknown polarization kind %r" % kind)
 
 
+class StratumWavelengths(np.ndarray):
+    """Return type of wavelength_strata: behaves EXACTLY like the plain
+    (n_strata,) float64 wavelength array every existing caller consumes
+    (len / iteration / indexing / arithmetic are all inherited), plus an
+    `edges` attribute: the (n_strata + 1,) per-stratum wavelength EDGES [m]
+    (edges[k]..edges[k+1] brackets stratum k; monotonic non-decreasing).
+
+    Added for the pulsed-optics time products (P4): the per-stratum
+    ANGULAR-FREQUENCY bandwidth (stratum_domega) sets the analytic time-
+    envelope kernel width for GDD-broadened arrivals. Views/slices carry
+    the parent's edges along (diagnostic attribute only — never used to
+    reindex a sliced array)."""
+
+    def __array_finalize__(self, obj):
+        self.edges = getattr(obj, "edges", None)
+
+
+def _with_edges(lam_m, edges_m):
+    out = np.ascontiguousarray(lam_m, dtype=np.float64).view(
+        StratumWavelengths)
+    out.edges = np.ascontiguousarray(edges_m, dtype=np.float64)
+    return out
+
+
+def stratum_domega(strata):
+    """(n_strata,) angular-frequency bandwidth [rad/s] of each wavelength
+    stratum, from a StratumWavelengths' edges: |2*pi*c*(1/lam_lo - 1/lam_hi)|
+    over the stratum's wavelength bracket. Zero for a zero-width
+    (monochromatic) stratum."""
+    e = strata.edges
+    return np.abs(2.0 * np.pi * C_LIGHT_MPS * (1.0 / e[:-1] - 1.0 / e[1:]))
+
+
+# CDF quantile the OPEN (infinite-tail) edges of the asymmetric-Gaussian
+# regime are clamped to: the outermost stratum's finite edge sits halfway
+# (in probability) between its own center quantile (0.5/n from the end)
+# and the open end — i.e. at 0.25/n from the end. A half-normal tail has
+# no finite support, but its kernel-bandwidth proxy must be finite; the
+# tail's half-mass point is the natural width surrogate (documented,
+# pinned by test_time_products.py's broadening gate).
+_EDGE_TAIL_FRACTION = 0.25
+
+
 def wavelength_strata(src, n_lambda):
-    """Deterministic per-stratum wavelengths [m] (equal probability each).
+    """Deterministic per-stratum wavelengths [m] (equal probability each),
+    returned as a StratumWavelengths (an ndarray subclass carrying the
+    per-stratum wavelength EDGES — see the class docstring; every
+    pre-existing caller keeps using the result as the plain array).
 
     Three regimes, each placing strata at CDF centers (k+0.5)/n so every
     stratum carries the same probability mass (equal-power stratified
-    sampling; per-ray birth_power is untouched):
+    sampling; per-ray birth_power is untouched). Edges sit at the CDF
+    quantiles k/n mapped through the same inverse transform:
       * a tabulated emission spectrum (_spectrum_lam_nm/_spectrum_pdf, from
         the emission registry): inverse-CDF of the piecewise-linear PDF —
         densify each linear segment x16, cumulative-trapezoid CDF, invert;
       * an asymmetric-Gaussian line (lambdamin/lambdamax bracket lambdac):
-        two glued half-normals;
+        two glued half-normals (the two OPEN tail edges are clamped to the
+        _EDGE_TAIL_FRACTION quantile — a half-normal has no finite rim);
       * a single bound: a symmetric uniform band around lambdac."""
     lam_c = src["lambdac_nm"]
     lam_lo = src.get("lambdamin_nm")
     lam_hi = src.get("lambdamax_nm")
     q = (np.arange(n_lambda) + 0.5) / n_lambda      # stratum centers in CDF
+    q_edge = np.arange(n_lambda + 1) / n_lambda     # stratum edges in CDF
     lam_tab = src.get("_spectrum_lam_nm")
     if lam_tab is not None:
         # inverse-CDF sampling of a tabulated piecewise-linear PDF: densify
@@ -176,9 +225,12 @@ def wavelength_strata(src, n_lambda):
         cdf = np.concatenate([[0.0], np.cumsum(
             0.5 * (pdf_dense[1:] + pdf_dense[:-1]) * np.diff(lam_dense))])
         cdf /= cdf[-1]
-        return np.interp(q, cdf, lam_dense) * 1e-9
+        return _with_edges(np.interp(q, cdf, lam_dense) * 1e-9,
+                           np.interp(q_edge, cdf, lam_dense) * 1e-9)
     if lam_lo is None and lam_hi is None:
-        return np.full(1, lam_c * 1e-9)             # monochromatic: 1 stratum
+        # monochromatic: 1 zero-width stratum (edges collapse onto lam_c)
+        return _with_edges(np.full(1, lam_c * 1e-9),
+                           np.full(2, lam_c * 1e-9))
     if lam_lo is not None and lam_hi is not None:
         sig_m = lam_c - lam_lo
         sig_p = lam_hi - lam_c
@@ -188,21 +240,32 @@ def wavelength_strata(src, n_lambda):
         if sig_m + sig_p == 0.0:
             # lambdamin == lambdamax == lambdac: a zero-width band is a
             # valid way to spell "monochromatic" (used to divide by zero)
-            return np.full(1, lam_c * 1e-9)
+            return _with_edges(np.full(1, lam_c * 1e-9),
+                               np.full(2, lam_c * 1e-9))
         # two half-normals glued at lambda_c with weights sig-/sig+
         from scipy.stats import norm
         w_m = sig_m / (sig_m + sig_p)
-        lam = np.empty(n_lambda)
-        left = q < w_m
-        # left side: q in [0,w_m) -> half-normal below lambda_c
-        qq = q[left] / max(w_m, 1e-300)
-        lam[left] = lam_c - np.abs(norm.ppf(0.5 + 0.5 * (1 - qq))) * sig_m
-        qq = (q[~left] - w_m) / max(1 - w_m, 1e-300)
-        lam[~left] = lam_c + np.abs(norm.ppf(0.5 + 0.5 * qq)) * sig_p
-        return lam * 1e-9
+
+        def gauss_ppf(qv):
+            lam = np.empty(len(qv))
+            left = qv < w_m
+            # left side: q in [0,w_m) -> half-normal below lambda_c
+            qq = qv[left] / max(w_m, 1e-300)
+            lam[left] = lam_c - np.abs(
+                norm.ppf(0.5 + 0.5 * (1 - qq))) * sig_m
+            qq = (qv[~left] - w_m) / max(1 - w_m, 1e-300)
+            lam[~left] = lam_c + np.abs(norm.ppf(0.5 + 0.5 * qq)) * sig_p
+            return lam * 1e-9
+        # clamp the two OPEN tail edges (q = 0, 1 map to -/+inf) to the
+        # half-mass quantile of the outermost stratum's tail
+        qe = q_edge.copy()
+        qe[0] = _EDGE_TAIL_FRACTION / n_lambda
+        qe[-1] = 1.0 - _EDGE_TAIL_FRACTION / n_lambda
+        return _with_edges(gauss_ppf(q), gauss_ppf(qe))
     # exactly one bound: symmetric uniform around lambda_c
     w = (lam_c - lam_lo) if lam_lo is not None else (lam_hi - lam_c)
-    return (lam_c - w + 2.0 * w * q) * 1e-9
+    return _with_edges((lam_c - w + 2.0 * w * q) * 1e-9,
+                       (lam_c - w + 2.0 * w * q_edge) * 1e-9)
 
 
 def _face_center_xyz(face):

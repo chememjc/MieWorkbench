@@ -25,6 +25,118 @@
 # =============================================================================
 import numpy as np
 
+C_LIGHT_MPS = 299792458.0
+
+# canonical order of the four selectable time products (pulsed-optics P4)
+TIME_PRODUCTS = ("pulse", "spectrogram", "streak", "cube")
+
+# FWHM = _FWHM_SIGMA * sigma for a Gaussian
+_FWHM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
+
+
+def resolve_time_products(args, scene):
+    """The tuple of active time products for this run (subset of
+    TIME_PRODUCTS, canonical order), or () when time products are off.
+
+    Rules (locked design, pulsed-optics P4):
+      * --time-products given: exactly what it parsed to (cli_specs.
+        parse_time_products; 'none' parses to the empty tuple).
+      * flag absent + any PULSED source (src['pulse'] with a duration):
+        auto-default to ('pulse', 'spectrogram').
+      * flag absent, no pulsed source (every pre-existing CW scene): ().
+
+    Shared by run_trace (drives track_time + detector recording) and
+    cengine.detect_features (any active product is an unported feature ->
+    Python engine), so the two can never disagree."""
+    tp = getattr(args, "time_products", None)
+    if tp is not None:
+        return tuple(tp)
+    for _, src in scene.sources:
+        pulse = src.get("pulse") or {}
+        if pulse.get("duration_s"):
+            return ("pulse", "spectrogram")
+    return ()
+
+
+def _splat_records(acc, t, sigma, power, aux, t_lo, dt):
+    """Deposit every arrival record into `acc` (n_aux, n_t) IN PLACE and
+    return the total EXCLUDED power (records whose kernel has zero
+    in-window support).
+
+    Each record deposits a discretely-normalized kernel along the time
+    axis at row aux[i]: a Gaussian of std sigma[i] evaluated at the bin
+    centers (the analytic envelope), or a single-bin delta (histogram
+    mode / a CW record / any kernel with sigma < dt/6, whose +-3 sigma
+    support fits inside one bin — discretely it IS a delta, and
+    evaluating it would underflow: see below). NORMALIZATION IS THE
+    ENERGY-CONSERVATION INVARIANT: each record's weights over the bins it
+    actually lands in (including kernels clipped by the window edge) are
+    rescaled to sum to exactly power[i], so sum(acc) == summed in-window
+    record power to float64 rounding.
+
+    Vectorized in chunks (records can be 1e7): callers pre-sort by sigma
+    so each chunk's bin-window width (±3 sigma of the chunk max) matches
+    its own kernels; the per-chunk work array is (m, 2K+1) and m is
+    shrunk to keep it bounded. No Python loop over records."""
+    n_t = acc.shape[1]
+    n = len(t)
+    flat = acc.reshape(-1)
+    excluded = 0.0
+    budget = 16 * 1024 * 1024          # work-array elements per chunk
+    i = 0
+    while i < n:
+        m = min(131072, n - i)
+        smax = float(sigma[i + m - 1])          # sorted: chunk max sigma
+        halfK = int(np.ceil(3.0 * smax / dt)) if smax > 0.0 else 0
+        if halfK > 0 and m * (2 * halfK + 1) > budget:
+            m = min(max(1024, budget // (2 * halfK + 1)), n - i)
+            smax = float(sigma[i + m - 1])
+            halfK = int(np.ceil(3.0 * smax / dt)) if smax > 0.0 else 0
+        sl = slice(i, i + m)
+        tc, pc, ac, sc = t[sl], power[sl], aux[sl], sigma[sl]
+        pos = (tc - t_lo) / dt                  # fractional bin coordinate
+        # sigma < dt/6 -> delta: a fs-scale kernel binned over a ns-scale
+        # window (auto window spanning several path lengths) evaluates
+        # exp(-0.5*(offset/sigma)^2) at offsets of tens of sigma — rs goes
+        # subnormal, pc/rs overflows to inf and 0*inf NaNs the neighbor
+        # bins. At the dt/6 boundary the worst-case bin-centre offset is
+        # 3 sigma (exp(-4.5) ~ 0.011), a safe 12x margin from underflow.
+        z = sc < dt / 6.0
+        if np.any(z):                           # delta records: one bin
+            # right-edge-INCLUSIVE like np.histogram: a record at exactly
+            # t_hi (the un-padded histogram auto window's own maximum)
+            # lands in the last bin instead of being excluded
+            ok = (pos[z] >= 0.0) & (pos[z] <= n_t)
+            j = np.clip(np.floor(pos[z]).astype(np.int64), 0, n_t - 1)
+            excluded += float(np.sum(pc[z][~ok]))
+            np.add.at(flat, ac[z][ok] * n_t + j[ok],
+                      pc[z][ok].astype(flat.dtype, copy=False))
+        g = ~z
+        if np.any(g):                           # Gaussian records
+            jc = np.floor(pos[g]).astype(np.int64)
+            jj = jc[:, None] + np.arange(-halfK, halfK + 1)[None, :]
+            t_cent = t_lo + (jj + 0.5) * dt
+            w = np.exp(-0.5 * ((t_cent - tc[g][:, None])
+                               / sc[g][:, None]) ** 2)
+            valid = (jj >= 0) & (jj < n_t)
+            w = np.where(valid, w, 0.0)
+            rs = w.sum(axis=1)
+            # floor guards mixed-width chunks (halfK from the chunk-max
+            # sigma can reach a narrow record tens of ITS sigma out): a
+            # kernel with only subnormal in-window support books as
+            # excluded instead of dividing by a subnormal. In-window
+            # Gaussians (sigma >= dt/6 here) have rs >= exp(-4.5).
+            okr = rs > 1e-12
+            excluded += float(np.sum(pc[g][~okr]))
+            scale = np.zeros_like(rs)
+            scale[okr] = pc[g][okr] / rs[okr]
+            w *= scale[:, None]
+            msk = valid & okr[:, None]
+            np.add.at(flat, (ac[g][:, None] * n_t + jj)[msk],
+                      w[msk].astype(flat.dtype, copy=False))
+        i += m
+    return excluded
+
 
 class _IncoherentAccumMixin:
     """Shared incoherent-power splat + per-key detected tally.
@@ -36,21 +148,69 @@ class _IncoherentAccumMixin:
     curved grids share EXACTLY this math (bilinear splat + unique-key power
     sum) so the two detector families book detected power identically."""
 
+    def _init_time(self, time_rec):
+        """Time-product state (pulsed-optics P4). time_rec: None (off — the
+        pre-existing zero-overhead default) or {'envelope': 'analytic' |
+        'histogram'} to buffer compact arrival records in both deposit
+        paths for finalize_time."""
+        self.time_record = time_rec is not None
+        self.time_envelope = (time_rec or {}).get("envelope", "analytic")
+        self.time_records = []      # chunked-append: one dict per deposit
+        self.time_data = {}         # finalize_time: dataset name -> array
+        self.time_attrs = {}        # finalize_time: .h5 attrs
+
     def lam_bin(self, lam):
         b = ((lam - self.lam_lo) / max(self.lam_hi - self.lam_lo, 1e-30)
              * self.spectral_bins).astype(int)
         return np.clip(b, 0, self.spectral_bins - 1)
 
+    def _record_time_arrivals(self, fx, fy, lam, power, source_id,
+                              lam_stratum, gopl, gdd):
+        """Time-product arrival records (pulsed-optics P4): appended by BOTH
+        deposit paths when this grid was built with time recording on AND
+        the trace tracked time (gopl is not None). Compact chunked-append
+        columns (one dict of arrays per deposit call), sized for 1e7+
+        records: t f64, power f64 (f64 so the discrete energy-conservation
+        invariant holds to 1e-12 against the detected tallies), fx/fy/lam
+        f32, source_id/lam_stratum i16, gdd f32 (analytic envelope only).
+        fx/fy are the raw fractional pixel coords to_grid returns (pixel j
+        spans [j, j+1)); binning happens once, in finalize_time."""
+        n = len(power)
+        if n == 0:
+            return
+        rec = {
+            "t": np.asarray(gopl, dtype=np.float64) / C_LIGHT_MPS,
+            "fx": np.asarray(fx, dtype=np.float32),
+            "fy": np.asarray(fy, dtype=np.float32),
+            "lam": np.asarray(lam, dtype=np.float32),
+            "power": np.asarray(power, dtype=np.float64).copy(),
+            "source_id": np.broadcast_to(
+                np.asarray(source_id), (n,)).astype(np.int16),
+            "lam_stratum": np.broadcast_to(
+                np.asarray(lam_stratum), (n,)).astype(np.int16),
+        }
+        if self.time_envelope == "analytic":
+            rec["gdd"] = (np.asarray(gdd, dtype=np.float32) if gdd is not None
+                          else np.zeros(n, dtype=np.float32))
+        self.time_records.append(rec)
+
     def deposit_incoherent(self, points, power, lam,
-                          source_id=None, lam_stratum=None, pol_stratum=None):
+                          source_id=None, lam_stratum=None, pol_stratum=None,
+                          gopl=None, gdd=None):
         """Bilinear splat of ray power [W] at surface points (self.inc splat
         math is UNCHANGED between planar and curved — only to_grid differs).
         source_id/lam_stratum/pol_stratum are optional (None preserves the
         pre-existing call signature) per-ray keys used only to accumulate
         detected_incoherent[(s, l, p)] += power_sum, mirroring
         add_gather_samples' detected_geometric tally so the two populations
-        combine under the same key shape."""
+        combine under the same key shape. gopl/gdd (track_time only, also
+        optional): per-ray group path [m] / accumulated GDD [s^2] at the
+        hit, consumed ONLY by the time-product arrival recording — the
+        splat and every tally are untouched by their presence."""
         fx, fy = self.to_grid(points)
+        if self.time_record and gopl is not None:
+            self._record_time_arrivals(fx, fy, lam, power, source_id,
+                                       lam_stratum, gopl, gdd)
         fx = fx - 0.5
         fy = fy - 0.5
         x0 = np.floor(fx).astype(int)
@@ -84,10 +244,177 @@ class _IncoherentAccumMixin:
             self.detected_incoherent_n[key] = (
                 self.detected_incoherent_n.get(key, 0) + int(n))
 
+    # ------------------------------------------------------------------
+    # Time products (pulsed-optics P4)
+    # ------------------------------------------------------------------
+    def merged_time_records(self):
+        """Concatenated arrival-record columns, or None when nothing was
+        recorded."""
+        if not self.time_records:
+            return None
+        return {k: np.concatenate([r[k] for r in self.time_records])
+                for k in self.time_records[0]}
+
+    def finalize_time(self, cfg):
+        """Bin the buffered arrival records into the SELECTED time products
+        (cfg from run_trace.build_time_cfg: products/bins/window/envelope/
+        cube_res + the per-source pulse duration and per-(source, stratum)
+        angular bandwidth tables). Populates self.time_data (dataset name
+        -> array, consumed by run_trace.save_detectors) and self.time_attrs.
+
+        Products (all stored as arrival-power DENSITIES [W/s] along t, so
+        sum(product) * dt == summed in-window record power [W]):
+          time_profile            (n_t,)            float64
+          time_profile_by_source  (n_sources, n_t)  float64  (with 'pulse')
+          time_spectrogram        (spectral_bins, n_t)  float64
+          time_streak             (n_t, W)          float64
+          time_cube               (n_t, H', W')     float32 (H' = min(H,
+                                  cube_res); per-axis binning factor in
+                                  the attrs)
+
+        Envelope: 'analytic' (default) — each record deposits a Gaussian
+        of FWHM sqrt(tau0^2 + (2 sqrt(2 ln2) |gdd| domega_stratum)^2)
+        where tau0 is the record's SOURCE pulse duration (0 for CW — a
+        pure delta, histogram-like) and domega_stratum its wavelength
+        stratum's angular bandwidth (sources.stratum_domega, mapped via
+        (source_id, lam_stratum)); 'histogram' — a plain weighted
+        histogram of t. NOTE fringe-resolved timing is out of scope:
+        coherent records carry geometric power at geometric arrival time.
+
+        Window: explicit cfg['window'] (seconds), else the exact record
+        [t_min, t_max] padded by 3x the widest kernel FWHM. Per-record
+        discrete kernel normalization (see _splat_records) makes every
+        product conserve energy EXACTLY over the in-window bins, window
+        clipping included; fully-out-of-window (or non-finite-t) record
+        power is reported in time_excluded_W."""
+        products = tuple(cfg.get("products") or ())
+        if not products or not self.time_record:
+            return
+        n_t = int(cfg["bins"])
+        envelope = cfg.get("envelope") or "analytic"
+        n_src = max(int(cfg.get("n_sources", 1)), 1)
+        recs = self.merged_time_records() or {
+            "t": np.zeros(0), "fx": np.zeros(0, np.float32),
+            "fy": np.zeros(0, np.float32), "lam": np.zeros(0, np.float32),
+            "power": np.zeros(0), "source_id": np.zeros(0, np.int16),
+            "lam_stratum": np.zeros(0, np.int16)}
+        n_all = len(recs["t"])
+        finite = np.isfinite(recs["t"])
+        excl_nonfinite = float(np.sum(recs["power"][~finite]))
+        if not np.all(finite):
+            recs = {k: v[finite] for k, v in recs.items()}
+        t = recs["t"]
+        power = recs["power"]
+        sid = np.clip(recs["source_id"].astype(np.int64), 0, n_src - 1)
+
+        # per-record kernel FWHM
+        if envelope == "analytic" and len(t):
+            tau0 = np.asarray(cfg["tau0_by_source"], dtype=np.float64)
+            dom = np.asarray(cfg["domega"], dtype=np.float64)
+            k_i = np.clip(recs["lam_stratum"].astype(np.int64), 0,
+                          dom.shape[1] - 1)
+            gdd = recs.get("gdd")
+            gdd = np.abs(np.asarray(gdd, dtype=np.float64)) \
+                if gdd is not None else np.zeros(len(t))
+            fwhm = np.sqrt(tau0[sid] ** 2
+                           + (_FWHM_SIGMA * gdd * dom[sid, k_i]) ** 2)
+        else:
+            fwhm = np.zeros(len(t))
+        sigma = fwhm / _FWHM_SIGMA
+
+        window = cfg.get("window")
+        if window is not None:
+            t_lo, t_hi = float(window[0]), float(window[1])
+        elif len(t):
+            pad = 3.0 * float(fwhm.max()) if len(fwhm) else 0.0
+            t_lo = float(t.min()) - pad
+            t_hi = float(t.max()) + pad
+        else:
+            t_lo, t_hi = 0.0, 1e-9
+        if not (t_hi > t_lo):
+            # a single delta arrival under histogram mode: open a minimal
+            # window so dt stays finite
+            eps = max(1e-12, abs(t_lo) * 1e-9)
+            t_lo, t_hi = t_lo - eps, t_hi + eps
+        dt = (t_hi - t_lo) / n_t
+
+        # power-weighted arrival-time percentiles (diagnostic attrs)
+        if len(t) and float(power.sum()) > 0.0:
+            order = np.argsort(t)
+            cw = np.cumsum(power[order])
+            cw = cw / cw[-1]
+            t_p001 = float(np.interp(1e-3, cw, t[order]))
+            t_p999 = float(np.interp(1.0 - 1e-3, cw, t[order]))
+        else:
+            t_p001 = t_p999 = t_lo
+
+        # sort by kernel width once; every product splats the same sorted
+        # records with a different row index (aux)
+        srt = np.argsort(sigma, kind="stable")
+        t_s, p_s, sig_s = t[srt], power[srt], sigma[srt]
+        fx_s = recs["fx"][srt].astype(np.float64)
+        fy_s = recs["fy"][srt].astype(np.float64)
+        lam_s = recs["lam"][srt].astype(np.float64)
+        sid_s = sid[srt]
+
+        data = {}
+        excl_win = None
+        if "pulse" in products:
+            acc = np.zeros((n_src, n_t))
+            excl_win = _splat_records(acc, t_s, sig_s, p_s, sid_s, t_lo, dt)
+            data["time_profile"] = acc.sum(axis=0) / dt
+            data["time_profile_by_source"] = acc / dt
+        if "spectrogram" in products:
+            acc = np.zeros((self.spectral_bins, n_t))
+            e = _splat_records(acc, t_s, sig_s, p_s,
+                               self.lam_bin(lam_s), t_lo, dt)
+            excl_win = e if excl_win is None else excl_win
+            data["time_spectrogram"] = acc / dt
+        if "streak" in products:
+            xp = np.clip(np.floor(fx_s).astype(np.int64), 0, self.W - 1)
+            acc = np.zeros((self.W, n_t))
+            e = _splat_records(acc, t_s, sig_s, p_s, xp, t_lo, dt)
+            excl_win = e if excl_win is None else excl_win
+            data["time_streak"] = np.ascontiguousarray(acc.T) / dt
+        cube_res = int(cfg.get("cube_res") or 256)
+        if "cube" in products:
+            H2, W2 = min(self.H, cube_res), min(self.W, cube_res)
+            yp = np.clip(np.floor(fy_s * (H2 / self.H)).astype(np.int64),
+                         0, H2 - 1)
+            xp = np.clip(np.floor(fx_s * (W2 / self.W)).astype(np.int64),
+                         0, W2 - 1)
+            acc = np.zeros((H2 * W2, n_t), dtype=np.float32)
+            e = _splat_records(acc, t_s, sig_s, p_s, yp * W2 + xp, t_lo, dt)
+            excl_win = e if excl_win is None else excl_win
+            data["time_cube"] = np.ascontiguousarray(np.transpose(
+                acc.reshape(H2, W2, n_t), (2, 0, 1))) / np.float32(dt)
+        excl_win = excl_win or 0.0
+
+        self.time_data = data
+        self.time_attrs = {
+            "t_lo_s": float(t_lo), "t_hi_s": float(t_hi),
+            "time_bins": int(n_t), "time_dt_s": float(dt),
+            "time_envelope": str(envelope),
+            "time_products": ",".join(products),
+            "time_cube_res": int(cube_res),
+            "t_p001_s": t_p001, "t_p999_s": t_p999,
+            "time_n_records": int(n_all),
+            "time_total_W": float(np.sum(p_s)) - float(excl_win),
+            "time_excluded_W": float(excl_win) + excl_nonfinite,
+            "time_window_explicit": bool(window is not None),
+        }
+        if "cube" in products:
+            self.time_attrs.update({
+                "time_cube_H": int(min(self.H, cube_res)),
+                "time_cube_W": int(min(self.W, cube_res)),
+                "time_cube_bin_y": float(self.H / min(self.H, cube_res)),
+                "time_cube_bin_x": float(self.W / min(self.W, cube_res)),
+            })
+
 
 class DetectorGrid(_IncoherentAccumMixin):
     def __init__(self, face, resolution, spectral_bins, lam_range,
-                 label=""):
+                 label="", time_rec=None):
         surf = face.surface
         if surf.__class__.__name__ != "Plane":
             raise NotImplementedError(
@@ -143,6 +470,7 @@ class DetectorGrid(_IncoherentAccumMixin):
         # of per-ray arrays), populated by Tracer._export_records when the
         # trace config has export_rays on. Empty otherwise (zero overhead).
         self.ray_records = []
+        self._init_time(time_rec)
 
         # trim mask in pixel space
         xs = self.x_lo + (np.arange(self.W) + 0.5) * self.pixel_m
@@ -172,15 +500,29 @@ class DetectorGrid(_IncoherentAccumMixin):
 
     def add_gather_samples(self, source_id, lam_stratum, pol_stratum,
                            pos, direction, Es, Ep, s_hat, lam, opl, power,
-                           scattered, dA=None):
+                           scattered, dA=None, pos_hit=None, gopl=None,
+                           gdd=None):
         """Record coherent Huygens samples (ray states at the segment start
         that reached this detector). Keyed per (source, wavelength stratum,
         polarization stratum): different strata never interfere.
 
         dA: optional per-sample wavefront patch areas [m^2] from ray-
         differential tracking (--ray-differentials); NaN entries fall back
-        to the source-referenced sample_area in the gather."""
+        to the source-referenced sample_area in the gather.
+
+        pos_hit/gopl/gdd (track_time only, all optional): the GEOMETRIC
+        hit point on the detector and the group path [m] / accumulated GDD
+        [s^2] advanced to it. Consumed ONLY by the time-product arrival
+        recording — coherent rays contribute their GEOMETRIC power at
+        their geometric arrival time (fringe-resolved timing is out of
+        scope: the Huygens gather reconstructs stationary interference,
+        and its phase math is untouched by these kwargs — the sample dicts
+        below are byte-identical with or without them)."""
         key = (int(source_id), int(lam_stratum), int(pol_stratum))
+        if self.time_record and gopl is not None and pos_hit is not None:
+            fx, fy = self.to_grid(pos_hit)
+            self._record_time_arrivals(fx, fy, lam, power, key[0], key[1],
+                                       gopl, gdd)
         rec = self.samples.setdefault(key, [])
         if dA is None:
             dA = np.full(len(lam), np.nan)
@@ -226,7 +568,7 @@ class CurvedDetectorGrid(_IncoherentAccumMixin):
     """
 
     def __init__(self, face, resolution, spectral_bins, lam_range,
-                 label=""):
+                 label="", time_rec=None):
         surf = face.surface
         stype = surf.__class__.__name__
         if stype not in ("Sphere", "Cylinder"):
@@ -290,6 +632,7 @@ class CurvedDetectorGrid(_IncoherentAccumMixin):
         self.detected_incoherent = {}
         self.detected_incoherent_n = {}
         self.ray_records = []
+        self._init_time(time_rec)
 
         # nominal in-plane frame at the arc center so --export-rays' meta
         # (xhat/yhat/normal/x_lo/y_lo) stays populated; NOT used by the splat.

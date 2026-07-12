@@ -152,6 +152,14 @@ def detect_features(args, scene):
         feats.add("viz_pattern")
     if args.save_fields:
         feats.add("save_fields")
+    # pulsed-optics time products (P4): time-binned detector recording
+    # (track_time + arrival records) exists in the Python engine only.
+    # resolve_time_products folds in BOTH triggers — an explicit
+    # --time-products AND the auto-enable rule (pulsed source present, no
+    # flag) — so routing can never disagree with run_trace's activation.
+    from .detector import resolve_time_products
+    if resolve_time_products(args, scene):
+        feats.add("time_products")
     return feats
 
 

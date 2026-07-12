@@ -39,11 +39,12 @@ from raytracer.materials import MaterialDB, load_coatings  # noqa: E402
 from raytracer.scene import Scene                        # noqa: E402
 from raytracer.sources import (sample_source, wavelength_strata,  # noqa: E402
                                n_pol_strata, sample_viz_pattern,
-                               apply_stratum_t0)
+                               apply_stratum_t0, stratum_domega)
 from raytracer.tracer import (Tracer, TraceConfig,       # noqa: E402
                               TraceResult, VizStore)
 from raytracer.detector import (DetectorGrid,            # noqa: E402
-                                CurvedDetectorGrid)
+                                CurvedDetectorGrid,
+                                resolve_time_products)
 from raytracer.rays import HIST_DEPTH                    # noqa: E402
 from raytracer.audit import PowerLedger                  # noqa: E402
 # NB: `gather` (the torch-CUDA coherent Huygens gather) is imported LAZILY
@@ -98,7 +99,7 @@ def lam_range_nm(scene):
     return (lo - pad) * 1e-9, (hi + pad) * 1e-9
 
 
-def _make_grid(face, args, lam_range):
+def _make_grid(face, args, lam_range, time_rec=None):
     """Dispatch a detector face to the right grid class by its surface type:
     planar -> DetectorGrid (unchanged), Sphere/Cylinder -> CurvedDetectorGrid;
     any other analytic/mesh surface falls through to DetectorGrid, which
@@ -107,17 +108,53 @@ def _make_grid(face, args, lam_range):
     cls = CurvedDetectorGrid if stype in ("Sphere", "Cylinder") \
         else DetectorGrid
     return cls(face, args.resolution, args.spectral_bins, lam_range,
-               label=face.id)
+               label=face.id, time_rec=time_rec)
 
 
-def build_detectors(scene, args, lam_range):
+def build_detectors(scene, args, lam_range, time_rec=None):
+    """time_rec: None (the pre-existing zero-overhead default) or
+    {'envelope': ...} to buffer time-product arrival records in every grid
+    (pulsed-optics P4; seed 0 only, like --save-fields/--export-rays)."""
     grids = {}
     for fid in scene.detector_faces:
-        grids[fid] = _make_grid(scene.faces[fid], args, lam_range)
+        grids[fid] = _make_grid(scene.faces[fid], args, lam_range,
+                                time_rec=time_rec)
     for fid in scene.extra_detector_faces:
         if fid not in grids:
-            grids[fid] = _make_grid(scene.faces[fid], args, lam_range)
+            grids[fid] = _make_grid(scene.faces[fid], args, lam_range,
+                                    time_rec=time_rec)
     return grids
+
+
+def build_time_cfg(args, scene, products):
+    """The finalize_time config (pulsed-optics P4), or None when no time
+    product is active. Carries the CLI knobs plus the two per-source
+    tables the analytic envelope needs at finalize time — records carry
+    (source_id, lam_stratum), and this maps them to the source pulse
+    duration tau0 [s] and the stratum angular bandwidth [rad/s]
+    (sources.stratum_domega over wavelength_strata's edges). Chosen over
+    threading per-record columns: 16 bytes/record saved, and the mapping
+    is exact (strata are deterministic per source)."""
+    if not products:
+        return None
+    n_src = len(scene.sources)
+    strata = [wavelength_strata(src, args.nlambda)
+              for _, src in scene.sources]
+    n_max = max((len(s) for s in strata), default=1)
+    tau0 = np.zeros(max(n_src, 1))
+    dom = np.zeros((max(n_src, 1), n_max))
+    for sid, (_, src) in enumerate(scene.sources):
+        pulse = src.get("pulse") or {}
+        tau0[sid] = float(pulse.get("duration_s") or 0.0)
+        dw = stratum_domega(strata[sid])
+        dom[sid, :len(dw)] = dw
+    window = None
+    if args.time_window is not None:
+        window = (args.time_window[0] * 1e-9, args.time_window[1] * 1e-9)
+    return {"products": tuple(products), "bins": int(args.time_bins),
+            "window": window, "envelope": args.time_envelope,
+            "cube_res": int(args.time_cube_res),
+            "tau0_by_source": tau0, "domega": dom, "n_sources": n_src}
 
 
 def resolve_workers(val):
@@ -265,6 +302,7 @@ def _extract_detector_payload(grid):
         "detected_incoherent_n": dict(grid.detected_incoherent_n),
         "samples": grid.samples,
         "ray_records": grid.ray_records,
+        "time_records": grid.time_records,
     }
 
 
@@ -282,18 +320,21 @@ def _merge_detector_payload(grid, dp):
     for k, recs in dp["samples"].items():
         grid.samples.setdefault(k, []).extend(recs)
     grid.ray_records.extend(dp["ray_records"])
+    grid.time_records.extend(dp.get("time_records", []))
 
 
 def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                   lam_range, particle_lams, export, viz_caps,
-                  track_history=False, track_time=False):
+                  track_history=False, track_time=False, time_rec=None):
     """One trace shard, run in a spawned process. Rebuilds the Scene from
     args.model_json (cheap; Scene is never pickled), traces rays_i primaries
     per source with an independent RNG stream, and returns a picklable
     accumulator payload for the parent to merge. NEVER imports/uses gather
-    (torch) so spawning stays CUDA-safe. Only worker 0 records viz rays."""
+    (torch) so spawning stays CUDA-safe. Only worker 0 records viz rays.
+    time_rec: every shard buffers arrival records (they concatenate in the
+    parent's merge, order-independent by construction)."""
     scene = build_scene(args)
-    grids = build_detectors(scene, args, lam_range)
+    grids = build_detectors(scene, args, lam_range, time_rec=time_rec)
     rng = np.random.default_rng(child_seq)
     cfg = TraceConfig(max_reflections=args.max_reflections,
                       power_floor=args.power_floor,
@@ -410,7 +451,7 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
 
 def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
                  export, workers, viz_caps, grids, track_history=False,
-                 track_time=False):
+                 track_time=False, time_rec=None):
     """Multi-process trace: N spawned shards trace rays/N primaries each with
     independent RNG streams; the parent merges their accumulators into `grids`
     and a fresh ledger. Returns (TraceResult, trace_s). The gather still runs
@@ -422,7 +463,7 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
     children = np.random.SeedSequence(seed).spawn(n_workers)
     tasks = [(args, children[i], i, rays_list[i], total, lam_range,
               particle_lams, export, (viz_caps if i == 0 else 0),
-              track_history, track_time)
+              track_history, track_time, time_rec)
              for i in range(n_workers)]
     print("[trace] --workers %d: sharding %d rays/source (%s) across "
           "spawned processes; gather runs single-process in the parent"
@@ -457,25 +498,27 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
 
 def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag,
                  export=False, workers=1, track_history=False,
-                 track_time=False, save_fields_labels=None):
+                 track_time=False, save_fields_labels=None, time_rec=None):
     """Trace one seed. workers<=1 keeps the exact pre-sharding single-process
     path (bit-identical); workers>1 shards the trace across spawned processes
     and merges. Either way the coherent gather runs ONCE in the parent.
     track_history allocates RayBatch.refl_hist (ghost/stray-light face-id
     history); it rides in the export ray records exactly like every other
     field, so the --workers merge concatenates it too. save_fields_labels:
-    see _do_gather / resolve_save_fields_detectors."""
+    see _do_gather / resolve_save_fields_detectors. time_rec: time-product
+    arrival recording config for the detector grids (seed 0 only, set by
+    the caller — see build_detectors)."""
     pattern = (common.parse_viz_pattern_spec(args.viz_pattern)
                if args.viz_pattern else None)
     viz_caps = compute_viz_caps(scene, args, pattern)
-    grids = build_detectors(scene, args, lam_range)
+    grids = build_detectors(scene, args, lam_range, time_rec=time_rec)
     sample_area = compute_sample_area(scene, args)
 
     if workers > 1 and int(args.rays) > 1:
         result, trace_s = _run_sharded(
             scene, args, seed, lam_range, particle_lams, case_diag,
             export, workers, viz_caps, grids, track_history=track_history,
-            track_time=track_time)
+            track_time=track_time, time_rec=time_rec)
     else:
         result, trace_s = _run_single(
             scene, args, seed, particle_lams, case_diag, export,
@@ -626,6 +669,14 @@ def save_detectors(case_dir, grids_list, seeds):
                 grp_name = "fields/%s" % "_".join(str(k) for k in key)
                 h[grp_name + "/Ex"] = Ex
                 h[grp_name + "/Ey"] = Ey
+            # time products (pulsed-optics P4; seed0 only, populated by
+            # finalize_time): time_profile / time_profile_by_source /
+            # time_spectrogram / time_streak / time_cube datasets + the
+            # t_lo_s/t_hi_s/time_* attrs. Absent entirely (byte-compatible
+            # .h5) when no time product was active.
+            for name, arr in getattr(g0, "time_data", {}).items():
+                h[name] = arr
+            h.attrs.update(getattr(g0, "time_attrs", {}) or {})
             h.attrs.update({
                 "label": label, "H": g0.H, "W": g0.W,
                 "pixel_m": g0.pixel_m,
@@ -805,9 +856,28 @@ def _main_locked(args, case_dir):
     export_on = args.export_rays or args.ghost_analysis
 
     # track_time: pulsed-optics time-domain accumulators (gopl/gdd_acc per
-    # ray, per-body path tally). P2 lands the engine core behind this
-    # INTERNAL switch; a later phase adds the CLI flag that drives it.
-    track_time = False
+    # ray, per-body path tally), driven by the resolved time products
+    # (--time-products / the pulsed-source auto-rule — P4). When active the
+    # engine was already forced to Python above (cengine.detect_features
+    # adds the 'time_products' feature via the SAME resolver).
+    time_products = resolve_time_products(args, scene)
+    time_cfg = build_time_cfg(args, scene, time_products)
+    track_time = bool(time_products)
+    if track_time:
+        case["time_products"] = {
+            "products": list(time_products),
+            "bins": int(args.time_bins),
+            "envelope": args.time_envelope,
+            "cube_res": int(args.time_cube_res),
+            "window_ns": list(args.time_window)
+            if args.time_window is not None else None,
+            "auto_enabled": args.time_products is None,
+        }
+        print("[trace] time products: %s (bins=%d, envelope=%s%s)"
+              % (",".join(time_products), args.time_bins,
+                 args.time_envelope,
+                 ", auto-enabled by pulsed source"
+                 if args.time_products is None else ""), flush=True)
 
     case_diag = {}
     grids_list = []
@@ -828,7 +898,9 @@ def _main_locked(args, case_dir):
             export=(export_on and s == 0), workers=workers,
             track_history=(args.ghost_analysis and s == 0),
             track_time=track_time,
-            save_fields_labels=save_fields_labels)
+            save_fields_labels=save_fields_labels,
+            time_rec=({"envelope": args.time_envelope}
+                      if track_time and s == 0 else None))
         grids_list.append(grids)
         rep = result.ledger.report(result.source_names)
         if track_time:
@@ -853,6 +925,12 @@ def _main_locked(args, case_dir):
     if export_on and grids_list:
         write_rays_full(case_dir, grids_list[0], args,
                         Path(args.model_json).parent.name, scene=scene)
+    if time_cfg is not None and grids_list:
+        # bin the seed-0 arrival records into the selected time products
+        # (seed 0 only, like --save-fields; save_detectors writes the
+        # populated time_data/time_attrs alongside the spectral cubes)
+        for grid in grids_list[0].values():
+            grid.finalize_time(time_cfg)
     save_detectors(case_dir, grids_list, args.seeds)
     common.write_json(case_dir / "audit.json",
                       {"per_seed": audits, "gate": 1e-3})
