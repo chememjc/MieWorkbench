@@ -22,6 +22,8 @@
  "props": {
   "coherent": true,
   "lambdac": 1560.0,
+  "lambdamax": 1594.0,
+  "lambdamin": 1526.0,
   "polarization": "linear:0",
   "power": 350.0,
   "pulse_duration": 0.1,
