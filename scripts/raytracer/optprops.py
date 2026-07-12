@@ -11,6 +11,8 @@
 #     filter/filters.csv             registry -> tables/<name>.csv
 #     coating/coatings.csv           TMM stacks + measured tables (materials.py)
 #     grating/gratings.csv           registry (kogelnik/dammann/table models)
+#     nonlinear/nonlinear.mienlo     chi2 tensors/processes + Pockels + Kerr
+#                                    n2 + saturable absorbers (nlo.py math)
 #
 # Every registry hard-validates its referenced table files at load time and
 # requires a non-empty `reference` (citation) column — same policy as
@@ -37,6 +39,7 @@ DEFAULT_FILTERS_CSV = DEFAULT_OPTPROPS_DIR / "filter" / "filters.miefilt"
 DEFAULT_GRATINGS_CSV = DEFAULT_OPTPROPS_DIR / "grating" / "gratings.miegrat"
 DEFAULT_DETECTORS_CSV = DEFAULT_OPTPROPS_DIR / "detector" / "detectors.miedet"
 DEFAULT_EMISSION_CSV = DEFAULT_OPTPROPS_DIR / "emission" / "emitters.miesrc"
+DEFAULT_NONLINEAR_CSV = DEFAULT_OPTPROPS_DIR / "nonlinear" / "nonlinear.mienlo"
 
 POLARIZER_TYPES = ("linear", "circular_left", "circular_right")
 GRATING_MODELS = ("lamellar", "bragg_kogelnik", "dammann", "table")
@@ -44,6 +47,11 @@ GRATING_MODELS = ("lamellar", "bragg_kogelnik", "dammann", "table")
 # and 'line' (discrete point-mass lines) are staged in library_data/ but need
 # their own source models — rejected here rather than silently mis-sampled.
 EMISSION_KINDS = ("continuous",)
+# nonlinear/nonlinear.mienlo row kinds (pulsed-optics round; the math lives
+# in raytracer/nlo.py, the tracer-side SHG event is a later phase).
+NLO_KINDS = ("chi2_tensor", "chi2_process", "pockels", "n2", "saturable")
+NLO_PROCESSES = ("shg_type1", "shg_type2")
+NLO_GEOMETRIES = ("longitudinal", "transverse")
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +601,237 @@ def load_scatter(csv_path=None):
     return out
 
 
+# ---------------------------------------------------------------------------
+# nonlinear/nonlinear.mienlo  (chi2 tensors + SHG process rows + Pockels +
+# Kerr n2 + saturable absorbers)
+# ---------------------------------------------------------------------------
+def _read_registry_commented(csv_path, required_cols, what):
+    """_read_registry variant that skips full-line '#' comments (the .mienlo
+    registry documents its d_il packing in a file-header comment block).
+    Same return shape [(name, row, ctx)], with ctx line numbers counted
+    against the ORIGINAL file. Quoted fields must not span lines here."""
+    csv_path = resolve_prop_path(Path(csv_path))
+    if not csv_path.exists():
+        raise MaterialError("%s csv not found: %s" % (what, csv_path))
+    kept, linenos = [], []
+    with open(csv_path, newline="") as fh:
+        for lineno, line in enumerate(fh, start=1):
+            if line.lstrip().startswith("#"):
+                continue
+            kept.append(line)
+            linenos.append(lineno)
+    reader = csv.DictReader(kept)
+    missing = required_cols - set(reader.fieldnames or [])
+    if missing:
+        raise MaterialError("%s csv %s: missing required column(s) %s"
+                            % (what, csv_path, sorted(missing)))
+    out = []
+    for i, row in enumerate(reader):
+        lineno = linenos[i + 1] if i + 1 < len(linenos) else linenos[-1]
+        name = (row.get("name") or "").strip()
+        ctx = "%s line %d (%r)" % (csv_path.name, lineno,
+                                   name or "<blank name>")
+        if not name:
+            raise MaterialError("%s: missing name" % ctx)
+        if any(name.lower() == n.lower() for n, _, _ in out):
+            raise MaterialError("%s: duplicate name" % ctx)
+        reference = (row.get("reference") or "").strip()
+        if not reference:
+            raise MaterialError("%s: reference is required" % ctx)
+        out.append((name, row, ctx))
+    return out
+
+
+def _nlo_float(row, col, ctx, positive=False, nonzero=False,
+               nonnegative=False):
+    raw = (row.get(col) or "").strip()
+    if not raw:
+        raise MaterialError("%s: %s is required" % (ctx, col))
+    try:
+        val = float(raw)
+    except ValueError:
+        raise MaterialError("%s: %s %r not numeric" % (ctx, col, raw))
+    if not np.isfinite(val):
+        raise MaterialError("%s: %s must be finite" % (ctx, col))
+    if positive and val <= 0:
+        raise MaterialError("%s: %s must be > 0 (got %g)" % (ctx, col, val))
+    if nonnegative and val < 0:
+        raise MaterialError("%s: %s must be >= 0 (got %g)" % (ctx, col, val))
+    if nonzero and val == 0:
+        raise MaterialError("%s: %s must be non-zero" % (ctx, col))
+    return val
+
+
+def _parse_d_il(raw, ctx):
+    """Unpack a d_il_pm_V cell into a (3, 6) float64 array.
+
+    Packing (documented in the .mienlo header too): the full 3x6 contracted
+    (Voigt) d-matrix ROW-MAJOR — three '|'-separated rows i = 1..3
+    (polarization component), each exactly six ';'-separated floats
+    l = 1..6 (11->1, 22->2, 33->3, 23/32->4, 13/31->5, 12/21->6), pm/V,
+    crystal principal frame:  d11;d12;...;d16|d21;...;d26|d31;...;d36
+    """
+    rows = [r.strip() for r in (raw or "").strip().split("|")]
+    if len(rows) != 3 or not all(rows):
+        raise MaterialError(
+            "%s: d_il_pm_V must pack exactly 3 '|'-separated rows "
+            "(d11;..;d16|d21;..;d26|d31;..;d36), got %r" % (ctx, raw))
+    mat = []
+    for i, r in enumerate(rows):
+        parts = [p.strip() for p in r.split(";")]
+        if len(parts) != 6:
+            raise MaterialError(
+                "%s: d_il_pm_V row %d must have exactly 6 ';'-separated "
+                "entries (got %d)" % (ctx, i + 1, len(parts)))
+        try:
+            mat.append([float(p) for p in parts])
+        except ValueError:
+            raise MaterialError("%s: d_il_pm_V row %d not numeric: %r"
+                                % (ctx, i + 1, r))
+    arr = np.asarray(mat, dtype=np.float64)
+    if not np.all(np.isfinite(arr)):
+        raise MaterialError("%s: d_il_pm_V entries must be finite" % ctx)
+    return arr
+
+
+def _parse_r_coeffs(raw, ctx):
+    """'r63=26.4' / 'r33=30.8;r13=8.6' -> {'r63': 26.4, ...} (pm/V)."""
+    out = {}
+    for kv in (raw or "").strip().split(";"):
+        kv = kv.strip()
+        if not kv:
+            continue
+        if "=" not in kv:
+            raise MaterialError(
+                "%s: bad r_coeffs_pm_V entry %r (want rNN=value)" % (ctx, kv))
+        k, v = kv.split("=", 1)
+        k = k.strip()
+        if len(k) < 2 or k[0] != "r" or not k[1:].isdigit():
+            raise MaterialError(
+                "%s: r_coeffs_pm_V key %r must be an rNN electro-optic "
+                "coefficient name" % (ctx, k))
+        try:
+            out[k] = float(v)
+        except ValueError:
+            raise MaterialError("%s: r_coeffs_pm_V %r=%r is not numeric"
+                                % (ctx, k, v))
+    if not out:
+        raise MaterialError(
+            "%s: r_coeffs_pm_V is required (named ';'-packed pairs, e.g. "
+            "'r63=26.4')" % ctx)
+    return out
+
+
+def load_nonlinear(csv_path=None, uniaxial=None, biaxial=None):
+    """-> {name: row-dict} from nonlinear/nonlinear.mienlo. One 'kind' key
+    discriminates row types (NLO_KINDS); per kind the parsed fields are:
+
+      chi2_tensor : crystal, point_group, d_il_pm_V ((3,6) float64 array —
+                    see _parse_d_il for the ';'/'|' packing), kleinman
+                    (bool), lam_ref_nm
+      chi2_process: crystal, process (NLO_PROCESSES), lam_pump_nm,
+                    theta_deg, phi_deg, d_eff_pm_V
+      pockels     : crystal, r_pm_V ({'r63': 26.4, ...}), geometry
+                    (NLO_GEOMETRIES)
+      n2          : material, n2_m2_W, lam_ref_nm
+      saturable   : I_sat_W_cm2 (> 0), T0 (unsaturated transmission/
+                    reflectance in (0, 1]), tau_recovery_s (>= 0)
+
+    plus 'reference' (required, hard-validated) and 'notes' on every row.
+    Full-line '#' comments in the csv are skipped.
+
+    Validation of cross-registry names: 'crystal' (chi2_*/pockels rows) is
+    checked against the uniaxial/biaxial registries when either handle is
+    passed (load_optical_properties passes both); with neither handle the
+    check is skipped so the registry can be loaded standalone. 'material'
+    (n2 rows) is NOT resolved here — the Kerr consumer resolves it against
+    MaterialDB at use time, LAZILY BY DESIGN: staged rows (n2_yag) may
+    precede their materials.miemat index row.
+    """
+    csv_path = Path(csv_path) if csv_path is not None else DEFAULT_NONLINEAR_CSV
+    known = None
+    if uniaxial is not None or biaxial is not None:
+        known = {str(k).strip().lower() for k in (uniaxial or {})} \
+            | {str(k).strip().lower() for k in (biaxial or {})}
+    out = {}
+    for name, row, ctx in _read_registry_commented(
+            csv_path, {"name", "kind", "reference"}, "nonlinear"):
+        kind = (row.get("kind") or "").strip()
+        if kind not in NLO_KINDS:
+            raise MaterialError("%s: kind %r must be one of %s"
+                                % (ctx, kind, ", ".join(NLO_KINDS)))
+        entry = {"kind": kind,
+                 "reference": (row.get("reference") or "").strip(),
+                 "notes": (row.get("notes") or "").strip()}
+        if kind in ("chi2_tensor", "chi2_process", "pockels"):
+            crystal = (row.get("crystal") or "").strip()
+            if not crystal:
+                raise MaterialError("%s: crystal is required for kind=%s"
+                                    % (ctx, kind))
+            if known is not None and crystal.lower() not in known:
+                raise MaterialError(
+                    "%s: crystal %r is not a birefringence registry row "
+                    "(uniaxial.miebrf / biaxial.mibiax)" % (ctx, crystal))
+            entry["crystal"] = crystal
+        if kind == "chi2_tensor":
+            point_group = (row.get("point_group") or "").strip()
+            if not point_group:
+                raise MaterialError("%s: point_group is required" % ctx)
+            kl = (row.get("kleinman") or "").strip().lower()
+            if kl not in ("true", "false"):
+                raise MaterialError("%s: kleinman must be 'true' or 'false' "
+                                    "(got %r)" % (ctx, kl))
+            entry.update(
+                point_group=point_group,
+                d_il_pm_V=_parse_d_il(row.get("d_il_pm_V"), ctx),
+                kleinman=(kl == "true"),
+                lam_ref_nm=_nlo_float(row, "lam_ref_nm", ctx, positive=True))
+        elif kind == "chi2_process":
+            process = (row.get("process") or "").strip()
+            if process not in NLO_PROCESSES:
+                raise MaterialError("%s: process %r must be one of %s"
+                                    % (ctx, process, ", ".join(NLO_PROCESSES)))
+            entry.update(
+                process=process,
+                lam_pump_nm=_nlo_float(row, "lam_pump_nm", ctx,
+                                       positive=True),
+                theta_deg=_nlo_float(row, "theta_deg", ctx),
+                phi_deg=_nlo_float(row, "phi_deg", ctx),
+                d_eff_pm_V=_nlo_float(row, "d_eff_pm_V", ctx, nonzero=True))
+        elif kind == "pockels":
+            geometry = (row.get("geometry") or "").strip()
+            if geometry not in NLO_GEOMETRIES:
+                raise MaterialError("%s: geometry %r must be one of %s"
+                                    % (ctx, geometry,
+                                       ", ".join(NLO_GEOMETRIES)))
+            entry.update(
+                r_pm_V=_parse_r_coeffs(row.get("r_coeffs_pm_V"), ctx),
+                geometry=geometry)
+        elif kind == "n2":
+            material = (row.get("material") or "").strip()
+            if not material:
+                raise MaterialError("%s: material is required for kind=n2"
+                                    % ctx)
+            entry.update(
+                material=material,
+                n2_m2_W=_nlo_float(row, "n2_m2_W", ctx, nonzero=True),
+                lam_ref_nm=_nlo_float(row, "lam_ref_nm", ctx, positive=True))
+        elif kind == "saturable":
+            T0 = _nlo_float(row, "T0", ctx, positive=True)
+            if T0 > 1.0:
+                raise MaterialError(
+                    "%s: T0 must be in (0, 1] (a fractional unsaturated "
+                    "transmission/reflectance, got %g)" % (ctx, T0))
+            entry.update(
+                I_sat_W_cm2=_nlo_float(row, "I_sat_W_cm2", ctx,
+                                       positive=True),
+                T0=T0,
+                tau_recovery_s=_nlo_float(row, "tau_recovery_s", ctx,
+                                          nonnegative=True))
+        out[name] = entry
+    return out
+
+
 class OpticalProperties:
     """Everything loaded from an opticalproperties/ root. Attributes:
     matdb (MaterialDB, with uniaxial attached), coatings, polarizers,
@@ -600,11 +839,11 @@ class OpticalProperties:
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
                  "gratings", "uniaxial", "biaxial", "diffusers", "detectors",
-                 "scatter", "emission")
+                 "scatter", "emission", "nonlinear")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
                  uniaxial, diffusers=None, detectors=None, biaxial=None,
-                 scatter=None, emission=None):
+                 scatter=None, emission=None, nonlinear=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -617,6 +856,7 @@ class OpticalProperties:
         self.detectors = detectors if detectors is not None else {}
         self.scatter = scatter if scatter is not None else {}
         self.emission = emission if emission is not None else {}
+        self.nonlinear = nonlinear if nonlinear is not None else {}
 
 
 def load_optical_properties(root=None, db=None):
@@ -659,7 +899,10 @@ def load_optical_properties(root=None, db=None):
                            root / "detector" / "detectors.miedet"),
         scatter=optional(load_scatter, root / "scatter" / "bsdf.miebsdf"),
         emission=optional(load_emission,
-                          root / "emission" / "emitters.miesrc"))
+                          root / "emission" / "emitters.miesrc"),
+        nonlinear=optional(load_nonlinear,
+                           root / "nonlinear" / "nonlinear.mienlo",
+                           uniaxial=uniaxial, biaxial=biaxial))
 
 
 # ---------------------------------------------------------------------------
@@ -681,3 +924,5 @@ if __name__ == "__main__":
     print("  scatter   : %d" % len(props.scatter))
     print("  emission  : %d  (%s)" % (len(props.emission),
                                       ", ".join(sorted(props.emission))))
+    print("  nonlinear : %d  (%s)" % (len(props.nonlinear),
+                                      ", ".join(sorted(props.nonlinear))))
