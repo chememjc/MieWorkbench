@@ -25,11 +25,11 @@ HIST_DEPTH = 8
 class RayBatch:
     __slots__ = ("pos", "dir", "s_hat", "Es", "Ep", "lam", "opl",
                  "medium", "depth", "source_id", "lam_stratum",
-                 "pol_stratum", "pol_mode", "n_eff",
+                 "pol_stratum", "pol_mode", "n_eff", "n_g_eff",
                  "generation", "last_face", "coherent", "birth_power",
                  "viz_flag", "scattered",
                  "dPdx", "dDdx", "dPdy", "dDdy", "birth_pos", "k_dir",
-                 "refl_hist")
+                 "refl_hist", "gopl", "gdd_acc")
 
     # ray-differential slots (Igehy): allocated ONLY under
     # --ray-differentials (None otherwise — +96 B/ray when on). NaN rows
@@ -50,6 +50,15 @@ class RayBatch:
     # k must be carried explicitly. Allocated only by the biaxial entry
     # interface; NaN rows in a mixed concat are rays that never entered a
     # biaxial medium (their pol_mode is 0/1 and k_dir is never read).
+
+    # gopl / gdd_acc: time-domain accumulators (TraceConfig.track_time;
+    # None otherwise, +16 B/ray when on, same optional-slot lifecycle as
+    # birth_pos). gopl = accumulated GROUP optical path Sum(n_g * ds)
+    # [metres] (envelope arrival time = gopl / c); gdd_acc = accumulated
+    # group-delay dispersion Sum((phi2/L) * ds) [s^2]. Zero at birth
+    # (alloc_time); children inherit through select, so a detected ray
+    # carries the full group delay of its lineage. A mixed concat
+    # NaN-fills the batches that lack them.
 
     # refl_hist: (N, HIST_DEPTH) int32 face-id history for ghost/stray-light
     # analysis — allocated ONLY under --ghost-analysis (TraceConfig.
@@ -86,6 +95,12 @@ class RayBatch:
         # interface and constant along the segment inside the crystal).
         self.pol_mode = np.zeros(n, dtype=np.int8)
         self.n_eff = np.zeros(n, dtype=np.float64)
+        # n_g_eff: directional GROUP index frozen at a crystal entry
+        # interface (uniaxial e-rays, biaxial slow/fast), the group-index
+        # sibling of n_eff. 0 = "not directional; use the medium's scalar
+        # group index". MANDATORY slot (like n_eff) so it survives
+        # select/concatenate even when time tracking is off.
+        self.n_g_eff = np.zeros(n, dtype=np.float64)
         self.generation = np.zeros(n, dtype=np.int16)
         self.last_face = np.full(n, -1, dtype=np.int32)
         self.coherent = np.zeros(n, dtype=bool)
@@ -109,6 +124,8 @@ class RayBatch:
         self.birth_pos = None
         self.k_dir = None
         self.refl_hist = None
+        self.gopl = None
+        self.gdd_acc = None
 
     def alloc_differentials(self):
         for name in self._DIFF_SLOTS:
@@ -116,6 +133,14 @@ class RayBatch:
 
     def alloc_history(self):
         self.refl_hist = np.full((len(self), HIST_DEPTH), -1, dtype=np.int32)
+
+    def alloc_time(self):
+        """Allocate + zero-fill the time-domain accumulators (gopl,
+        gdd_acc) on this batch (TraceConfig.track_time; mirrors
+        alloc_history). gopl = 0 at birth by definition: the emitting
+        surface is the group-delay reference plane."""
+        self.gopl = np.zeros(len(self), dtype=np.float64)
+        self.gdd_acc = np.zeros(len(self), dtype=np.float64)
 
     @property
     def has_differentials(self):
@@ -209,6 +234,12 @@ class RayBatch:
             # mixed batches: -1 marks rays from a batch without history
             out.refl_hist = np.full((len(out), HIST_DEPTH), -1,
                                     dtype=np.int32)
+        if any(b.gopl is not None for b in batches):
+            # mixed batches: rays from a batch without time tracking
+            # NaN-fill (their group delay is undefined, not zero)
+            out.gopl = np.full(len(out), np.nan)
+        if any(b.gdd_acc is not None for b in batches):
+            out.gdd_acc = np.full(len(out), np.nan)
         at = 0
         for b in batches:
             n = len(b)

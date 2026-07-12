@@ -285,7 +285,7 @@ def _merge_detector_payload(grid, dp):
 
 def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                   lam_range, particle_lams, export, viz_caps,
-                  track_history=False):
+                  track_history=False, track_time=False):
     """One trace shard, run in a spawned process. Rebuilds the Scene from
     args.model_json (cheap; Scene is never pickled), traces rays_i primaries
     per source with an independent RNG stream, and returns a picklable
@@ -299,7 +299,8 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                       n_lambda=args.nlambda, rays=rays_i,
                       seed=worker_index, viz_rays=viz_caps,
                       rough_fresnel=args.rough_fresnel,
-                      export_rays=export, track_history=track_history)
+                      export_rays=export, track_history=track_history,
+                      track_time=track_time)
     particles = None
     part_diag = None
     if args.particles:
@@ -345,11 +346,14 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                       for fid, g in grids.items()},
         "viz": result.viz.as_array() if worker_index == 0 else None,
         "particles": part_diag,
+        # per-body power-weighted bulk path (track_time only; linear
+        # tally, shards add per key like the ledger flux)
+        "path_tally": result.path_tally,
     }
 
 
 def _run_single(scene, args, seed, particle_lams, case_diag, export,
-                viz_caps, grids, track_history=False):
+                viz_caps, grids, track_history=False, track_time=False):
     """Single-process trace (the pre-sharding code path, unchanged). Populates
     `grids` in place and returns (TraceResult, trace_s)."""
     cfg = TraceConfig(max_reflections=args.max_reflections,
@@ -357,7 +361,8 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
                       n_lambda=args.nlambda, rays=int(args.rays),
                       seed=seed, viz_rays=viz_caps,
                       rough_fresnel=args.rough_fresnel,
-                      export_rays=export, track_history=track_history)
+                      export_rays=export, track_history=track_history,
+                      track_time=track_time)
     particles = None
     if args.particles:
         from raytracer.particles import ParticleCloud
@@ -387,7 +392,8 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
 
 
 def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
-                 export, workers, viz_caps, grids, track_history=False):
+                 export, workers, viz_caps, grids, track_history=False,
+                 track_time=False):
     """Multi-process trace: N spawned shards trace rays/N primaries each with
     independent RNG streams; the parent merges their accumulators into `grids`
     and a fresh ledger. Returns (TraceResult, trace_s). The gather still runs
@@ -399,7 +405,7 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
     children = np.random.SeedSequence(seed).spawn(n_workers)
     tasks = [(args, children[i], i, rays_list[i], total, lam_range,
               particle_lams, export, (viz_caps if i == 0 else 0),
-              track_history)
+              track_history, track_time)
              for i in range(n_workers)]
     print("[trace] --workers %d: sharding %d rays/source (%s) across "
           "spawned processes; gather runs single-process in the parent"
@@ -414,10 +420,13 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
                               args.rays * len(scene.sources)
                               / max(trace_s, 1e-9))
     ledger = PowerLedger(len(scene.sources))
+    path_tally = {}
     for pl in payloads:
         ledger.merge(pl["ledger"])
         for fid, dp in pl["detectors"].items():
             _merge_detector_payload(grids[fid], dp)
+        for k, v in pl.get("path_tally", {}).items():
+            path_tally[k] = path_tally.get(k, 0.0) + v
     viz = VizStore()
     v0 = payloads[0]["viz"] if payloads else None
     if v0 is not None and len(v0):
@@ -425,13 +434,13 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
     if payloads and payloads[0].get("particles") is not None:
         case_diag.setdefault("particles", payloads[0]["particles"])
     names = [scene.bodies[i].label for i, _ in scene.sources]
-    result = TraceResult(grids, ledger, viz, names)
+    result = TraceResult(grids, ledger, viz, names, path_tally=path_tally)
     return result, trace_s
 
 
 def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag,
                  export=False, workers=1, track_history=False,
-                 save_fields_labels=None):
+                 track_time=False, save_fields_labels=None):
     """Trace one seed. workers<=1 keeps the exact pre-sharding single-process
     path (bit-identical); workers>1 shards the trace across spawned processes
     and merges. Either way the coherent gather runs ONCE in the parent.
@@ -448,11 +457,13 @@ def run_one_seed(scene, args, seed, lam_range, particle_lams, case_diag,
     if workers > 1 and int(args.rays) > 1:
         result, trace_s = _run_sharded(
             scene, args, seed, lam_range, particle_lams, case_diag,
-            export, workers, viz_caps, grids, track_history=track_history)
+            export, workers, viz_caps, grids, track_history=track_history,
+            track_time=track_time)
     else:
         result, trace_s = _run_single(
             scene, args, seed, particle_lams, case_diag, export,
-            viz_caps, grids, track_history=track_history)
+            viz_caps, grids, track_history=track_history,
+            track_time=track_time)
 
     if pattern is not None:
         _viz_pattern_pass(scene, args, seed, pattern, result)
@@ -531,10 +542,15 @@ def write_rays_full(case_dir, grids, args, model_name, scene=None):
     # refl_hist rides along only when the trace tracked history (ghost mode).
     any_hist = any("refl_hist" in r for det in grids.values()
                    for r in det.ray_records)
+    # gopl/gdd_acc ride along only when the trace tracked time (pulsed
+    # phases) — same conditional pattern as refl_hist.
+    any_time = any("gopl" in r for det in grids.values()
+                   for r in det.ray_records)
     for det in grids.values():
         safe = det.label.replace(".", "_")
         recs = det.ray_records
-        keys = _EXPORT_KEYS + (("refl_hist",) if any_hist else ())
+        keys = _EXPORT_KEYS + (("refl_hist",) if any_hist else ()) \
+            + (("gopl", "gdd_acc") if any_time else ())
         cols = {}
         for k in keys:
             if recs and k in recs[0]:
@@ -761,6 +777,11 @@ def _main_locked(args, case_dir):
     # track history (zero overhead). Both are seed-0 only, like --save-fields.
     export_on = args.export_rays or args.ghost_analysis
 
+    # track_time: pulsed-optics time-domain accumulators (gopl/gdd_acc per
+    # ray, per-body path tally). P2 lands the engine core behind this
+    # INTERNAL switch; a later phase adds the CLI flag that drives it.
+    track_time = False
+
     case_diag = {}
     grids_list = []
     audits = []
@@ -779,9 +800,16 @@ def _main_locked(args, case_dir):
             scene, args, seed, lam_range, particle_lams, case_diag,
             export=(export_on and s == 0), workers=workers,
             track_history=(args.ghost_analysis and s == 0),
+            track_time=track_time,
             save_fields_labels=save_fields_labels)
         grids_list.append(grids)
         rep = result.ledger.report(result.source_names)
+        if track_time:
+            # per-body power-weighted bulk path [W*m] (GDD budget input;
+            # key present only when time tracking ran, so the audit.json
+            # schema is unchanged otherwise)
+            rep["path_tally_Wm"] = {
+                k: float(v) for k, v in sorted(result.path_tally.items())}
         audits.append(rep)
         gather_diags_all["seed%d" % seed] = gdiags
         detected_all["seed%d" % seed] = build_detected_block(grids, gdiags)

@@ -492,6 +492,52 @@ class Scene:
                     * np.real(mz.n_complex(lam))) ** (1.0 / 3.0)
         return self.matdb.get(body.material).n_complex(lam)
 
+    def medium_group_index(self, body_index, lam):
+        """Real GROUP index n_g for rays inside body body_index (-1 =
+        ambient), mirroring medium_index's medium resolution. Ambient and
+        detector interiors return exactly 1.0 (the vacuum-like envelope
+        reference — the group delay of an ambient path is its geometric
+        length, so gopl == d in air by construction; the ~3e-4 constant-
+        model air index carries no dispersion anyway). Birefringent bodies
+        return the ORDINARY material's group index (e-rays override via
+        RayBatch.n_g_eff, same convention as n_eff); biaxial bodies return
+        the geometric-mean bookkeeping value (sheet rays always carry
+        n_g_eff)."""
+        if body_index < 0:
+            return np.ones_like(np.asarray(lam, dtype=np.float64))
+        body = self.bodies[body_index]
+        if body.role == "detector" or body.material in (None, "detector"):
+            return np.ones_like(np.asarray(lam, dtype=np.float64))
+        if body.birefringent:
+            return self.matdb.get_uniaxial(body.material)[0].n_group(lam)
+        if body.biaxial:
+            mx, my, mz = self.matdb.get_biaxial(body.material)
+            return (mx.n_group(lam) * my.n_group(lam)
+                    * mz.n_group(lam)) ** (1.0 / 3.0)
+        return self.matdb.get(body.material).n_group(lam)
+
+    def medium_gdd_per_length(self, body_index, lam):
+        """Material group-delay dispersion per unit length [s^2/m] for rays
+        inside body body_index (-1 = ambient), mirroring medium_index.
+        Ambient/detector interiors: 0.0. Birefringent: the o material
+        (same isotropic fallback as medium_index); biaxial: arithmetic
+        mean of the three principal materials (diagnostic-grade scalar
+        bookkeeping, like medium_index's geometric-mean phase index)."""
+        from .materials import gdd_per_length
+        lam = np.asarray(lam, dtype=np.float64)
+        if body_index < 0:
+            return np.zeros_like(lam)
+        body = self.bodies[body_index]
+        if body.role == "detector" or body.material in (None, "detector"):
+            return np.zeros_like(lam)
+        if body.birefringent:
+            return gdd_per_length(
+                self.matdb.get_uniaxial(body.material)[0], lam)
+        if body.biaxial:
+            mats = self.matdb.get_biaxial(body.material)
+            return sum(gdd_per_length(m, lam) for m in mats) / 3.0
+        return gdd_per_length(self.matdb.get(body.material), lam)
+
     def uniaxial_indices(self, body, lam):
         """(n_o_real, n_e_real) arrays for a birefringent body at lam [m]."""
         mo, me = self.matdb.get_uniaxial(body.material)

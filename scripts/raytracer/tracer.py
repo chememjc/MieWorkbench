@@ -53,7 +53,7 @@ class TraceConfig:
     def __init__(self, max_reflections=6, power_floor=1e-4, n_lambda=5,
                  rays=int(1e5), seed=0, viz_rays=500, batch_size=1 << 20,
                  rough_fresnel="micro", export_rays=False,
-                 track_history=False):
+                 track_history=False, track_time=False):
         self.max_reflections = max_reflections
         self.power_floor = power_floor
         self.n_lambda = n_lambda
@@ -68,6 +68,13 @@ class TraceConfig:
         # analysis; --ghost-analysis, seed 0 only). Zero overhead when off
         # (the slot stays None everywhere). Purely diagnostic.
         self.track_history = track_history
+        # track_time: allocate RayBatch.gopl/gdd_acc on the primaries and
+        # advance the GROUP optical path + accumulated GDD beside opl in
+        # step() (pulsed-optics time-domain core). Zero RNG use; when off
+        # NO new code executes and every existing accumulator (opl, the
+        # ledger, detector cubes) is bit-identical. Diagnostic/analysis
+        # only — never feeds the splat/gather.
+        self.track_time = track_time
         # viz_rays: int cap for every source, or {source_id: cap} computed
         # from --viz-density (rays per mm^2 of emit area) upstream
         self.viz_rays = viz_rays
@@ -122,11 +129,18 @@ class VizStore:
 
 
 class TraceResult:
-    def __init__(self, detectors, ledger, viz, source_names):
+    def __init__(self, detectors, ledger, viz, source_names,
+                 path_tally=None):
         self.detectors = detectors        # face_id -> DetectorGrid
         self.ledger = ledger
         self.viz = viz
         self.source_names = source_names
+        # path_tally: {body label: Sum(power * ds) [W*m]} power-weighted
+        # bulk path per non-ambient body (track_time only; the per-body
+        # GDD budget of a later phase divides by detected power to get
+        # the mean glass path). Diagnostic, zero RNG use, empty when
+        # time tracking is off.
+        self.path_tally = path_tally if path_tally is not None else {}
 
 
 class Tracer:
@@ -144,6 +158,10 @@ class Tracer:
         self.ledger = PowerLedger(len(scene.sources))
         self.viz = VizStore()
         self.rng = np.random.default_rng(config.seed)
+        # per-body power-weighted bulk path [W*m], keyed by body label
+        # (same key space as the ledger's element flux tallies). Filled
+        # only under cfg.track_time; see TraceResult.path_tally.
+        self.path_tally = {}
 
     # ------------------------------------------------------------------
     def run(self, batches):
@@ -153,6 +171,8 @@ class Tracer:
             VizStore.flag_primaries(b, self.cfg.viz_rays)
             if self.cfg.track_history and b.refl_hist is None:
                 b.alloc_history()
+            if self.cfg.track_time and b.gopl is None:
+                b.alloc_time()
         # a hard iteration cap guards against pathological loops; with the
         # generation cap the loop terminates naturally well before this
         for _ in range(64 * (self.cfg.max_reflections + 2)):
@@ -177,7 +197,8 @@ class Tracer:
                 self.ledger.credit("truncated_generation", b.source_id,
                                    b.power)
         names = [self.scene.bodies[i].label for i, _ in self.scene.sources]
-        return TraceResult(self.detectors, self.ledger, self.viz, names)
+        return TraceResult(self.detectors, self.ledger, self.viz, names,
+                           path_tally=self.path_tally)
 
     # ------------------------------------------------------------------
     def step(self, batch):
@@ -238,6 +259,33 @@ class Tracer:
         # absorbing crystals.
         n_phase = np.where(batch.n_eff > 0.0, batch.n_eff, np.real(n_med))
         batch.opl += n_phase * seg
+
+        # ---- time-domain accumulators (track_time only) ----
+        # GROUP optical path Sum(n_g * ds) and accumulated GDD
+        # Sum((phi2/L) * ds) advance beside opl; frozen directional group
+        # indices (n_g_eff, crystal e/sheet rays) override the medium
+        # scalar exactly like n_eff does for the phase. Also tallies the
+        # power-weighted bulk path per body (GDD budget, diagnostic).
+        # STRICTLY additive: nothing here touches opl/Es/Ep/ledger buckets
+        # or the RNG, and none of it runs when track_time is off.
+        if self.cfg.track_time and batch.gopl is not None:
+            n_grp = np.empty(n, dtype=np.float64)
+            gdd_l = np.empty(n, dtype=np.float64)
+            for m in np.unique(med):
+                sel = med == m
+                n_grp[sel] = scene.medium_group_index(int(m),
+                                                      batch.lam[sel])
+                gdd_l[sel] = scene.medium_gdd_per_length(int(m),
+                                                         batch.lam[sel])
+                if m >= 0:
+                    # p_before = power at the segment start (pre bulk
+                    # absorption); escaped rays have seg == 0
+                    lbl = scene.bodies[int(m)].label
+                    self.path_tally[lbl] = self.path_tally.get(lbl, 0.0) \
+                        + float(np.sum(p_before[sel] * seg[sel]))
+            batch.gopl += np.where(batch.n_g_eff > 0.0, batch.n_g_eff,
+                                   n_grp) * seg
+            batch.gdd_acc += gdd_l * seg
 
         # ray differentials: the wavefront patch area at the segment START
         # (= the last interaction point) is what the gather wavelet needs;
@@ -400,6 +448,12 @@ class Tracer:
         # Present only when track_history is on (refl_hist allocated).
         if grp.refl_hist is not None:
             rec["refl_hist"] = grp.refl_hist.copy()
+        # track_time: the accumulated group path / GDD ride along the same
+        # way (present only when the time slots are allocated).
+        if grp.gopl is not None:
+            rec["gopl"] = grp.gopl.copy()
+        if grp.gdd_acc is not None:
+            rec["gdd_acc"] = grp.gdd_acc.copy()
         det.ray_records.append(rec)
 
     def _flux_out_children(self, body, children):
@@ -508,6 +562,7 @@ class Tracer:
                 self._warned_nested_mode = True
             grp.pol_mode[:] = 0
             grp.n_eff[:] = 0.0
+            grp.n_g_eff[:] = 0.0
 
         # media on both sides
         cur = grp.current_medium()
@@ -1071,6 +1126,7 @@ class Tracer:
             och.Ep = np.zeros_like(Epo)
             och.pol_mode[:] = 0
             och.n_eff[:] = 0.0               # medium_index gives n_o
+            och.n_g_eff[:] = 0.0             # medium_group_index: o group
             ok_o = ~res["tir_o"]
             och.push_medium(ok_o, np.full(len(ent), body.index))
             keep = ok_o & (och.power > 0)
@@ -1097,6 +1153,16 @@ class Tracer:
             ech.Ep = Epe                     # e mode: D along e_e_hat only
             ech.pol_mode[:] = 1
             ech.n_eff[:] = res["n_ray_e"]    # OPL per metre along the RAY
+            if self.cfg.track_time:
+                # directional group index at the frozen internal k
+                # (first-cut: phase-surface derivative at fixed theta,
+                # walk-off path distinction neglected — see
+                # birefringence.n_group_e_theta)
+                mo, me = scene.matdb.get_uniaxial(body.material)
+                cos_kc = np.sum(res["k_e"] * np.broadcast_to(
+                    c_axis, res["k_e"].shape), axis=-1)
+                ech.n_g_eff[:] = bir.n_group_e_theta(cos_kc, mo, me,
+                                                     ech.lam)
             ok_e = ~res["tir_e"]
             ech.push_medium(ok_e, np.full(len(ent), body.index))
             keep = ok_e & (ech.power > 0)
@@ -1157,6 +1223,7 @@ class Tracer:
             tr.Ep = Ep_i * np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp))
             tr.pol_mode[:] = 0
             tr.n_eff[:] = 0.0
+            tr.n_g_eff[:] = 0.0
             ok_t = ~tir
             tr.pop_medium(ok_t, np.full(len(exi), body.index))
             keep = ok_t & (tr.power > 0)
@@ -1183,6 +1250,12 @@ class Tracer:
                                                  n_e[exi][is_e])
                 rf.dir[is_e] = s_ray
                 rf.n_eff[is_e] = n_ray
+                if self.cfg.track_time:
+                    mo, me = scene.matdb.get_uniaxial(body.material)
+                    cos_kc = np.sum(k_r[is_e] * np.broadcast_to(
+                        c_axis, k_r[is_e].shape), axis=-1)
+                    rf.n_g_eff[is_e] = bir.n_group_e_theta(
+                        cos_kc, mo, me, rf.lam[is_e])
             cr = can_reflect[exi]
             if np.any(~cr):
                 self.ledger.credit("truncated_generation",
@@ -1198,6 +1271,26 @@ class Tracer:
                                where=body.label)
         self._flux_out_children(body, out)
         return RayBatch.concatenate(out) if out else None
+
+    # ------------------------------------------------------------------
+    def _biaxial_group_index(self, body, lam, k_hat, frame, slow_mask):
+        """Directional GROUP index for biaxial sheet rays: local central
+        difference of the SAME sheet's phase index over lam (+-0.1%
+        relative step) holding k_hat and the crystal frame fixed,
+        n_g = n - lam * dn/dlam. slow_mask: bool (n,) or scalar — True
+        picks the slow sheet. Same first-cut limitation as the uniaxial
+        n_group_e_theta (angular dispersion / ray-vs-k path neglected)."""
+        from . import birefringence as bir
+        lam = np.asarray(lam, dtype=np.float64)
+        h = lam * 1e-3
+
+        def n_of(lm):
+            modes = bir.biaxial_modes_for_k(
+                k_hat, frame, self.scene.biaxial_eps(body, lm))
+            return np.where(slow_mask, modes["n_slow"], modes["n_fast"])
+
+        d1 = (n_of(lam + h) - n_of(lam - h)) / (2.0 * h)
+        return n_of(lam) - lam * d1
 
     # ------------------------------------------------------------------
     def _biaxial_children(self, fid, grp, entering, n_hat, cos_i):
@@ -1337,6 +1430,9 @@ class Tracer:
                 ch.Ep = mag * phase
                 ch.pol_mode[:] = mode_val
                 ch.n_eff[:] = res["n_ray_%s" % name]
+                if self.cfg.track_time:
+                    ch.n_g_eff[:] = self._biaxial_group_index(
+                        body, ch.lam, k_hat, frame, name == "slow")
                 if ch.k_dir is None:
                     ch.k_dir = np.full((len(ent), 3), np.nan)
                 ch.k_dir[...] = k_hat
@@ -1397,6 +1493,7 @@ class Tracer:
             tr.Ep = Ep_i * np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp))
             tr.pol_mode[:] = 0
             tr.n_eff[:] = 0.0
+            tr.n_g_eff[:] = 0.0
             ok_t = ~tir
             tr.pop_medium(ok_t, np.full(len(exi), body.index))
             keep = ok_t & (tr.power > 0)
@@ -1423,6 +1520,9 @@ class Tracer:
                 self._record_reflection(rf, fid)
                 rf.generation += 1
                 rf.n_eff[...] = n_ray
+                if self.cfg.track_time:
+                    rf.n_g_eff[...] = self._biaxial_group_index(
+                        body, rf.lam, k_r_hat, frame, is_slow)
                 rf.k_dir[...] = k_r_hat
                 cr = can_reflect[exi]
                 if np.any(~cr):
