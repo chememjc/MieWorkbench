@@ -21,6 +21,119 @@ from .surfaces import make_surface, AnalyticFace
 FACEMAP_ALL = "__all__"     # matches common.FACEMAP_ALL (contract sentinel)
 
 
+def _parse_pulse_source(label, src):
+    """Pulsed-optics Phase P3: resolve a source's power specification and
+    (optional) pulse metadata IN PLACE on `src` (the extracted source
+    record — see extract_geometry.py's source_dict). Body properties
+    arrive as (all optional except lambdac, checked upstream):
+    power_mW, pulse_energy_uJ, pulse_duration_ps, rep_rate_hz.
+
+    Rules:
+      * power XOR pulse_energy: both present is a hard error (which
+        average-power definition should win is ambiguous); neither
+        present is ALSO an error — this is the pre-existing "a source
+        needs a power spec" contract, now phrased as an XOR since
+        pulse_energy is a second valid way to satisfy it.
+      * pulse_energy (+ mandatory rep_rate — average power is otherwise
+        underdetermined) derives power_W = energy_J * rep_rate_Hz,
+        written back to src["power_mW"] so every downstream consumer
+        (sampling in sources.py, the power ledger, ...) sees ordinary
+        average power and needs no pulse-awareness at all.
+      * power + rep_rate (no pulse_energy) reverse-derives
+        pulse_energy_J = power_W / rep_rate_Hz.
+      * pulse_duration alone (no energy, no rep_rate) is legal: CW
+        virtual-pulse mode, a bare tau0 annotation for a later envelope/
+        chirp model — the source is still continuous-wave average power.
+
+    Whenever ANY of {pulse_energy, pulse_duration, rep_rate} is present,
+    sets src["pulse"] = {energy_J, duration_s, rep_rate_Hz, peak_power_W,
+    avg_power_W, derived, kappa}. All 7 keys are ALWAYS present (matching
+    the lambdamin_nm/lambdamax_nm convention elsewhere in this contract:
+    key present, value None when not computable) rather than being
+    omitted — simpler for downstream code to consume with a plain
+    .get()/indexing. peak_power_W = 0.94 * energy_J / duration_s (Gaussian
+    pulse shape factor) needs BOTH energy_J and duration_s; kappa =
+    peak_power_W / avg_power_W needs peak_power_W. `derived` records
+    which of {power_mW, pulse_energy_J} this function computed
+    ("power"/"pulse_energy"/None — CW-with-duration-only derives
+    neither). A plain non-pulsed source (power only, nothing else) gets
+    no "pulse" key at all — zero footprint for the overwhelming majority
+    of existing scenes."""
+    power_mw = src.get("power_mW")
+    energy_uj = src.get("pulse_energy_uJ")
+    duration_ps = src.get("pulse_duration_ps")
+    rep_rate_hz = src.get("rep_rate_hz")
+
+    # power_mW == 0.0 means "not authored" (extract_geometry's sentinel
+    # for a pulse_energy-only source — common.validate_model requires
+    # source.power_mW to already be a real float, so extract_geometry
+    # can't leave it None; see that file's comment at the source_dict
+    # build site). None is accepted too, for hand-built model dicts
+    # (tests) that skip the sentinel and simply omit the key.
+    has_power = power_mw is not None and power_mw != 0.0
+    has_energy = energy_uj is not None
+    has_duration = duration_ps is not None
+    has_rep_rate = rep_rate_hz is not None
+
+    if has_power and has_energy:
+        raise ValueError(
+            "source %s: both power (%.6g mW) and pulse_energy (%.6g uJ) "
+            "are set — pick one (average power is ambiguous otherwise)"
+            % (label, power_mw, energy_uj))
+    if not has_power and not has_energy:
+        raise ValueError(
+            "source %s: needs either 'power' (mW) or 'pulse_energy' (uJ) "
+            "— neither is present" % label)
+
+    if has_energy and energy_uj <= 0:
+        raise ValueError("source %s: pulse_energy must be > 0 uJ (got %g)"
+                         % (label, energy_uj))
+    if has_duration and duration_ps <= 0:
+        raise ValueError("source %s: pulse_duration must be > 0 ps (got %g)"
+                         % (label, duration_ps))
+    if has_rep_rate and rep_rate_hz <= 0:
+        raise ValueError("source %s: rep_rate must be > 0 Hz (got %g)"
+                         % (label, rep_rate_hz))
+
+    energy_j = None
+    derived = None
+    if has_energy:
+        if not has_rep_rate:
+            raise ValueError(
+                "source %s: pulse_energy needs rep_rate — average power "
+                "is underdetermined without it" % label)
+        energy_j = energy_uj * 1e-6
+        power_w = energy_j * rep_rate_hz
+        src["power_mW"] = power_w * 1e3
+        derived = "power"
+    else:
+        power_w = power_mw * 1e-3
+        if has_rep_rate:
+            energy_j = power_w / rep_rate_hz
+            derived = "pulse_energy"
+
+    if not (has_energy or has_duration or has_rep_rate):
+        return   # ordinary source: no pulse annotation at all
+
+    duration_s = duration_ps * 1e-12 if has_duration else None
+    peak_power_w = (0.94 * energy_j / duration_s
+                    if (energy_j is not None and duration_s is not None)
+                    else None)
+    avg_power_w = power_w
+    kappa = (peak_power_w / avg_power_w
+             if (peak_power_w is not None and avg_power_w > 0) else None)
+
+    src["pulse"] = {
+        "energy_J": energy_j,
+        "duration_s": duration_s,
+        "rep_rate_Hz": rep_rate_hz,
+        "peak_power_W": peak_power_w,
+        "avg_power_W": avg_power_w,
+        "derived": derived,
+        "kappa": kappa,
+    }
+
+
 class Body:
     __slots__ = ("index", "name", "label", "role", "material", "coating",
                  "mirror", "absorbance", "roughness_nm", "roughness_faces",
@@ -204,6 +317,11 @@ class Scene:
 
             if body.role == "source":
                 src = rec["source"]
+                # pulsed-optics Phase P3: resolve power vs pulse_energy
+                # (XOR + derivation) BEFORE anything downstream reads
+                # src["power_mW"] — must run before body.source is stored
+                # and before sample_source ever sees this dict.
+                _parse_pulse_source(body.label, src)
                 spec_name = src.get("spectrum")
                 if spec_name is not None:
                     if spec_name not in emission:

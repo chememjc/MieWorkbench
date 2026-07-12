@@ -97,8 +97,12 @@ class Validator:
         return None if rec is None else rec.get("value")
 
     def role(self, body):
-        if self.prop(body, "power") is not None \
-                and self.prop(body, "lambdac") is not None:
+        # pulsed-optics Phase P3: pulse_energy is a valid alternative to
+        # power (extract_geometry.classify_body's OR-gate mirrored here);
+        # check_pulse_params below enforces the power/pulse_energy XOR.
+        if self.prop(body, "lambdac") is not None \
+                and (self.prop(body, "power") is not None
+                     or self.prop(body, "pulse_energy") is not None):
             return "source"
         mat = self.prop(body, "material")
         if mat is None or str(mat).strip().lower() in ("", "none"):
@@ -174,10 +178,11 @@ def check_roles(v):
     roles = [v.role(b) for b in v.bodies()]
     if "source" not in roles:
         out.append(Finding(ERROR, "scene has no light source (a source "
-                           "body needs both 'power' and 'lambdac' "
-                           "properties)",
+                           "body needs 'lambdac' plus either 'power' or "
+                           "'pulse_energy')",
                            fix_hint="add a laser/source element or set "
-                           "power+lambdac on a body", check="roles"))
+                           "power+lambdac (or pulse_energy+lambdac) on a "
+                           "body", check="roles"))
     if "detector" not in roles:
         out.append(Finding(ERROR, "scene has no detector (set "
                            "material='detector' on a screen body)",
@@ -188,6 +193,54 @@ def check_roles(v):
             out.append(Finding(INFO, "%s has no material and is ignored "
                                "by the simulation" % b["label"],
                                body=b["name"], check="roles"))
+    return out
+
+
+@check("pulse-params")
+def check_pulse_params(v):
+    """Pulsed-source body-property contract (pulsed-optics Phase P3):
+    catches the power/pulse_energy XOR and the pulse_energy-needs-
+    rep_rate rule (raytracer.scene._parse_pulse_source enforces the same
+    rules engine-side; this surfaces them pre-run instead of as a
+    SceneError mid-trace) plus positivity and a stray-property warning."""
+    out = []
+    for b in v.bodies():
+        power = v.prop(b, "power")
+        pulse_energy = v.prop(b, "pulse_energy")
+        pulse_duration = v.prop(b, "pulse_duration")
+        rep_rate = v.prop(b, "rep_rate")
+        if power is None and pulse_energy is None \
+                and pulse_duration is None and rep_rate is None:
+            continue    # no pulse properties at all on this body
+        if v.role(b) != "source":
+            out.append(Finding(
+                WARNING, "%s: pulse_energy/pulse_duration/rep_rate are "
+                "only meaningful on source bodies (need 'lambdac' too); "
+                "ignoring" % b["label"], body=b["name"],
+                check="pulse-params"))
+            continue
+        if power is not None and pulse_energy is not None:
+            out.append(Finding(
+                ERROR, "%s: both power (%.6g mW) and pulse_energy "
+                "(%.6g uJ) are set — pick one (average power is "
+                "ambiguous otherwise)"
+                % (b["label"], float(power), float(pulse_energy)),
+                body=b["name"], fix_hint="remove one of power/"
+                "pulse_energy", check="pulse-params"))
+        if pulse_energy is not None and rep_rate is None:
+            out.append(Finding(
+                ERROR, "%s: pulse_energy needs rep_rate — average power "
+                "is underdetermined without it" % b["label"],
+                body=b["name"], fix_hint="set rep_rate (Hz)",
+                check="pulse-params"))
+        for name, val, unit in (("pulse_energy", pulse_energy, "uJ"),
+                                ("pulse_duration", pulse_duration, "ps"),
+                                ("rep_rate", rep_rate, "Hz")):
+            if val is not None and float(val) <= 0:
+                out.append(Finding(
+                    ERROR, "%s: %s must be > 0 %s (got %g)"
+                    % (b["label"], name, unit, float(val)),
+                    body=b["name"], check="pulse-params"))
     return out
 
 

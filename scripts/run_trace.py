@@ -38,7 +38,8 @@ import cli_specs                                          # noqa: E402
 from raytracer.materials import MaterialDB, load_coatings  # noqa: E402
 from raytracer.scene import Scene                        # noqa: E402
 from raytracer.sources import (sample_source, wavelength_strata,  # noqa: E402
-                               n_pol_strata, sample_viz_pattern)
+                               n_pol_strata, sample_viz_pattern,
+                               apply_stratum_t0)
 from raytracer.tracer import (Tracer, TraceConfig,       # noqa: E402
                               TraceResult, VizStore)
 from raytracer.detector import (DetectorGrid,            # noqa: E402
@@ -333,6 +334,16 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                           ledger=tracer.ledger,
                           differentials=args.ray_differentials,
                           export_rays=export)
+        if cfg.track_time:
+            # pre-allocate + apply the pulsed-optics birth-time offset
+            # HERE, before tracer.run() ever sees this batch: sample_source
+            # always runs before Tracer.run() allocates gopl (its own
+            # alloc_time() call is an idempotent no-op once we've already
+            # set it), so this is the only place a source's optional
+            # _stratum_t0 hook can land before any propagation accumulates
+            # on top of it. See apply_stratum_t0's docstring.
+            b.alloc_time()
+            apply_stratum_t0(b, src)
         b.Es *= sqrt_f
         b.Ep *= sqrt_f
         b.birth_power *= f
@@ -381,6 +392,12 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
                           ledger=tracer.ledger,
                           differentials=args.ray_differentials,
                           export_rays=export)
+        if cfg.track_time:
+            # see the matching comment in _shard_worker: this is the only
+            # place a source's optional _stratum_t0 birth-time offset can
+            # land before tracer.run() begins propagating rays.
+            b.alloc_time()
+            apply_stratum_t0(b, src)
         batches.append(b)
     t0 = time.time()
     result = tracer.run(batches)
@@ -718,6 +735,16 @@ def _main_locked(args, case_dir):
         "estimates": est,
         "status": "estimated",
         "sources": [scene.bodies[b].label for b, _ in scene.sources],
+        # pulsed-optics Phase P3: per-source pulse metadata (energy_J,
+        # duration_s, rep_rate_Hz, peak_power_W, avg_power_W, derived,
+        # kappa — see raytracer.scene._parse_pulse_source), keyed by
+        # source label, for post-process/GUI consumption. A source with
+        # no pulse properties at all contributes no entry (empty dict
+        # when the case has no pulsed sources -- unchanged schema for the
+        # overwhelming majority of existing scenes). Per-pulse DETECTED
+        # quantities are a later phase; this is metadata visibility only.
+        "source_pulse": {scene.bodies[b].label: src["pulse"]
+                         for b, src in scene.sources if "pulse" in src},
         "detectors": [scene.faces[f].id for f in scene.detector_faces],
     }
     common.write_json(case_dir / "case.json", case)

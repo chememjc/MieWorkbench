@@ -214,6 +214,46 @@ def test_good_beam_waist_and_m2_are_clean():
     assert not validation.has_errors(run(s))
 
 
+def test_pulse_power_and_energy_both_set_is_an_error():
+    s = good_structure()
+    s["bodies"][0]["properties"]["pulse_energy"] = {
+        "type": "t", "group": "Base", "value": 10.0}
+    errs = messages(run(s), validation.ERROR)
+    assert any("both power" in m and "pulse_energy" in m for m in errs)
+
+
+def test_pulse_energy_without_rep_rate_is_an_error():
+    s = good_structure()
+    # pulse_energy-only source: no 'power' property at all
+    s["bodies"][0] = body("Laser", {"lambdac": 633.0, "pulse_energy": 10.0})
+    errs = messages(run(s), validation.ERROR)
+    assert any("pulse_energy needs rep_rate" in m for m in errs)
+
+
+def test_pulse_energy_and_rep_rate_is_clean():
+    s = good_structure()
+    s["bodies"][0] = body("Laser", {"lambdac": 633.0, "pulse_energy": 10.0,
+                                    "rep_rate": 1000.0})
+    assert not validation.has_errors(run(s))
+
+
+def test_pulse_props_on_non_source_body_warns():
+    s = good_structure()
+    s["bodies"][1] = body("Lens", {"material": "bk7", "rep_rate": 1000.0})
+    warns = messages(run(s), validation.WARNING)
+    assert any("only meaningful on source bodies" in m for m in warns)
+
+
+@pytest.mark.parametrize("prop,value", [
+    ("pulse_energy", -1.0), ("pulse_duration", 0.0), ("rep_rate", -5.0)])
+def test_bad_pulse_value_is_an_error(prop, value):
+    s = good_structure()
+    s["bodies"][0]["properties"][prop] = {
+        "type": "t", "group": "Base", "value": value}
+    errs = messages(run(s), validation.ERROR)
+    assert any("%s must be > 0" % prop in m for m in errs)
+
+
 def test_unknown_coating_and_bad_facemap():
     s = good_structure()
     s["bodies"][1]["properties"]["coating"] = {

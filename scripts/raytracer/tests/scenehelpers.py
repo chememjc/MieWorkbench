@@ -53,13 +53,20 @@ def box_faces(name, x0, x1, half):
 def source_body(name="Src", x=-0.02, half=0.001, power_mW=1.0,
                 lambdac_nm=633.0, coherent=False, polarization=None,
                 lambdamin_nm=None, lambdamax_nm=None, apodization=None,
-                beam_waist_mm=None, m2=1.0, spectrum=None):
+                beam_waist_mm=None, m2=1.0, spectrum=None,
+                pulse_energy_uJ=None, pulse_duration_ps=None,
+                rep_rate_hz=None):
     """Source with a single square emitting plane at x (normal +x; the
     toward-origin policy sends rays along +x). apodization: already-parsed
     dict (common.parse_apodization_spec). beam_waist_mm: sets source.beam
     {waist_mm, m2} — half MUST be large enough that the waist's Gaussian
     tail doesn't need excessive rejection-sampling tries against the
-    emitting face's physical aperture."""
+    emitting face's physical aperture. pulse_energy_uJ/pulse_duration_ps/
+    rep_rate_hz: pulsed-optics Phase P3 raw properties (raytracer.scene.
+    _parse_pulse_source does the XOR/derivation) — pass power_mW=0.0 for
+    a pulse_energy-only source (extract_geometry's "unset power" sentinel;
+    None also works here since this helper builds the dict directly, but
+    0.0 matches what a real extracted model.json contains)."""
     face = _rect_face("%s.Pad.Face1" % name, [x, 0, 0], [1, 0, 0],
                       [[x, -half, -half], [x, half, -half],
                        [x, half, half], [x, -half, half]],
@@ -78,6 +85,12 @@ def source_body(name="Src", x=-0.02, half=0.001, power_mW=1.0,
         src["beam"] = {"waist_mm": beam_waist_mm, "m2": m2}
     if spectrum is not None:
         src["spectrum"] = spectrum
+    if pulse_energy_uJ is not None:
+        src["pulse_energy_uJ"] = pulse_energy_uJ
+    if pulse_duration_ps is not None:
+        src["pulse_duration_ps"] = pulse_duration_ps
+    if rep_rate_hz is not None:
+        src["rep_rate_hz"] = rep_rate_hz
     return {"name": name, "label": name, "role": "source",
             "source": src, "faces": [face]}
 

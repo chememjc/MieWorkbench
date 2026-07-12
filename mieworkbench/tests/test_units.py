@@ -41,6 +41,15 @@ def test_new_biaxial_apodization_scatter_props_have_unit_decisions():
     assert label_with_unit("scatter") == "scatter"        # registry name
 
 
+def test_new_pulsed_source_props_have_unit_decisions():
+    """Pulsed-optics Phase P3: pulse_energy/pulse_duration/rep_rate (source
+    body properties) need explicit unit decisions, same as every other
+    contract property."""
+    assert label_with_unit("pulse_energy") == "pulse_energy [µJ]"
+    assert label_with_unit("pulse_duration") == "pulse_duration [ps]"
+    assert label_with_unit("rep_rate") == "rep_rate [Hz]"
+
+
 def test_format_power_mw():
     assert format_power_mw(0.005) == "5"
     assert format_power_mw(1.23e-6) == "0.00123"

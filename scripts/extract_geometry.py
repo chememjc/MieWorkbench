@@ -30,9 +30,15 @@
 # Body tagging convention (group "Base" custom properties):
 #   material   (string) - row name in materials.csv; "detector" -> detector;
 #                          missing/"none" -> ignored; else -> optic.
-#   power (mW), lambdac (nm) (floats) - presence of BOTH marks a source body
+#   power (mW), lambdac (nm) (floats) - presence of lambdac PLUS EITHER
+#                          power or pulse_energy marks a source body
 #                          (sources typically carry no material property).
 #   lambdamin, lambdamax (nm, optional), coherent (bool, default False).
+#   pulse_energy (uJ)/pulse_duration (ps FWHM)/rep_rate (Hz) (floats,
+#   optional, source bodies only) - pulsed-optics Phase P3: an alternative
+#   (pulse_energy) or supplement (pulse_duration/rep_rate) to plain power;
+#   raytracer.scene derives whichever of {power, pulse_energy} is absent
+#   from the other + rep_rate (power XOR pulse_energy is enforced there).
 #   spectrum (string, source bodies only, optional) - emission-registry row
 #   naming a tabulated emission spectrum; supersedes lambdamin/lambdamax.
 #   coating (string, optional -> per-face map, "none" -> omitted),
@@ -873,7 +879,13 @@ def classify_body(body):
     # the GUI) but is invisible to the traced physics
     if getattr(body, "miewb_exclude", False):
         return "ignored"
-    if hasattr(body, "power") and hasattr(body, "lambdac"):
+    # a source needs lambdac PLUS one of {power, pulse_energy} (pulsed-
+    # optics Phase P3: pulse_energy is a valid alternative to power, so a
+    # pulse-only source authored without ever setting the 'power' property
+    # still classifies correctly; scene.py enforces the power/pulse_energy
+    # XOR that this OR-gate deliberately allows through to)
+    if hasattr(body, "lambdac") and (hasattr(body, "power")
+                                     or hasattr(body, "pulse_energy")):
         return "source"
     material = getattr(body, "material", None)
     if material is None or str(material).strip().lower() in ("", "none"):
@@ -1219,7 +1231,17 @@ def extract_one(fcstd_path, outdir, strict):
 
             if role == "source":
                 n_sources += 1
-                power_mw = float(obj.power)
+                # power may be absent on a pulse_energy-only source (see
+                # classify_body's OR-gate). 0.0 (not None) is the "unset"
+                # sentinel here -- same convention as mirror/absorbance/
+                # roughness_nm elsewhere in this contract -- because
+                # common.validate_model requires source.power_mW to
+                # already be a real float (_req(src, "power_mW", float,
+                # ...), a pre-existing schema gate this phase doesn't
+                # touch). scene.py's power/pulse_energy XOR + derivation
+                # treats power_mW == 0.0 as "not authored" and overwrites
+                # it with the real derived average power.
+                power_mw = float(obj.power) if hasattr(obj, "power") else 0.0
                 lambdac_nm = float(obj.lambdac)
                 lambdamin = float(obj.lambdamin) if hasattr(obj, "lambdamin") else None
                 lambdamax = float(obj.lambdamax) if hasattr(obj, "lambdamax") else None
@@ -1233,6 +1255,11 @@ def extract_one(fcstd_path, outdir, strict):
                     "emit_face": closest_face_id,
                     "emit_face_autodetected": True,
                 }
+                # design-angle annotation (core.wizards.design_field_fan);
+                # optional, consumed by
+                # analysis_imaging.field_angle_annotations_from_model.
+                if hasattr(obj, "field_angle_deg"):
+                    source_dict["field_angle_deg"] = float(obj.field_angle_deg)
                 pol_raw = str_prop_or_none(obj, "polarization")
                 if pol_raw is not None:
                     try:
@@ -1271,6 +1298,18 @@ def extract_one(fcstd_path, outdir, strict):
                         die("%s: m2 must be >= 1.0 (got %g)"
                             % (obj.Label, m2))
                     source_dict["beam"] = {"waist_mm": waist_mm, "m2": m2}
+                # pulsed-source properties (Phase P3): optional and
+                # independently omitted when absent, same as
+                # polarization/apodization/spectrum/beam above. scene.py
+                # enforces the power/pulse_energy XOR, requires rep_rate
+                # alongside pulse_energy, and derives whichever of
+                # {power_mW, pulse_energy_uJ} is missing.
+                if hasattr(obj, "pulse_energy"):
+                    source_dict["pulse_energy_uJ"] = float(obj.pulse_energy)
+                if hasattr(obj, "pulse_duration"):
+                    source_dict["pulse_duration_ps"] = float(obj.pulse_duration)
+                if hasattr(obj, "rep_rate"):
+                    source_dict["rep_rate_hz"] = float(obj.rep_rate)
                 body_dict["source"] = source_dict
             elif role == "detector":
                 n_detectors += 1
@@ -1341,8 +1380,8 @@ def extract_one(fcstd_path, outdir, strict):
         if not bodies_out:
             die("%s: no non-ignored bodies found" % stem)
         if n_sources == 0:
-            die("%s: no light sources found (need power+lambdac properties "
-                "on a body)" % stem)
+            die("%s: no light sources found (need lambdac plus power or "
+                "pulse_energy properties on a body)" % stem)
         if n_detectors == 0:
             die("%s: no detectors found (material=detector)" % stem)
 

@@ -59,6 +59,45 @@ import numpy as np
 
 from .rays import RayBatch
 
+C_LIGHT_MPS = 299792458.0
+
+
+def apply_stratum_t0(batch, src):
+    """Pulsed-optics birth-time offset hook (Phase P3 stub consumed by a
+    later SPM/chirp phase). If src carries an optional "_stratum_t0"
+    array (seconds, one entry per wavelength stratum — same stratum
+    indexing as wavelength_strata/batch.lam_stratum), add
+    C_LIGHT_MPS * t0[stratum] metres to batch.gopl for every ray, keyed
+    by its own lam_stratum. gopl is a pure Sum(n_g*ds) accumulator that
+    is exactly 0 at birth by contract (RayBatch.alloc_time's docstring)
+    and never read to make trace decisions (track_time is diagnostic
+    only — see tracer.py) — so nudging it once, right at birth, by a
+    per-stratum constant is equivalent to starting the group-delay
+    integration from a nonzero t0 for that stratum.
+
+    No-op when "_stratum_t0" is absent, OR when batch.gopl is still None.
+    The second guard is the one that actually matters in this codebase's
+    real call order: sample_source() (this module) ALWAYS runs and
+    returns a fresh batch BEFORE scripts/run_trace.py ever calls
+    Tracer.run(batches) — and Tracer.run() is what allocates gopl
+    (`if self.cfg.track_time and b.gopl is None: b.alloc_time()`,
+    tracer.py Tracer.run()). So batch.gopl is unconditionally None right
+    after sample_source() builds a batch; this function is a plain
+    no-op there. It only fires for a caller that pre-allocates —
+    run_trace.py's batch-building loops call b.alloc_time() themselves
+    (under the same cfg.track_time gate) right after sample_source()
+    returns and BEFORE tracer.run(), then call this function — the same
+    idempotent-alloc dance test_time_core.py's _build() harness already
+    does by hand. Kept as a free function (not inlined at the
+    batch.lam_stratum assignment below) so callers control exactly when
+    it fires and a batch with track_time off stays a true zero-cost
+    no-op."""
+    t0 = src.get("_stratum_t0")
+    if t0 is None or batch.gopl is None:
+        return
+    t0 = np.asarray(t0, dtype=np.float64)
+    batch.gopl += C_LIGHT_MPS * t0[batch.lam_stratum]
+
 
 def n_pol_strata(src):
     """Number of mutually-incoherent polarization populations a source
@@ -359,6 +398,10 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
     idx = np.arange(n_kept)
     batch.lam[:] = lam_strata[idx % n_strata]
     batch.lam_stratum[:] = idx % n_strata
+    # NOTE: the src["_stratum_t0"] birth-time offset (apply_stratum_t0,
+    # module top) is NOT applied here — batch.gopl is still None at this
+    # point in the real pipeline (see that function's docstring for why);
+    # the caller applies it after pre-allocating gopl.
     # interleave so every (lam, pol) combination is uniformly filled
     batch.pol_stratum[:] = (idx // n_strata) % n_pol
     batch.source_id[:] = source_id

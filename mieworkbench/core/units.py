@@ -36,6 +36,9 @@ PROPERTY_UNITS = {
     "apodization": None,          # spec string ('gaussian:w0=<mm>[:order=<n>]')
     "scatter": None,               # ABg/BSDF registry name or per-face map
     "detector_face": None,         # FaceN pin for the detector screen face
+    "pulse_energy": "µJ",          # per-pulse energy (source-only)
+    "pulse_duration": "ps",        # pulse FWHM duration (source-only)
+    "rep_rate": "Hz",              # pulse repetition rate (source-only)
 }
 
 # Geometry/transform panels (values live in FreeCAD sheets / placements).
