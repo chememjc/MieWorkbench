@@ -424,6 +424,111 @@ def check_library_names(v):
     return out
 
 
+@check("nlo-props")
+def check_nlo_props(v):
+    """Pulsed-optics Phase P8: Pockels cell / saturable absorber / TPA /
+    Kerr thin-lens body properties. Registry-name validation follows the
+    same pattern as check_library_names (coating/filter/polarizer/
+    grating): unknown 'nonlinear'/'saturable'/'kerr_n2' registry rows are
+    hard errors here too (same severity the engine itself gates on at
+    Scene construction). pockels_voltage set without an attached
+    kind=pockels 'nonlinear' row, and saturable/tpa_beta/kerr_n2/
+    pockels_voltage placed on a SOURCE body, are advisory smells
+    (WARNING) — the engine's own hard validation (role checks, crystal_
+    axis/geometry/gap requirements) is the actual gate; this check exists
+    so the GUI catches likely mistakes before a run."""
+    if v.optprops is None:
+        return [Finding(WARNING, "no optical-property library loaded; "
+                        "nonlinear-property name checks skipped",
+                        check="nlo-props")]
+    p = v.optprops
+    nonlinear_reg = getattr(p, "nonlinear", {}) or {}
+    out = []
+    for b in v.bodies():
+        role = v.role(b)
+        if role == "ignored":
+            continue
+
+        nl_raw = v.prop(b, "nonlinear")
+        nl_row = None
+        if nl_raw is not None:
+            name = str(nl_raw).strip()
+            if name.lower() in ("", "none"):
+                nl_raw = None
+            elif name not in nonlinear_reg:
+                out.append(Finding(
+                    ERROR, "%s: unknown nonlinear entry %r"
+                    % (b["label"], name), body=b["name"],
+                    fix_hint="add it to opticalproperties/nonlinear/"
+                    "nonlinear.mienlo or fix the name",
+                    check="nlo-props"))
+            else:
+                nl_row = nonlinear_reg[name]
+            if role == "source":
+                out.append(Finding(
+                    WARNING, "%s: nonlinear is only meaningful on optic "
+                    "bodies (this is a source)" % b["label"],
+                    body=b["name"], check="nlo-props"))
+
+        pv = v.prop(b, "pockels_voltage")
+        if pv is not None:
+            try:
+                pv_val = float(pv)
+            except (TypeError, ValueError):
+                pv_val = None
+            if role == "source":
+                out.append(Finding(
+                    WARNING, "%s: pockels_voltage is only meaningful on "
+                    "optic bodies (this is a source)" % b["label"],
+                    body=b["name"], check="nlo-props"))
+            elif pv_val and (nl_row is None or nl_row.get("kind") != "pockels"):
+                out.append(Finding(
+                    WARNING, "%s: pockels_voltage is set but no "
+                    "kind=pockels 'nonlinear' row is attached — it has "
+                    "no effect" % b["label"], body=b["name"],
+                    fix_hint="set nonlinear=<a kind=pockels registry row>",
+                    check="nlo-props"))
+
+        for prop_name, parser, kind, what in (
+                ("saturable", common.parse_saturable_value, "saturable",
+                 "saturable absorber"),
+                ("kerr_n2", common.parse_kerr_n2_value, "n2", "Kerr n2")):
+            raw = v.prop(b, prop_name)
+            if raw is None:
+                continue
+            if role == "source":
+                out.append(Finding(
+                    WARNING, "%s: %s is only meaningful on optic bodies "
+                    "(this is a source)" % (b["label"], prop_name),
+                    body=b["name"], check="nlo-props"))
+                continue
+            try:
+                spec = parser(str(raw))
+            except ValueError as exc:
+                out.append(Finding(ERROR, "%s: bad %s spec: %s"
+                                   % (b["label"], prop_name, exc),
+                                   body=b["name"], check="nlo-props"))
+                continue
+            reg_name = spec.get("registry")
+            if reg_name is not None:
+                row = nonlinear_reg.get(reg_name)
+                if row is None or row.get("kind") != kind:
+                    out.append(Finding(
+                        ERROR, "%s: unknown %s registry entry %r"
+                        % (b["label"], what, reg_name), body=b["name"],
+                        fix_hint="add it to opticalproperties/nonlinear/"
+                        "nonlinear.mienlo (kind=%s) or fix the name"
+                        % kind, check="nlo-props"))
+
+        tpa = v.prop(b, "tpa_beta")
+        if tpa is not None and role == "source":
+            out.append(Finding(WARNING, "%s: tpa_beta is only meaningful "
+                               "on optic bodies (this is a source)"
+                               % b["label"], body=b["name"],
+                               check="nlo-props"))
+    return out
+
+
 @check("spec-syntax")
 def check_spec_syntax(v):
     out = []

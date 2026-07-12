@@ -735,7 +735,15 @@ def load_nonlinear(csv_path=None, uniaxial=None, biaxial=None):
                     (NLO_GEOMETRIES)
       n2          : material, n2_m2_W, lam_ref_nm
       saturable   : I_sat_W_cm2 (> 0), T0 (unsaturated transmission/
-                    reflectance in (0, 1]), tau_recovery_s (>= 0)
+                    reflectance in (0, 1]), tau_recovery_s (>= 0),
+                    alpha0_per_mm (float > 0, OPTIONAL -- pulsed-optics
+                    Phase P8: the bulk unsaturated absorption coefficient
+                    per millimetre, consumed by nlo.saturable_alpha0_per_m.
+                    None when the column is blank, which falls back to
+                    reading T0 itself as a per-millimetre transmission
+                    (alpha0 = -ln(T0)/mm) -- the shipped sam_1550_16_2ps
+                    row (a SESAM MIRROR device whose T0 is really a
+                    whole-device reflectance) leaves this blank)
 
     plus 'reference' (required, hard-validated) and 'notes' on every row.
     Full-line '#' comments in the csv are skipped.
@@ -822,12 +830,17 @@ def load_nonlinear(csv_path=None, uniaxial=None, biaxial=None):
                 raise MaterialError(
                     "%s: T0 must be in (0, 1] (a fractional unsaturated "
                     "transmission/reflectance, got %g)" % (ctx, T0))
+            alpha0_raw = (row.get("alpha0_per_mm") or "").strip()
+            alpha0_per_mm = (_nlo_float(row, "alpha0_per_mm", ctx,
+                                        positive=True)
+                             if alpha0_raw else None)
             entry.update(
                 I_sat_W_cm2=_nlo_float(row, "I_sat_W_cm2", ctx,
                                        positive=True),
                 T0=T0,
                 tau_recovery_s=_nlo_float(row, "tau_recovery_s", ctx,
-                                          nonnegative=True))
+                                          nonnegative=True),
+                alpha0_per_mm=alpha0_per_mm)
         out[name] = entry
     return out
 

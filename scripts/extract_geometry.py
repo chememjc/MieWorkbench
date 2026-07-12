@@ -69,6 +69,20 @@
 #   fallback; verified against the actual FreeCAD geometry to 1 um before
 #   being trusted (see build_asphere_surface()).
 #
+#   Pulsed-optics Phase P8 (optics only, group "Base"):
+#   nonlinear (string, registry row name in opticalproperties/nonlinear/
+#   nonlinear.mienlo) - kind=pockels (needs a birefringent material +
+#   crystal_axis; TRANSVERSE geometry only in this phase) or kind=chi2_*
+#   (accepted + warned, the SHG/parametric event is a later phase).
+#   pockels_voltage (float V, default 0) + pockels_gap (float mm, > 0,
+#   the transverse E=V/d electrode gap) - Pockels cell operating point.
+#   saturable (string) - nonlinear.mienlo kind=saturable registry row name,
+#   OR inline 'sat:I_sat=<W/cm2>:T0=<0..1>' (common.parse_saturable_value).
+#   tpa_beta (float cm/GW) - two-photon-absorption coefficient.
+#   kerr_n2 (string) - nonlinear.mienlo kind=n2 registry row name, OR
+#   inline 'n2:<m2/W>' (common.parse_kerr_n2_value); Kerr thin-lens phase,
+#   coherent sources only.
+#
 # Units: FreeCAD's native unit is mm; every length in model.json is SI
 # metres. Wavelengths are nm, power is mW (matching the property units used
 # in the FCStd itself), angles are radians.
@@ -1205,6 +1219,69 @@ def extract_one(fcstd_path, outdir, strict):
                             % (obj.Label, axis2_raw, e))
                     body_dict["crystal_axis2"] = rotated_local_axis(
                         obj, local2)
+
+            # ---- pulsed-optics Phase P8: Pockels / saturable / TPA / -----
+            # ---- Kerr n2 --------------------------------------------------
+            nonlinear_raw = str_prop_or_none(obj, "nonlinear")
+            if nonlinear_raw is not None:
+                if role != "optic":
+                    warn("%s: nonlinear is only meaningful on optic bodies "
+                         "(role=%s); ignoring" % (obj.Label, role), warnings)
+                else:
+                    body_dict["nonlinear"] = nonlinear_raw
+
+            if hasattr(obj, "pockels_voltage"):
+                if role != "optic":
+                    warn("%s: pockels_voltage is only meaningful on optic "
+                         "bodies (role=%s); ignoring" % (obj.Label, role),
+                         warnings)
+                else:
+                    body_dict["pockels_voltage"] = float(obj.pockels_voltage)
+
+            if hasattr(obj, "pockels_gap"):
+                if role != "optic":
+                    warn("%s: pockels_gap is only meaningful on optic "
+                         "bodies (role=%s); ignoring" % (obj.Label, role),
+                         warnings)
+                else:
+                    gap = float(obj.pockels_gap)
+                    if gap <= 0:
+                        die("%s: pockels_gap must be > 0 mm (got %g)"
+                            % (obj.Label, gap))
+                    body_dict["pockels_gap_mm"] = gap
+
+            saturable_raw = str_prop_or_none(obj, "saturable")
+            if saturable_raw is not None:
+                if role != "optic":
+                    warn("%s: saturable is only meaningful on optic bodies "
+                         "(role=%s); ignoring" % (obj.Label, role), warnings)
+                else:
+                    try:
+                        common.parse_saturable_value(saturable_raw)
+                    except ValueError as e:
+                        die("%s: bad saturable spec %r: %s"
+                            % (obj.Label, saturable_raw, e))
+                    body_dict["saturable"] = saturable_raw
+
+            if hasattr(obj, "tpa_beta"):
+                if role != "optic":
+                    warn("%s: tpa_beta is only meaningful on optic bodies "
+                         "(role=%s); ignoring" % (obj.Label, role), warnings)
+                else:
+                    body_dict["tpa_beta"] = float(obj.tpa_beta)
+
+            kerr_n2_raw = str_prop_or_none(obj, "kerr_n2")
+            if kerr_n2_raw is not None:
+                if role != "optic":
+                    warn("%s: kerr_n2 is only meaningful on optic bodies "
+                         "(role=%s); ignoring" % (obj.Label, role), warnings)
+                else:
+                    try:
+                        common.parse_kerr_n2_value(kerr_n2_raw)
+                    except ValueError as e:
+                        die("%s: bad kerr_n2 spec %r: %s"
+                            % (obj.Label, kerr_n2_raw, e))
+                    body_dict["kerr_n2"] = kerr_n2_raw
 
             grating_raw = str_prop_or_none(obj, "grating")
             if grating_raw is not None:

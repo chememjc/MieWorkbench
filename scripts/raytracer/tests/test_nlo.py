@@ -41,7 +41,7 @@ from raytracer.materials import MaterialError              # noqa: E402
 NLO_HEADER = ("kind,name,crystal,point_group,d_il_pm_V,kleinman,lam_ref_nm,"
               "process,lam_pump_nm,theta_deg,phi_deg,d_eff_pm_V,"
               "r_coeffs_pm_V,geometry,material,n2_m2_W,I_sat_W_cm2,T0,"
-              "tau_recovery_s,reference,notes")
+              "tau_recovery_s,alpha0_per_mm,reference,notes")
 
 COLS = NLO_HEADER.split(",")
 
@@ -151,6 +151,24 @@ def test_saturable_row_parses(registry):
     assert sam["I_sat_W_cm2"] == 6.0e7
     assert sam["T0"] == 0.84
     assert sam["tau_recovery_s"] == 2.0e-12
+    # shipped row predates alpha0_per_mm (a mirror/reflectance device, not
+    # a bulk transmission) -- schema column optional, blank -> None
+    assert sam["alpha0_per_mm"] is None
+
+
+def test_saturable_row_alpha0_per_mm_optional_column(tmp_path):
+    """Phase P8 schema addition: alpha0_per_mm is optional (blank -> None,
+    a positive value parses through)."""
+    p = write_registry(tmp_path, [saturable_row()])
+    reg = optprops.load_nonlinear(csv_path=p)
+    assert reg["s1"]["alpha0_per_mm"] is None
+    p2 = write_registry(tmp_path, [saturable_row(alpha0_per_mm="1.5")])
+    reg2 = optprops.load_nonlinear(csv_path=p2)
+    assert reg2["s1"]["alpha0_per_mm"] == 1.5
+    with pytest.raises(MaterialError, match="alpha0_per_mm"):
+        optprops.load_nonlinear(
+            csv_path=write_registry(tmp_path,
+                                    [saturable_row(alpha0_per_mm="-1.0")]))
 
 
 def test_optical_properties_slot(props, registry):

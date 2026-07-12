@@ -266,6 +266,104 @@ def test_unknown_coating_and_bad_facemap():
     assert any("bad coating spec" in m for m in errs)
 
 
+def test_unknown_nonlinear_entry_is_an_error():
+    s = good_structure()
+    s["bodies"][1] = body("Lens", {"material": "bk7",
+                                   "nonlinear": "NoSuchNlo"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("unknown nonlinear entry 'NoSuchNlo'" in m for m in errs)
+
+
+def test_pockels_row_is_clean():
+    s = good_structure()
+    s["bodies"][1] = body("Xtal", {"material": "linbo3",
+                                   "crystal_axis": "0,1,0",
+                                   "nonlinear": "linbo3_eo",
+                                   "pockels_voltage": 500.0,
+                                   "pockels_gap": 1.0})
+    assert not validation.has_errors(run(s))
+
+
+def test_pockels_voltage_without_pockels_row_warns():
+    s = good_structure()
+    s["bodies"][1] = body("Lens", {"material": "bk7",
+                                   "pockels_voltage": 500.0})
+    warns = messages(run(s), validation.WARNING)
+    assert any("no effect" in m for m in warns)
+
+
+def test_pockels_voltage_with_chi2_row_warns():
+    s = good_structure()
+    s["bodies"][1] = body("Xtal", {"material": "bbo",
+                                   "crystal_axis": "0,1,0",
+                                   "nonlinear": "bbo_shg_800_type1",
+                                   "pockels_voltage": 500.0})
+    warns = messages(run(s), validation.WARNING)
+    assert any("no effect" in m for m in warns)
+
+
+def test_pockels_voltage_on_source_warns():
+    s = good_structure()
+    s["bodies"][0]["properties"]["pockels_voltage"] = {
+        "type": "t", "group": "Base", "value": 500.0}
+    warns = messages(run(s), validation.WARNING)
+    assert any("pockels_voltage is only meaningful" in m for m in warns)
+
+
+def test_saturable_inline_spec_is_clean():
+    s = good_structure()
+    s["bodies"][1] = body("Sat", {"material": "air",
+                                  "saturable": "sat:I_sat=1e3:T0=0.5"})
+    assert not validation.has_errors(run(s))
+
+
+def test_saturable_bad_inline_spec_is_an_error():
+    s = good_structure()
+    s["bodies"][1] = body("Sat", {"material": "air",
+                                  "saturable": "sat:I_sat=1e3"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("bad saturable spec" in m for m in errs)
+
+
+def test_saturable_unknown_registry_entry_is_an_error():
+    s = good_structure()
+    s["bodies"][1] = body("Sat", {"material": "air",
+                                  "saturable": "@NoSuchSaturable"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("unknown saturable absorber registry entry" in m
+              for m in errs)
+
+
+def test_saturable_on_source_warns():
+    s = good_structure()
+    s["bodies"][0]["properties"]["saturable"] = {
+        "type": "t", "group": "Base", "value": "sat:I_sat=1e3:T0=0.5"}
+    warns = messages(run(s), validation.WARNING)
+    assert any("saturable is only meaningful" in m for m in warns)
+
+
+def test_kerr_n2_inline_spec_is_clean():
+    s = good_structure()
+    s["bodies"][1] = body("Kerr", {"material": "air", "kerr_n2": "n2:3e-20"})
+    assert not validation.has_errors(run(s))
+
+
+def test_kerr_n2_unknown_registry_entry_is_an_error():
+    s = good_structure()
+    s["bodies"][1] = body("Kerr", {"material": "air",
+                                   "kerr_n2": "@NoSuchN2"})
+    errs = messages(run(s), validation.ERROR)
+    assert any("unknown Kerr n2 registry entry" in m for m in errs)
+
+
+def test_tpa_beta_on_source_warns():
+    s = good_structure()
+    s["bodies"][0]["properties"]["tpa_beta"] = {
+        "type": "t", "group": "Base", "value": 50.0}
+    warns = messages(run(s), validation.WARNING)
+    assert any("tpa_beta is only meaningful" in m for m in warns)
+
+
 def test_open_solid_flagged():
     s = good_structure()
     s["bodies"][1] = body("Lens", {"material": "bk7"}, closed=False)
@@ -293,6 +391,9 @@ TYPO_CORPUS = [
     ("surface_override", "Face1=a;Face1=b"),
     ("grating", "Face2=0:v"),            # lines/mm must be > 0
     ("grating", "Face2=@"),
+    ("saturable", "sat:I_sat=1e3"),      # missing T0
+    ("saturable", "sat:I_sat=1e3:T0=1.5"),
+    ("kerr_n2", "n2:0"),                  # must be non-zero
 ]
 
 

@@ -39,6 +39,13 @@ PROPERTY_UNITS = {
     "pulse_energy": "µJ",          # per-pulse energy (source-only)
     "pulse_duration": "ps",        # pulse FWHM duration (source-only)
     "rep_rate": "Hz",              # pulse repetition rate (source-only)
+    # Pulsed-optics Phase P8: Pockels cell / saturable absorber / TPA / Kerr.
+    "nonlinear": None,              # nonlinear.mienlo registry name (pockels/chi2)
+    "pockels_voltage": "V",         # Pockels cell applied voltage
+    "pockels_gap": "mm",            # transverse-geometry electrode gap d (E=V/d)
+    "saturable": None,              # registry name or inline 'sat:I_sat=..:T0=..'
+    "tpa_beta": "cm/GW",            # two-photon-absorption coefficient
+    "kerr_n2": None,                # registry name or inline 'n2:<m2/W>'
 }
 
 # Geometry/transform panels (values live in FreeCAD sheets / placements).

@@ -35,6 +35,7 @@ from . import thinfilm as tf
 from . import grating as grating_mod
 from . import roughness as rough_mod
 from . import differentials as diff_mod
+from . import nlo as nlo_mod
 from .rays import RayBatch, AMBIENT, HIST_DEPTH
 from .audit import PowerLedger
 
@@ -228,12 +229,42 @@ class Tracer:
         for m in np.unique(med):
             sel = med == m
             n_med[sel] = scene.medium_index(int(m), batch.lam[sel])
+            if m < 0:
+                continue
+            body_m = scene.bodies[int(m)]
             # bulk spectral filters: additive absorption coefficient from
             # the body's filter table (Beer-Lambert; energy lands in
             # absorbed_bulk with correct path-length scaling)
-            if m >= 0 and scene.bodies[int(m)].filter is not None:
-                alpha_add[sel] = scene.bodies[int(m)].filter_alpha(
-                    batch.lam[sel])
+            if body_m.filter is not None:
+                alpha_add[sel] = body_m.filter_alpha(batch.lam[sel])
+            # ---- pulsed-optics Phase P8: saturable absorber + TPA -------
+            # both are intensity-dependent bulk absorption, so they slot
+            # into the SAME Beer-Lambert alpha_add hook as the spectral
+            # filter above -- the energy they remove lands in
+            # absorbed_bulk automatically (no separate ledger bucket, no
+            # closure risk). alpha_sat(I) = alpha0/(1+I/I_sat);
+            # alpha_TPA(I) = beta_SI * I (nlo.tpa_alpha_per_m).
+            if body_m.saturable_spec is not None or body_m.tpa_beta:
+                sub = batch.select(np.where(sel)[0])
+                I_local, warn_reason = nlo_mod.ray_intensity(sub, scene)
+                if warn_reason is not None \
+                        and not getattr(self, "_warned_nlo_intensity", False):
+                    import warnings
+                    warnings.warn(
+                        "body %s: saturable/TPA bulk effect needs a "
+                        "per-ray intensity estimate (%s) -- those rays "
+                        "use the UNSATURATED alpha0 (saturable) / ZERO "
+                        "(TPA) limit" % (body_m.label, warn_reason))
+                    self._warned_nlo_intensity = True
+                I_safe = np.where(np.isfinite(I_local), I_local, 0.0)
+                extra = np.zeros_like(I_safe)
+                if body_m.saturable_spec is not None:
+                    extra = extra + nlo_mod.saturable_alpha_per_m(
+                        body_m.saturable_spec, I_safe)
+                if body_m.tpa_beta:
+                    extra = extra + nlo_mod.tpa_alpha_per_m(
+                        body_m.tpa_beta, I_safe)
+                alpha_add[sel] = alpha_add[sel] + extra
         alpha = 4.0 * np.pi * np.imag(n_med) / batch.lam + alpha_add
         trans = np.exp(-np.clip(alpha * seg, 0.0, 700.0))
         p_before = batch.power
@@ -259,6 +290,50 @@ class Tracer:
         # absorbing crystals.
         n_phase = np.where(batch.n_eff > 0.0, batch.n_eff, np.real(n_med))
         batch.opl += n_phase * seg
+
+        # ---- pulsed-optics Phase P8: Kerr thin-element bulk phase -------
+        # Delta_opl = n2 * I(r) * L added directly to opl (L = this ray's
+        # OWN segment length through the body, generalizing the "thin
+        # plate" picture to oblique/curved-thin elements too) -- flows
+        # straight into the coherent gather's k*opl phase, so a collimated
+        # beam picks up the parabolic self-focusing phase profile with NO
+        # further plumbing. Coherent rays only: the term is phase-only and
+        # has no effect on an incoherent direct-power deposit, and I(r)
+        # needs a genuine transverse profile (ray differentials) to be
+        # physical in the first place.
+        kerr_bodies = [int(m) for m in np.unique(med)
+                      if m >= 0 and scene.bodies[int(m)].kerr_n2_value]
+        for bm in kerr_bodies:
+            in_body = med == bm
+            incoh = in_body & ~batch.coherent
+            if np.any(incoh) and not getattr(self, "_warned_kerr_incoherent",
+                                             False):
+                import warnings
+                warnings.warn(
+                    "body %s: kerr_n2 has no effect on INCOHERENT rays "
+                    "(the Kerr term is a phase-only addition to opl, "
+                    "consumed by the coherent gather) -- skipped"
+                    % scene.bodies[bm].label)
+                self._warned_kerr_incoherent = True
+            sel = in_body & batch.coherent
+            if not np.any(sel):
+                continue
+            sub = batch.select(np.where(sel)[0])
+            I_local, warn_reason = nlo_mod.ray_intensity(sub, scene)
+            if warn_reason is not None \
+                    and not getattr(self, "_warned_kerr_intensity", False):
+                import warnings
+                warnings.warn(
+                    "body %s: Kerr bulk phase needs a per-ray intensity "
+                    "estimate (%s) -- those rays get NO Kerr phase this "
+                    "segment (run with --ray-differentials for a "
+                    "physical transverse profile)"
+                    % (scene.bodies[bm].label, warn_reason))
+                self._warned_kerr_intensity = True
+            I_safe = np.where(np.isfinite(I_local), I_local, 0.0)
+            idx = np.where(sel)[0]
+            batch.opl[idx] += (scene.bodies[bm].kerr_n2_value * I_safe
+                              * seg[idx])
 
         # ---- time-domain accumulators (track_time only) ----
         # GROUP optical path Sum(n_g * ds) and accumulated GDD
@@ -404,13 +479,26 @@ class Tracer:
                     grp.Es[sel], grp.Ep[sel], grp.s_hat[sel],
                     grp.lam[sel], grp_start_opl[sel],
                     grp.power[sel], grp.scattered[sel],
-                    dA=grp_dA[sel] if grp_dA is not None else None)
+                    dA=grp_dA[sel] if grp_dA is not None else None,
+                    # track_time only (None otherwise): the GEOMETRIC hit
+                    # point + group path/GDD advanced to it (same state
+                    # _export_records captures), feeding the time-product
+                    # arrival records inside the detector — the gather
+                    # sample arrays above are untouched.
+                    pos_hit=grp.pos[sel],
+                    gopl=grp.gopl[sel] if grp.gopl is not None else None,
+                    gdd=grp.gdd_acc[sel] if grp.gdd_acc is not None
+                    else None)
         if np.any(~coh):
             i = np.where(~coh)[0]
             det.deposit_incoherent(grp.pos[i], grp.power[i], grp.lam[i],
                                    source_id=grp.source_id[i],
                                    lam_stratum=grp.lam_stratum[i],
-                                   pol_stratum=grp.pol_stratum[i])
+                                   pol_stratum=grp.pol_stratum[i],
+                                   gopl=grp.gopl[i]
+                                   if grp.gopl is not None else None,
+                                   gdd=grp.gdd_acc[i]
+                                   if grp.gdd_acc is not None else None)
         # diagnostic ledger (not a closure bucket)
         self.ledger.by_surface[det.label] = (
             self.ledger.by_surface.get(det.label, 0.0)
@@ -1158,7 +1246,7 @@ class Tracer:
                 # (first-cut: phase-surface derivative at fixed theta,
                 # walk-off path distinction neglected — see
                 # birefringence.n_group_e_theta)
-                mo, me = scene.matdb.get_uniaxial(body.material)
+                mo, me = scene.uniaxial_materials(body)
                 cos_kc = np.sum(res["k_e"] * np.broadcast_to(
                     c_axis, res["k_e"].shape), axis=-1)
                 ech.n_g_eff[:] = bir.n_group_e_theta(cos_kc, mo, me,
@@ -1251,7 +1339,7 @@ class Tracer:
                 rf.dir[is_e] = s_ray
                 rf.n_eff[is_e] = n_ray
                 if self.cfg.track_time:
-                    mo, me = scene.matdb.get_uniaxial(body.material)
+                    mo, me = scene.uniaxial_materials(body)
                     cos_kc = np.sum(k_r[is_e] * np.broadcast_to(
                         c_axis, k_r[is_e].shape), axis=-1)
                     rf.n_g_eff[is_e] = bir.n_group_e_theta(

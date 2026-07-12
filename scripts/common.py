@@ -248,6 +248,78 @@ def parse_diffuser_value(value):
     raise ValueError("unknown diffuser option %r in %r" % (head, value))
 
 
+def parse_saturable_value(value):
+    """Saturable-absorber body property value grammar (pulsed-optics
+    Phase P8):
+        'sat:I_sat=<W/cm2>:T0=<0..1>'   inline spec (no registry needed)
+        '@name' | 'name'                nonlinear.mienlo kind=saturable
+                                         registry row (resolved against
+                                         opticalproperties/nonlinear/
+                                         nonlinear.mienlo at Scene build)
+    -> {"inline": True, "I_sat_W_cm2": float, "T0": float}
+       | {"registry": str}
+    """
+    value = str(value).strip()
+    if value.startswith("sat:"):
+        out = {"inline": True}
+        for part in value[len("sat:"):].split(":"):
+            part = part.strip()
+            if not part:
+                continue
+            if "=" not in part:
+                raise ValueError(
+                    "bad saturable inline spec %r (expected "
+                    "sat:I_sat=<W/cm2>:T0=<0..1>)" % value)
+            k, v = part.split("=", 1)
+            k = k.strip()
+            if k == "I_sat":
+                out["I_sat_W_cm2"] = float(v)
+            elif k == "T0":
+                out["T0"] = float(v)
+            else:
+                raise ValueError("unknown saturable inline option %r in %r"
+                                 % (k, value))
+        if out.get("I_sat_W_cm2") is None or out["I_sat_W_cm2"] <= 0:
+            raise ValueError(
+                "saturable inline spec needs I_sat > 0 (W/cm^2): %r"
+                % value)
+        if out.get("T0") is None or not 0.0 < out["T0"] <= 1.0:
+            raise ValueError(
+                "saturable inline spec needs T0 in (0, 1]: %r" % value)
+        return out
+    name = value[1:] if value.startswith("@") else value
+    if not name:
+        raise ValueError("empty saturable registry reference %r" % value)
+    return {"registry": name}
+
+
+def parse_kerr_n2_value(value):
+    """Kerr (chi3 n2) body property value grammar (pulsed-optics Phase P8):
+        'n2:<m2/W>'      inline nonlinear-index value (no registry needed;
+                         may be negative, e.g. some semiconductors)
+        '@name' | 'name'  nonlinear.mienlo kind=n2 registry row (resolved
+                         against opticalproperties/nonlinear/
+                         nonlinear.mienlo at Scene build)
+    -> {"inline": True, "n2_m2_W": float} | {"registry": str}
+    """
+    value = str(value).strip()
+    if value.startswith("n2:"):
+        raw = value[len("n2:"):]
+        try:
+            n2 = float(raw)
+        except ValueError:
+            raise ValueError("bad kerr_n2 inline value %r (expected "
+                             "n2:<m2/W>)" % value)
+        if n2 == 0.0:
+            raise ValueError("kerr_n2 inline value must be non-zero: %r"
+                             % value)
+        return {"inline": True, "n2_m2_W": n2}
+    name = value[1:] if value.startswith("@") else value
+    if not name:
+        raise ValueError("empty kerr_n2 registry reference %r" % value)
+    return {"registry": name}
+
+
 def parse_rough_spec(spec):
     """'Body.Obj.FaceN:50[:lcorr=10]'  (sigma in nm, lcorr in um)"""
     spec = spec.strip()
@@ -670,6 +742,22 @@ def validate_model(model):
             _req(b, "filter", str, bctx)
         if b.get("crystal_axis") is not None:
             _check_axis(b["crystal_axis"], "crystal_axis", bctx)
+        # ---- pulsed-optics Phase P8 (Pockels / saturable / TPA / Kerr) ---
+        if b.get("nonlinear") is not None:
+            _req(b, "nonlinear", str, bctx)
+        if b.get("pockels_voltage") is not None:
+            _req(b, "pockels_voltage", float, bctx)
+        if b.get("pockels_gap_mm") is not None:
+            gap = _req(b, "pockels_gap_mm", float, bctx)
+            if gap <= 0:
+                raise ContractError(
+                    "%s: pockels_gap_mm must be > 0 (got %g)" % (bctx, gap))
+        if b.get("saturable") is not None:
+            _req(b, "saturable", str, bctx)
+        if b.get("tpa_beta") is not None:
+            _req(b, "tpa_beta", float, bctx)
+        if b.get("kerr_n2") is not None:
+            _req(b, "kerr_n2", str, bctx)
         if isinstance(b.get("coating"), dict):
             _check_facemap(b["coating"], "coating", bctx)
         if b.get("roughness_faces") is not None:

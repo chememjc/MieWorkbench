@@ -53,3 +53,21 @@ def test_new_pulsed_source_props_have_unit_decisions():
 def test_format_power_mw():
     assert format_power_mw(0.005) == "5"
     assert format_power_mw(1.23e-6) == "0.00123"
+
+
+def test_new_nlo_props_have_unit_decisions():
+    """Pulsed-optics Phase P8: Pockels cell (nonlinear/pockels_voltage/
+    pockels_gap) + saturable absorber (saturable) + two-photon absorption
+    (tpa_beta) + Kerr thin lens (kerr_n2) need explicit unit decisions,
+    same as every other contract property. These are not (yet) wired
+    into element_editor.CONTRACT_PROPERTIES (same anticipatory-unit-entry
+    pattern P3 used for pulse_energy/pulse_duration/rep_rate before those
+    landed in the editor) -- test_every_contract_property_has_a_unit_
+    decision only asserts the OTHER direction (every CONTRACT_PROPERTIES
+    entry has a unit), so this test pins the new keys directly."""
+    assert label_with_unit("nonlinear") == "nonlinear"          # registry name
+    assert label_with_unit("pockels_voltage") == "pockels_voltage [V]"
+    assert label_with_unit("pockels_gap") == "pockels_gap [mm]"
+    assert label_with_unit("saturable") == "saturable"          # spec string
+    assert label_with_unit("tpa_beta") == "tpa_beta [cm/GW]"
+    assert label_with_unit("kerr_n2") == "kerr_n2"               # spec string

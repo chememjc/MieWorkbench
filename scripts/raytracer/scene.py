@@ -16,6 +16,7 @@
 import numpy as np
 
 from .surfaces import make_surface, AnalyticFace
+from . import nlo
 
 
 FACEMAP_ALL = "__all__"     # matches common.FACEMAP_ALL (contract sentinel)
@@ -141,7 +142,11 @@ class Body:
                  "detector", "closed", "face_ids", "polarizer",
                  "polarizer_axis", "filter", "crystal_axis", "birefringent",
                  "filter_lam_um", "filter_alpha_per_m", "crystal_axis2",
-                 "crystal_frame", "biaxial")
+                 "crystal_frame", "biaxial",
+                 # pulsed-optics Phase P8 (Pockels / saturable / TPA / Kerr):
+                 "nonlinear", "pockels_voltage", "pockels_gap_mm",
+                 "pockels_mats", "saturable_raw", "saturable_spec",
+                 "tpa_beta", "kerr_n2_raw", "kerr_n2_value")
 
     def __init__(self, index, rec):
         self.index = index
@@ -189,6 +194,24 @@ class Body:
         self.closed = bool(rec.get("solid_closed", True))
         self.face_ids = []
 
+        # ---- pulsed-optics Phase P8: Pockels / saturable / TPA / Kerr ----
+        # 'nonlinear' names a nonlinear.mienlo registry row (kind=pockels or
+        # chi2_*; resolved+validated by Scene, which also sets pockels_mats
+        # for an attached pockels row). 'saturable'/'kerr_n2' are resolved
+        # by Scene too (registry row OR inline spec, common.
+        # parse_saturable_value/parse_kerr_n2_value) into saturable_spec
+        # ({I_sat_W_cm2, T0, alpha0_per_mm}) / kerr_n2_value (float, m^2/W).
+        self.nonlinear = rec.get("nonlinear") or None
+        self.pockels_voltage = float(rec.get("pockels_voltage") or 0.0)
+        pg = rec.get("pockels_gap_mm")
+        self.pockels_gap_mm = float(pg) if pg is not None else None
+        self.pockels_mats = None            # (mat_o, mat_e) shifted proxies
+        self.saturable_raw = rec.get("saturable") or None
+        self.saturable_spec = None
+        self.tpa_beta = float(rec.get("tpa_beta") or 0.0)   # cm/GW
+        self.kerr_n2_raw = rec.get("kerr_n2") or None
+        self.kerr_n2_value = None           # m^2/W
+
     def filter_alpha(self, lam_m):
         """Additive bulk absorption coefficient [1/m] at wavelength(s) [m]
         from this body's spectral filter table (0 if no filter). Hard error
@@ -220,7 +243,12 @@ class Scene:
         filters = optprops.filters if optprops is not None else {}
         grating_registry = optprops.gratings if optprops is not None else {}
         emission = optprops.emission if optprops is not None else {}
+        nonlinear_registry = optprops.nonlinear if optprops is not None else {}
         self.polarizers = polarizers
+        # needed inside the body loop below (nonlinear/saturable/kerr_n2
+        # value-string parsing) — imported here (not at module level) to
+        # match the existing convention lower in this method.
+        import common as _common
         self.ambient = matdb.get(model.get("ambient_material", "air"))
         suppress = set(suppress_bodies)
 
@@ -313,6 +341,138 @@ class Scene:
                 fentry = filters[body.filter]
                 body.filter_lam_um = fentry["lam_um"]
                 body.filter_alpha_per_m = fentry["alpha_per_m"]
+
+            # ---- pulsed-optics Phase P8: Pockels / chi2-accept / --------
+            # ---- saturable absorber / TPA / Kerr n2 ---------------------
+            if body.nonlinear is not None:
+                if body.role != "optic":
+                    raise ValueError(
+                        "body %s: nonlinear is only meaningful on optic "
+                        "bodies (role=%s)" % (body.label, body.role))
+                if body.nonlinear not in nonlinear_registry:
+                    raise ValueError(
+                        "body %s: unknown nonlinear entry %r "
+                        "(opticalproperties/nonlinear/nonlinear.mienlo "
+                        "has: %s)" % (body.label, body.nonlinear,
+                                     ", ".join(sorted(nonlinear_registry))
+                                     or "<none loaded — pass optprops>"))
+                nrow = nonlinear_registry[body.nonlinear]
+                if nrow["kind"] in ("chi2_tensor", "chi2_process"):
+                    # SHG/parametric event lands in a later engine phase;
+                    # accept the row (so authoring can proceed now) and
+                    # warn once instead of hard-erroring — the ray simply
+                    # propagates through the body unaffected by chi2 this
+                    # phase.
+                    if not getattr(self, "_warned_chi2_accept", False):
+                        import warnings
+                        warnings.warn(
+                            "body %s: chi2 nonlinear row %r attached — "
+                            "the SHG/parametric event is not implemented "
+                            "yet (a later engine phase); accepted and "
+                            "IGNORED this phase" % (body.label,
+                                                    body.nonlinear))
+                        self._warned_chi2_accept = True
+                elif nrow["kind"] == "pockels":
+                    if not body.birefringent:
+                        raise ValueError(
+                            "body %s: pockels row %r needs a birefringent "
+                            "material (body material is %r)"
+                            % (body.label, body.nonlinear, body.material))
+                    if (nrow["crystal"].strip().lower()
+                            != body.material.strip().lower()):
+                        raise ValueError(
+                            "body %s: pockels row %r crystal %r does not "
+                            "match the body's birefringent material %r"
+                            % (body.label, body.nonlinear, nrow["crystal"],
+                               body.material))
+                    if nrow["geometry"] != "transverse":
+                        raise ValueError(
+                            "body %s: pockels row %r uses %r geometry — "
+                            "this engine phase (P8) implements the "
+                            "TRANSVERSE Pockels geometry ONLY (documented "
+                            "scope); a %r cell needs a later engine phase"
+                            % (body.label, body.nonlinear, nrow["geometry"],
+                               nrow["geometry"]))
+                    if "r33" not in nrow["r_pm_V"] \
+                            or "r13" not in nrow["r_pm_V"]:
+                        raise ValueError(
+                            "body %s: pockels row %r needs BOTH r33 and "
+                            "r13 coefficients for the transverse geometry "
+                            "(got %s)" % (body.label, body.nonlinear,
+                                         sorted(nrow["r_pm_V"])))
+                    if body.pockels_gap_mm is None:
+                        raise ValueError(
+                            "body %s: pockels row %r needs the "
+                            "pockels_gap body property (mm) — the "
+                            "transverse-field gap distance d in E = V/d"
+                            % (body.label, body.nonlinear))
+                    mo, me = matdb.get_uniaxial(body.material)
+                    gap_m = body.pockels_gap_mm * 1e-3
+                    body.pockels_mats = nlo.pockels_shifted_materials(
+                        mo, me, nrow["r_pm_V"], gap_m, body.pockels_voltage)
+                else:
+                    raise ValueError(
+                        "body %s: the 'nonlinear' body property expects "
+                        "a pockels or chi2_* registry row (got kind=%r "
+                        "for %r) — saturable absorption and the Kerr "
+                        "effect use their own 'saturable'/'kerr_n2' body "
+                        "properties" % (body.label, nrow["kind"],
+                                       body.nonlinear))
+
+            if body.saturable_raw is not None:
+                if body.role != "optic":
+                    raise ValueError(
+                        "body %s: saturable is only meaningful on optic "
+                        "bodies (role=%s)" % (body.label, body.role))
+                parsed = _common.parse_saturable_value(body.saturable_raw)
+                if "registry" in parsed:
+                    sat_names = sorted(k for k, v in
+                                       nonlinear_registry.items()
+                                       if v["kind"] == "saturable")
+                    srow = nonlinear_registry.get(parsed["registry"])
+                    if srow is None or srow["kind"] != "saturable":
+                        raise ValueError(
+                            "body %s: unknown saturable registry entry "
+                            "%r (kind=saturable rows: %s)"
+                            % (body.label, parsed["registry"],
+                               ", ".join(sat_names) or "<none>"))
+                    body.saturable_spec = {
+                        "I_sat_W_cm2": srow["I_sat_W_cm2"], "T0": srow["T0"],
+                        "alpha0_per_mm": srow.get("alpha0_per_mm")}
+                else:
+                    body.saturable_spec = {
+                        "I_sat_W_cm2": parsed["I_sat_W_cm2"],
+                        "T0": parsed["T0"], "alpha0_per_mm": None}
+
+            if body.kerr_n2_raw is not None:
+                if body.role != "optic":
+                    raise ValueError(
+                        "body %s: kerr_n2 is only meaningful on optic "
+                        "bodies (role=%s)" % (body.label, body.role))
+                parsed = _common.parse_kerr_n2_value(body.kerr_n2_raw)
+                if "registry" in parsed:
+                    n2_names = sorted(k for k, v in
+                                      nonlinear_registry.items()
+                                      if v["kind"] == "n2")
+                    krow = nonlinear_registry.get(parsed["registry"])
+                    if krow is None or krow["kind"] != "n2":
+                        raise ValueError(
+                            "body %s: unknown kerr_n2 registry entry %r "
+                            "(kind=n2 rows: %s)"
+                            % (body.label, parsed["registry"],
+                               ", ".join(n2_names) or "<none>"))
+                    mat_name = krow["material"]
+                    if mat_name not in matdb:
+                        raise ValueError(
+                            "body %s: kerr_n2 registry row %r's material "
+                            "%r is not in materials.miemat (a STAGED n2 "
+                            "row — see "
+                            "library_data/staged/nonlinear_staging_notes.md)"
+                            % (body.label, parsed["registry"], mat_name))
+                    body.kerr_n2_value = krow["n2_m2_W"]
+                else:
+                    body.kerr_n2_value = parsed["n2_m2_W"]
+
             self.bodies.append(body)
 
             if body.role == "source":
@@ -414,8 +574,7 @@ class Scene:
 
         # ---- per-face physics options ---------------------------------
         # precedence everywhere: CLI spec > body per-face entry > body
-        # whole-body value.
-        import common as _common
+        # whole-body value. (_common imported earlier in this method.)
         self.gratings = {}
         # body 'grating' property (per-face dict, values from
         # common.parse_grating_value)
@@ -600,7 +759,7 @@ class Scene:
             # ambient (rays never legitimately travel "inside" them)
             return self.ambient.n_complex(lam)
         if body.birefringent:
-            return self.matdb.get_uniaxial(body.material)[0].n_complex(lam)
+            return self.uniaxial_materials(body)[0].n_complex(lam)
         if body.biaxial:
             # scalar bookkeeping index (medium stack / seam accounting):
             # the geometric mean keeps it sheet-neutral
@@ -627,7 +786,7 @@ class Scene:
         if body.role == "detector" or body.material in (None, "detector"):
             return np.ones_like(np.asarray(lam, dtype=np.float64))
         if body.birefringent:
-            return self.matdb.get_uniaxial(body.material)[0].n_group(lam)
+            return self.uniaxial_materials(body)[0].n_group(lam)
         if body.biaxial:
             mx, my, mz = self.matdb.get_biaxial(body.material)
             return (mx.n_group(lam) * my.n_group(lam)
@@ -649,16 +808,30 @@ class Scene:
         if body.role == "detector" or body.material in (None, "detector"):
             return np.zeros_like(lam)
         if body.birefringent:
-            return gdd_per_length(
-                self.matdb.get_uniaxial(body.material)[0], lam)
+            return gdd_per_length(self.uniaxial_materials(body)[0], lam)
         if body.biaxial:
             mats = self.matdb.get_biaxial(body.material)
             return sum(gdd_per_length(m, lam) for m in mats) / 3.0
         return gdd_per_length(self.matdb.get(body.material), lam)
 
+    def uniaxial_materials(self, body):
+        """(mat_o, mat_e) Material-like objects for a birefringent body —
+        the Pockels-SHIFTED proxy pair (nlo._ShiftedIndex) when the body
+        carries an attached EO cell (body.pockels_mats, set at Scene
+        construction from a 'nonlinear'=pockels row + pockels_voltage/
+        pockels_gap), else the bare uniaxial registry pair. Single choke
+        point so every consumer (medium_index, medium_group_index,
+        medium_gdd_per_length, uniaxial_indices, and the tracer's
+        directional-group-index lookups in _birefringent_children) sees
+        the Pockels shift transparently — retardance, dispersion and
+        group delay all follow from the SAME two proxies."""
+        if body.pockels_mats is not None:
+            return body.pockels_mats
+        return self.matdb.get_uniaxial(body.material)
+
     def uniaxial_indices(self, body, lam):
         """(n_o_real, n_e_real) arrays for a birefringent body at lam [m]."""
-        mo, me = self.matdb.get_uniaxial(body.material)
+        mo, me = self.uniaxial_materials(body)
         return (np.real(mo.n_complex(lam)), np.real(me.n_complex(lam)))
 
     def biaxial_eps(self, body, lam):
