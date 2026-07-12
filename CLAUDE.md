@@ -62,6 +62,13 @@ python3 scripts/run_pipeline.py --models example.FCStd --preset quick
 #                        or 'fan[:n=K]' (center + edge midpoints; GUI preview)
 # detector outputs: --photometric (lux maps) --spectrometer (λ-vs-x profiles);
 #   QE-weighted photocurrent has NO flag — set qe_curve on the detector body
+# time domain (pulsed round): --time-products pulse,spectrogram,streak,cube
+#   (pulsed source auto-enables pulse,spectrogram; 'none' suppresses);
+#   --time-bins preset-scaled 128/256/512; --time-window ns; --time-envelope
+#   analytic|histogram; --gdd-budget = per-element GD/GDD/TOD table (free
+#   when time products run; on CW forces group-delay tracking). All
+#   time/NLO features Python-route (tokens time_products/gdd_budget/
+#   nonlinear/saturable/tpa/kerr).
 
 # GUI
 env/bin/python -m mieworkbench [model.FCStd|X.MieWB|X.MieSim]   # or bin/mieworkbench
@@ -128,7 +135,9 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   `run_trace` REFUSES a locked case (exit 4). The GUI opens live cases
   read-only in monitor mode (polls `progress.json`).
 - **Primitives** (`scripts/primitivelib.py` + `primitives/*.FCStd` +
-  `.meta.json`): 62 catalog elements (sources/detectors/fiber optics/
+  `.meta.json`): 69 catalog elements (sources incl. 6 pulsed/SC
+  lasers (P12: maitai_800/erfiber_1560/ndyag_1064/sc_superk/laser_pulsed/
+  fiber_nonlinear_output)/detectors/fiber optics/
   lenses/beamsplitters/filters/polarization/prisms & mirrors/apertures/
   diffusers — incl. 8 LED monochromatic sources, `fiber_optic` core+cladding
   analytic cylinders, NA 0.22 via the `fiber_core_na22` material row, and
@@ -172,6 +181,13 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   `circular:left|right` | `elliptical:<psi>:<chi>`, `spectrum` =
   `emission/emitters.miesrc` row = tabulated emission SPD (continuous only;
   supersedes lambdamin/max, inverse-CDF equal-power strata)]
+- pulsed sources (P3/P6): `power` XOR `pulse_energy` (µJ, needs
+  `rep_rate` Hz); `pulse_duration` (ps FWHM; on a power-only source =
+  virtual pulse); derived {P_pk=0.94E/τ, κ} echoed in case.json
+  source_pulse; power_mW=0.0 is the "unset" extractor sentinel. `spm` =
+  `phimax:<rad>` | `gamma:<W⁻¹km⁻¹>:length:<m>` (source-side SPM:
+  exact FFT spectrum installed as SPD + S-curve chirp via stratum
+  birth-time offsets)
 - optic extras (stackable): `coating` (whole-body or `Face3=MgF2;...`),
   `roughness`, `diffuser` (`grit:120`|`slope:0.08`|`@dg_600`, per-face ok;
   NEVER with roughness on one face — deep-rough Beckmann limit, §5.4.1),
@@ -181,6 +197,14 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   vertex inside the retained face — off-axis parabola segments are
   structurally unverifiable, use `mirror_parabolic` on-axis),
   `mirror`, `absorbance`
+- NLO extras (pulsed round): `nonlinear` = nonlinear.mienlo row
+  (chi2_process → per-segment SHG transfer: incoherent λ/2 child,
+  stratum id n_λ+parent, η clamped 0.5; pockels rows + `pockels_voltage`/
+  `pockels_gap_mm` = transverse EO via shifted-index proxies;
+  chi2_tensor rows are authoring-only, hard error on a body),
+  `saturable` (`@row`), `tpa_beta` (cm/GW), `kerr_n2` (`@n2_row`) —
+  intensity uses (p/dA)·κ, ray differentials preferred (flat-top
+  fallback warns; Kerr NEEDS --ray-differentials)
 - dimensions in `Spreadsheet::Sheet` aliased `=<val> mm` cells; extract
   echoes the primary `dim` sheet FLAT plus every sheet namespaced
   `<sheetlabel>.<alias>`
@@ -261,8 +285,8 @@ symmetric element's own axis allowed+reported) and 3-seed power
 (38), `polarizer/polarizers.miepol` (17), `filter/filters.miefilt` (56),
 `grating/gratings.miegrat` (8), `birefringence/uniaxial.miebrf` (13 uniaxial
 crystals), `detector/detectors.miedet` (detector QE curves, 1 entry: hamamatsu_s1223),
-`emission/emitters.miesrc` (tabulated source emission spectra, 1 entry:
-led_white_2733k; continuous kind only), per-item tables `*/tables/*.mietab`. Loaders prefer the new names and **fall back to
+`emission/emitters.miesrc` (tabulated source emission spectra, 2 entries:
+led_white_2733k + sc_superk supercontinuum SPD; continuous kind only), per-item tables `*/tables/*.mietab`. Loaders prefer the new names and **fall back to
 legacy `.csv`** (external all-.csv libraries keep working). `reference`
 (citation) column is REQUIRED everywhere; loaders hard-validate
 (`raytracer/optprops.py`). Override root: `--optical-properties DIR`.

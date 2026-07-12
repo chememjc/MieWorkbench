@@ -462,3 +462,51 @@ model extension:
   GUI exposes a face combo. The e2e prism/pbs scenes could now be
   migrated from direction-based readouts to pinned faces (small
   follow-up).
+
+## Pulsed-optics round follow-ups (2026-07-12)
+
+Engine seams deliberately deferred by the pulsed/fs round (each is
+documented as an honest limit in docs/RAYTRACER.md §5.2.1/§6.11/§6.12):
+
+- **Split-step NLSE propagation**: the SPM transform is source-side and
+  quasi-classical (one FFT, single-time-per-frequency chirp). A split-step
+  Fourier propagator would give real intra-train nonlinear evolution
+  (SPM+GVD interplay, soliton dynamics) at the cost of a per-segment field
+  model.
+- **Mid-train SPM**: an `spm` property on a fiber/waveguide BODY (not the
+  source) breaks the per-source wavelength-strata bookkeeping — needs
+  stratum re-quantization at the element, same machinery an OPO/Raman
+  element would need.
+- **Depleted-pump coupled-wave SHG**: the bulk event clamps the undepleted
+  quadratic η at 0.5. The full coupled-amplitude tanh² solution would
+  extend validity to strong conversion (and enable back-conversion).
+- **Harmonic walk-off + exact uniaxial SHG**: the harmonic child is
+  collinear with equal s/p split; real type-I/II geometry puts it in the
+  e/o eigenpolarization with Poynting walk-off (needs the exact uniaxial
+  Fresnel work already listed above).
+- **Cascaded/coherent harmonics**: children are incoherent and never
+  re-convert (no THG via cascade, no phase-sensitive pump-harmonic
+  interplay). A coherent-harmonic mode would gather the 2ω population
+  with its own phase ledger.
+- **Raman / fluorescence-style inelastic transfer**: the SHG event is the
+  template (stratum id extension + ledger transfer); a Stokes-shift bulk
+  event would reuse the same plumbing with a gain spectrum row.
+- **C-engine port of the round's tokens**: `time_products`, `gdd_budget`,
+  `nonlinear`, `saturable`, `tpa`, `kerr` all Python-route today
+  (`cengine.detect_features`). The arrival-record buffer + per-segment
+  alpha hooks are the natural first ports; the SHG child spawn needs the
+  C children queue to learn stratum extension.
+- **Fringe-resolved timing**: the coherent population records its
+  GEOMETRIC arrival power — interference within a time bin is not
+  resolved (a coherent time-domain gather would need per-record complex
+  amplitudes at 100× the record cost).
+- **Angular-dispersion group-index term**: e-ray group delay uses the
+  frozen directional n_g and neglects dθ/dλ (calcite oracle bounds the
+  error); gratings/prisms get geometric GDD only through traced arrival
+  times (correct) — the analytic GDD-budget table stays material-only.
+- **Per-source time cubes / .h5 growth**: time products bin all sources
+  together (profile has a by-source split; the cube does not) — a
+  per-source cube would multiply memory by n_sources.
+- **SuperK SPD tail vs material tables**: the sc_superk table spans
+  400–2400 nm; benches whose materials aren't tabulated that far must
+  clip the SPD (documented in the primitive tooltip + registry notes).

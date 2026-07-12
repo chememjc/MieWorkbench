@@ -463,6 +463,53 @@ to 1, must be `>=1`). A source can carry `beam_waist`/`m2` and
 `apodization` simultaneously (independent knobs — position spread from
 one, power taper from the other) but this is an uncommon combination.
 
+### 5.2.1 Pulsed sources (`pulse_energy` / `pulse_duration` / `rep_rate`)
+
+Three optional float body properties turn a source pulsed
+(`raytracer.scene._parse_pulse_source` resolves them at scene build):
+
+- **`power` XOR `pulse_energy`** — exactly one defines the source's
+  average power. `power` (mW) is the classic CW spec; `pulse_energy`
+  (µJ) **requires `rep_rate`** (Hz) and derives
+  `power = energy × rep_rate`. Both set (nonzero) is a hard error —
+  which average-power definition wins would be ambiguous. `power = 0.0`
+  is the extractor's "not authored" sentinel for pulse_energy-only
+  sources (`common.validate_model` requires the key to exist as a
+  float).
+- **`pulse_duration`** (ps, Gaussian FWHM). With an energy spec this is
+  a real pulsed source; with `power` alone it is a *virtual-pulse*
+  annotation (a CW source whose time products render as one τ₀ pulse).
+  Either way, whenever any pulse property is present the source dict
+  carries a `pulse` block `{energy_J, duration_s, rep_rate_Hz,
+  peak_power_W, avg_power_W, derived, kappa}` — echoed per source into
+  `case.json` `source_pulse`. `peak_power_W = 0.94·E/τ` (Gaussian shape
+  factor); `kappa = P_pk/P_avg` is the peak-to-average ratio that
+  scales every nonlinear element's intensity estimate (§6.12).
+- **Everything downstream still trades in average watts.** The ledger,
+  detector cubes, and closure gate are untouched — per-pulse quantities
+  are reporting/NLO scalars, and *one pulse per rep period* is the
+  model (no inter-pulse interference).
+
+A pulsed source (nonzero `pulse_duration`) auto-enables the
+`pulse,spectrogram` time products (§6.11); `--time-products none`
+suppresses that.
+
+**`spm` (source-only, string).** Source-side self-phase-modulation
+transform (`sources.install_spm`): `'phimax:<rad>'` or
+`'gamma:<W⁻¹km⁻¹>:length:<m>'` (γ from a fiber datasheet;
+`φ_max = γ·P_pk·L_eff` from the derived peak power). At scene build the
+EXACT pure-SPM spectrum (one 4096-pt FFT of
+`E(t) = √I(t)·e^{iφ_max·I(t)/I₀}`) is installed as the source's
+tabulated SPD (superseding `lambdamin`/`lambdamax`), and each wavelength
+stratum gets a birth-time offset from the analytic instantaneous-
+frequency curve evaluated on its central monotonic branch — the
+spectrogram shows the SPM S-curve with the physical tilt (leading edge
+red, trailing blue). **Honest limits:** a quasi-classical
+single-time-per-frequency approximation (the spectral wings recur at
+two times; they are folded onto the branch ends); the transform is
+source-side only — mid-train SPM would break the stratum bookkeeping
+(future.md). Resolved `φ_max` is echoed into `case.json` `source_spm`.
+
 ### 5.3 Surface interaction: mirror/absorbance, coatings, polarizers, filters
 
 Documented in `tracer.py`'s module header and dispatched per hit face as
@@ -1374,6 +1421,109 @@ flags and both **seed-0 only** (neither averages across `--seeds`):
   needs a reference (Airy/aberration-free) PSF model this module does not
   build yet.
 
+### 6.11 Time domain: group delay, time products, and the GDD budget
+
+**The time model.** Whenever any time product (or `--gdd-budget`) is
+active, every ray carries two extra accumulators beside `opl`
+(`RayBatch.alloc_time`, tracer `cfg.track_time`): `gopl = Σ n_g·ds`
+(GROUP optical path — arrival time is `t = gopl/c`; ambient counts
+exactly 1.0, so an air path's group delay is its geometric length) and
+`gdd_acc = Σ (φ₂/L)·ds` (accumulated material GDD, s²). Directional
+group indices for crystal e-rays ride `n_g_eff` exactly like `n_eff`
+does for phase. Strictly additive instrumentation: nothing touches
+power/phase/ledger/RNG, and detector cubes and `opl` are bit-identical
+with tracking on vs off (pinned by `test_time_core.py`).
+
+**Time products** (`--time-products pulse,spectrogram,streak,cube` /
+`all` / `none`; a pulsed source auto-enables `pulse,spectrogram`).
+Detectors buffer compact **arrival records** (t, fx, fy, λ, power, gdd,
+stratum — both the incoherent deposit and the coherent population at
+its GEOMETRIC arrival; fringe-resolved timing is documented out of
+scope) and bin them once at the end (`finalize_time`):
+
+- `time_profile` (n_t,) [+ `time_profile_by_source`] — I(t), W/s
+- `time_spectrogram` (spectral_bins, n_t)
+- `time_streak` (n_t, W) — x vs t
+- `time_cube` (n_t, H', W') float32, spatially capped at
+  `--time-cube-res` (default 256)
+
+All stored as arrival-power **densities** [W/s]: integrating any
+product over the window reproduces the in-window detected power
+(`time_total_W` attr; `time_excluded_W` books out-of-window power).
+`.h5` attrs: `t_lo_s/t_hi_s/time_bins/time_dt_s/time_envelope/
+time_products/t_p001_s/t_p999_s` (+ cube binning factors). Window:
+auto = exact arrival span padded 3× the widest kernel, or explicit
+`--time-window T0,T1` (ns; clipped kernels renormalize over in-window
+bins — energy conserving).
+
+**Envelopes.** `--time-envelope analytic` (default): each record splats
+a Gaussian of FWHM `sqrt(τ0² + (2√(2ln2)·|gdd_acc|·Δω_stratum)²)` —
+zero GDD gives exactly the transform-limited pulse, and the traced
+FWHM matches the textbook `τ(φ₂) = τ0·√(1+(4ln2·φ₂/τ0²)²)` at any
+`--nlambda` (2% gate, `test_gdd_budget.py`); it also kills MC shot
+noise at `quick`. `histogram` is a plain weighted arrival histogram
+(assumption-free cross-check; CW/rangefinder mode). Sub-bin kernels
+(σ < dt/6) deposit as single-bin deltas — evaluating a fs kernel on
+ps bins underflows (NaN via 0·inf; regression-pinned).
+
+**GDD budget** (`--gdd-budget`, or free whenever time tracking runs).
+`case.json['gdd_budget']`: per traversed body, the power-weighted mean
+bulk path `L̄ = path_tally/flux_in` and its MATERIAL dispersion at the
+reference source's λc — n_g, GD, GDD, TOD (crystal bodies use the
+o-material; biaxial the principal mean) — plus totals and a per-pulsed-
+source broadening annotation τ0 → τ_out at its own λc. post_process
+renders `images/gdd_budget.png` + CSV + `report.json`. **Honest
+limit:** MATERIAL dispersion only — geometric GDD (gratings, prisms,
+angular chirp) shows up in the traced time products instead, and the
+e-ray group index neglects the dθ/dλ angular term (calcite oracle
+bounds it). The flag on a CW scene forces group-delay tracking (Python
+engine, token `gdd_budget`).
+
+### 6.12 χ² / nonlinear elements (SHG, Pockels, saturable, TPA, Kerr)
+
+All intensity-dependent elements share one convention: the local PEAK
+intensity `I_pk = (p_ray/dA)·κ_pulse` (`nlo.ray_intensity`) — dA from
+ray differentials when `--ray-differentials` is on, else a flat-top
+source-area fallback (warned once; the Kerr lens *needs* differentials
+to be physical). κ comes from the source's pulse block (§5.2.1); a CW
+source has κ = 1.
+
+- **SHG bulk transfer** (`nonlinear` body property naming a
+  `chi2_process` registry row). Deterministic per-segment conversion —
+  zero RNG use — with the undepleted Boyd plane-wave efficiency
+  `η = 8π²d_eff²L²I/(n₁²n₂ε₀cλ₁²)·sinc²(ΔkL/2)`, clamped at 0.5 with a
+  warning (pump depletion makes the quadratic growth unphysical past
+  that). The row supplies `d_eff` and the design pump wavelength
+  (exactly phase-matched there); spectral detuning uses the BODY
+  material's scalar index. Parent amplitudes deplete by `√(1−η)`; an
+  **incoherent** child at λ/2 with stratum id `n_lambda + parent`
+  carries `η·p` — a pure transfer (ledger closes with no new bucket;
+  children are never gathered, so coherent budget gates ignore them),
+  inherits `gopl`/`gdd_acc` (arrival rides the pump group delay), and
+  refracts/Fresnels out through the exit face at λ/2. The detector
+  spectral range extends to cover λ/2 automatically;
+  `case.json['harmonic_strata']` maps child↔parent ids and
+  `shg_converted_W` tallies the transfer per body. **Honest limits:**
+  no walk-off, no angular detuning, equal s/p harmonic split, no
+  cascaded re-conversion, `chi2_tensor` rows are authoring-side only
+  (derive a process row via `nlo.d_eff_tensor`/`phase_match_angle`).
+- **Pockels** (`nonlinear` = a `pockels` row + `pockels_voltage`/
+  `pockels_gap_mm`): transverse geometry only — Δn = −½n³rE wrapped as
+  shifted-index material proxies, so retardance/dispersion/group delay
+  all follow from the existing crystal physics.
+- **Saturable absorption** (`saturable` = `@row` or inline) and **TPA**
+  (`tpa_beta`, cm/GW): intensity-dependent bulk absorption in the same
+  Beer-Lambert `alpha_add` hook as spectral filters — energy lands in
+  `absorbed_bulk`, closure-free. Evaluated once per segment at entry
+  intensity.
+- **Kerr lens** (`kerr_n2` = `@n2_row` or a value): thin-element phase
+  `Δopl = n₂·I(r)·L` added to coherent rays' `opl` — the gather then
+  shows the self-focusing (oracle `f_K = w²/(4n₂I₀L)` at 5%). Coherent
+  benches only (warned otherwise).
+
+Every NLO element forces the Python engine (feature tokens
+`nonlinear/saturable/tpa/kerr` — the C engine has none of this).
+
 ---
 
 ## 7. Optical properties library (`opticalproperties/`)
@@ -1611,11 +1761,25 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--grating SPEC]... [--rough SPEC]... [--particles SPEC]
     [--particle-threshold F] [--suppress-body NAME]...
     [--photometric] [--spectrometer]
+    [--time-products LIST] [--time-bins N] [--time-window T0,T1]
+    [--time-cube-res N] [--time-envelope {analytic,histogram}]
+    [--gdd-budget]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--emit-csv] [--export-rays] [--export-rays-max N] [--ghost-analysis]
     [--wavefront-point X,Y] [--viz-generations N] [--views v1,v2,...] [--smoke]
     [--keep-going] [--print-only] [--workers N]
 ```
+
+**Time-domain flags** (forwarded to **trace**; §6.11): `--time-products`
+is a comma list of `pulse,spectrogram,streak,cube` (`all`/`none`) —
+default `pulse,spectrogram` when the scene has a pulsed source, nothing
+otherwise, `none` suppresses the auto-rule. `--time-bins` is
+preset-scaled (quick 128 / normal 256 / detailed 512,
+`cli_specs.TIME_BINS_PRESET`) when not given. `--time-window` is in ns.
+Any active product tracks per-ray group delay and forces the Python
+engine. `--gdd-budget` emits the per-element dispersion table (§6.11)
+into `case.json`/`report.json` + `images/gdd_budget.png`; on a CW scene
+it forces group-delay tracking (Python engine).
 
 `--models` accepts globs and multiple files (bare names also resolve
 under `basemodels/`). `--steps` always executes in the fixed canonical
@@ -1690,6 +1854,9 @@ trace can already saturate every core/GPU). Logs: `results/log.extract`
     [--save-fields] [--save-fields-detectors LABEL[,LABEL...]]
     [--gather-occlusion] [--optical-properties PATH]
     [--strict-analytic] [--mesh-flat-normals] [--dry-run]
+    [--time-products LIST] [--time-bins N=256] [--time-window T0,T1]
+    [--time-cube-res N=256] [--time-envelope {analytic,histogram}=analytic]
+    [--gdd-budget]
     [--export-rays] [--export-rays-max N=2000000] [--ghost-analysis]
 ```
 
@@ -2077,6 +2244,16 @@ physics modules against a real extracted FreeCAD geometry.
 | `test_gather.py` (7) | Gather kernel vs brute-force reference; point-source 1/r² + spherical phase; double-slit fringe pitch + visibility; single-slit first-zero position; incoherent source shows no fringes; undersampling gate raises; torch vs numpy backend agreement | kernel rel 1e-4; point-source rel 1e-5; double-slit pitch rel 1%, visibility >0.9; single-slit zero rel 2%; incoherent visibility <0.35; torch/numpy rel 5e-3 |
 | `test_integration.py` (5) | `Scene` built from the real extracted `example.FCStd` contract; wavelength-strata semantics (monochromatic + asymmetric-Gaussian bounding); full-trace energy closure; traced focal position vs the thick-lens lensmaker equation | closure <1e-3; **focal position vs lensmaker equation: rel 5e-3 (<0.5%)** |
 | `test_doubleslit_e2e.py` (1) | **The** end-to-end wave-optics validation: the real `doubleslit.FCStd` scene, extracted and traced through the full engine, must produce Young's fringes with the correct pitch, visibility, and Fraunhofer-envelope shape — unchanged by the polarization/birefringence/grating feature work | gate: correlation with analytic Fraunhofer pattern >0.75, pitch within 1.5 detector pixels of `lambda*L/d`, visibility >0.85, closure <1e-3 |
+| `test_dispersion.py` | Group index / GDD / TOD derivative API vs literature: fused silica n_g(800nm)=1.467145, GVD 36.16 fs²/mm; BK7 @1064; stencil clamping at table edges | 1e-4 (n_g), 1% (GVD) |
+| `test_time_core.py` | Slab group delay `(n_g−1)L/c`; CW impulse response; calcite o/e group split; **bit-identity of opl + detector cubes with time tracking on vs off**; per-body path tally | closed-form/bit-identical |
+| `test_pulsed_source.py` | Power XOR pulse_energy contract (all error paths); derived pulse block (P_pk=0.94E/τ, κ); case.json `source_pulse` echo | exact |
+| `test_time_products.py` (24) | ∫I(t)dt == detected power for every product × both envelopes (coherent population via geometric power); marginal consistency (spectrogram/streak/cube vs profile); auto vs explicit window + clipped-kernel conservation; analytic smoother than histogram; CW delta at d/c; **traced FWHM vs τ(φ₂) broadening through 20mm fused silica**; auto-enable rule; engine routing; sub-bin-kernel splat regression (fs kernels on ns windows stayed finite) | conservation 1e-12; broadening 5% (products), 2% (the locked `test_gdd_budget` gate) |
+| `test_gdd_budget.py` (5) | Budget GDD == `gdd_per_length·L̄` (the table's own numbers, 1e-3); τ_out formula exactness; **traced FWHM matches the budget's τ_out at 2% (THE locked gate)**; CW `--gdd-budget` forces tracking + Python routing; pipeline forwarding | 1e-3 / 2% |
+| `test_spm.py` (12) | SPM RMS spectral broadening vs Agrawal `√(1+(4/3√3)φ_max²)`; multi-peak count ≈ φ_max/π+1; chirp tilt sign (red first) + monotonic t0; SPD normalization/supersession; grammar + γ·P_pk·L_eff derivation; sc_superk registry row | 10% (RMS); exact peak windows |
+| `test_nlo.py` | d_eff tensor contraction (3m closed form 7e-16); KTP II 3.246 pm/V vs published 3.2; BBO θ_pm=29.211° vs 29.2°; registry load/validation | closed-form to 7e-16; published values 1–2% |
+| `test_nlo_elements.py` (23) | Pockels crossed-polarizer `sin²(πV/2V_π)`; saturable α(I) curve + TPA law vs `exp(-α(I_in)L)`; Kerr focal shift vs `f_K=w²/(4n₂I₀L)`; chi2_process→shg_spec resolution; chi2_tensor rejection | sin² 1%; Kerr 5% |
+| `test_shg_event.py` (6) | Vectorized η == scalar (incl. clamp); **η ∝ I·L² at Δk=0**; sinc² detuning sweep vs closed form; transfer closure (harmonic ≤ tally, total detected conserved); harmonic at λ/2 in the right spectral bin + `harmonic_strata` map; **child gopl continuity** (harmonic arrival rides the pump group delay); NLO bodies force Python routing | 1e-12 (vec); 1–2% (scaling/detuning); closure <1e-3 |
+| `test_imaging.py` | Exit pupil vs paraxial stop image; singlet distortion; clipped-stop vignetting; Petzval field curvature; telecentric CRA≈0; Strehl PSF-peak vs Maréchal | per-product gates (see file header) |
 
 **Measured double-slit result** (real completed run,
 `results/doubleslit/dev/`, 400,000 rays, 1024×1024 detector, computed

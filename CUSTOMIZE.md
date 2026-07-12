@@ -730,3 +730,37 @@ See `opticalproperties/birefringence/biaxial.mibiax` for the four shipped
 rows and `library.md` §3.2 for the citation/confidence notes (the 5
 mineral-placeholder rows there are UNVERIFIED and not yet promoted —
 promoting one means clearing that flag against a real source first).
+
+## 10. Nonlinear registry rows + pulsed-source primitives (pulsed round)
+
+**χ²/EO/Kerr/saturable rows** live in
+`opticalproperties/nonlinear/nonlinear.mienlo` (plain CSV, full-line `#`
+comments allowed, `reference` mandatory; `raytracer/optprops.py
+load_nonlinear` hard-validates). Five row kinds:
+
+- `chi2_tensor` — 3×6 d_il (pm/V, semicolon-packed row-major) + point
+  group. Authoring/derivation only: `nlo.d_eff_tensor` contracts it for
+  an arbitrary geometry and `nlo.phase_match_angle` solves type-I ooe
+  angles. A tensor row on a body is a hard error.
+- `chi2_process` — pre-solved scalar process: crystal, process
+  (`shg_type1`/`shg_type2`), `lam_pump_nm` (the exactly-phase-matched
+  design pump), `theta_deg`/`phi_deg`, `d_eff_pm_V`. This is what the
+  `nonlinear` body property consumes for the tracer's SHG transfer
+  (docs/RAYTRACER.md §6.12). Derive new ones from a tensor row + the
+  solver, cite both the d-coefficient source and the angle source.
+- `pockels` (r coefficients, transverse geometry), `n2` (Kerr, m²/W),
+  `saturable` (SESAM-style I_sat/T0/modulation) — consumed by the
+  `nonlinear`/`kerr_n2`/`saturable` body properties respectively.
+
+**Pulsed-laser primitives** reuse `_build_laser_collimated`; the entire
+personality lives in the catalog entry's `props` dict
+(`scripts/primitivelib.py`, "pulsed lasers" block): either
+`power` + `rep_rate` (+ `pulse_duration`) — energy/pulse derives — or
+`pulse_energy` + `rep_rate` with NO power key (the XOR contract,
+docs/RAYTRACER.md §5.2.1). Datasheet provenance goes in the tooltip
+(these ship with citations: Mai Tai HP, FemtoFiber pro, Q-smart 850,
+SuperK EXR-20). A supercontinuum-style source pairs `spectrum=<row>`
+with a digitized SPD table in `emission/tables/*.mietab` (§5 above);
+an SPM-broadened source sets `spm='gamma:<W⁻¹km⁻¹>:length:<m>'`.
+Regenerate with
+`/home3/freecad/FreeCAD.AppImage -c scripts/make_primitives.py -- --kind <name> < /dev/null`.
