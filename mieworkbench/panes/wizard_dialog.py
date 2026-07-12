@@ -26,7 +26,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox,
-    QLabel, QLineEdit, QPushButton, QVBoxLayout,
+    QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout,
 )
 
 _SCRIPTS = os.path.normpath(os.path.join(
@@ -349,3 +349,177 @@ class ZoomPairDialog(QDialog):
     def result(self):
         """The last computed solve_zoom_pair() dict, or None."""
         return self._last
+
+
+class FieldFanDialog(QDialog):
+    """Field-angle fan wizard page (core.wizards.design_field_fan): N
+    field-point sources arc- or plane-spaced about a pivot, each aimed at
+    it, each carrying its field_angle_deg property — the source layout
+    the --imaging-products field renderers (distortion / vignetting /
+    field curves / telecentricity) consume. Follows the ZoomPairDialog
+    pattern (Compute button, gray result label, no unguarded modals);
+    the CALLER (mainwindow) inserts the primitives from result() as one
+    undo macro through the Project API."""
+
+    def __init__(self, source_kinds=None, parent=None):
+        """source_kinds: [(kind, display_label)] for the source-kind
+        combo (defaults to laser_collimated only)."""
+        super().__init__(parent)
+        self.setWindowTitle("Field-angle Fan")
+        lay = QVBoxLayout(self)
+
+        note = QLabel(
+            "Places N field-point sources aimed at a common pivot (the "
+            "system's entrance aperture), one per field angle — the "
+            "layout the imaging products (distortion, vignetting, field "
+            "curves, telecentricity) analyze. Each source gets a "
+            "field_angle_deg property recording its design angle.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray;")
+        lay.addWidget(note)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("N sources:"), 0, 0)
+        self.n_spin = QSpinBox()
+        self.n_spin.setRange(1, 25)
+        self.n_spin.setValue(3)
+        self.n_spin.setToolTip("Number of field points, evenly spanning "
+                               "±θmax (ignored when an explicit angle "
+                               "list is given)")
+        grid.addWidget(self.n_spin, 0, 1)
+        grid.addWidget(QLabel("±θmax [deg]:"), 0, 2)
+        self.theta_edit = QLineEdit("15")
+        self.theta_edit.setValidator(QDoubleValidator())
+        self.theta_edit.setToolTip("Half-angle of the fan; N sources "
+                                   "span [-θmax, +θmax]")
+        grid.addWidget(self.theta_edit, 0, 3)
+
+        grid.addWidget(QLabel("Angles [deg] (optional):"), 1, 0)
+        self.angles_edit = QLineEdit("")
+        self.angles_edit.setToolTip(
+            "Explicit comma-separated field angles (e.g. '0, 8, 16'); "
+            "when non-empty this overrides N/θmax")
+        grid.addWidget(self.angles_edit, 1, 1, 1, 3)
+
+        grid.addWidget(QLabel("Pivot x,y,z [mm]:"), 2, 0)
+        self.pivot_edit = QLineEdit("0, 0, 0")
+        self.pivot_edit.setToolTip("Common aim point (typically the "
+                                   "first element's front vertex / the "
+                                   "aperture stop)")
+        grid.addWidget(self.pivot_edit, 2, 1, 1, 3)
+
+        grid.addWidget(QLabel("Radius R [mm]:"), 3, 0)
+        self.radius_edit = QLineEdit("100")
+        self.radius_edit.setValidator(QDoubleValidator())
+        self.radius_edit.setToolTip("Source stand-off from the pivot "
+                                    "(auto-grown if the source bodies "
+                                    "would overlap)")
+        grid.addWidget(self.radius_edit, 3, 1)
+        grid.addWidget(QLabel("Aperture [mm]:"), 3, 2)
+        self.aperture_edit = QLineEdit("")
+        self.aperture_edit.setValidator(QDoubleValidator())
+        self.aperture_edit.setToolTip("Beam/emit diameter per source "
+                                      "(blank = the primitive's default; "
+                                      "also the overlap-guard bounding "
+                                      "diameter)")
+        grid.addWidget(self.aperture_edit, 3, 3)
+
+        grid.addWidget(QLabel("Source kind:"), 4, 0)
+        self.kind_combo = QComboBox()
+        for kind, disp in (source_kinds
+                           or [("laser_collimated", "Collimated laser")]):
+            self.kind_combo.addItem(disp, kind)
+        grid.addWidget(self.kind_combo, 4, 1)
+        grid.addWidget(QLabel("Fan plane:"), 4, 2)
+        self.plane_combo = QComboBox()
+        self.plane_combo.addItem("xy (about z)", "xy")
+        self.plane_combo.addItem("xz (about y)", "xz")
+        grid.addWidget(self.plane_combo, 4, 3)
+
+        grid.addWidget(QLabel("Spacing:"), 5, 0)
+        self.spacing_combo = QComboBox()
+        self.spacing_combo.addItem("arc (constant distance to pivot)",
+                                   "arc")
+        self.spacing_combo.addItem("plane (constant axial distance)",
+                                   "plane")
+        grid.addWidget(self.spacing_combo, 5, 1)
+        btn = QPushButton("Compute")
+        btn.setToolTip("Solve the fan placements and preview them below")
+        btn.clicked.connect(self._compute)
+        grid.addWidget(btn, 5, 2, 1, 2)
+        lay.addLayout(grid)
+
+        self.result_label = QLabel("")
+        self.result_label.setStyleSheet("color: gray;")
+        self.result_label.setWordWrap(True)
+        lay.addWidget(self.result_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok
+                                   | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Add fan")
+        buttons.accepted.connect(self._accept_with_compute)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self.resize(520, 420)
+        self._last = None
+
+    # -- parsing helpers ---------------------------------------------------
+    def _angles(self):
+        text = self.angles_edit.text().strip()
+        if text:
+            return [float(t) for t in text.replace(";", ",").split(",")
+                    if t.strip()]
+        return None
+
+    def _pivot(self):
+        parts = [t for t in self.pivot_edit.text().replace(";", ",")
+                 .split(",") if t.strip()]
+        if len(parts) != 3:
+            raise ValueError("pivot needs three comma-separated "
+                             "coordinates (x, y, z in mm)")
+        return tuple(float(t) for t in parts)
+
+    def _compute(self):
+        try:
+            angles = self._angles()
+            n_or_angles = angles if angles is not None \
+                else int(self.n_spin.value())
+            aperture = self.aperture_edit.text().strip()
+            design = wizards.design_field_fan(
+                n_or_angles,
+                theta_max_deg=float(self.theta_edit.text() or 0),
+                pivot_mm=self._pivot(),
+                radius_mm=float(self.radius_edit.text()),
+                source_kind=self.kind_combo.currentData(),
+                aperture_mm=float(aperture) if aperture else None,
+                plane=self.plane_combo.currentData(),
+                spacing=self.spacing_combo.currentData())
+        except Exception as exc:
+            self.result_label.setText(str(exc))
+            self._last = None
+            return False
+        self._last = design
+        lines = ["%d source(s) on R=%.4g mm (%s, %s plane):"
+                 % (len(design["sources"]), design["radius_mm"],
+                    design["spacing"], design["plane"])]
+        for s in design["sources"]:
+            lines.append("  θ=%+.4g°  at (%.4g, %.4g, %.4g) mm"
+                         % ((s["angle_deg"],) + tuple(s["pos_mm"])))
+        if design["note"]:
+            lines.append("NOTE: %s" % design["note"])
+        self.result_label.setText("\n".join(lines))
+        return True
+
+    def _accept_with_compute(self):
+        # never an unguarded modal: a bad input just shows in the label
+        if self._compute():
+            self.accept()
+
+    def result(self):
+        """The last computed design_field_fan() dict, or None."""
+        return self._last
+
+    def aperture_mm(self):
+        """Explicit per-source aperture [mm] or None (primitive default)."""
+        text = self.aperture_edit.text().strip()
+        return float(text) if text else None

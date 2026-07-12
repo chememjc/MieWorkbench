@@ -287,6 +287,10 @@ def post_cmd(stem, case_dir, args):
     if args.wavefront_point is not None:
         cmd += ["--wavefront-point",
                 "%g,%g" % (args.wavefront_point[0], args.wavefront_point[1])]
+    if args.wavefront_pupil != "source":
+        cmd += ["--wavefront-pupil", args.wavefront_pupil]
+    if args.imaging_products:
+        cmd += ["--imaging-products", ",".join(args.imaging_products)]
     if args.viz_generations is not None:
         cmd += ["--viz-generations", str(int(args.viz_generations))]
     return cmd
@@ -475,6 +479,15 @@ def main():
     args = parse_args()
     steps = resolve_steps(args.steps)
     varspecs = validate_var_counts(args)
+    if args.imaging_products and not (args.export_rays
+                                      or args.ghost_analysis):
+        # same style as the post stage's own gate: the imaging products
+        # are computed from rays_full.npz, which only --export-rays (or
+        # --ghost-analysis, which implies it) makes the trace write.
+        raise SystemExit(
+            "run_pipeline.py: --imaging-products requires --export-rays "
+            "(the distortion/vignetting/field-curves/telecentricity "
+            "products are computed from rays_full.npz)")
     case = common.case_name(args.preset, args.tag)
 
     if args.print_only:

@@ -337,6 +337,173 @@ def solve_zoom_pair(f1_mm, f2_mm, z_mm=None, track_mm=None):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Field-angle fan designer (pulsed-optics round P9): N sources aimed at a
+# common pivot point, one per field angle, feeding the --imaging-products
+# field renderers (distortion/vignetting/field curves/telecentricity need
+# one source per field point). Pure math like the rest of this module; the
+# GUI page / make_demos consume the returned placement dicts.
+# ---------------------------------------------------------------------------
+FIELD_FAN_DEFAULT_DIAMETER_MM = 10.0   # laser_collimated 'diameter' default
+
+
+def _fan_source_diameter(source_kind, aperture_mm):
+    """Bounding diameter estimate for the overlap guard: the explicit
+    aperture wins, else the primitive's 'diameter' dim default (via
+    scripts/primitivelib metadata when importable), else 10 mm."""
+    if aperture_mm is not None:
+        return float(aperture_mm)
+    if _SCRIPTS_DIR not in sys.path:
+        sys.path.insert(0, _SCRIPTS_DIR)
+    try:
+        import primitivelib
+        spec = primitivelib.PRIMITIVES[source_kind]["params"]["diameter"]
+        return float(spec["default"])
+    except Exception:
+        return FIELD_FAN_DEFAULT_DIAMETER_MM
+
+
+def _fan_quat(theta_deg, plane):
+    """Quaternion [x,y,z,w] rotating +x to the fan direction at
+    theta_deg: about +z for the 'xy' plane (dir = (cos t, sin t, 0), the
+    make_demos rot_z convention), about -y for 'xz' (dir =
+    (cos t, 0, sin t))."""
+    half = math.radians(theta_deg) / 2.0
+    if plane == "xy":
+        return [0.0, 0.0, math.sin(half), math.cos(half)]
+    return [0.0, -math.sin(half), 0.0, math.cos(half)]
+
+
+def _fan_dir(theta_deg, plane):
+    t = math.radians(theta_deg)
+    if plane == "xy":
+        return (math.cos(t), math.sin(t), 0.0)
+    return (math.cos(t), 0.0, math.sin(t))
+
+
+def design_field_fan(n_or_angles, theta_max_deg=None,
+                     pivot_mm=(0.0, 0.0, 0.0), radius_mm=100.0,
+                     source_kind="laser_collimated", aperture_mm=None,
+                     plane="xy", spacing="arc"):
+    """Field-angle source fan: N sources, each AIMED AT the pivot point,
+    one per field angle, ready to import as primitives.
+
+    n_or_angles: an int N (angles = N values evenly spanning
+    [-theta_max_deg, +theta_max_deg]; theta_max_deg required) or an
+    explicit angle list in degrees (order preserved).
+    pivot_mm: the common aim point (entrance-pupil/front-vertex position).
+    radius_mm: source stand-off from the pivot (see `spacing`).
+    plane: 'xy' (fan about world z; angle 0 = +x, the bench convention)
+    or 'xz' (fan about y).
+    spacing:
+      'arc'   — sources ARC-SPACED on a circle of radius R about the
+                pivot: pos = pivot - R*dir(theta) (constant path length
+                to the pivot);
+      'plane' — sources on the plane at axial distance R before the
+                pivot: pos = pivot - R*x_hat - R*tan(theta)*t_hat
+                (constant AXIAL distance — the make_demos
+                demo_curved_focal_surface layout: y_off = R*tan(theta)).
+
+    Overlap guard: each source's bounding diameter (aperture_mm, else the
+    primitive's 'diameter' default) must fit between adjacent fan
+    positions; when it does not, R is AUTO-GROWN proportionally (source
+    separation scales linearly with R in both spacings) and the result
+    carries a 'note' saying so.
+
+    NOTE (extractor echo pending): each returned source carries
+    props={'field_angle_deg': theta} — set it on the source's PRIMARY
+    body (the same set_property path the GUI uses) so the imaging
+    products can read the exact design angle once extract_geometry echoes
+    it into the source dict; until then post_process derives theta from
+    the emit-face directions (analysis_imaging.field_angles_deg), so the
+    fan works today either way.
+
+    Returns {'sources': [{name_suffix, angle_deg, pos_mm, quat, dir,
+    props}...], 'pivot_mm', 'plane', 'spacing', 'radius_mm' (possibly
+    grown), 'radius_requested_mm', 'source_diameter_mm', 'note'}."""
+    if plane not in ("xy", "xz"):
+        raise ValueError("plane must be 'xy' or 'xz' (got %r)" % (plane,))
+    if spacing not in ("arc", "plane"):
+        raise ValueError("spacing must be 'arc' or 'plane' (got %r)"
+                         % (spacing,))
+    if isinstance(n_or_angles, int):
+        n = n_or_angles
+        if n < 1:
+            raise ValueError("field fan needs N >= 1 source")
+        if n == 1:
+            angles = [0.0]
+        else:
+            if theta_max_deg is None or theta_max_deg <= 0:
+                raise ValueError("N-source fan needs theta_max_deg > 0")
+            angles = [-theta_max_deg + 2.0 * theta_max_deg * i / (n - 1)
+                      for i in range(n)]
+    else:
+        angles = [float(a) for a in n_or_angles]
+        if not angles:
+            raise ValueError("field fan needs at least one angle")
+    if len(set(angles)) != len(angles):
+        raise ValueError("duplicate field angles: %s" % (angles,))
+    if any(abs(a) >= 90.0 for a in angles):
+        raise ValueError("field angles must satisfy |theta| < 90 deg "
+                         "(got %s)" % (angles,))
+
+    pivot = [float(v) for v in pivot_mm]
+    R = float(radius_mm)
+    if R <= 0:
+        raise ValueError("radius_mm must be > 0")
+    diameter = _fan_source_diameter(source_kind, aperture_mm)
+
+    def positions(R):
+        out = []
+        for a in angles:
+            d = _fan_dir(a, plane)
+            if spacing == "arc":
+                p = [pivot[i] - R * d[i] for i in range(3)]
+            else:
+                t = math.tan(math.radians(a))
+                ax = (1.0, 0.0, 0.0)
+                tr = (0.0, 1.0, 0.0) if plane == "xy" else (0.0, 0.0, 1.0)
+                p = [pivot[i] - R * ax[i] - R * t * tr[i]
+                     for i in range(3)]
+            out.append(p)
+        return out
+
+    def min_separation(R):
+        pts = positions(R)
+        srt = sorted(zip(angles, pts))
+        seps = [math.dist(srt[i][1], srt[i + 1][1])
+                for i in range(len(srt) - 1)]
+        return min(seps) if seps else float("inf")
+
+    note = None
+    R_final = R
+    if len(angles) > 1:
+        sep = min_separation(R)
+        if sep < diameter:
+            # separation scales linearly with R in both spacings
+            R_final = R * diameter / sep * 1.001
+            note = ("radius auto-grown %.6g -> %.6g mm so the %.6g mm "
+                    "source bodies clear each other (min separation was "
+                    "%.6g mm)" % (R, R_final, diameter, sep))
+
+    sources = []
+    for a, p in zip(angles, positions(R_final)):
+        suffix = ("%05.1f" % abs(a)).replace(".", "p")
+        suffix = ("m" if a < 0 else "p") + suffix if a != 0 else "axis"
+        sources.append({
+            "name_suffix": suffix,
+            "angle_deg": float(a),
+            "pos_mm": [float(v) for v in p],
+            "quat": _fan_quat(a, plane),
+            "dir": list(_fan_dir(a, plane)),
+            "props": {"field_angle_deg": float(a)},
+        })
+    return {"sources": sources, "pivot_mm": pivot, "plane": plane,
+            "spacing": spacing, "radius_mm": R_final,
+            "radius_requested_mm": R, "source_kind": source_kind,
+            "source_diameter_mm": diameter, "note": note}
+
+
 def solve_fresnel(f, n, aperture, n_facets=12):
     """Fresnel lens: the design focal length and index feed the facet
     slopes directly (primitivelib lens_fresnel params)."""

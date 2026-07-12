@@ -14,6 +14,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPTS))
 
@@ -81,6 +83,63 @@ def test_post_cmd_forwards_viz_generations_zero():
     cmd = run_pipeline.post_cmd("x", CASE_DIR, args)
     i = cmd.index("--viz-generations")
     assert cmd[i + 1] == "0"
+
+
+# ---------------------------------------------------------------------------
+# --imaging-products / --wavefront-pupil (post stage, pulsed-optics P9)
+# ---------------------------------------------------------------------------
+def test_post_cmd_forwards_imaging_products_and_wavefront_pupil():
+    args = _parse(["--export-rays",
+                   "--imaging-products", "distortion,telecentricity",
+                   "--wavefront-pupil", "exit_pupil"])
+    cmd = run_pipeline.post_cmd("x", CASE_DIR, args)
+    i = cmd.index("--imaging-products")
+    assert cmd[i + 1] == "distortion,telecentricity"
+    i = cmd.index("--wavefront-pupil")
+    assert cmd[i + 1] == "exit_pupil"
+
+
+def test_post_cmd_omits_imaging_flags_by_default():
+    args = _parse([])
+    cmd = run_pipeline.post_cmd("x", CASE_DIR, args)
+    assert "--imaging-products" not in cmd
+    assert "--wavefront-pupil" not in cmd
+
+
+def test_imaging_products_all_expands_to_every_product():
+    args = _parse(["--export-rays", "--imaging-products", "all"])
+    cmd = run_pipeline.post_cmd("x", CASE_DIR, args)
+    i = cmd.index("--imaging-products")
+    assert cmd[i + 1] == "distortion,vignetting,field_curves,telecentricity"
+
+
+def test_imaging_products_rejects_unknown_name():
+    with pytest.raises(SystemExit):
+        _parse(["--export-rays", "--imaging-products", "distortion,bogus"])
+
+
+def test_pipeline_gates_imaging_products_without_export_rays(monkeypatch):
+    argv = ["--models", "x.FCStd", "--imaging-products", "distortion",
+            "--print-only"]
+    monkeypatch.setattr(sys, "argv", ["run_pipeline.py"] + argv)
+    with pytest.raises(SystemExit) as exc:
+        run_pipeline.main()
+    assert "--export-rays" in str(exc.value)
+
+
+def test_pipeline_allows_imaging_products_with_ghost_analysis(tmp_path,
+                                                              monkeypatch,
+                                                              capsys):
+    # --ghost-analysis implies --export-rays at the trace stage, so the
+    # gate must accept it too
+    model = tmp_path / "dummy.FCStd"
+    model.write_bytes(b"")
+    argv = ["--models", str(model), "--steps", "post",
+            "--ghost-analysis", "--imaging-products", "vignetting",
+            "--print-only"]
+    monkeypatch.setattr(sys, "argv", ["run_pipeline.py"] + argv)
+    assert run_pipeline.main() == 0
+    assert "--imaging-products vignetting" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,8 @@ sys.path.insert(0, str(REPO / "scripts"))
 import common  # noqa: E402
 import miewb_tool  # noqa: E402
 from mieworkbench.core.fcclient import FcClient  # noqa: E402
-from mieworkbench.core.wizards import solve_achromat  # noqa: E402
+from mieworkbench.core.wizards import (solve_achromat,  # noqa: E402
+                                       design_field_fan)
 import primitivelib  # noqa: E402  (metadata only, no FreeCAD)
 
 PRIMDIR = REPO / "primitives"
@@ -1501,17 +1502,28 @@ def demo_curved_focal_surface(d):
     theta = 16.0
     y_off = 40.0 * math.tan(math.radians(theta))
     beam = 8.0
-    d.add("laser_collimated", "Axis", pos=(-40.0, 0.0, 0.0),
-          params={"diameter": beam, "length": 6.0},
-          props={"lambdac": lam, "coherent": False})
-    d.add("laser_collimated", "FieldP", pos=(-40.0, -y_off, 0.0),
-          rot_deg=theta,
-          params={"diameter": beam, "length": 6.0},
-          props={"lambdac": lam, "coherent": False})
-    d.add("laser_collimated", "FieldM", pos=(-40.0, y_off, 0.0),
-          rot_deg=-theta,
-          params={"diameter": beam, "length": 6.0},
-          props={"lambdac": lam, "coherent": False})
+    # the field fan now comes from the fan wizard (core.wizards.
+    # design_field_fan, pulsed-optics P9) with the SAME three angles and
+    # 'plane' spacing (constant axial distance, y_off = R*tan(theta) —
+    # the layout this demo hand-rolled before the wizard existed); the
+    # asserts pin the wizard output to the original literals so the
+    # committed placement baselines stay bit-identical. Each source also
+    # records its design field_angle_deg (consumed by --imaging-products
+    # once the extractor echoes it; harmless extra body property today).
+    fan = design_field_fan([0.0, theta, -theta], pivot_mm=(0.0, 0.0, 0.0),
+                           radius_mm=40.0, spacing="plane",
+                           aperture_mm=beam)
+    fan_labels = ["Axis", "FieldP", "FieldM"]
+    old_literals = [(-40.0, 0.0, 0.0), (-40.0, -y_off, 0.0),
+                    (-40.0, y_off, 0.0)]
+    for entry, label, lit in zip(fan["sources"], fan_labels, old_literals):
+        assert max(abs(a - b) for a, b in zip(entry["pos_mm"], lit)) \
+            < 1e-9, (label, entry["pos_mm"], lit)
+        d.add("laser_collimated", label, pos=tuple(entry["pos_mm"]),
+              quat=entry["quat"],
+              params={"diameter": beam, "length": 6.0},
+              props={"lambdac": lam, "coherent": False,
+                     "field_angle_deg": entry["angle_deg"]})
     d.chain("lens_dcx", "Lens", "Axis", 40.0,
             params={"R_front": R, "R_back": R, "ct": ct, "aperture": ap},
             props={"coating": "MgF2"})

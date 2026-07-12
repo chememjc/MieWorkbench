@@ -65,7 +65,8 @@ from .panes.scene3d import Scene3DPane
 from .panes.train_editor import TrainEditorPane
 from .panes.transform_panel import TransformPanel
 from .panes.element_wizard import TypeChooserDialog
-from .panes.wizard_dialog import ElementWizardDialog, ZoomPairDialog
+from .panes.wizard_dialog import (ElementWizardDialog, FieldFanDialog,
+                                  ZoomPairDialog)
 
 try:
     # a parallel round authors this pane; the optical-train wiring degrades
@@ -459,6 +460,13 @@ class MainWindow(QMainWindow):
                        "track for a front+rear focal-length pair, with a "
                        "copyable train-grammar expression string")
         act.triggered.connect(self._open_zoom_pair_calculator)
+
+        act = tools_menu.addAction("&Field-angle Fan…")
+        act.setToolTip("Insert N field-point sources aimed at a pivot "
+                       "(one per field angle) — the source layout the "
+                       "imaging products (distortion, vignetting, field "
+                       "curves, telecentricity) analyze")
+        act.triggered.connect(self._open_field_fan_wizard)
 
         view_menu = menubar.addMenu("&View")
         dock_toggles = [self.outliner_dock, self.train_editor_dock,
@@ -1704,6 +1712,81 @@ class MainWindow(QMainWindow):
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         dlg.show()
         dlg.raise_()
+
+    # -- field-angle fan wizard --------------------------------------------------
+    def _source_primitive_infos(self):
+        """{kind: info} for the library's Sources-category primitives."""
+        return {info["kind"]: info
+                for info in self.library_manager.primitives_list()
+                if info.get("category") == "Sources"
+                and info.get("params")}
+
+    def _open_field_fan_wizard(self):
+        if not self.project.is_open():
+            QMessageBox.information(
+                self, "MieWorkbench",
+                "Open or create a model first (File → New… / Open…).")
+            return
+        infos = self._source_primitive_infos()
+        kinds = [(k, i.get("label", k)) for k, i in sorted(infos.items())]
+        # laser_collimated first: the canonical field-fan source
+        kinds.sort(key=lambda kv: (kv[0] != "laser_collimated", kv[0]))
+        dlg = FieldFanDialog(source_kinds=kinds or None, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        design = dlg.result()
+        if design is None:
+            return
+        info = infos.get(design["source_kind"])
+        if info is None:
+            QMessageBox.warning(self, "Field-angle fan",
+                                "Primitive %r not found in the library"
+                                % design["source_kind"])
+            return
+        try:
+            self._insert_field_fan(design, info, dlg.aperture_mm())
+        except Exception as exc:
+            self.project.abort_macro()
+            QMessageBox.warning(self, "Field-angle fan failed", str(exc))
+            return
+        if design.get("note"):
+            self.statusBar().showMessage("Field fan: %s" % design["note"],
+                                         8000)
+        else:
+            self.statusBar().showMessage(
+                "Added %d field-fan source(s)" % len(design["sources"]),
+                5000)
+
+    def _insert_field_fan(self, design, info, aperture_mm=None):
+        """Import the fan's N source primitives as ONE undo macro: per
+        source import_primitive -> optional diameter edit -> the
+        field_angle_deg property (recorded for the imaging products; the
+        extractor echo is pending, post_process falls back to emit-face
+        directions meanwhile) -> anchored set_placement aiming at the
+        pivot."""
+        from .panes.library import default_label
+        used = {b["label"] for b in self.project.structure.get("bodies",
+                                                               [])}
+        self.project.begin_macro("Add field fan")
+        for entry in design["sources"]:
+            base = "Field_%s" % entry["name_suffix"]
+            label = base if base not in used else default_label(base, used)
+            used.add(label)
+            self.project.import_primitive(info["path"], label)
+            if aperture_mm is not None and "diameter" in (info.get("params")
+                                                          or {}):
+                self.project.set_element_parameters(
+                    "dim_%s" % label,
+                    {"diameter": "=%.10g mm" % aperture_mm},
+                    rebuild_group=label)
+            names = self.project.element_bodies(label)
+            self.project.set_property(names[0], "field_angle_deg",
+                                      float(entry["angle_deg"]))
+            body = self.project.body(label)["name"]
+            self.project.apply_operation(body, Operation(
+                "set_placement", {"pos_mm": list(entry["pos_mm"]),
+                                  "quat": list(entry["quat"])}))
+        self.project.end_macro()
 
     # -- runner wiring -----------------------------------------------------------
     def _wire_runner(self):

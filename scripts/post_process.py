@@ -16,6 +16,7 @@
 # =============================================================================
 import csv
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -47,7 +48,8 @@ from raytracer.analysis_field import (psf_from_fields,   # noqa: E402
                                       ee_radius)
 from raytracer.analysis import (fit_zernike, opd_from_rays,  # noqa: E402
                                 strehl_marechal, noll_name,
-                                fringe_index, noll_to_nm)
+                                fringe_index, noll_to_nm, zernike_basis)
+from raytracer import analysis_imaging as ai              # noqa: E402
 
 
 # =============================================================================
@@ -1882,7 +1884,20 @@ def _zernike_panel(ax_map, ax_bar, px, py, opd_waves, coeffs_waves, title):
 
 
 def render_wavefront(case_dir, report, csv_emitter=None,
-                     wavefront_point=None):
+                     wavefront_point=None, pupil_mode="source"):
+    """pupil_mode 'source' (default, unchanged behavior — analysis.py's
+    source-referenced pupil from birth_pos) | 'exit_pupil' (the
+    analysis_imaging.py chief-ray/exit-pupil search: pupil coordinates =
+    ray intersections with the plane through the least-squares pupil
+    center E, OPD referenced to the reference sphere on each bundle's
+    chief landing point). 'exit_pupil' falls back to 'source' PER
+    DETECTOR — with the reason in the report block — when the pupil solve
+    degenerates (single field point, telecentric image side). Both modes
+    now report a PSF-peak-ratio Strehl (analysis_imaging.strehl_psf_peak
+    over the piston/tip/tilt-removed OPD) ALONGSIDE strehl_marechal."""
+    if pupil_mode not in ("source", "exit_pupil"):
+        raise ValueError("pupil_mode must be 'source' or 'exit_pupil' "
+                         "(got %r)" % (pupil_mode,))
     npz_path = case_dir / "rays_full.npz"
     if not npz_path.exists():
         return
@@ -1896,9 +1911,14 @@ def render_wavefront(case_dir, report, csv_emitter=None,
         xhat = np.asarray(dm["xhat"], dtype=np.float64)
         yhat = np.asarray(dm["yhat"], dtype=np.float64)
         normal = np.asarray(dm["normal"], dtype=np.float64)
-        cols = {k: z["%s/%s" % (safe, k)]
-                for k in ("pos", "opl", "lam", "source_id", "lam_stratum",
-                          "pol_stratum", "power", "coherent", "birth_pos")}
+        keys = ("pos", "opl", "lam", "source_id", "lam_stratum",
+                "pol_stratum", "power", "coherent", "birth_pos")
+        if pupil_mode == "exit_pupil":
+            # the exit-pupil solve needs incoming directions; 'source'
+            # mode deliberately does NOT read them (unchanged behavior,
+            # incl. against pre-'dir' synthetic fixtures)
+            keys = keys + ("dir",)
+        cols = {k: z["%s/%s" % (safe, k)] for k in keys}
         if len(cols["pos"]) == 0:
             continue
         coh = cols["coherent"].astype(bool)
@@ -1912,6 +1932,38 @@ def render_wavefront(case_dir, report, csv_emitter=None,
                                    lst[coh & finite_bp].tolist(),
                                    pst[coh & finite_bp].tolist())))
 
+        # ---- exit-pupil solve (per detector, once) ----------------------
+        det_pupil_mode = pupil_mode
+        pupil_note = None
+        ep_plane = None
+        ep_chiefs = {}
+        if pupil_mode == "exit_pupil":
+            groups = ai.field_groups(cols, min_rays=MIN_WAVEFRONT_RAYS)
+            cents = [ai.centroid_ray(g) for g in groups.values()]
+            E, reason = (ai.exit_pupil_center(cents) if groups
+                         else (None, "no field bundle clears "
+                               "MIN_WAVEFRONT_RAYS"))
+            if E is None:
+                det_pupil_mode = "source"
+                pupil_note = reason
+                print("[post] NOTE: %s: exit-pupil solve fell back to the "
+                      "source-referenced pupil (%s)" % (label, reason))
+            else:
+                ep_chiefs = {s: ai.chief_ray(g, E, normal)
+                             for s, g in groups.items()}
+                axis_sid = ai.pick_axis_source(
+                    list(groups), {}, {}, {}, normal, chiefs=ep_chiefs)
+                try:
+                    ep_plane = ai.pupil_plane(E, groups[axis_sid],
+                                              prefer_u=normal,
+                                              fallback_u=yhat)
+                except ValueError as exc:
+                    det_pupil_mode = "source"
+                    pupil_note = str(exc)
+                    print("[post] NOTE: %s: exit-pupil plane degenerate "
+                          "(%s) — source-referenced pupil used" %
+                          (label, exc))
+
         rows_by_key = []
         panels = []
         csv_rows = []
@@ -1922,12 +1974,33 @@ def render_wavefront(case_dir, report, csv_emitter=None,
                 continue
             bp = cols["birth_pos"][m]
             pw = cols["power"][m]
-            pupil = _pupil_xy(bp, xhat, yhat, pw)
-            if pupil is None:
-                continue
-            px, py = pupil
             pos_m = cols["pos"][m]
             opl_m = cols["opl"][m]
+            if det_pupil_mode == "exit_pupil":
+                key_group = {"pos": pos_m, "dir": cols["dir"][m],
+                             "opl": opl_m, "power": pw}
+                xy, ok = ai.pupil_coords(key_group, ep_plane)
+                if not np.all(ok):
+                    # rays parallel to the pupil plane cannot be pupil-
+                    # mapped; drop them from this key's fit
+                    m_idx = np.where(m)[0][ok]
+                    m = np.zeros_like(m)
+                    m[m_idx] = True
+                    n = int(ok.sum())
+                    if n <= MIN_WAVEFRONT_RAYS:
+                        continue
+                    bp, pw = cols["birth_pos"][m], cols["power"][m]
+                    pos_m, opl_m = cols["pos"][m], cols["opl"][m]
+                    xy = xy[ok]
+                # keep the fit domain inside the unit disc (the RMS*sqrt(2)
+                # radius estimate leaves marginal samples slightly outside)
+                rmax = float(np.max(np.hypot(xy[:, 0], xy[:, 1]))) or 1.0
+                px, py = xy[:, 0] / max(1.0, rmax), xy[:, 1] / max(1.0, rmax)
+            else:
+                pupil = _pupil_xy(bp, xhat, yhat, pw)
+                if pupil is None:
+                    continue
+                px, py = pupil
             lam_mean = float(np.mean(cols["lam"][m]))
             total_power = float(np.sum(pw))
             if wavefront_point is not None:
@@ -1935,6 +2008,8 @@ def render_wavefront(case_dir, report, csv_emitter=None,
                 n_off = float(np.dot(pos_m[0], normal))
                 ref = (x_mm * 1e-3 * xhat + y_mm * 1e-3 * yhat
                       + n_off * normal)
+            elif det_pupil_mode == "exit_pupil" and s in ep_chiefs:
+                ref = ep_chiefs[s]["landing"]
             else:
                 wsum = total_power or 1.0
                 ref = (pw[:, None] * pos_m).sum(axis=0) / wsum
@@ -1942,10 +2017,18 @@ def render_wavefront(case_dir, report, csv_emitter=None,
                 np.stack([px, py], axis=1), pos_m, opl_m, ref)
             fit = fit_zernike(rho, theta, opd, jmax=jmax, weights=pw)
             strehl = strehl_marechal(fit["rms_wavefront"], lam_mean)
+            # PSF-peak-ratio Strehl from the piston/tip/tilt-removed OPD
+            # (tilt only displaces the peak) — reported ALONGSIDE the
+            # Maréchal estimate, never replacing it.
+            opd_ptt = opd - zernike_basis(3, rho, theta) @ fit["coeffs"][:3]
+            strehl_psf = ai.strehl_psf_peak(
+                np.stack([px, py], axis=1), opd_ptt, np.sqrt(pw),
+                cols["lam"][m])
             key_name = "%d_%d_%d" % (s, l, p)
             rows_by_key.append({
                 "key": key_name, "source_id": s, "lam_stratum": l,
                 "pol_stratum": p, "strehl_marechal": strehl,
+                "strehl_psf_peak": strehl_psf,
                 "rms_waves": fit["rms_wavefront"] / lam_mean,
                 "pv_waves": fit["pv"] / lam_mean, "n_rays": n,
                 "total_power_W": total_power,
@@ -1966,10 +2049,14 @@ def render_wavefront(case_dir, report, csv_emitter=None,
         block = {
             "keys": rows_by_key,
             "strehl_marechal": dominant["strehl_marechal"],
+            "strehl_psf_peak": dominant["strehl_psf_peak"],
             "rms_waves": dominant["rms_waves"],
             "pv_waves": dominant["pv_waves"],
             "n_rays": dominant["n_rays"],
+            "pupil_mode": det_pupil_mode,
         }
+        if pupil_note:
+            block["pupil_note"] = pupil_note
         report.setdefault("detectors", {}).setdefault(
             label, {})["wavefront"] = block
 
@@ -1978,8 +2065,11 @@ def render_wavefront(case_dir, report, csv_emitter=None,
         for i, (name, px, py, opd_w, coeffs_w) in enumerate(panels):
             _zernike_panel(axes[i, 0], axes[i, 1], px, py, opd_w, coeffs_w,
                           "%s key %s" % (label, name))
-        fig.suptitle("Wavefront — %s (source-referenced pupil, seed 0 "
-                     "only)" % label, fontsize=11)
+        fig.suptitle("Wavefront — %s (%s pupil, seed 0 "
+                     "only)" % (label,
+                                "exit-pupil"
+                                if det_pupil_mode == "exit_pupil"
+                                else "source-referenced"), fontsize=11)
         fig.tight_layout(rect=(0, 0, 1, 0.95))
         fig.savefig(adir / ("wavefront_%s.png" % safe), bbox_inches="tight")
         plt.close(fig)
@@ -1992,6 +2082,374 @@ def render_wavefront(case_dir, report, csv_emitter=None,
                 entity=label, chart="zernike_fit", units="waves; nm",
                 provenance="rays_full.npz",
                 image="analysis/wavefront_%s.png" % safe)
+
+
+# =============================================================================
+# --imaging-products follow-on: field-imaging products (distortion /
+# vignetting / field curvature+astigmatism / telecentricity) from the
+# analysis_imaging.py exit-pupil/chief-ray stage over rays_full.npz's per-
+# source ("field point") ray bundles + case.json's per-(source, detector)
+# detected powers. HARD-requires --export-rays (unlike the other rays_full
+# consumers, which silently no-op: the user explicitly asked for these
+# products, so a missing npz is an error naming the missing flag — same
+# spirit as run_pipeline's --imaging-products/--export-rays gate).
+#
+# Field-point convention: one SOURCE per field angle (the core.wizards.
+# design_field_fan layout). theta_s comes from the source's optional
+# `field_angle_deg` annotation when the extractor echoes it, else is
+# DERIVED from the source's emit-face direction vs. the on-axis source's
+# (works today without extractor changes; see analysis_imaging.
+# field_angles_deg). The exit-pupil solve needs >= 2 field bundles; when
+# it degenerates every product falls back to bundle-centroid chief rays
+# and the report block says so honestly.
+# =============================================================================
+IMAGING_MIN_RAYS = 30
+
+
+def _detected_by_source(case, label):
+    """{source_id: seed-averaged detected power W (coherent + incoherent,
+    summed over lam/pol strata)} for one detector label, from case.json's
+    per-seed 'detected' block (same accumulation as
+    add_per_source_detected, keyed by source id instead of flattened)."""
+    detected_all = case.get("detected", {})
+    n = float(len(detected_all)) or 1.0
+    out = {}
+    for seed_block in detected_all.values():
+        for skey, vals in seed_block.get(label, {}).items():
+            s = int(skey.split("/")[0])
+            out[s] = out.get(s, 0.0) + (vals.get("coherent_W", 0.0)
+                                        + vals.get("incoherent_W", 0.0)) / n
+    return out
+
+
+def _imaging_theta_h(groups, chiefs, thetas, axis_sid):
+    """[(sid, theta_deg, h_m)] for the NON-axis field points with a known
+    field angle, sorted by theta. h = |chief landing - axis chief
+    landing| (the real image height)."""
+    c0 = chiefs[axis_sid]["landing"]
+    rows = []
+    for s in groups:
+        if s == axis_sid or thetas.get(s) is None:
+            continue
+        h = float(np.linalg.norm(chiefs[s]["landing"] - c0))
+        rows.append((s, float(thetas[s]), h))
+    rows.sort(key=lambda r: r[1])
+    return rows
+
+
+def _render_imaging_distortion(safe, label, adir, block, src_names,
+                               groups, chiefs, thetas, axis_sid,
+                               csv_emitter=None):
+    pts = [(s, t, h) for s, t, h in
+           _imaging_theta_h(groups, chiefs, thetas, axis_sid) if t > 1e-6]
+    if not pts:
+        block["distortion"] = {
+            "note": "no non-axis field point with a known field angle — "
+                    "distortion needs a multi-angle source fan (see the "
+                    "field-angle fan wizard)"}
+        return
+    gd = ai.grid_distortion([t for _, t, _ in pts], [h for _, _, h in pts])
+    rows = []
+    csv_rows = []
+    for (s, _, _), (t, h, h_ref, pct) in zip(pts, gd["rows"]):
+        rows.append({"source": src_names.get(s, str(s)), "theta_deg": t,
+                     "h_mm": h * 1e3, "h_ref_mm": h_ref * 1e3,
+                     "distortion_pct": pct})
+        csv_rows.append((src_names.get(s, str(s)), t, h * 1e3,
+                         h_ref * 1e3, pct))
+    block["distortion"] = {
+        "f_eff_mm": gd["f_eff_m"] * 1e3,
+        "f_eff_note": "f_eff calibrated on the innermost field point "
+                      "(h_ref = f_eff*tan(theta) through the smallest "
+                      "non-axis angle — standard practice; distortion is "
+                      "reported relative to that point)",
+        "rows": rows,
+    }
+    if len(pts) < 2:
+        block["distortion"]["note"] = (
+            "single non-axis field point: it IS the f_eff calibration, "
+            "so its reported distortion is 0 by construction — add more "
+            "field angles for a meaningful curve")
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.6, 4.2))
+    ths = [r["theta_deg"] for r in rows]
+    ax1.plot(ths, [r["distortion_pct"] for r in rows], marker="o",
+             color="C0")
+    ax1.axhline(0, color="0.7", lw=0.6, zorder=0)
+    ax1.set_xlabel("field angle [deg]")
+    ax1.set_ylabel("distortion [%]")
+    ax1.set_title("distortion vs field  (f_eff %.2f mm, innermost-point "
+                  "calibration)" % (gd["f_eff_m"] * 1e3), fontsize=9)
+    # deformed-grid visual: a synthetic square grid mapped through the
+    # fitted radial polynomial (r -> r*(1+D(r)))
+    r_max, _ = gd["poly"]
+    lim = r_max / math.sqrt(2.0) if r_max > 0 else 1.0
+    ticks = np.linspace(-lim, lim, 9)
+    line = np.linspace(-lim, lim, 121)
+    for t in ticks:
+        for gx, gy in ((np.full_like(line, t), line),
+                       (line, np.full_like(line, t))):
+            ax2.plot(gx * 1e3, gy * 1e3, color="0.85", lw=0.6, zorder=0)
+            r = np.hypot(gx, gy)
+            scale = np.ones_like(r)
+            nz = r > 0
+            scale[nz] = ai.distortion_map_radius(r[nz], gd["poly"]) / r[nz]
+            ax2.plot(gx * scale * 1e3, gy * scale * 1e3, color="C3",
+                     lw=0.9)
+    ax2.set_aspect("equal", "box")
+    ax2.set_xlabel("x [mm]")
+    ax2.set_ylabel("y [mm]")
+    ax2.set_title("deformed grid (fitted radial polynomial)", fontsize=9)
+    fig.suptitle("Grid distortion — %s (seed 0 only)" % label, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(adir / ("imaging_distortion_%s.png" % safe),
+                bbox_inches="tight")
+    plt.close(fig)
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "imaging_distortion_%s.csv" % safe,
+            ["source", "theta_deg", "h_mm", "h_ref_mm", "distortion_pct"],
+            csv_rows, entity=label, chart="grid_distortion",
+            units="deg; mm; %", provenance="rays_full.npz",
+            image="analysis/imaging_distortion_%s.png" % safe)
+
+
+def _render_imaging_vignetting(safe, label, adir, block, src_names, case,
+                               groups, thetas, axis_sid, kept_fraction,
+                               csv_emitter=None):
+    p_by_sid = _detected_by_source(case, label)
+    p_axis = p_by_sid.get(axis_sid, 0.0)
+    rays_per_source = float((case.get("options") or {}).get("rays") or 0.0)
+    rows = []
+    csv_rows = []
+    for s in sorted(groups):
+        n_det = len(groups[s]["pos"]) / max(kept_fraction, 1e-12)
+        survival = (n_det / rays_per_source) if rays_per_source > 0 \
+            else float("nan")
+        rel = (p_by_sid.get(s, 0.0) / p_axis) if p_axis > 0 \
+            else float("nan")
+        rows.append({"source": src_names.get(s, str(s)),
+                     "theta_deg": thetas.get(s),
+                     "detected_W": p_by_sid.get(s, 0.0),
+                     "rel_illumination": rel,
+                     "ray_survival_frac": survival})
+        csv_rows.append((src_names.get(s, str(s)),
+                         "" if thetas.get(s) is None else thetas[s],
+                         p_by_sid.get(s, 0.0), rel, int(round(n_det)),
+                         int(rays_per_source), survival))
+    block["vignetting"] = {"axis_source": src_names.get(axis_sid,
+                                                        str(axis_sid)),
+                           "rows": rows}
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    xs = [r["theta_deg"] if r["theta_deg"] is not None else float("nan")
+          for r in rows]
+    ax.plot(xs, [r["rel_illumination"] for r in rows], marker="o",
+            color="C0", label="relative illumination (detected power)")
+    ax.plot(xs, [r["ray_survival_frac"] for r in rows], marker="s",
+            color="C2", label="ray survival (detected/emitted rays)")
+    ax.set_xlabel("field angle [deg]")
+    ax.set_ylabel("fraction")
+    ax.set_ylim(bottom=0)
+    ax.axhline(1.0, color="0.7", lw=0.6, zorder=0)
+    ax.legend(fontsize=8)
+    ax.set_title("Vignetting / relative illumination — %s\n(normalized "
+                 "to the on-axis source %s; seed 0 ray counts)"
+                 % (label, src_names.get(axis_sid, str(axis_sid))),
+                 fontsize=9)
+    fig.tight_layout()
+    fig.savefig(adir / ("imaging_vignetting_%s.png" % safe),
+                bbox_inches="tight")
+    plt.close(fig)
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "imaging_vignetting_%s.csv" % safe,
+            ["source", "theta_deg", "detected_W", "rel_illumination",
+             "rays_detected", "rays_emitted", "ray_survival_frac"],
+            csv_rows, entity=label, chart="vignetting", units="deg; W",
+            provenance="rays_full.npz + case.json[detected]",
+            image="analysis/imaging_vignetting_%s.png" % safe)
+
+
+def _render_imaging_field_curves(safe, label, adir, block, src_names,
+                                 groups, chiefs, thetas, axis_sid, normal,
+                                 yhat, csv_emitter=None):
+    rows = []
+    csv_rows = []
+    c0 = chiefs[axis_sid]["landing"]
+    for s in sorted(groups):
+        scan = ai.best_focus_scan(groups[s], chiefs[s], normal, yhat=yhat)
+        h = float(np.linalg.norm(chiefs[s]["landing"] - c0))
+        rows.append({"source": src_names.get(s, str(s)),
+                     "theta_deg": thetas.get(s), "h_mm": h * 1e3,
+                     "z_t_mm": scan["z_t_m"] * 1e3,
+                     "z_s_mm": scan["z_s_m"] * 1e3,
+                     "astig_mm": scan["astig_m"] * 1e3,
+                     "n_t": scan["n_t"], "n_s": scan["n_s"]})
+        csv_rows.append((src_names.get(s, str(s)),
+                         "" if thetas.get(s) is None else thetas[s],
+                         h * 1e3, scan["z_t_m"] * 1e3, scan["z_s_m"] * 1e3,
+                         scan["astig_m"] * 1e3, scan["n_t"], scan["n_s"]))
+    block["field_curves"] = {"rows": rows,
+                             "sign_note": "z is the signed best-focus "
+                             "defocus ALONG each field's chief ray from "
+                             "its detector landing point (positive = "
+                             "beyond the detector)"}
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.6))
+    order = sorted(range(len(rows)),
+                   key=lambda i: (rows[i]["theta_deg"]
+                                  if rows[i]["theta_deg"] is not None
+                                  else float("inf")))
+    ths = [rows[i]["theta_deg"] for i in order]
+    z_t = [rows[i]["z_t_mm"] for i in order]
+    z_s = [rows[i]["z_s_mm"] for i in order]
+    med = [(a + b) / 2.0 for a, b in zip(z_t, z_s)]
+    ax.plot(z_t, ths, marker="o", color="C0", label="tangential z_T")
+    ax.plot(z_s, ths, marker="s", color="C2", label="sagittal z_S")
+    ax.plot(med, ths, marker=".", ls="--", color="0.4",
+            label="medial (z_T+z_S)/2")
+    ax.axvline(0, color="0.7", lw=0.6, zorder=0)
+    ax.set_xlabel("best-focus shift along chief ray [mm]")
+    ax.set_ylabel("field angle [deg]")
+    ax.legend(fontsize=8)
+    ax.set_title("Field curvature / astigmatism — %s (seed 0 only)"
+                 % label, fontsize=10)
+    fig.tight_layout()
+    fig.savefig(adir / ("imaging_field_curves_%s.png" % safe),
+                bbox_inches="tight")
+    plt.close(fig)
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "imaging_field_curves_%s.csv" % safe,
+            ["source", "theta_deg", "h_mm", "z_t_mm", "z_s_mm",
+             "astig_mm", "n_rays_t", "n_rays_s"], csv_rows,
+            entity=label, chart="field_curves", units="deg; mm",
+            provenance="rays_full.npz",
+            image="analysis/imaging_field_curves_%s.png" % safe)
+
+
+def _render_imaging_telecentricity(safe, label, adir, block, src_names,
+                                   groups, chiefs, thetas, axis_sid,
+                                   csv_emitter=None):
+    c0 = chiefs[axis_sid]["landing"]
+    rows = []
+    csv_rows = []
+    for s in sorted(groups):
+        h = float(np.linalg.norm(chiefs[s]["landing"] - c0))
+        rows.append({"source": src_names.get(s, str(s)),
+                     "theta_deg": thetas.get(s), "h_mm": h * 1e3,
+                     "cra_deg": chiefs[s]["cra_deg"]})
+        csv_rows.append((src_names.get(s, str(s)),
+                         "" if thetas.get(s) is None else thetas[s],
+                         h * 1e3, chiefs[s]["cra_deg"]))
+    block["telecentricity"] = {"rows": rows,
+                               "max_cra_deg": max(r["cra_deg"]
+                                                  for r in rows)}
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    rows_s = sorted(rows, key=lambda r: r["h_mm"])
+    ax.plot([r["h_mm"] for r in rows_s], [r["cra_deg"] for r in rows_s],
+            marker="o", color="C0")
+    ax.axhline(0, color="0.7", lw=0.6, zorder=0)
+    ax.set_xlabel("image height h [mm]")
+    ax.set_ylabel("chief-ray angle to detector normal [deg]")
+    ax.set_title("Telecentricity — %s (CRA = 0 is image-side "
+                 "telecentric; seed 0 only)" % label, fontsize=10)
+    fig.tight_layout()
+    fig.savefig(adir / ("imaging_telecentricity_%s.png" % safe),
+                bbox_inches="tight")
+    plt.close(fig)
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "imaging_telecentricity_%s.csv" % safe,
+            ["source", "theta_deg", "h_mm", "cra_deg"], csv_rows,
+            entity=label, chart="telecentricity", units="deg; mm",
+            provenance="rays_full.npz",
+            image="analysis/imaging_telecentricity_%s.png" % safe)
+
+
+def render_imaging_products(case_dir, case, model, report, products,
+                            csv_emitter=None):
+    """Dispatch the requested --imaging-products per detector. `products`
+    is the validated tuple from cli_specs.parse_imaging_products (empty/
+    None = no-op). Raises SystemExit when rays_full.npz is missing — the
+    products were explicitly requested and need --export-rays."""
+    if not products:
+        return
+    npz_path = case_dir / "rays_full.npz"
+    if not npz_path.exists():
+        raise SystemExit(
+            "--imaging-products requires --export-rays: %s has no "
+            "rays_full.npz — rerun the trace stage with --export-rays "
+            "(or --ghost-analysis, which implies it)" % case_dir)
+    z = np.load(npz_path, allow_pickle=True)
+    meta = json.loads(str(z["meta"]))
+    adir = case_dir / "analysis"
+    adir.mkdir(exist_ok=True)
+    source_labels = case.get("sources", [])
+    annotations = ai.field_angle_annotations_from_model(model)
+    source_dirs = ai.source_directions_from_model(model)
+
+    for safe, dm in meta["detectors"].items():
+        label = dm["label"]
+        normal = np.asarray(dm["normal"], dtype=np.float64)
+        yhat = np.asarray(dm["yhat"], dtype=np.float64)
+        cols = {k: z["%s/%s" % (safe, k)]
+                for k in ("pos", "dir", "opl", "lam", "source_id",
+                          "power")}
+        groups = ai.field_groups(cols, min_rays=IMAGING_MIN_RAYS)
+        if not groups:
+            print("[post] NOTE: imaging products: %s has no field bundle "
+                  "with >= %d rays — skipped" % (label, IMAGING_MIN_RAYS))
+            continue
+        src_names = {s: (source_labels[s] if s < len(source_labels)
+                         else str(s)) for s in groups}
+        labels_by_sid = dict(src_names)
+        cents = [ai.centroid_ray(g) for g in groups.values()]
+        E, ep_reason = ai.exit_pupil_center(cents)
+        chiefs = {s: ai.chief_ray(g, E, normal)
+                  for s, g in groups.items()}
+        axis_sid = ai.pick_axis_source(
+            list(groups), labels_by_sid, annotations, source_dirs,
+            normal, chiefs=chiefs)
+        thetas = ai.field_angles_deg(list(groups), axis_sid,
+                                     labels_by_sid, annotations,
+                                     source_dirs)
+        block = {
+            "field_points": len(groups),
+            "axis_source": src_names[axis_sid],
+            "exit_pupil": {"ok": E is not None},
+        }
+        if E is not None:
+            block["exit_pupil"]["center_mm"] = [float(v) * 1e3 for v in E]
+        else:
+            block["exit_pupil"]["fallback_reason"] = ep_reason
+            print("[post] NOTE: imaging products: %s: exit-pupil solve "
+                  "fell back to bundle-centroid chief rays (%s)"
+                  % (label, ep_reason))
+        report.setdefault("detectors", {}).setdefault(
+            label, {})["imaging"] = block
+
+        if "distortion" in products:
+            _render_imaging_distortion(safe, label, adir, block,
+                                       src_names, groups, chiefs, thetas,
+                                       axis_sid, csv_emitter)
+        if "vignetting" in products:
+            _render_imaging_vignetting(safe, label, adir, block,
+                                       src_names, case, groups, thetas,
+                                       axis_sid,
+                                       float(dm.get("kept_fraction", 1.0)),
+                                       csv_emitter)
+        if "field_curves" in products:
+            _render_imaging_field_curves(safe, label, adir, block,
+                                         src_names, groups, chiefs,
+                                         thetas, axis_sid, normal, yhat,
+                                         csv_emitter)
+        if "telecentricity" in products:
+            _render_imaging_telecentricity(safe, label, adir, block,
+                                           src_names, groups, chiefs,
+                                           thetas, axis_sid, csv_emitter)
 
 
 def main(argv=None):
@@ -2078,7 +2536,14 @@ def main(argv=None):
     # MIN_WAVEFRONT_RAYS). --wavefront-point overrides the default power-
     # weighted landing centroid image point.
     render_wavefront(case_dir, report, csv_emitter,
-                     wavefront_point=args.wavefront_point)
+                     wavefront_point=args.wavefront_point,
+                     pupil_mode=args.wavefront_pupil)
+
+    # --imaging-products follow-on: distortion / vignetting / field
+    # curves / telecentricity from the exit-pupil/chief-ray stage
+    # (HARD-requires rays_full.npz — SystemExit naming --export-rays).
+    render_imaging_products(case_dir, case, model, report,
+                            args.imaging_products or (), csv_emitter)
 
     common.progress_emit("post", 0.8, "diagnostic plots",
                          case_dir=case_dir)

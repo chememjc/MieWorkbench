@@ -5,8 +5,14 @@
 # Pupil model (v1, documented limitation): the SOURCE-REFERENCED pupil — each
 # exported ray's normalized transverse birth position on the emitting face is
 # its pupil coordinate. Exact for the collimated/laser benches this tracer
-# models; NOT a true exit pupil for finite-conjugate, field-point imaging
-# (an exit-pupil/chief-ray search stage is future work, see lowhanging.md).
+# models; NOT a true exit pupil for finite-conjugate, field-point imaging.
+# The exit-pupil/chief-ray search stage lives in analysis_imaging.py (a
+# least-squares pupil center from >= 2 field bundles' centroid rays, chief
+# rays, reference-sphere OPD, PSF-peak Strehl); post_process.render_wavefront
+# selects between the two via its pupil_mode parameter ("source" — this
+# module's model, the default — | "exit_pupil"), falling back to "source"
+# with a report note when the exit-pupil solve degenerates (single field
+# point / telecentric image side).
 #
 # OPD definition: for a ray with accumulated optical path `opl` (metres,
 # already n-weighted along its path) landing at `hit`, the wavefront error
@@ -26,8 +32,9 @@
 #
 # Strehl: Maréchal approximation exp(-(2*pi*sigma/lam)^2) from the
 # piston/tip/tilt-removed residual RMS sigma (metres). The PSF-peak-ratio
-# Strehl (vs a diffraction-limited reference) lives with the field-based
-# products in analysis_field.py / post_process.
+# Strehl (|sum a e^{ikW}|^2 / (sum a)^2 over the pupil samples) lives in
+# analysis_imaging.strehl_psf_peak and is reported ALONGSIDE strehl_marechal
+# by post_process.render_wavefront (never replacing it).
 # =============================================================================
 import math
 

@@ -64,6 +64,30 @@ def parse_wavefront_point(s):
             "invalid --wavefront-point %r (expected X_MM,Y_MM)" % s)
 
 
+IMAGING_PRODUCTS = ("distortion", "vignetting", "field_curves",
+                    "telecentricity")
+
+
+def parse_imaging_products(s):
+    """Comma list -> validated tuple for --imaging-products (post stage's
+    field-imaging renderers; 'all' = every product). argparse type=."""
+    names = [t.strip() for t in s.split(",") if t.strip()]
+    if not names:
+        raise argparse.ArgumentTypeError(
+            "--imaging-products got an empty list (expected a comma list "
+            "of %s or 'all')" % ",".join(IMAGING_PRODUCTS))
+    if names == ["all"]:
+        return IMAGING_PRODUCTS
+    bad = [n for n in names if n not in IMAGING_PRODUCTS]
+    if bad:
+        raise argparse.ArgumentTypeError(
+            "unknown --imaging-products entr%s %s (know: %s, or 'all')"
+            % ("y" if len(bad) == 1 else "ies", ",".join(bad),
+               ",".join(IMAGING_PRODUCTS)))
+    # de-duplicate, keep the canonical order
+    return tuple(n for n in IMAGING_PRODUCTS if n in names)
+
+
 # ---------------------------------------------------------------------------
 # pipeline  (scripts/run_pipeline.py)
 # ---------------------------------------------------------------------------
@@ -270,6 +294,24 @@ def _build_pipeline_parser():
                         "fan renders use); default: each coherent key's "
                         "power-weighted landing centroid. post stage only, "
                         "requires --export-rays")
+    g.add_argument("--wavefront-pupil", default="source",
+                   choices=["source", "exit_pupil"],
+                   help="render_wavefront's pupil model: 'source' "
+                        "(default, unchanged: normalized birth position "
+                        "on the emitting face) or 'exit_pupil' (chief-ray/"
+                        "exit-pupil search over the field bundles, "
+                        "analysis_imaging.py; falls back to 'source' with "
+                        "a report note when the solve degenerates). post "
+                        "stage only, requires --export-rays")
+    g.add_argument("--imaging-products", default=None,
+                   type=parse_imaging_products, metavar="LIST",
+                   help="comma list of field-imaging products to render "
+                        "in the post stage (requires --export-rays and a "
+                        "multi-source field fan, e.g. the field-angle fan "
+                        "wizard): %s, or 'all'. Each writes analysis/ "
+                        "PNGs + report.json 'imaging' blocks (+ CSVs "
+                        "under --emit-csv). Default: none"
+                        % ",".join(IMAGING_PRODUCTS))
 
     g = p.add_argument_group("execution / orchestration")
     g.add_argument("--keep-going", action="store_true",
@@ -490,6 +532,22 @@ def _build_post_parser():
                         "fan renders use); default: each coherent key's "
                         "power-weighted landing centroid. Only matters "
                         "when rays_full.npz exists (--export-rays ran)")
+    g.add_argument("--wavefront-pupil", default="source",
+                   choices=["source", "exit_pupil"],
+                   help="render_wavefront's pupil model: 'source' "
+                        "(default, unchanged behavior) or 'exit_pupil' "
+                        "(analysis_imaging.py chief-ray/exit-pupil "
+                        "search; falls back to 'source' with a report "
+                        "note when the solve degenerates — single field "
+                        "point / telecentric image side)")
+    g.add_argument("--imaging-products", default=None,
+                   type=parse_imaging_products, metavar="LIST",
+                   help="comma list of field-imaging products to render: "
+                        "%s, or 'all'. HARD-REQUIRES rays_full.npz (run "
+                        "the trace with --export-rays). Outputs: "
+                        "analysis/imaging_*.png + report.json "
+                        "detectors.<label>.imaging blocks (+ data/*.csv "
+                        "under --emit-csv)" % ",".join(IMAGING_PRODUCTS))
     return p
 
 
