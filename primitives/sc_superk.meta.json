@@ -1,0 +1,31 @@
+{
+ "category": "Sources",
+ "kind": "sc_superk",
+ "label": "Supercontinuum (SuperK EXR-20)",
+ "params": {
+  "diameter": {
+   "default": 1.5,
+   "help": "collimated beam diameter (datasheet: ~1 mm @530 nm to ~3 mm @2000 nm; single mid-band value)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 1200.0,
+  "power": 8000.0,
+  "pulse_duration": 5.0,
+  "rep_rate": 80000000.0,
+  "spectrum": "sc_superk"
+ },
+ "tooltip": "NKT SuperK EXTREME EXR-20 supercontinuum: 8 W total over the tabulated 400-2400 nm SPD (spectrum=sc_superk, digitized +-20-30% from the Jan 2011 datasheet; 1064 nm residual pump spike clipped), ~5 ps seed pulses at 80 MHz, single-mode, unpolarized (M2<1.1). lambdac is the power-weighted mean of the table. Clip the SPD to your bench's material window (docs/RAYTRACER.md)."
+}

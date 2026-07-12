@@ -1,0 +1,30 @@
+{
+ "category": "Sources",
+ "kind": "laser_pulsed",
+ "label": "Pulsed laser (generic)",
+ "params": {
+  "diameter": {
+   "default": 2.0,
+   "help": "beam (emit face) diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": true,
+  "lambdac": 800.0,
+  "pulse_duration": 0.1,
+  "pulse_energy": 0.01,
+  "rep_rate": 80000000.0
+ },
+ "tooltip": "Generic pulsed laser: 10 nJ / 100 fs FWHM / 80 MHz at 800 nm (a typical fs oscillator). Edit pulse_energy / pulse_duration / rep_rate freely \u2014 power stays unset (pulse_energy x rep_rate defines average power)."
+}

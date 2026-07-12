@@ -245,6 +245,110 @@ PRIMITIVES = {
         "props": {"power": 5.0, "lambdac": 584.6,
                   "spectrum": "led_white_2733k", "coherent": False},
     },
+    # -- pulsed lasers (pulsed-optics P12; pulse props per the P3 power
+    #    XOR pulse_energy contract — sources with pulse_duration auto-
+    #    enable the time products. Data: library_data_pinned.md research
+    #    notes 2026-07-11, datasheet-exact unless noted) ------------------
+    "laser_pulsed": {
+        "category": "Sources", "label": "Pulsed laser (generic)",
+        "tooltip": "Generic pulsed laser: 10 nJ / 100 fs FWHM / 80 MHz at "
+                   "800 nm (a typical fs oscillator). Edit pulse_energy / "
+                   "pulse_duration / rep_rate freely — power stays unset "
+                   "(pulse_energy x rep_rate defines average power).",
+        "params": {"diameter": P(2.0, "mm", "beam (emit face) diameter "
+                                            "(circular) or edge length "
+                                            "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"lambdac": 800.0, "pulse_energy": 0.01,
+                  "pulse_duration": 0.1, "rep_rate": 8e7,
+                  "coherent": True},
+    },
+    "laser_maitai_800": {
+        "category": "Sources", "label": "Ti:sapphire fs (Mai Tai HP)",
+        "tooltip": "Spectra-Physics Mai Tai HP Ti:sapphire oscillator at "
+                   "its 800 nm tuning peak: 2.5 W average, <100 fs sech2 "
+                   "(modelled Gaussian), 80 MHz, 1.2 mm beam, linear "
+                   "polarization >500:1 (MKS/Spectra-Physics Mai Tai "
+                   "datasheet rev 6/26). Energy/pulse derives as "
+                   "power/rep_rate = 31 nJ.",
+        "params": {"diameter": P(1.2, "mm", "1/e^2 beam diameter at "
+                                            "800 nm (datasheet <1.2)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 2500.0, "lambdac": 800.0,
+                  "pulse_duration": 0.1, "rep_rate": 8e7,
+                  "polarization": "linear:0", "coherent": True},
+    },
+    "laser_erfiber_1560": {
+        "category": "Sources", "label": "Er-fiber fs (1560 nm)",
+        "tooltip": "TOPTICA FemtoFiber pro IR/NIR Er-fiber oscillator: "
+                   "350 mW average, <100 fs, 80 MHz, 3.5 mm beam at "
+                   "1560 nm (TOPTICA manual M-043 v07; polarization ratio "
+                   "at 1560 nm estimated from the 780 nm SHG spec). "
+                   "Energy/pulse derives as 4.4 nJ.",
+        "params": {"diameter": P(3.5, "mm", "1/e^2 beam diameter at "
+                                            "1560 nm"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 350.0, "lambdac": 1560.0,
+                  "pulse_duration": 0.1, "rep_rate": 8e7,
+                  "polarization": "linear:0", "coherent": True},
+    },
+    "laser_ndyag_1064": {
+        "category": "Sources", "label": "Q-switched Nd:YAG (850 mJ)",
+        "tooltip": "Quantel/Lumibird Q-smart 850 flashlamp Nd:YAG: "
+                   "850 mJ/pulse, ~6 ns FWHM, 10 Hz, 9 mm beam, "
+                   "horizontal polarization >80% (Quantel datasheet "
+                   "10-32-2667 rev 05/14; linewidth <=0.7 cm^-1 — "
+                   "modelled monochromatic). Average power derives as "
+                   "8.5 W; peak power 133 MW.",
+        "params": {"diameter": P(9.0, "mm", "beam diameter at output"),
+                   "length": P(15.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"lambdac": 1064.0, "pulse_energy": 850000.0,
+                  "pulse_duration": 6000.0, "rep_rate": 10.0,
+                  "polarization": "linear:0", "coherent": True},
+    },
+    "sc_superk": {
+        "category": "Sources", "label": "Supercontinuum (SuperK EXR-20)",
+        "tooltip": "NKT SuperK EXTREME EXR-20 supercontinuum: 8 W total "
+                   "over the tabulated 400-2400 nm SPD "
+                   "(spectrum=sc_superk, digitized +-20-30% from the Jan "
+                   "2011 datasheet; 1064 nm residual pump spike clipped), "
+                   "~5 ps seed pulses at 80 MHz, single-mode, unpolarized "
+                   "(M2<1.1). lambdac is the power-weighted mean of the "
+                   "table. Clip the SPD to your bench's material window "
+                   "(docs/RAYTRACER.md).",
+        "params": {"diameter": P(1.5, "mm", "collimated beam diameter "
+                                            "(datasheet: ~1 mm @530 nm to "
+                                            "~3 mm @2000 nm; single "
+                                            "mid-band value)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 8000.0, "lambdac": 1200.0,
+                  "spectrum": "sc_superk", "pulse_duration": 5.0,
+                  "rep_rate": 8e7, "coherent": False},
+    },
+    "fiber_nonlinear_output": {
+        "category": "Sources", "label": "Nonlinear-fiber output (SPM)",
+        "tooltip": "Er-fiber fs laser launched through 2 cm of highly-"
+                   "nonlinear fiber (OFS/Lightera HNLF, gamma = 11.5 "
+                   "W^-1km^-1): the source-side SPM transform (spm "
+                   "property) installs the exact multi-peak self-phase-"
+                   "modulated spectrum (phi_max ~ 9.5 rad here) and the "
+                   "S-curve chirp. Edit the spm property "
+                   "('gamma:<W^-1km^-1>:length:<m>' or 'phimax:<rad>') "
+                   "to change the broadening.",
+        "params": {"diameter": P(3.5, "mm", "collimated output beam "
+                                            "diameter"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 350.0, "lambdac": 1560.0,
+                  "pulse_duration": 0.1, "rep_rate": 8e7,
+                  "spm": "gamma:11.5:length:0.02",
+                  "polarization": "linear:0", "coherent": True},
+    },
     # -- detectors ----------------------------------------------------------
     "detector_plane": {
         "category": "Detectors", "label": "Detector plane",
@@ -1997,6 +2101,12 @@ def builders():
             raise RuntimeError("primitivelib builders need FreeCAD")
         _BUILDERS = {
             "laser_collimated": _build_laser_collimated,
+            "laser_pulsed": _build_laser_collimated,
+            "laser_maitai_800": _build_laser_collimated,
+            "laser_erfiber_1560": _build_laser_collimated,
+            "laser_ndyag_1064": _build_laser_collimated,
+            "sc_superk": _build_laser_collimated,
+            "fiber_nonlinear_output": _build_laser_collimated,
             "laser_divergent": _build_laser_divergent,
             "source_broadband": _build_laser_collimated,
             "led_deep_red_660": _build_laser_collimated,

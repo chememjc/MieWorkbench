@@ -1,0 +1,31 @@
+{
+ "category": "Sources",
+ "kind": "laser_ndyag_1064",
+ "label": "Q-switched Nd:YAG (850 mJ)",
+ "params": {
+  "diameter": {
+   "default": 9.0,
+   "help": "beam diameter at output",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 15.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": true,
+  "lambdac": 1064.0,
+  "polarization": "linear:0",
+  "pulse_duration": 6000.0,
+  "pulse_energy": 850000.0,
+  "rep_rate": 10.0
+ },
+ "tooltip": "Quantel/Lumibird Q-smart 850 flashlamp Nd:YAG: 850 mJ/pulse, ~6 ns FWHM, 10 Hz, 9 mm beam, horizontal polarization >80% (Quantel datasheet 10-32-2667 rev 05/14; linewidth <=0.7 cm^-1 \u2014 modelled monochromatic). Average power derives as 8.5 W; peak power 133 MW."
+}

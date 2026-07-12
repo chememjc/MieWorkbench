@@ -1,0 +1,31 @@
+{
+ "category": "Sources",
+ "kind": "laser_maitai_800",
+ "label": "Ti:sapphire fs (Mai Tai HP)",
+ "params": {
+  "diameter": {
+   "default": 1.2,
+   "help": "1/e^2 beam diameter at 800 nm (datasheet <1.2)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": true,
+  "lambdac": 800.0,
+  "polarization": "linear:0",
+  "power": 2500.0,
+  "pulse_duration": 0.1,
+  "rep_rate": 80000000.0
+ },
+ "tooltip": "Spectra-Physics Mai Tai HP Ti:sapphire oscillator at its 800 nm tuning peak: 2.5 W average, <100 fs sech2 (modelled Gaussian), 80 MHz, 1.2 mm beam, linear polarization >500:1 (MKS/Spectra-Physics Mai Tai datasheet rev 6/26). Energy/pulse derives as power/rep_rate = 31 nJ."
+}

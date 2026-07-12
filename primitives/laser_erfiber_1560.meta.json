@@ -1,0 +1,31 @@
+{
+ "category": "Sources",
+ "kind": "laser_erfiber_1560",
+ "label": "Er-fiber fs (1560 nm)",
+ "params": {
+  "diameter": {
+   "default": 3.5,
+   "help": "1/e^2 beam diameter at 1560 nm",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": true,
+  "lambdac": 1560.0,
+  "polarization": "linear:0",
+  "power": 350.0,
+  "pulse_duration": 0.1,
+  "rep_rate": 80000000.0
+ },
+ "tooltip": "TOPTICA FemtoFiber pro IR/NIR Er-fiber oscillator: 350 mW average, <100 fs, 80 MHz, 3.5 mm beam at 1560 nm (TOPTICA manual M-043 v07; polarization ratio at 1560 nm estimated from the 780 nm SHG spec). Energy/pulse derives as 4.4 nJ."
+}

@@ -1,0 +1,32 @@
+{
+ "category": "Sources",
+ "kind": "fiber_nonlinear_output",
+ "label": "Nonlinear-fiber output (SPM)",
+ "params": {
+  "diameter": {
+   "default": 3.5,
+   "help": "collimated output beam diameter",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": true,
+  "lambdac": 1560.0,
+  "polarization": "linear:0",
+  "power": 350.0,
+  "pulse_duration": 0.1,
+  "rep_rate": 80000000.0,
+  "spm": "gamma:11.5:length:0.02"
+ },
+ "tooltip": "Er-fiber fs laser launched through 2 cm of highly-nonlinear fiber (OFS/Lightera HNLF, gamma = 11.5 W^-1km^-1): the source-side SPM transform (spm property) installs the exact multi-peak self-phase-modulated spectrum (phi_max ~ 9.5 rad here) and the S-curve chirp. Edit the spm property ('gamma:<W^-1km^-1>:length:<m>' or 'phimax:<rad>') to change the broadening."
+}
