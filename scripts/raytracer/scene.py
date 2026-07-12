@@ -146,7 +146,7 @@ class Body:
                  # pulsed-optics Phase P8 (Pockels / saturable / TPA / Kerr):
                  "nonlinear", "pockels_voltage", "pockels_gap_mm",
                  "pockels_mats", "saturable_raw", "saturable_spec",
-                 "tpa_beta", "kerr_n2_raw", "kerr_n2_value")
+                 "tpa_beta", "kerr_n2_raw", "kerr_n2_value", "shg_spec")
 
     def __init__(self, index, rec):
         self.index = index
@@ -209,6 +209,7 @@ class Body:
         self.saturable_raw = rec.get("saturable") or None
         self.saturable_spec = None
         self.tpa_beta = float(rec.get("tpa_beta") or 0.0)   # cm/GW
+        self.shg_spec = None     # P7b: resolved chi2_process row (Scene)
         self.kerr_n2_raw = rec.get("kerr_n2") or None
         self.kerr_n2_value = None           # m^2/W
 
@@ -357,21 +358,47 @@ class Scene:
                                      ", ".join(sorted(nonlinear_registry))
                                      or "<none loaded — pass optprops>"))
                 nrow = nonlinear_registry[body.nonlinear]
-                if nrow["kind"] in ("chi2_tensor", "chi2_process"):
-                    # SHG/parametric event lands in a later engine phase;
-                    # accept the row (so authoring can proceed now) and
-                    # warn once instead of hard-erroring — the ray simply
-                    # propagates through the body unaffected by chi2 this
-                    # phase.
-                    if not getattr(self, "_warned_chi2_accept", False):
+                if nrow["kind"] == "chi2_tensor":
+                    raise ValueError(
+                        "body %s: chi2_tensor row %r cannot drive the "
+                        "SHG event directly — it has no resolved d_eff/"
+                        "phase-matching geometry. Attach a chi2_process "
+                        "row instead (derive one from the tensor with "
+                        "nlo.d_eff_tensor + nlo.phase_match_angle; see "
+                        "docs/RAYTRACER.md)" % (body.label,
+                                                body.nonlinear))
+                elif nrow["kind"] == "chi2_process":
+                    # pulsed-optics P7b: the deterministic per-segment
+                    # SHG transfer (tracer.step). Design pump wavelength
+                    # is exactly phase-matched (delta_k = 0); detuned rays
+                    # get the scalar-index sinc^2 falloff (tracer's
+                    # _shg_delta_k — walk-off/angular detuning are
+                    # documented out of scope).
+                    if not str(nrow["process"]).startswith("shg"):
+                        raise ValueError(
+                            "body %s: chi2_process row %r is %r — only "
+                            "SHG processes drive the bulk event this "
+                            "phase" % (body.label, body.nonlinear,
+                                       nrow["process"]))
+                    if (str(nrow.get("crystal") or "").strip().lower()
+                            != str(body.material or "").strip().lower()):
+                        # soft warning (unlike pockels' hard error): the
+                        # row only supplies d_eff + the design pump; the
+                        # INDICES (detuning, Fresnel) come from the
+                        # body's material — mixing them is legitimate in
+                        # test benches but usually an authoring mistake
                         import warnings
                         warnings.warn(
-                            "body %s: chi2 nonlinear row %r attached — "
-                            "the SHG/parametric event is not implemented "
-                            "yet (a later engine phase); accepted and "
-                            "IGNORED this phase" % (body.label,
-                                                    body.nonlinear))
-                        self._warned_chi2_accept = True
+                            "body %s: chi2 row %r is for crystal %r but "
+                            "the body material is %r — detuning/Fresnel "
+                            "use the BODY's indices"
+                            % (body.label, body.nonlinear,
+                               nrow.get("crystal"), body.material))
+                    body.shg_spec = {
+                        "name": body.nonlinear,
+                        "d_eff_m_V": nrow["d_eff_pm_V"] * 1e-12,
+                        "lam_pump_m": nrow["lam_pump_nm"] * 1e-9,
+                    }
                 elif nrow["kind"] == "pockels":
                     if not body.birefringent:
                         raise ValueError(
@@ -813,6 +840,26 @@ class Scene:
             mats = self.matdb.get_biaxial(body.material)
             return sum(gdd_per_length(m, lam) for m in mats) / 3.0
         return gdd_per_length(self.matdb.get(body.material), lam)
+
+    def medium_tod_per_length(self, body_index, lam):
+        """Material third-order dispersion per unit length [s^3/m] for rays
+        inside body body_index (-1 = ambient), with EXACTLY
+        medium_gdd_per_length's medium-resolution fallbacks (ambient/
+        detector 0.0; birefringent -> o material; biaxial -> arithmetic
+        mean). Used by the --gdd-budget table, not the hot path."""
+        from .materials import tod_per_length
+        lam = np.asarray(lam, dtype=np.float64)
+        if body_index < 0:
+            return np.zeros_like(lam)
+        body = self.bodies[body_index]
+        if body.role == "detector" or body.material in (None, "detector"):
+            return np.zeros_like(lam)
+        if body.birefringent:
+            return tod_per_length(self.uniaxial_materials(body)[0], lam)
+        if body.biaxial:
+            mats = self.matdb.get_biaxial(body.material)
+            return sum(tod_per_length(m, lam) for m in mats) / 3.0
+        return tod_per_length(self.matdb.get(body.material), lam)
 
     def uniaxial_materials(self, body):
         """(mat_o, mat_e) Material-like objects for a birefringent body —

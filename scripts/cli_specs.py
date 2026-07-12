@@ -90,6 +90,17 @@ def parse_imaging_products(s):
 
 TIME_PRODUCTS = ("pulse", "spectrogram", "streak", "cube")
 
+# Comma-list product flags, dest -> (canonical choices, whether 'none' is
+# a meaningful explicit value). The GUI's ConfigMatrix renders these as a
+# row of per-product checkboxes instead of a free-text QLineEdit; anything
+# else introspecting the parsers can use it the same way. 'none' matters
+# only for --time-products (it suppresses the pulsed-scene auto-default;
+# an omitted --imaging-products already means "none").
+PRODUCT_FLAG_CHOICES = {
+    "time_products": (TIME_PRODUCTS, True),
+    "imaging_products": (IMAGING_PRODUCTS, False),
+}
+
 # --time-bins preset scaling (pulsed-optics P4): applied by run_pipeline's
 # trace_cmd when --time-bins is not given (common.PRESETS itself is
 # unchanged; the trace parser's own default covers direct run_trace.py use).
@@ -181,6 +192,18 @@ def _add_time_product_args(g, bins_default):
                         "record's accumulated GDD x stratum bandwidth; "
                         "'histogram' is a plain weighted histogram of "
                         "arrival times")
+    g.add_argument("--gdd-budget", action="store_true",
+                   help="emit the per-element dispersion budget (mean "
+                        "traced path, group delay, GDD, TOD at the "
+                        "reference source's center wavelength + totals + "
+                        "pulse-broadening estimate) into case.json; "
+                        "post_process renders the table/CSV. Covers "
+                        "MATERIAL dispersion only — geometric GDD "
+                        "(gratings, prisms) shows up in the traced time "
+                        "products instead. The budget is computed "
+                        "automatically whenever time products are active; "
+                        "this flag additionally forces group-delay "
+                        "tracking on a CW scene (Python engine)")
 
 
 # ---------------------------------------------------------------------------

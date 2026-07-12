@@ -1387,6 +1387,14 @@ def extract_one(fcstd_path, outdir, strict):
                     source_dict["pulse_duration_ps"] = float(obj.pulse_duration)
                 if hasattr(obj, "rep_rate"):
                     source_dict["rep_rate_hz"] = float(obj.rep_rate)
+                # spm (string, Phase P6): source-side self-phase-modulation
+                # spec ('phimax:<rad>' or 'gamma:<W^-1km^-1>:length:<m>');
+                # string passthrough — raytracer.sources.install_spm
+                # parses/validates (it needs the derived pulse block,
+                # which only exists engine-side)
+                spm_raw = str_prop_or_none(obj, "spm")
+                if spm_raw is not None:
+                    source_dict["spm"] = spm_raw
                 body_dict["source"] = source_dict
             elif role == "detector":
                 n_detectors += 1

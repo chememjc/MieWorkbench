@@ -101,6 +101,20 @@ def detect_features(args, scene):
             feats.add("polarizer")
         if body.filter:
             feats.add("filter")
+        # pulsed-optics NLO elements (P8 Pockels/saturable/TPA/Kerr, P7b
+        # chi2 SHG): none exist in the C engine — each forces Python.
+        # These were MISSING for P8's elements at first: a kerr_n2 body
+        # whose other features were all ported routed to C and silently
+        # skipped the physics ("every feature emits its token" is the
+        # round's own locked rule).
+        if body.nonlinear:
+            feats.add("nonlinear")
+        if body.saturable_raw:
+            feats.add("saturable")
+        if body.tpa_beta:
+            feats.add("tpa")
+        if body.kerr_n2_raw:
+            feats.add("kerr")
     if scene.gratings:
         feats.add("grating")
     if scene.roughness:
@@ -160,6 +174,10 @@ def detect_features(args, scene):
     from .detector import resolve_time_products
     if resolve_time_products(args, scene):
         feats.add("time_products")
+    # --gdd-budget forces group-delay tracking (per-body path tally) even
+    # on a CW scene with no time products — Python engine only (P5)
+    if getattr(args, "gdd_budget", False):
+        feats.add("gdd_budget")
     return feats
 
 

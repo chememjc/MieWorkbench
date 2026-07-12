@@ -99,6 +99,121 @@ def apply_stratum_t0(batch, src):
     batch.gopl += C_LIGHT_MPS * t0[batch.lam_stratum]
 
 
+def parse_spm_spec(raw):
+    """'phimax:<rad>' or 'gamma:<W^-1 km^-1>:length:<m>' -> dict.
+    The authoring grammar for the `spm` source property (pulsed-optics
+    P6): either the peak nonlinear phase directly, or the fiber
+    nonlinearity gamma (the datasheet unit, per-watt-per-KILOMETRE) and
+    an effective length, from which phi_max = gamma * P_pk * L_eff
+    (P_pk = the source's derived Gaussian peak power)."""
+    parts = [p.strip() for p in str(raw).split(":")]
+    try:
+        if len(parts) == 2 and parts[0] == "phimax":
+            v = float(parts[1])
+            if v <= 0:
+                raise ValueError("phimax must be > 0 rad")
+            return {"phimax": v}
+        if len(parts) == 4 and parts[0] == "gamma" and parts[2] == "length":
+            g, L = float(parts[1]), float(parts[3])
+            if g <= 0 or L <= 0:
+                raise ValueError("gamma and length must be > 0")
+            return {"gamma_W_km": g, "length_m": L}
+    except ValueError as e:
+        raise ValueError("bad spm spec %r: %s" % (raw, e))
+    raise ValueError(
+        "bad spm spec %r (expected 'phimax:<rad>' or "
+        "'gamma:<W^-1km^-1>:length:<m>')" % raw)
+
+
+# SPM synthesis grid: 4096 points spanning +-8 tau captures the Gaussian
+# envelope to below 1e-38 and resolves phi_max up to ~50 rad
+_SPM_N = 4096
+_SPM_SPAN_TAU = 8.0
+# SPD floor relative to the spectral peak kept in the installed table
+_SPM_SPD_FLOOR = 1e-5
+
+
+def install_spm(scene, n_lambda):
+    """Pulsed-optics P6: apply the SOURCE-SIDE self-phase-modulation
+    transform to every source carrying an `spm` property, IN PLACE on the
+    scene's source dicts. Two artifacts per source:
+
+      * the EXACT pure-SPM power spectrum — E(t) = sqrt(I(t)) *
+        exp(i phi_max I(t)/I0) on a 4096-pt grid, one FFT, converted to a
+        wavelength-density table installed as the source's tabulated SPD
+        (_spectrum_lam_nm/_spectrum_pdf, superseding lambdamin/lambdamax
+        exactly like an emission-registry `spectrum` row);
+      * the chirp — per-stratum birth-time offsets (src['_stratum_t0'],
+        the P3 hook) from the analytic instantaneous-frequency curve
+        delta_omega(t) = -d(phi_NL)/dt evaluated on its CENTRAL monotonic
+        branch (between the two extrema), so the spectrogram shows the
+        SPM S-curve with the physical tilt: leading edge red, trailing
+        edge blue. The outer branches (each frequency also recurs in the
+        wings) are folded onto the branch ends — a quasi-classical
+        single-time-per-frequency approximation, documented in
+        docs/RAYTRACER.md.
+
+    Deterministic and RNG-free by construction: shard workers rebuild the
+    scene per process and MUST arrive at bit-identical tables. Call right
+    after Scene construction, before anything reads wavelength strata."""
+    for _, src in scene.sources:
+        raw = src.get("spm")
+        if raw is None:
+            continue
+        spec = parse_spm_spec(raw)
+        pulse = src.get("pulse") or {}
+        tau = pulse.get("duration_s")
+        if not tau:
+            raise ValueError(
+                "spm source: needs pulse_duration (the transform is "
+                "defined on the Gaussian pulse envelope)")
+        if "phimax" in spec:
+            phimax = spec["phimax"]
+        else:
+            p_pk = pulse.get("peak_power_W")
+            if not p_pk:
+                raise ValueError(
+                    "spm 'gamma:...:length:...' needs the derived peak "
+                    "power — give the source pulse_energy + rep_rate (or "
+                    "power + rep_rate) alongside pulse_duration")
+            phimax = (spec["gamma_W_km"] * 1e-3) * p_pk * spec["length_m"]
+        lam0 = src["lambdac_nm"] * 1e-9
+        w0 = 2.0 * np.pi * C_LIGHT_MPS / lam0
+
+        # ---- exact SPM spectrum: one FFT of the analytic field ----
+        t = np.linspace(-_SPM_SPAN_TAU * tau, _SPM_SPAN_TAU * tau, _SPM_N,
+                        endpoint=False)
+        dt = t[1] - t[0]
+        g = np.exp(-4.0 * np.log(2.0) * (t / tau) ** 2)   # I(t)/I0, FWHM tau
+        field = np.sqrt(g) * np.exp(1j * phimax * g)
+        spec_w = np.abs(np.fft.fftshift(np.fft.fft(field))) ** 2
+        dw = np.fft.fftshift(np.fft.fftfreq(_SPM_N, dt)) * 2.0 * np.pi
+        w_abs = w0 + dw
+        keep = (spec_w > _SPM_SPD_FLOOR * spec_w.max()) & (w_abs > 0)
+        lam_nm = 2.0 * np.pi * C_LIGHT_MPS / w_abs[keep] * 1e9
+        # spectral density per wavelength: S(lam) = S(w) * dw/dlam
+        pdf = spec_w[keep] * (2.0 * np.pi * C_LIGHT_MPS
+                              / (lam_nm * 1e-9) ** 2)
+        order = np.argsort(lam_nm)
+        src["_spectrum_lam_nm"] = lam_nm[order]
+        src["_spectrum_pdf"] = pdf[order] / pdf.max()
+        src["lambdamin_nm"] = None
+        src["lambdamax_nm"] = None
+        src["_spm_phimax"] = float(phimax)     # echoed into case.json
+
+        # ---- chirp: per-stratum birth time from the central branch ----
+        # delta_omega(t) = -d/dt (phimax g(t)) = phimax 8ln2 t/tau^2 g(t);
+        # monotonic increasing between its extrema (leading edge t<0 ->
+        # red, trailing -> blue)
+        dwt = phimax * 8.0 * np.log(2.0) * t / tau ** 2 * g
+        i_lo, i_hi = int(np.argmin(dwt)), int(np.argmax(dwt))
+        branch = slice(i_lo, i_hi + 1)
+        lam_k = np.asarray(wavelength_strata(src, n_lambda),
+                           dtype=np.float64)
+        dw_k = 2.0 * np.pi * C_LIGHT_MPS / lam_k - w0
+        src["_stratum_t0"] = np.interp(dw_k, dwt[branch], t[branch])
+
+
 def n_pol_strata(src):
     """Number of mutually-incoherent polarization populations a source
     emits: 2 for unpolarized (the default), 1 for any explicit state."""

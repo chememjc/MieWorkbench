@@ -35,11 +35,13 @@ sys.path.insert(0, str(SCRIPTS))
 
 import common                                            # noqa: E402
 import cli_specs                                          # noqa: E402
-from raytracer.materials import MaterialDB, load_coatings  # noqa: E402
+from raytracer.materials import (MaterialDB, load_coatings,  # noqa: E402
+                                 C_LIGHT_M_S)
 from raytracer.scene import Scene                        # noqa: E402
 from raytracer.sources import (sample_source, wavelength_strata,  # noqa: E402
                                n_pol_strata, sample_viz_pattern,
-                               apply_stratum_t0, stratum_domega)
+                               apply_stratum_t0, stratum_domega,
+                               install_spm)
 from raytracer.tracer import (Tracer, TraceConfig,       # noqa: E402
                               TraceResult, VizStore)
 from raytracer.detector import (DetectorGrid,            # noqa: E402
@@ -95,6 +97,12 @@ def lam_range_nm(scene):
             span_hi = lc + 3.0 * max(lmax - lc, 0.0)
         lo = min(lo, span_lo)
         hi = max(hi, span_hi)
+    # P7b: a chi2 (SHG) body emits harmonic children at lam/2 — the
+    # detector spectral range must cover them or every 532 lands in the
+    # bottom bin edge (the harmonic of the LOWEST pump still fits at
+    # lo/2). CW scenes without nonlinear bodies are untouched.
+    if any(b.shg_spec for b in scene.bodies):
+        lo = 0.5 * lo
     pad = max(5.0, 0.02 * (hi - lo))
     return (lo - pad) * 1e-9, (hi + pad) * 1e-9
 
@@ -155,6 +163,85 @@ def build_time_cfg(args, scene, products):
             "window": window, "envelope": args.time_envelope,
             "cube_res": int(args.time_cube_res),
             "tau0_by_source": tau0, "domega": dom, "n_sources": n_src}
+
+
+_FWHM_GAUSS = 4.0 * np.log(2.0)      # tau_out = tau0*sqrt(1+(K*phi2/tau0^2)^2)
+
+
+def build_gdd_budget(scene, result):
+    """The case.json 'gdd_budget' block (pulsed-optics P5): per traversed
+    body, the power-weighted mean bulk path L_bar = path_tally / flux_in
+    and the MATERIAL dispersion it contributes (group delay / GDD / TOD,
+    scene.medium_* resolution incl. the birefringent/biaxial fallbacks) at
+    the reference wavelength, plus totals and a Gaussian pulse-broadening
+    estimate per pulsed source AT ITS OWN center wavelength. Geometric
+    dispersion (gratings, prisms, angular chirp) is deliberately absent —
+    it shows up in the traced time products, not this table. Reference =
+    the highest-emitted-power pulsed source (any source when none is
+    pulsed). Returns None when nothing was tallied (e.g. an all-air
+    scene)."""
+    if not result.path_tally:
+        return None
+    label_to_index = {b.label: b.index for b in scene.bodies}
+    emitted = result.ledger.emitted
+
+    def _src_key(k):
+        _, src = scene.sources[k]
+        pulsed = bool((src.get("pulse") or {}).get("duration_s"))
+        return (pulsed, float(emitted[k]) if k < len(emitted) else 0.0)
+
+    k_ref = max(range(len(scene.sources)), key=_src_key)
+    lam_ref = float(scene.sources[k_ref][1]["lambdac_nm"]) * 1e-9
+
+    def _rows_at(lam_m):
+        lam = np.asarray([lam_m])
+        rows = []
+        for label, tally in sorted(result.path_tally.items()):
+            flux_in = result.ledger.flux.get(label, {}).get("in_W", 0.0)
+            bi = label_to_index.get(label)
+            if flux_in <= 0.0 or bi is None:
+                continue
+            L = float(tally) / float(flux_in)
+            n_g = float(scene.medium_group_index(bi, lam)[0])
+            rows.append({
+                "label": label,
+                "material": scene.bodies[bi].material,
+                "L_bar_mm": L * 1e3,
+                "n_g": n_g,
+                "gd_fs": n_g * L / C_LIGHT_M_S * 1e15,
+                "gdd_fs2": float(
+                    scene.medium_gdd_per_length(bi, lam)[0]) * L * 1e30,
+                "tod_fs3": float(
+                    scene.medium_tod_per_length(bi, lam)[0]) * L * 1e45,
+            })
+        return rows
+
+    rows = _rows_at(lam_ref)
+    if not rows:
+        return None
+    total = {k: sum(r[k] for r in rows)
+             for k in ("gd_fs", "gdd_fs2", "tod_fs3")}
+    pulses = []
+    for k, (bi_src, src) in enumerate(scene.sources):
+        tau0 = float((src.get("pulse") or {}).get("duration_s") or 0.0)
+        if tau0 <= 0.0:
+            continue
+        lam_c = float(src["lambdac_nm"]) * 1e-9
+        phi2_fs2 = sum(r["gdd_fs2"]
+                       for r in (rows if lam_c == lam_ref
+                                 else _rows_at(lam_c)))
+        tau0_fs = tau0 * 1e15
+        pulses.append({
+            "source": scene.bodies[bi_src].label,
+            "lambda_c_nm": lam_c * 1e9,
+            "tau0_fs": tau0_fs,
+            "phi2_fs2": phi2_fs2,
+            "tau_out_fs": tau0_fs * float(np.sqrt(
+                1.0 + (_FWHM_GAUSS * phi2_fs2 / tau0_fs ** 2) ** 2)),
+        })
+    return {"lambda_ref_nm": lam_ref * 1e9,
+            "reference_source": scene.bodies[scene.sources[k_ref][0]].label,
+            "rows": rows, "total": total, "pulses": pulses}
 
 
 def resolve_workers(val):
@@ -401,6 +488,8 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
         # per-body power-weighted bulk path (track_time only; linear
         # tally, shards add per key like the ledger flux)
         "path_tally": result.path_tally,
+        # P7b: per-body SHG transferred power (linear tally, shards add)
+        "shg_converted": result.shg_converted,
     }
 
 
@@ -479,12 +568,15 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
                               / max(trace_s, 1e-9))
     ledger = PowerLedger(len(scene.sources))
     path_tally = {}
+    shg_converted = {}
     for pl in payloads:
         ledger.merge(pl["ledger"])
         for fid, dp in pl["detectors"].items():
             _merge_detector_payload(grids[fid], dp)
         for k, v in pl.get("path_tally", {}).items():
             path_tally[k] = path_tally.get(k, 0.0) + v
+        for k, v in pl.get("shg_converted", {}).items():
+            shg_converted[k] = shg_converted.get(k, 0.0) + v
     viz = VizStore()
     v0 = payloads[0]["viz"] if payloads else None
     if v0 is not None and len(v0):
@@ -492,7 +584,8 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
     if payloads and payloads[0].get("particles") is not None:
         case_diag.setdefault("particles", payloads[0]["particles"])
     names = [scene.bodies[i].label for i, _ in scene.sources]
-    result = TraceResult(grids, ledger, viz, names, path_tally=path_tally)
+    result = TraceResult(grids, ledger, viz, names, path_tally=path_tally,
+                         shg_converted=shg_converted)
     return result, trace_s
 
 
@@ -732,7 +825,7 @@ def build_scene(args):
     apply_source_overrides(model, args.source_face)
     from raytracer.optprops import load_optical_properties
     props = load_optical_properties(root=args.optical_properties)
-    return Scene(model, props.matdb, props.coatings,
+    scene = Scene(model, props.matdb, props.coatings,
                  suppress_bodies=args.suppress_body,
                  # extra_detector_faces adds transparent screens on top of the
                  # scene (NOT in the C engine's PORTED set -> forces Python).
@@ -747,6 +840,12 @@ def build_scene(args):
                  geometry_dir=Path(args.model_json).parent,
                  strict_analytic=args.strict_analytic,
                  mesh_flat_normals=args.mesh_flat_normals)
+    # pulsed-optics P6: source-side SPM transform (spm property). Runs
+    # HERE, inside the one factored scene builder, so the parent process
+    # and every spawned shard install bit-identical spectra/birth-time
+    # offsets (deterministic, RNG-free).
+    install_spm(scene, args.nlambda)
+    return scene
 
 
 def _main_locked(args, case_dir):
@@ -796,6 +895,22 @@ def _main_locked(args, case_dir):
         # quantities are a later phase; this is metadata visibility only.
         "source_pulse": {scene.bodies[b].label: src["pulse"]
                          for b, src in scene.sources if "pulse" in src},
+        # pulsed-optics P6: SPM sources echo the resolved peak nonlinear
+        # phase (phi_max, rad) alongside the raw spec string
+        "source_spm": {scene.bodies[b].label:
+                       {"spec": src["spm"],
+                        "phimax_rad": src.get("_spm_phimax")}
+                       for b, src in scene.sources if "spm" in src},
+        # pulsed-optics P7b: harmonic stratum-id map (child stratum =
+        # n_lambda + parent stratum) — present only when a chi2 body is
+        # in the scene; consumers (post/GUI spectra labels) use it to
+        # tell fundamental strata from SHG children
+        **({"harmonic_strata": {
+                "n_lambda": int(args.nlambda),
+                "map": {str(k): int(args.nlambda) + k
+                        for k in range(int(args.nlambda))},
+                "bodies": [b.label for b in scene.bodies if b.shg_spec]}}
+           if any(b.shg_spec for b in scene.bodies) else {}),
         "detectors": [scene.faces[f].id for f in scene.detector_faces],
     }
     common.write_json(case_dir / "case.json", case)
@@ -862,8 +977,12 @@ def _main_locked(args, case_dir):
     # adds the 'time_products' feature via the SAME resolver).
     time_products = resolve_time_products(args, scene)
     time_cfg = build_time_cfg(args, scene, time_products)
-    track_time = bool(time_products)
-    if track_time:
+    # --gdd-budget forces group-delay tracking even with no time product
+    # active (CW dispersion audit); with any product active the budget
+    # comes for free off the same tally (engine routing already Python
+    # via the 'gdd_budget' / 'time_products' feature tokens)
+    track_time = bool(time_products) or args.gdd_budget
+    if time_products:
         case["time_products"] = {
             "products": list(time_products),
             "bins": int(args.time_bins),
@@ -900,7 +1019,7 @@ def _main_locked(args, case_dir):
             track_time=track_time,
             save_fields_labels=save_fields_labels,
             time_rec=({"envelope": args.time_envelope}
-                      if track_time and s == 0 else None))
+                      if time_products and s == 0 else None))
         grids_list.append(grids)
         rep = result.ledger.report(result.source_names)
         if track_time:
@@ -909,11 +1028,21 @@ def _main_locked(args, case_dir):
             # schema is unchanged otherwise)
             rep["path_tally_Wm"] = {
                 k: float(v) for k, v in sorted(result.path_tally.items())}
+        if result.shg_converted:
+            # P7b diagnostic: per-body SHG transferred power (a stratum-
+            # to-stratum transfer, never a closure bucket)
+            rep["shg_converted_W"] = {
+                k: float(v)
+                for k, v in sorted(result.shg_converted.items())}
         audits.append(rep)
         gather_diags_all["seed%d" % seed] = gdiags
         detected_all["seed%d" % seed] = build_detected_block(grids, gdiags)
         if s == 0:
             all_viz = result.viz.as_array()
+            if track_time:
+                budget = build_gdd_budget(scene, result)
+                if budget is not None:
+                    case["gdd_budget"] = budget
         if not rep["closure_ok"]:
             print("[trace] WARNING: energy closure gate FAILED: %s"
                   % {k: v["closure_error"]

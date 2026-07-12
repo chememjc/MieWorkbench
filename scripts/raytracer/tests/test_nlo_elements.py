@@ -321,18 +321,35 @@ def test_pockels_wrong_crystal_rejected():
 # =========================================================================== #
 # chi2 nonlinear row: accept + warn (SHG lands in a later phase)
 # =========================================================================== #
-def test_chi2_row_on_body_accepted_with_warning():
+def test_chi2_process_row_resolves_shg_spec():
+    # P7b upgraded the P8-era accept-and-warn stub: a chi2_process row now
+    # resolves to body.shg_spec (the tracer's per-segment SHG transfer);
+    # matching-crystal bodies resolve WITHOUT the mismatch warning
     model = sh.make_model([
         sh.source_body(x=-0.01, half=0.004),
         sh.slab_body("SHG", "bbo", -0.002, 0.0, half=0.004,
                     crystal_axis=[0.0, 1.0, 0.0], nonlinear="bbo_shg_800_type1"),
         sh.detector_body(x=0.02, half=0.006),
     ])
-    with pytest.warns(UserWarning, match="chi2"):
-        scene = build(model)
+    scene = build(model)
     body = next(b for b in scene.bodies if b.label == "SHG")
     assert body.nonlinear == "bbo_shg_800_type1"
     assert body.pockels_mats is None      # not a Pockels row -- untouched
+    assert body.shg_spec["d_eff_m_V"] == pytest.approx(1.95e-12)
+    assert body.shg_spec["lam_pump_m"] == pytest.approx(800e-9)
+
+
+def test_chi2_tensor_row_on_body_rejected():
+    # tensor rows carry no resolved d_eff/geometry -- the SHG event needs
+    # a chi2_process row (derive one via nlo.d_eff_tensor)
+    model = sh.make_model([
+        sh.source_body(x=-0.01, half=0.004),
+        sh.slab_body("SHG", "bbo", -0.002, 0.0, half=0.004,
+                    crystal_axis=[0.0, 1.0, 0.0], nonlinear="bbo_d"),
+        sh.detector_body(x=0.02, half=0.006),
+    ])
+    with pytest.raises(ValueError, match="chi2_process"):
+        build(model)
 
 
 def test_nonlinear_kind_mismatch_rejected():

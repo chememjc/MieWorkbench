@@ -274,6 +274,8 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--time-cube-res", str(int(args.time_cube_res))]
     if args.time_envelope != "analytic":
         cmd += ["--time-envelope", args.time_envelope]
+    if args.gdd_budget:
+        cmd += ["--gdd-budget"]
     if args.dry_run:
         cmd += ["--dry-run"]
     return cmd

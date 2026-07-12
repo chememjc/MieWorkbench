@@ -261,6 +261,29 @@ def shg_efficiency(d_eff, L_m, I_W_m2, n1, n2, lam1_m, delta_k):
     return float(eta), False
 
 
+def shg_efficiency_vec(d_eff, L_m, I_W_m2, n1, n2, lam1_m, delta_k):
+    """Vectorized shg_efficiency: every argument may be an (n,) array
+    (d_eff is scalar in practice). Same Boyd Eq. 2.2.19 undepleted form
+    and the same ETA_CLAMP = 0.5 cap; returns (eta[n], clamped[n] bool).
+    Kept beside the scalar version (whose docstring carries the
+    derivation + citations) — tracer.step's per-segment SHG transfer
+    calls this once per nonlinear body per step (rays can be 1e5+; a
+    scalar loop would dominate the step time). Pinned equal to the
+    scalar form in test_shg_event.py."""
+    L = np.asarray(L_m, dtype=np.float64)
+    I = np.asarray(I_W_m2, dtype=np.float64)
+    if np.any(L < 0) or np.any(I < 0):
+        raise MaterialError("nlo.shg_efficiency_vec: L_m and I_W_m2 must "
+                            "be >= 0")
+    eta = (8.0 * np.pi ** 2 * float(d_eff) ** 2 * L ** 2 * I
+           / (np.asarray(n1, dtype=np.float64) ** 2
+              * np.asarray(n2, dtype=np.float64) * EPS0 * C0
+              * np.asarray(lam1_m, dtype=np.float64) ** 2)
+           ) * sinc2(0.5 * np.asarray(delta_k, dtype=np.float64) * L)
+    clamped = eta > ETA_CLAMP
+    return np.where(clamped, ETA_CLAMP, eta), clamped
+
+
 def local_intensity(power_W, dA_m2, kappa_pulse):
     """Local intensity I = (power / dA) * kappa_pulse [W/m^2].
 

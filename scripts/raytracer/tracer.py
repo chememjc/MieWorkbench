@@ -131,7 +131,7 @@ class VizStore:
 
 class TraceResult:
     def __init__(self, detectors, ledger, viz, source_names,
-                 path_tally=None):
+                 path_tally=None, shg_converted=None):
         self.detectors = detectors        # face_id -> DetectorGrid
         self.ledger = ledger
         self.viz = viz
@@ -142,6 +142,11 @@ class TraceResult:
         # the mean glass path). Diagnostic, zero RNG use, empty when
         # time tracking is off.
         self.path_tally = path_tally if path_tally is not None else {}
+        # shg_converted: {body label: transferred W} diagnostic tally of
+        # the P7b chi2 event (a power TRANSFER between strata, never a
+        # closure bucket). Empty when no nonlinear body converted.
+        self.shg_converted = shg_converted if shg_converted is not None \
+            else {}
 
 
 class Tracer:
@@ -163,6 +168,8 @@ class Tracer:
         # (same key space as the ledger's element flux tallies). Filled
         # only under cfg.track_time; see TraceResult.path_tally.
         self.path_tally = {}
+        # P7b: per-body SHG transferred power [W] (see TraceResult)
+        self.shg_converted = {}
 
     # ------------------------------------------------------------------
     def run(self, batches):
@@ -199,7 +206,8 @@ class Tracer:
                                    b.power)
         names = [self.scene.bodies[i].label for i, _ in self.scene.sources]
         return TraceResult(self.detectors, self.ledger, self.viz, names,
-                           path_tally=self.path_tally)
+                           path_tally=self.path_tally,
+                           shg_converted=self.shg_converted)
 
     # ------------------------------------------------------------------
     def step(self, batch):
@@ -361,6 +369,107 @@ class Tracer:
             batch.gopl += np.where(batch.n_g_eff > 0.0, batch.n_g_eff,
                                    n_grp) * seg
             batch.gdd_acc += gdd_l * seg
+
+        # ---- pulsed-optics Phase P7b: chi2 SHG bulk transfer ------------
+        # Deterministic per-segment conversion for rays inside a
+        # nonlinear-tagged (chi2_process) medium — structurally the
+        # continuum-children pattern, but with NO collision sampling and
+        # ZERO RNG use. eta = the undepleted Boyd sinc^2 form
+        # (nlo.shg_efficiency_vec) on the local PEAK intensity
+        # I_pk = (p/dA) * kappa_pulse (nlo.ray_intensity: ray
+        # differentials, else the flat-top source-area fallback + one
+        # warning suggesting --ray-differentials). The parent's
+        # amplitudes deplete by sqrt(1-eta); an INCOHERENT child at lam/2
+        # with stratum id = n_lambda + parent id carries eta*p — a pure
+        # power TRANSFER, so the ledger closes with no new bucket, and
+        # children are never gathered (coherent budget gates unaffected).
+        # Harmonic children themselves never re-convert (stratum-id
+        # guard: no cascaded quartering). Spectral detuning uses the
+        # SCALAR medium index, exactly phase-matched at the registry
+        # row's design pump wavelength — walk-off and angular detuning
+        # are documented out of scope (future.md).
+        shg_bodies = [int(m) for m in np.unique(med)
+                      if m >= 0 and scene.bodies[int(m)].shg_spec]
+        for bm in shg_bodies:
+            spec = scene.bodies[bm].shg_spec
+            sel = ((med == bm) & (seg > 0.0)
+                   & (batch.lam_stratum < self.cfg.n_lambda))
+            idx = np.where(sel)[0]
+            if len(idx) == 0:
+                continue
+            sub = batch.select(idx)
+            I_local, warn_reason = nlo_mod.ray_intensity(sub, scene)
+            if warn_reason is not None \
+                    and not getattr(self, "_warned_shg_intensity", False):
+                import warnings
+                warnings.warn(
+                    "body %s: SHG conversion needs a per-ray intensity "
+                    "estimate (%s) -- those rays convert NOTHING this "
+                    "segment (run with --ray-differentials for a "
+                    "physical transverse profile)"
+                    % (scene.bodies[bm].label, warn_reason))
+                self._warned_shg_intensity = True
+            I_safe = np.where(np.isfinite(I_local), I_local, 0.0)
+            lam_i = batch.lam[idx]
+            n1 = np.real(scene.medium_index(bm, lam_i))
+            n2 = np.real(scene.medium_index(bm, lam_i / 2.0))
+            lam_d = spec["lam_pump_m"]
+            n1d = float(np.real(scene.medium_index(
+                bm, np.array([lam_d])))[0])
+            n2d = float(np.real(scene.medium_index(
+                bm, np.array([lam_d / 2.0])))[0])
+            dk = (4.0 * np.pi * (n1 - n2) / lam_i
+                  - 4.0 * np.pi * (n1d - n2d) / lam_d)
+            eta, clamped = nlo_mod.shg_efficiency_vec(
+                spec["d_eff_m_V"], seg[idx], I_safe, n1, n2, lam_i, dk)
+            if np.any(clamped) \
+                    and not getattr(self, "_warned_shg_clamp", False):
+                import warnings
+                warnings.warn(
+                    "body %s: SHG efficiency clamped at %.0f%% -- the "
+                    "undepleted quadratic growth is not quantitative at "
+                    "this conversion level (pump depletion; Boyd Sec. "
+                    "2.6)" % (scene.bodies[bm].label,
+                              100.0 * nlo_mod.ETA_CLAMP))
+                self._warned_shg_clamp = True
+            conv = eta > 0.0
+            if not np.any(conv):
+                continue
+            rows = idx[conv]
+            eta_c = eta[conv]
+            p_conv = batch.power[rows] * eta_c
+            dep = np.sqrt(1.0 - eta_c)
+            batch.Es[rows] *= dep
+            batch.Ep[rows] *= dep
+            child = batch.select(rows)
+            # birth just inside the exit end of the segment: conversion
+            # is distributed along it, and the harmonic must still
+            # refract/Fresnel through the exit face at lam/2. The offset
+            # must clear the faces' 100 nm self-intersection guard
+            # (t_eps) — a child born closer MISSES the exit face and
+            # sails to the detector still carrying the crystal's medium
+            # stack (group index included; cost 42 ps in the first
+            # e2e bench). 1 um = 10x the guard; micro-segments fall
+            # back to mid-segment birth.
+            s_birth = np.maximum(seg[rows] - 1e-6, 0.5 * seg[rows])
+            child.pos = batch.pos[rows] + s_birth[:, None] * batch.dir[rows]
+            child.lam = batch.lam[rows] / 2.0
+            child.lam_stratum = batch.lam_stratum[rows] + self.cfg.n_lambda
+            child.coherent[:] = False
+            # harmonic rays resolve their own indices at lam/2 from here
+            child.n_eff[:] = 0.0
+            child.n_g_eff[:] = 0.0
+            # equal s/p split at fixed phase: an incoherent power carrier
+            # (the exact harmonic polarization needs the full uniaxial
+            # treatment — documented approximation)
+            amp = np.sqrt(p_conv / 2.0) + 0j
+            child.Es = amp
+            child.Ep = amp.copy()
+            lbl = scene.bodies[bm].label
+            self.shg_converted[lbl] = (self.shg_converted.get(lbl, 0.0)
+                                       + float(np.sum(p_conv)))
+            particle_children = child if particle_children is None \
+                else RayBatch.concatenate([particle_children, child])
 
         # ray differentials: the wavefront patch area at the segment START
         # (= the last interaction point) is what the gather wavelet needs;

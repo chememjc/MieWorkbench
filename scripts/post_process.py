@@ -747,6 +747,66 @@ def render_time_products(h5path, outdir_img, outdir_spec, report, case,
     report["detectors"].setdefault(label, {})["time_products"] = block
 
 
+def render_gdd_budget(case, outdir_img, report, csv_emitter=None):
+    """Render the material-dispersion budget run_trace computed into
+    case.json['gdd_budget'] (present whenever group-delay tracking ran:
+    --gdd-budget or any active time product) as a table PNG
+    (images/gdd_budget.png), the same block in report['gdd_budget'], and
+    (under --emit-csv) data/gdd_budget.csv. Per element: power-weighted
+    mean bulk path, n_g, GD/GDD/TOD at the reference wavelength; TOTAL
+    row; per-pulsed-source broadening annotation tau0 -> tau_out at its
+    own center wavelength. MATERIAL dispersion only — geometric GDD
+    (gratings/prisms) appears in the traced time products instead.
+    No-op when the trace didn't track group delay."""
+    block = case.get("gdd_budget")
+    if not block:
+        return
+    rows, total = block["rows"], block["total"]
+    cols = ["element", "material", "mean path\n[mm]", "n_g",
+            "GD [fs]", "GDD [fs²]", "TOD [fs³]"]
+    cells = [[r["label"], r["material"], "%.4g" % r["L_bar_mm"],
+              "%.6g" % r["n_g"], "%.5g" % (r["gd_fs"] + 0.0),
+              "%.5g" % (r["gdd_fs2"] + 0.0),
+              "%.5g" % (r["tod_fs3"] + 0.0)]      # +0.0 kills IEEE '-0'
+             for r in rows]
+    cells.append(["TOTAL", "", "", "", "%.5g" % total["gd_fs"],
+                  "%.5g" % total["gdd_fs2"], "%.5g" % total["tod_fs3"]])
+    fig_h = 0.42 * (len(cells) + 1) + 1.1 + 0.3 * len(block["pulses"])
+    fig, ax = plt.subplots(figsize=(9.5, fig_h))
+    ax.axis("off")
+    tab = ax.table(cellText=cells, colLabels=cols, loc="upper center",
+                   cellLoc="center")
+    tab.auto_set_font_size(False)
+    tab.set_fontsize(9)
+    tab.scale(1.0, 1.35)
+    for c in range(len(cols)):                       # bold the TOTAL row
+        tab[len(cells), c].set_text_props(weight="bold")
+    ax.set_title("material dispersion budget @ %.4g nm (reference "
+                 "source: %s)" % (block["lambda_ref_nm"],
+                                  block["reference_source"]),
+                 fontsize=11, pad=14)
+    for i, p in enumerate(block["pulses"]):
+        fig.text(0.06, 0.05 + 0.045 * (len(block["pulses"]) - 1 - i),
+                 "%s @ %.4g nm: τ₀ = %.4g fs → τ_out = %.4g fs "
+                 "(φ₂ = %.5g fs²)"
+                 % (p["source"], p["lambda_c_nm"], p["tau0_fs"],
+                    p["tau_out_fs"], p["phi2_fs2"]), fontsize=9)
+    fig.savefig(outdir_img / "gdd_budget.png", bbox_inches="tight")
+    plt.close(fig)
+    report["gdd_budget"] = block
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "gdd_budget.csv",
+            ["element", "material", "L_bar_mm", "n_g", "gd_fs",
+             "gdd_fs2", "tod_fs3"],
+            [[r["label"], r["material"], r["L_bar_mm"], r["n_g"],
+              r["gd_fs"], r["gdd_fs2"], r["tod_fs3"]] for r in rows]
+            + [["TOTAL", "", "", "", total["gd_fs"], total["gdd_fs2"],
+                total["tod_fs3"]]],
+            entity="system", chart="gdd_budget", units="fs^n",
+            image="images/gdd_budget.png")
+
+
 # =============================================================================
 # Polarization-state (Stokes) maps -- DATA-DRIVEN, currently always a no-op.
 #
@@ -2760,6 +2820,11 @@ def main(argv=None):
         # time_* datasets (run_trace --time-products / pulsed auto-rule)
         render_time_products(h5path, img, spec, report, case,
                              csv_emitter=csv_emitter)
+
+    # dispersion budget (pulsed-optics P5): no-op unless the trace tracked
+    # group delay (--gdd-budget or any active time product) and wrote
+    # case.json['gdd_budget']
+    render_gdd_budget(case, img, report, csv_emitter=csv_emitter)
 
     # per-(source, detector) detected power: promotes case.json["detected"]
     # into report.json regardless of --emit-csv (deliverable independent of
