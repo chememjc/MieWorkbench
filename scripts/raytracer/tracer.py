@@ -361,11 +361,19 @@ class Tracer:
                 gdd_l[sel] = scene.medium_gdd_per_length(int(m),
                                                          batch.lam[sel])
                 if m >= 0:
-                    # p_before = power at the segment start (pre bulk
-                    # absorption); escaped rays have seg == 0
+                    # weight by the SURVIVING power (post bulk
+                    # absorption, = batch.power here): the budget's mean
+                    # path must describe the light that carries on. With
+                    # p_before, the 13% Fresnel-transmitted fraction
+                    # entering an aluminum mirror died within nm but
+                    # booked the full 5 mm body segment -- a 0.5 mm
+                    # "mean aluminum path" with -74,000 fs^2 of metal
+                    # GDD in the fs_oap budget that no photon ever saw.
+                    # For transparent glass the two weightings agree to
+                    # the bulk-loss fraction. Escaped rays have seg == 0.
                     lbl = scene.bodies[int(m)].label
                     self.path_tally[lbl] = self.path_tally.get(lbl, 0.0) \
-                        + float(np.sum(p_before[sel] * seg[sel]))
+                        + float(np.sum(batch.power[sel] * seg[sel]))
             batch.gopl += np.where(batch.n_g_eff > 0.0, batch.n_g_eff,
                                    n_grp) * seg
             batch.gdd_acc += gdd_l * seg

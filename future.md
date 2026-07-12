@@ -510,3 +510,22 @@ documented as an honest limit in docs/RAYTRACER.md §5.2.1/§6.11/§6.12):
 - **SuperK SPD tail vs material tables**: the sc_superk table spans
   400–2400 nm; benches whose materials aren't tabulated that far must
   clip the SPD (documented in the primitive tooltip + registry notes).
+- **Deferred demos (P13 scope call)**: `prism_compressor` (two-prism
+  Fork pair — needs the min-deviation central-ray trace helpers factored
+  out of demo_prism_spectrometer + a mirrored-prism placement solve) and
+  `wideangle_retrofocus` (negative-front retrofocus + field fan +
+  --imaging-products distortion). Both have their physics fully
+  validated engine-side (material GDD budget, angular dispersion via
+  traced arrivals, imaging products on imaging_analysis); only the
+  gallery scenes are missing.
+- **Transmission-grating truncated-order booking**: a bk7
+  `grating_plate` with `orders=-1..1` leaks the truncated lamellar
+  orders (~8% at 800 nm/600 g/mm) past the closure gate — the
+  REFLECTIVE branch books the remainder into absorbed_surface exactly
+  (see UXNOTES_PULSED.md #8). The transmission branch needs the same
+  remainder credit.
+- **Dominant-cluster auto time window**: the auto window spans ALL
+  arrivals incl. double-bounce ghost echoes ~60 ps out — a 100 fs pulse
+  then lands in one 2 ps bin. Cluster the records (or window on the
+  p0.1–p99.9 power span) so fs pulses resolve without a hand-pinned
+  --time-window.

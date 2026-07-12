@@ -193,15 +193,29 @@ def build_gdd_budget(scene, result):
     k_ref = max(range(len(scene.sources)), key=_src_key)
     lam_ref = float(scene.sources[k_ref][1]["lambdac_nm"]) * 1e-9
 
+    # significance floors: a metal mirror body admits a ~nm evanescent
+    # bulk path whose table row would carry metal-dispersion GD/GDD
+    # numbers that NO meaningful power ever experiences (the fs_oap
+    # contrast demo showed -163,000 fs^2 of "aluminum GDD"). Two guards:
+    # a body must see >= 0.1% of the emitted power (flux_in books the
+    # SURFACE arrival, so mirrors pass this one) AND its power-weighted
+    # mean bulk path must be >= 1 um (a micron of any real glass is
+    # < 0.2 fs^2 -- irrelevant; the aluminum skin depth is nm).
+    total_emitted = float(np.sum(emitted)) if len(emitted) else 0.0
+    flux_floor = 1e-3 * total_emitted
+    l_floor = 1e-6
+
     def _rows_at(lam_m):
         lam = np.asarray([lam_m])
         rows = []
         for label, tally in sorted(result.path_tally.items()):
             flux_in = result.ledger.flux.get(label, {}).get("in_W", 0.0)
             bi = label_to_index.get(label)
-            if flux_in <= 0.0 or bi is None:
+            if flux_in <= flux_floor or bi is None:
                 continue
             L = float(tally) / float(flux_in)
+            if L < l_floor:
+                continue
             n_g = float(scene.medium_group_index(bi, lam)[0])
             rows.append({
                 "label": label,

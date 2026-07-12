@@ -1,8 +1,9 @@
 # MieWorkbench demo gallery
 
-Twenty-seven optical systems (eleven classic instruments, five
+Thirty-four optical systems (eleven classic instruments, five
 single-physics benches, four analysis/scattering benches, four
-physics-showcase benches, the telephoto pair, and a folded periscope),
+physics-showcase benches, the telephoto pair, a folded periscope, and
+seven pulsed-optics/time-domain benches),
 each a self-contained `.MieWB` workbench archive (double-click-open in
 the GUI, or run headlessly) plus the bare `.FCStd` scene. All are assembled as **optical trains** by
 `scripts/make_demos.py` (the GUI's own Project/chain op path): every
@@ -185,6 +186,49 @@ Hard-won notes baked into these three (full log: `UXNOTES_ROUND3.md`):
   overlaps solids (concave rim sag ~3.6 mm) — the same reason real
   negative doublets are cemented.
 - The afocal relay spacing is `bfl₁+bfl₂` (thick-lens), not `f₁+f₂`.
+
+### Pulsed-optics / time-domain benches (pulsed round)
+
+Seven demos exercising the round's physics: per-ray group delay + the
+four time products (`--time-products`), the GDD budget, the pulsed-source
+contract, source-side SPM, the χ² SHG transfer, and the transverse
+Pockels cell. Every number below is measured from the shipped
+`var/evaluation/*.MieSim` run (quick preset unless noted); every run
+closes the energy ledger <1e-3. Time/NLO features route to the PYTHON
+engine by design (feature tokens). The shakedown log is
+`UXNOTES_PULSED.md` — it includes the two engine bugs these demos
+caught (the grating child polarization-frame leak and the absorbed-path
+tally bias).
+
+| Demo | System | What it shows | Verified numbers |
+|---|---|---|---|
+| `sc_spectrogram` | SuperK EXR-20 (tabulated 400–2400 nm SPD, 5 ps/80 MHz) → 100 mm SF11 → screen; `pulse,spectrogram` + `--gdd-budget` | Time-of-flight spectroscopy: the spectrogram ridge IS the material group-delay curve t(λ)=[air+n_g(λ)L]/c (~37 ps ramp) | ridge matches n_g(λ)L/c to **≤1.0%** across 474–1514 nm |
+| `erfiber_spm` | Er-fiber fs oscillator through 2 cm HNLF (`spm=gamma:11.5:length:0.02`, φ_max = 9.46 rad) → screen; 129 λ-strata | Source-side SPM: the classic M-shaped multi-peak spectrum + the S-curve chirp (leading edge red) | strong outer lobes at ~1441/1698 nm; spectrogram tilt d⟨t⟩/dλ < 0 (red first) |
+| `fs_lens_telescope` | Mai Tai (100 fs, 800 nm) → BK7 PCX pair (f=50+100) + 40 mm SF11 block → screen; `--gdd-budget`, pinned ±2 ps window | The refractive half of the GDD contrast pair: material dispersion stretches the pulse; the budget table PREDICTS the traced profile | budget φ₂ **8029 fs²** → τ_out 244.0 fs; traced FWHM **244.5 fs** (0.2%) |
+| `fs_oap_telescope` | Same pulse through an all-reflective 2× expander (concave f=50+100, periscope Z-fold) | The reflective half: zero glass in the train ⇒ no material GDD, pulse stays transform-limited | traced FWHM **101.3 fs** (kernel-limited 100 fs); GDD budget empty |
+| `tof_rangefinder` | 0.5 ns/10 µJ pulses → 50:50 plate BS → target mirror at 600 mm; start pulse on DetRef (−y), return on DetReturn (+y); histogram envelope, 1024 bins | Time-of-flight ranging off two one-pulse profiles | Δt = **4.0225 ns** → range 603 mm; the +3 mm over 2d/c = the BS glass transits (a real rangefinder systematic, ~5.9 ps per 3 mm/45° pass) |
+| `shg_green_bench` | 2 µJ/10 ps/1 kHz at 1064 nm → 5 mm KTP (`ktp_shg_1064_type2`, d_eff 3.2 pm/V) → 805 nm shortpass dichroic → DetGreen (532 straight) + DetIR (1064 folded); `--ray-differentials` | The χ² SHG transfer: incoherent λ/2 children, `harmonic_strata` map, `shg_converted_W` tally, dichroic color split | η = **6.0%** (0.120 mW of 2 mW avg converted); DetGreen 0.096 mW at 532 nm (exit-Fresnel losses), DetIR 1.54 mW; closure 3e-13 |
+| `treacy_compressor` | 600 g/mm reflective grating pair at normal incidence (m=−1 then m=+1), 70 mm slant → screen; 17 strata, 1024 bins | ALL-GEOMETRIC (grating-pair) GDD: no glass anywhere, the arrival-time tilt is pure diffraction geometry | spectrogram slope **82.8 fs/nm** (3-λ geometric ray oracle: 87.4); traced FWHM 100 → **791 fs** vs 786 fs from its own measured slope (0.6%) |
+
+Deliberate deviations (all in the docstrings): the Treacy pair is
+REFLECTIVE (aluminum, `mirror=1.0`) because the transmission plate's
+truncated lamellar orders leak ~8% past the closure gate (future.md);
+`erfiber_spm`/`treacy_compressor` set `coherent=False` (129 strata /
+the diffraction-split arm cannot budget 1000 gather samples per key at
+quick, and neither needs interference); the fs contrast pair pins
+`--time-window` ±2 ps around the computed main-pulse group delay (the
+auto window spans the lens double-bounce echoes → 2 ps bins);
+`fs_lens_telescope` adds a 40 mm SF11 block because 10 mm of BK7 lens
+glass alone broadens 100 fs by only 0.8% — invisible at any binning.
+`prism_compressor` and `wideangle_retrofocus` from the round plan are
+deferred (future.md) — their physics is engine-gated elsewhere. A
+`pockels_switch` bench was built and then DROPPED: the o/e
+recombination only exists in the coherent gather, and at any
+gallery-scale bench the reconstruction's phase noise (phase-step
+gate warnings) drowns the EO retardance — the voltage sweep moved
+the detected power 0.6% where sin² predicts 61%. The transverse
+Pockels physics is pinned instead by the engine oracle
+(test_nlo_elements: sin²(πV/2V_π) at 1% on a beat-length cell).
 
 ## Rendered gallery
 

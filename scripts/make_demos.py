@@ -1257,7 +1257,11 @@ def demo_imaging_analysis(d):
            "paraxial_image_x solve (the chain can't place the sensor at "
            "'the system's paraxial image plane' directly)" % x_img)
     return {"preset": "quick", "save_fields": True, "export_rays": True,
-            "emit_csv": True}
+            "emit_csv": True,
+            # pulsed-optics P13 extension: the P9 field-imaging products
+            # (distortion/vignetting/field curves/telecentricity) render
+            # from the same rays_full.npz this demo already exports
+            "imaging_products": "all"}
 
 
 def demo_multiled_photometry(d):
@@ -1844,7 +1848,274 @@ def demo_folded_periscope(d):
     return {"preset": "quick"}
 
 
+# ---------------------------------------------------------------------------
+# pulsed-optics round demos (P13)
+# ---------------------------------------------------------------------------
+def demo_sc_spectrogram(d):
+    """Supercontinuum time-of-flight spectroscopy: the SuperK EXR-20
+    source (tabulated 400-2400 nm SPD, 5 ps seed pulses at 80 MHz)
+    through a 100 mm SF11 block onto a screen. The spectrogram shows the
+    material group-delay curve directly: t(lambda) = [air + n_g(lambda) *
+    L]/c — SF11's n_g falls ~0.11 from 450 to 2400 nm, a ~37 ps ramp.
+    The GDD budget table rides along for free."""
+    d.add("sc_superk", "SuperK", pos=(-15, 0, 0),
+          params={"diameter": 1.5, "length": 10.0})
+    d.chain("window", "SF11Block", "SuperK", 15.0,
+            params={"width": 15.0, "thickness": 100.0, "round_flag": 1},
+            props={"material": "SF11"})
+    d.chain("detector_plane", "Screen", "SF11Block", 20.0,
+            params={"width": 10.0, "round_flag": 1})
+    d.expect("SF11Block", (0, 0, 0))
+    d.expect("Screen", (120, 0, 0))
+    d.note("sc_spectrogram: SuperK SPD + 100 mm SF11; the spectrogram IS "
+           "the n_g(lambda) curve")
+    return {"preset": "quick", "nlambda": 17, "spectral_bins": 64,
+            "time_products": "pulse,spectrogram", "time_bins": 512,
+            "gdd_budget": True}
+
+
+def demo_erfiber_spm(d):
+    """Self-phase-modulation bench: the Er-fiber oscillator launched
+    through 2 cm of HNLF (the fiber_nonlinear_output primitive: spm =
+    gamma:11.5:length:0.02, phi_max ~ 9.4 rad) onto a screen. The
+    detector spectrum shows the classic SPM multi-peak structure
+    (~phi_max/pi + 1 = 4 peaks) and the spectrogram the S-curve chirp
+    (leading edge red, trailing blue)."""
+    # coherent=False: 129 strata cannot budget 1000 gather samples each
+    # at quick preset, and nothing here needs the coherent reconstruction
+    d.add("fiber_nonlinear_output", "FiberOut", pos=(-12, 0, 0),
+          params={"diameter": 3.5, "length": 10.0},
+          props={"coherent": False})
+    d.chain("detector_plane", "Screen", "FiberOut", 40.0,
+            params={"width": 10.0, "round_flag": 1})
+    d.expect("Screen", (28, 0, 0))
+    d.note("erfiber_spm: source-side SPM transform; spectral peaks + "
+           "S-curve tilt are the physics gates")
+    # nlambda 129 >> spectral_bins 64: wavelength strata are EQUAL-POWER
+    # by design, so the SPD shape is carried by their density -- too few
+    # strata renders a flat comb instead of the SPM multi-peak structure
+    return {"preset": "quick", "nlambda": 129, "spectral_bins": 64,
+            "time_products": "pulse,spectrogram", "time_bins": 512}
+
+
+def demo_fs_lens_telescope(d):
+    """fs pulse through a REFRACTIVE 2x beam expander (BK7 PCX pair,
+    f=50+100): the Mai Tai's 100 fs pulses pick up ~ 350 fs^2 of BK7 GDD
+    across the two lenses and stretch to ~ 130 fs (the GDD budget table
+    predicts tau_out; the traced time profile confirms it). Contrast
+    pair: demo_fs_oap_telescope (reflective, zero material GDD)."""
+    lam = 800.0
+    n = n_glass("bk7", lam)
+    f1, f2 = 50.0, 100.0
+    r1, r2 = (n - 1.0) * f1, (n - 1.0) * f2
+    ct1, ct2 = 4.0, 6.0
+    d.add("laser_maitai_800", "MaiTai", pos=(-30, 0, 0),
+          params={"diameter": 1.2, "length": 10.0})
+    d.chain("lens_pcx", "L1", "MaiTai", 30.0,
+            params={"R_front": r1, "aperture": 10.0, "ct": ct1})
+    d.chain("lens_pcx", "L2", "L1", "%.10g" % (f1 + f2 - ct1 - ct2),
+            flip=True,
+            params={"R_front": r2, "aperture": 16.0, "ct": ct2})
+    # a 40 mm SF11 block (189.6 fs^2/mm at 800) makes the stretch
+    # unmistakable: the 10 mm of BK7 lens glass alone is ~446 fs^2 =
+    # a 0.8% FWHM change no 512-bin profile can resolve
+    d.chain("window", "SF11Block", "L2", 8.0,
+            params={"width": 16.0, "thickness": 40.0, "round_flag": 1},
+            props={"material": "SF11"})
+    d.chain("detector_plane", "Screen", "SF11Block", 12.0,
+            params={"width": 12.0, "round_flag": 1})
+    d.expect("L1", (0, 0, 0))
+    d.expect("L2", (f1 + f2, 0, 0))
+    # chain arithmetic with the FLIPPED L2 (its beam-side exit is
+    # the flat front vertex): solver-built positions are the truth
+    d.expect("Screen", (210.0, 0, 0))
+    d.note("fs_lens_telescope: refractive half of the GDD contrast pair")
+    # main-pulse group delay: 190 mm air + 10 mm BK7 (n_g 1.5266) +
+    # 40 mm SF11 (n_g 1.8109) -> the tight window (+-2 ps) excludes the
+    # double-bounce echoes that otherwise blow the auto window to ~1 ns
+    # (2 ps bins cannot resolve a 100-230 fs pulse)
+    t_c = (0.190 + 1.5266 * 0.010 + 1.8109 * 0.040) / 299792458.0 * 1e9
+    return {"preset": "quick", "time_products": "pulse",
+            "time_bins": 512, "gdd_budget": True,
+            "time_window": "%.6f,%.6f" % (t_c - 0.002, t_c + 0.002)}
+
+
+def demo_fs_oap_telescope(d):
+    """fs pulse through an all-REFLECTIVE 2x expander (concave f=50 +
+    f=100 in a periscope Z-fold, confocal): mirrors traverse no glass,
+    so the GDD budget is empty and the traced pulse stays at the
+    transform-limited 100 fs — the reflective half of the contrast pair
+    with demo_fs_lens_telescope."""
+    f1, f2 = 50.0, 100.0
+    d.add("laser_maitai_800", "MaiTai", pos=(-30, 0, 0),
+          params={"diameter": 1.2, "length": 10.0})
+    d.fold_mirror("M1", "MaiTai", 30.0, deviation=90.0, azimuth=0.0,
+                  kind="mirror_concave",
+                  params={"R": 2.0 * f1, "aperture": 20.0, "ct": 5.0})
+    d.fold_mirror("M2", "M1", f1 + f2, deviation=90.0, azimuth=180.0,
+                  kind="mirror_concave",
+                  params={"R": 2.0 * f2, "aperture": 30.0, "ct": 6.0})
+    d.chain("detector_plane", "Screen", "M2", 40.0,
+            params={"width": 12.0, "round_flag": 1})
+    d.expect("M1", (0, 0, 0))
+    d.expect("M2", (0, f1 + f2, 0))
+    d.expect("Screen", (40.0, f1 + f2, 0))
+    d.note("fs_oap_telescope: reflective half of the GDD contrast pair "
+           "(45-deg concave folds; astigmatism is irrelevant to the "
+           "time-domain story)")
+    d.pin_detector("Screen", (1.0, 0.0, 0.0))
+    # all-air path 220 mm -> 733.9 ps; tight window, same reasoning as
+    # the lens half
+    t_c = 0.220 / 299792458.0 * 1e9
+    return {"preset": "quick", "time_products": "pulse",
+            "time_bins": 512, "gdd_budget": True,
+            "time_window": "%.6f,%.6f" % (t_c - 0.0015, t_c + 0.0015)}
+
+
+def demo_tof_rangefinder(d):
+    """Time-of-flight rangefinder: a 0.5 ns / 10 uJ pulsed laser fires
+    through a 50:50 plate BS at a target mirror `range_mm` away. The
+    first BS reflection puts the START pulse on DetRef (-y); the return
+    from the target reflects to +y onto DetReturn. The two time profiles
+    are one pulse each, separated by exactly 2*range/c (~4 ns at 600
+    mm) — read the range off the histogram-envelope profiles."""
+    bs_exit = 3.0 * math.sqrt(2.0)
+    d.variable("range_mm", 600.0, 200.0, 1000.0, 5,
+               comment="BS center to target mirror, mm")
+    d.add("laser_pulsed", "Laser", pos=(-40, 0, 0),
+          params={"diameter": 3.0, "length": 10.0},
+          props={"lambdac": 633.0, "lambdamin": 632.0,
+                 "lambdamax": 634.0, "pulse_energy": 10.0,
+                 "pulse_duration": 500.0, "rep_rate": 1000.0,
+                 "coherent": False})
+    # tilt_ry=45: +x input reflects to -y (michelson's convention)
+    d.chain("bs_plate", "BS", "Laser", 40.0, tilt_ry=45.0,
+            params={"width": 25.0, "thickness": 3.0, "round_flag": 1,
+                    "wedge_deg": 0.0})
+    d.chain("detector_plane", "DetRef", "BS", 50.0, port="reflect",
+            params={"width": 20.0, "round_flag": 0})
+    d.chain("mirror_flat", "Target", "BS",
+            "range_mm - %.10g" % bs_exit, port="transmit",
+            params={"width": 30.0, "round_flag": 1})
+    # the retro return re-reflects at the BS toward +y (the forward pass
+    # reflected -y): anchor the return detector on the +y arm, facing -y
+    d.add("detector_plane", "DetReturn", pos=(0.0, 50.0, 0.0),
+          rot_deg=90.0,
+          params={"width": 20.0, "round_flag": 0})
+    d.expect("BS", (0, 0, 0))
+    d.expect("DetRef", (0, -50, 0))
+    d.expect("Target", (600, 0, 0))
+    d.note("tof_rangefinder: DetReturn - DetRef peak separation = "
+           "2*range/c (4.003 ns at 600 mm); histogram envelope")
+    d.pin_detector("DetRef", (0.0, -1.0, 0.0))
+    d.pin_detector("DetReturn", (0.0, 1.0, 0.0))
+    return {"preset": "quick", "time_products": "pulse",
+            "time_bins": 1024, "time_envelope": "histogram",
+            "max_reflections": 8}
+
+
+def demo_shg_green_bench(d):
+    """Frequency-doubling bench: 2 uJ / 10 ps / 1 kHz pulses at 1064 nm
+    through a 5 mm KTP crystal (ktp_shg_1064_type2 process row, d_eff =
+    3.2 pm/V) — ~5%% converts to 532 nm (cleanly undepleted).
+    A 805 nm shortpass dichroic at 45 deg then splits the colors:
+    green transmits straight to DetGreen, the residual 1064 folds to
+    DetIR. case.json carries shg_converted_W + harmonic_strata; run
+    with --ray-differentials (baked in simparams) for a real transverse
+    intensity profile."""
+    d.add("laser_pulsed", "Pump", pos=(-25, 0, 0),
+          params={"diameter": 1.5, "length": 10.0},
+          props={"lambdac": 1064.0, "lambdamin": 1063.5,
+                 "lambdamax": 1064.5, "pulse_energy": 2.0,
+                 "pulse_duration": 10.0, "rep_rate": 1000.0,
+                 "coherent": False})
+    d.chain("window", "KTP", "Pump", 25.0,
+            params={"width": 8.0, "thickness": 5.0, "round_flag": 0},
+            props={"material": "ktp",
+                   "crystal_axis": "0,0,1", "crystal_axis2": "0,1,0",
+                   "nonlinear": "ktp_shg_1064_type2"})
+    # dichroic on the BS plate at 45 deg (michelson's idiom: tilt_ry=45
+    # reflects +x to -y; the bs_plate KIND exposes the reflect port --
+    # a plain window does not): the coating override swaps the 50:50
+    # coat for the 805 nm shortpass, so >805 nm reflects (the pump) and
+    # <805 nm transmits (the green). Coated face toward the beam.
+    d.chain("bs_plate", "Dichroic", "KTP", 25.0, tilt_ry=45.0,
+            params={"width": 20.0, "thickness": 2.0, "round_flag": 1,
+                    "wedge_deg": 0.0},
+            props={"coating": "dichroic_805sp_45"})
+    d.chain("detector_plane", "DetIR", "Dichroic", 30.0, port="reflect",
+            params={"width": 15.0, "round_flag": 0})
+    # the transmitted green continues straight through (the transmit
+    # port never redirects the train, tilted plate included)
+    d.chain("detector_plane", "DetGreen", "Dichroic", 30.0,
+            port="transmit",
+            params={"width": 15.0, "round_flag": 0})
+    d.expect("KTP", (0, 0, 0))
+    d.expect("Dichroic", (30, 0, 0))
+    d.expect("DetIR", (30, -30, 0))
+    d.note("shg_green_bench: KTP type-II process row; dichroic splits "
+           "532/1064 onto separate detectors")
+    d.pin_detector("DetIR", (0.0, -1.0, 0.0))
+    return {"preset": "quick", "ray_differentials": True,
+            "spectral_bins": 32, "time_products": "pulse",
+            "time_bins": 256}
+
+
+def demo_treacy_compressor(d):
+    """Treacy grating pair (single pass, TRANSMISSION geometry): 100 fs
+    pulses at 800 nm hit a 600 g/mm transmission grating at normal
+    incidence; the m=-1 order (theta_d = 28.7 deg) travels a 70 mm slant
+    to a second, parallel grating whose m=+1 order restores the original
+    direction (spatially chirped, parallel colors). The per-wavelength
+    geometric path difference IS the grating-pair GDD (Treacy 1969):
+    the spectrogram tilt and the stretched pulse FWHM on the screen
+    measure phi2 with no material dispersion anywhere in the train."""
+    lam = 800e-9
+    dsp = 1e-3 / 600.0                     # 600 g/mm
+    s_d = lam / dsp                        # sin(theta_d) at normal inc.
+    c_d = math.sqrt(1.0 - s_d * s_d)
+    L_s = 70.0                             # G1 -> G2 slant, mm
+    # REFLECTIVE pair (the transmission plate's truncated lamellar
+    # orders leak ~8% past the closure gate; the aluminum reflection
+    # grating books everything, same as czerny_turner): normal-incidence
+    # m=-1 reflects back-down at theta_d toward G2, whose m=+1 restores
+    # a +x beam displaced below G1.
+    g2 = (-L_s * c_d, -L_s * s_d)          # G2 front-face position
+    scr = (40.0, g2[1])
+    # coherent=False: the diffracted arm keeps too few gather samples
+    # per stratum for the coherent budget, and the time-domain story
+    # needs no interference
+    d.add("laser_maitai_800", "MaiTai", pos=(-90, 0, 0),
+          params={"diameter": 1.2, "length": 10.0},
+          props={"coherent": False})
+    d.add("grating_plate", "G1", pos=(0, 0, 0),
+          params={"width": 12.0, "thickness": 2.0, "round_flag": 0},
+          props={"material": "aluminum", "mirror": 1.0})
+    d.add("grating_plate", "G2", pos=g2 + (0.0,), rot_deg=180.0,
+          params={"width": 20.0, "thickness": 2.0, "round_flag": 0},
+          props={"material": "aluminum", "mirror": 1.0})
+    d.add("detector_plane", "Screen", pos=scr + (0.0,),
+          params={"width": 16.0, "round_flag": 0})
+    d.pin_grating("G1", (1.0, 0.0, 0.0), "600:0,1,0:orders=-1..1")
+    d.pin_grating("G2", (-c_d, -s_d, 0.0), "600:0,1,0:orders=-1..1")
+    d.pin_detector("Screen", (1.0, 0.0, 0.0))
+    d.note("treacy_compressor: reflective pair at normal incidence "
+           "(m=-1 then m=+1), theta_d=%.2f deg, slant %.0f mm -- all-"
+           "geometric GDD, zero glass in the dispersed path"
+           % (math.degrees(math.asin(s_d)), L_s))
+    return {"preset": "quick", "nlambda": 17, "spectral_bins": 32,
+            "time_products": "pulse,spectrogram", "time_bins": 1024,
+            "max_reflections": 8}
+
+
 DEMOS = {
+    "sc_spectrogram": demo_sc_spectrogram,
+    "erfiber_spm": demo_erfiber_spm,
+    "fs_lens_telescope": demo_fs_lens_telescope,
+    "fs_oap_telescope": demo_fs_oap_telescope,
+    "tof_rangefinder": demo_tof_rangefinder,
+    "shg_green_bench": demo_shg_green_bench,
+    "treacy_compressor": demo_treacy_compressor,
     "telephoto": demo_telephoto,
     "telephoto_zoom": demo_telephoto_zoom,
     "folded_periscope": demo_folded_periscope,
