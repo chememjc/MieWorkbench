@@ -114,7 +114,8 @@ DEFAULT_OPTPROPS_ROOT = "/home3/raytracegui/opticalproperties"
 
 CONTRACT_PROPERTIES = (
     "material", "power", "lambdac", "lambdamin", "lambdamax", "coherent",
-    "spectrum", "polarization", "beam_waist", "m2", "apodization", "coating",
+    "spectrum", "polarization", "pulse_energy", "pulse_duration",
+    "rep_rate", "beam_waist", "m2", "apodization", "coating",
     "roughness", "diffuser", "scatter", "filter", "polarizer",
     "polarizer_axis", "crystal_axis", "crystal_axis2", "grating",
     "surface_override", "mirror", "absorbance", "qe_curve", "detector_face",
@@ -123,7 +124,8 @@ REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating",
                        "grating", "diffuser", "scatter", "qe_curve",
                        "spectrum")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
-                      "absorbance", "beam_waist", "m2")
+                      "absorbance", "beam_waist", "m2", "pulse_energy",
+                      "pulse_duration", "rep_rate")
 BOOL_PROPERTIES = ("coherent",)
 
 # offered in the Active Properties value dropdowns alongside registry rows
@@ -152,6 +154,9 @@ PROPERTY_DEFAULTS = {
     "m2": 1.0,
     "apodization": "gaussian:w0=1",
     "detector_face": "",   # empty = '(auto)' closest-to-origin auto-pick
+    "pulse_energy": 0.01,      # uJ (10 nJ, a typical fs oscillator)
+    "pulse_duration": 0.1,     # ps FWHM (100 fs)
+    "rep_rate": 8e7,           # Hz
 }
 # Registry-valued properties default to a well-known entry when the
 # library has it, else the first name alphabetically.
@@ -191,6 +196,14 @@ TOOLTIPS = {
                  "(source-only; omit for plane/uniform emission).",
     "m2": "Beam quality factor M^2 (>=1.0); only meaningful with "
          "beam_waist set (source-only).",
+    "pulse_energy": "Per-pulse energy in µJ (pulsed source; EXCLUSIVE "
+                    "with a nonzero power — adding this zeroes power; "
+                    "needs rep_rate so average power is defined).",
+    "pulse_duration": "Pulse FWHM duration in ps (with pulse_energy: a "
+                      "real pulsed source; with power alone: the "
+                      "virtual-pulse duration for the time products).",
+    "rep_rate": "Pulse repetition rate in Hz (required with "
+                "pulse_energy; with power it derives energy/pulse).",
     "apodization": "Transverse field-amplitude apodization across the "
                    "emitting face: 'gaussian:w0=<mm>[:order=<n>]' "
                    "(source-only).",
@@ -300,6 +313,7 @@ class ElementEditorPane(QWidget):
         self._refresh_timer.timeout.connect(self._deferred_refresh)
 
         self._build_properties_box()
+        self._build_pulse_box()
         self._build_paraxial_box()
         self._build_faces_box()
         self._build_sheet_box()
@@ -307,6 +321,7 @@ class ElementEditorPane(QWidget):
         body = QWidget()
         body_layout = QVBoxLayout(body)
         body_layout.addWidget(self.props_box)
+        body_layout.addWidget(self.pulse_box)
         body_layout.addWidget(self.paraxial_box)
         body_layout.addWidget(self.faces_box)
         body_layout.addWidget(self.sheet_box)
@@ -352,11 +367,24 @@ class ElementEditorPane(QWidget):
         if not name or self._project is None or self._body_name is None:
             return
         body = self._project.body(self._body_name)
-        if name in (body.get("properties", {}) or {}):
+        props = body.get("properties", {}) or {}
+        if name in props:
             self.add_prop_combo.setCurrentText("")
             return   # already present; don't clobber its value
         self._project.set_property(self._body_name, name,
                                    self._default_property_value(name))
+        if name == "pulse_energy":
+            # power XOR pulse_energy (pulsed-optics P3 contract): a source
+            # gaining pulse_energy hands the power definition over to
+            # energy x rep_rate; power_mW=0.0 is the contract's "unset"
+            # sentinel, so zero it rather than remove it
+            cur = (props.get("power") or {}).get("value")
+            try:
+                nonzero = float(cur) != 0.0
+            except (TypeError, ValueError):
+                nonzero = False
+            if nonzero:
+                self._project.set_property(self._body_name, "power", 0.0)
         self.add_prop_combo.setCurrentText("")
 
     def _default_property_value(self, name):
@@ -1072,6 +1100,97 @@ class ElementEditorPane(QWidget):
         self.paraxial_box.setLayout(layout)
         self.paraxial_box.setVisible(False)
 
+    # -- pulse readout (read-only, derived echo; pulsed-optics P11) -----------
+    def _build_pulse_box(self):
+        self.pulse_box = QGroupBox("Pulse (derived)")
+        self.pulse_label = QLabel("")
+        self.pulse_label.setWordWrap(True)
+        self.pulse_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout = QVBoxLayout()
+        layout.addWidget(self.pulse_label)
+        self.pulse_box.setLayout(layout)
+        self.pulse_box.setVisible(False)
+        self.pulse_box.setToolTip(
+            "Live echo of the quantities raytracer.scene derives from the "
+            "pulse contract: energy/pulse, average power, peak power "
+            "(0.94 E/τ, Gaussian). power XOR pulse_energy — with "
+            "pulse_energy set, power must stay 0 (the unset sentinel).")
+
+    @staticmethod
+    def _fmt_si(value, unit):
+        """value [SI base unit] -> '12.3 nJ'-style string (engineering
+        prefixes, %.4g)."""
+        for scale, prefix in ((1e12, "T"), (1e9, "G"), (1e6, "M"),
+                              (1e3, "k"), (1.0, ""), (1e-3, "m"),
+                              (1e-6, "µ"), (1e-9, "n"), (1e-12, "p"),
+                              (1e-15, "f")):
+            if abs(value) >= scale:
+                return "%.4g %s%s" % (value / scale, prefix, unit)
+        return "%.4g %s" % (value, unit)
+
+    def _refresh_pulse(self):
+        """Derived-echo for the pulsed-source contract fields: shown when
+        the body carries any pulse property. Mirrors scene.py's P3
+        derivation (P_pk = 0.94 E/τ; whichever of power/pulse_energy is
+        absent derives from the other + rep_rate) without importing the
+        optics-env engine."""
+        try:
+            if self._project is None or self._body_name is None:
+                self.pulse_box.setVisible(False)
+                return
+            body = self._project.body(self._body_name)
+            props = {n: (e or {}).get("value")
+                     for n, e in (body.get("properties") or {}).items()}
+            if not any(k in props for k in ("pulse_energy",
+                                            "pulse_duration", "rep_rate")):
+                self.pulse_box.setVisible(False)
+                return
+
+            def num(name):
+                try:
+                    v = float(props.get(name))
+                    return v if v > 0.0 else None
+                except (TypeError, ValueError):
+                    return None
+
+            e_J = num("pulse_energy")
+            e_J = e_J * 1e-6 if e_J is not None else None       # µJ -> J
+            tau = num("pulse_duration")
+            tau = tau * 1e-12 if tau is not None else None      # ps -> s
+            f_Hz = num("rep_rate")
+            p_avg = num("power")
+            p_avg = p_avg * 1e-3 if p_avg is not None else None  # mW -> W
+            warn = None
+            if e_J is not None and p_avg is not None:
+                warn = ("power AND pulse_energy are both set — the run "
+                        "will refuse (set power to 0; it is the \"unset\" "
+                        "sentinel)")
+            if e_J is None and p_avg is not None and f_Hz is not None:
+                e_J = p_avg / f_Hz                       # derived energy
+            if p_avg is None and e_J is not None and f_Hz is not None:
+                p_avg = e_J * f_Hz                       # derived power
+            bits = []
+            if e_J is not None:
+                bits.append("E/pulse = %s" % self._fmt_si(e_J, "J"))
+            if p_avg is not None:
+                bits.append("P_avg = %s" % self._fmt_si(p_avg, "W"))
+            if e_J is not None and tau is not None:
+                bits.append("P_pk = %s (0.94 E/τ)"
+                            % self._fmt_si(0.94 * e_J / tau, "W"))
+            if tau is not None:
+                bits.append("τ = %s FWHM" % self._fmt_si(tau, "s"))
+            if e_J is not None and f_Hz is None and num("power") is None:
+                warn = warn or ("pulse_energy needs rep_rate (average "
+                                "power is undefined without it)")
+            text = " · ".join(bits) if bits else "(incomplete pulse spec)"
+            if warn:
+                text += "\n⚠ %s" % warn
+            self.pulse_label.setText(text)
+            self.pulse_box.setVisible(True)
+        except Exception as exc:
+            self.pulse_box.setVisible(False)
+            self.pulse_box.setToolTip("pulse readout: %s" % exc)
+
     def _element_label(self):
         """The element (group) label the current body belongs to."""
         if self._project is None or self._body_name is None:
@@ -1307,3 +1426,4 @@ class ElementEditorPane(QWidget):
         self._refresh_assignments_table()
         self._refresh_sheet_table()
         self._refresh_paraxial()
+        self._refresh_pulse()

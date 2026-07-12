@@ -188,3 +188,42 @@ def test_save_fields_top_row_checkbox(qtbot):
     matrix.reset_to_defaults()
     assert not matrix.save_fields_check.isChecked()
     assert "save_fields" not in matrix.values()
+
+
+def test_product_flags_render_as_checkbox_rows(qtbot):
+    # pulsed-optics P11: --time-products / --imaging-products get one
+    # checkbox per product (cli_specs.PRODUCT_FLAG_CHOICES) instead of a
+    # free-text line; values()/set_values round-trip the comma string and
+    # to_args forwards it verbatim
+    from mieworkbench.panes.config_matrix import ProductChecks
+    matrix = ConfigMatrix()
+    qtbot.addWidget(matrix)
+    for dest, (products, allow_none) in \
+            cli_specs.PRODUCT_FLAG_CHOICES.items():
+        w = matrix.widgets[dest]
+        assert isinstance(w, ProductChecks)
+        assert set(w.checks) == set(products)
+        assert (w.none_check is not None) == allow_none
+    tp = matrix.widgets["time_products"]
+    tp.checks["cube"].setChecked(True)
+    tp.checks["pulse"].setChecked(True)
+    vals = matrix.values()
+    assert vals["time_products"] == "pulse,cube"   # canonical order
+    args = matrix.to_args()
+    i = args.index("--time-products")
+    assert args[i + 1] == "pulse,cube"
+    # the real pipeline parser accepts what the widget produced
+    ns = cli_specs.build_parser("pipeline").parse_args(
+        ["--models", "x.FCStd"] + args)
+    assert ns.time_products == ("pulse", "cube")
+    # round-trip through set_values
+    matrix.reset_to_defaults()
+    assert matrix.values() == {}
+    matrix.set_values(vals)
+    assert matrix.values()["time_products"] == "pulse,cube"
+    # 'none' is exclusive: it unchecks and disables the product boxes
+    tp.none_check.setChecked(True)
+    assert matrix.values()["time_products"] == "none"
+    assert not tp.checks["pulse"].isEnabled()
+    tp.none_check.setChecked(False)
+    assert tp.checks["pulse"].isEnabled()

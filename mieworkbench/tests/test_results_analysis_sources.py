@@ -171,3 +171,57 @@ def test_sources_export_csv(qtbot, tmp_path, monkeypatch):
     assert rows[0] == ["Detector", "Source", "λ stratum", "Pol stratum",
                        "Coherent [mW]", "Incoherent [mW]", "Total [mW]"]
     assert len(rows) == 1 + pane.sources.rowCount()
+
+
+# ---------------------------------------------------------------------------
+# pulsed-optics P11: Time gallery tab + pulse/GDD summary line
+# ---------------------------------------------------------------------------
+def test_time_tab_partitions_time_images_and_summary_line(qtbot, tmp_path):
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    case = make_fake_case(tmp_path)
+    img = case / "images"
+    for name in ("det_Screen_time_profile.png",
+                 "det_Screen_time_spectrogram.png",
+                 "gdd_budget.png",
+                 "det_Screen_irradiance.png"):
+        (img / name).write_bytes(_PNG)
+    report = json.loads((case / "report.json").read_text())
+    report["gdd_budget"] = {
+        "lambda_ref_nm": 800.0, "reference_source": "Laser",
+        "rows": [], "total": {"gd_fs": 1e5, "gdd_fs2": 585.3,
+                              "tod_fs3": 227.6},
+        "pulses": [{"source": "Laser", "lambda_c_nm": 800.0,
+                    "tau0_fs": 100.0, "phi2_fs2": 585.3,
+                    "tau_out_fs": 101.3}],
+    }
+    report["detectors"]["Screen.Face5"]["time_products"] = {
+        "fwhm_s": 1.021e-13}
+    (case / "report.json").write_text(json.dumps(report))
+    pane.load_case(str(case))
+
+    time_paths = {os.path.basename(p)
+                  for p in pane.galleries["time"]._paths}
+    assert time_paths == {"det_Screen_time_profile.png",
+                          "det_Screen_time_spectrogram.png",
+                          "gdd_budget.png"}
+    image_paths = {os.path.basename(p)
+                   for p in pane.galleries["images"]._paths}
+    assert "det_Screen_irradiance.png" in image_paths
+    assert not (time_paths & image_paths)
+
+    text = pane.pulse_summary.text()
+    assert "τ₀ 100 fs" in text
+    assert "101.3 fs predicted" in text
+    assert "585.3 fs²" in text
+    assert "measured FWHM 102.1 fs" in text
+    assert not pane.pulse_summary.isHidden()
+
+
+def test_pulse_summary_hidden_for_cw_case(qtbot, tmp_path):
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    case = make_fake_case(tmp_path)
+    pane.load_case(str(case))
+    assert pane.pulse_summary.isHidden()
+    assert pane.galleries["time"]._paths == []

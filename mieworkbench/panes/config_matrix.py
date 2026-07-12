@@ -52,6 +52,58 @@ def _fmt_num(value):
     return ("%g" % value) if isinstance(value, float) else str(value)
 
 
+class ProductChecks(QWidget):
+    """One checkbox per product for a comma-list products flag
+    (cli_specs.PRODUCT_FLAG_CHOICES: --time-products / --imaging-products).
+    value() returns the comma-joined checked names in canonical order, ''
+    when nothing is checked (= flag omitted -> the CLI default / pulsed
+    auto-rule), or 'none' when the dedicated none-box is checked (only
+    offered where 'none' is a meaningful explicit value: it suppresses the
+    --time-products auto-default). Checking 'none' unchecks and disables
+    the product boxes."""
+
+    def __init__(self, products, allow_none, parent=None):
+        super().__init__(parent)
+        self.products = tuple(products)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.checks = {}
+        for name in self.products:
+            cb = QCheckBox(name)
+            self.checks[name] = cb
+            lay.addWidget(cb)
+        self.none_check = None
+        if allow_none:
+            self.none_check = QCheckBox("none (suppress auto)")
+            self.none_check.toggled.connect(self._on_none_toggled)
+            lay.addWidget(self.none_check)
+        lay.addStretch(1)
+
+    def _on_none_toggled(self, on):
+        for cb in self.checks.values():
+            if on:
+                cb.setChecked(False)
+            cb.setEnabled(not on)
+
+    def value(self):
+        if self.none_check is not None and self.none_check.isChecked():
+            return "none"
+        return ",".join(n for n in self.products
+                        if self.checks[n].isChecked())
+
+    def set_value(self, text):
+        text = str(text or "").strip()
+        if self.none_check is not None:
+            self.none_check.setChecked(text == "none")
+        if text == "none":
+            return
+        names = {t.strip() for t in text.split(",") if t.strip()}
+        if "all" in names:
+            names = set(self.products)
+        for name, cb in self.checks.items():
+            cb.setChecked(name in names)
+
+
 class ConfigMatrix(QWidget):
     estimateRequested = Signal(dict)
 
@@ -140,6 +192,11 @@ class ConfigMatrix(QWidget):
 
     def _make_widget(self, action):
         kind = type(action).__name__
+        if action.dest in cli_specs.PRODUCT_FLAG_CHOICES:
+            products, allow_none = cli_specs.PRODUCT_FLAG_CHOICES[action.dest]
+            widget = ProductChecks(products, allow_none)
+            widget.setToolTip(action.help or action.option_strings[-1])
+            return widget
         if kind == "_StoreTrueAction":
             widget = QCheckBox()
             widget.setChecked(False)
@@ -199,7 +256,11 @@ class ConfigMatrix(QWidget):
         for dest, widget in self.widgets.items():
             action = self.actions[dest]
             kind = type(action).__name__
-            if isinstance(widget, QCheckBox):
+            if isinstance(widget, ProductChecks):
+                text = widget.value()
+                if text:
+                    out[dest] = text
+            elif isinstance(widget, QCheckBox):
                 if widget.isChecked():
                     out[dest] = True
             elif kind == "_AppendAction":
@@ -239,7 +300,9 @@ class ConfigMatrix(QWidget):
             if dest not in values:
                 continue
             value = values[dest]
-            if isinstance(widget, QCheckBox):
+            if isinstance(widget, ProductChecks):
+                widget.set_value(value)
+            elif isinstance(widget, QCheckBox):
                 widget.setChecked(bool(value))
             elif isinstance(widget, QComboBox):
                 widget.setCurrentText(str(value))
@@ -260,7 +323,9 @@ class ConfigMatrix(QWidget):
         self.preset_combo.setCurrentText(self._preset_action.default)
         for dest, widget in self.widgets.items():
             action = self.actions[dest]
-            if isinstance(widget, QCheckBox):
+            if isinstance(widget, ProductChecks):
+                widget.set_value("")
+            elif isinstance(widget, QCheckBox):
                 widget.setChecked(False)
             elif isinstance(widget, QComboBox):
                 widget.setCurrentText("" if action.default is None

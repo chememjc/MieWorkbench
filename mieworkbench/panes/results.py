@@ -482,9 +482,26 @@ class ResultsPane(QWidget):
             g.set_status_callback(self.statusChanged.emit)
             self.galleries[name] = g
             self.tabs.addTab(g, name.capitalize())
+        # time-domain products get their own category (pulsed-optics P11):
+        # det_*_time_*.png + gdd_budget.png would otherwise crowd Images
+        # (four extra PNGs per detector on a pulsed run). The tab is empty
+        # (and harmless) on every CW case.
+        time_gallery = _Gallery()
+        time_gallery.set_status_callback(self.statusChanged.emit)
+        self.galleries["time"] = time_gallery
+        self.tabs.addTab(time_gallery, "Time")
         lay.addWidget(self.tabs)
         self.audit = QLabel("")
         lay.addWidget(self.audit)
+        # pulse/GDD readout (pulsed-optics P11): one compact line fed from
+        # report.json's gdd_budget block + the detectors' time_products
+        # FWHMs; empty (hidden) for CW cases without --gdd-budget
+        self.pulse_summary = QLabel("")
+        self.pulse_summary.setWordWrap(True)
+        self.pulse_summary.setTextInteractionFlags(
+            Qt.TextSelectableByMouse)
+        lay.addWidget(self.pulse_summary)
+        self.pulse_summary.hide()
 
     # -- table CSV export (right-click on summary/power) ----------------------
     def _build_table_export_menu(self, table, default_name):
@@ -547,6 +564,8 @@ class ResultsPane(QWidget):
         for gallery in self.galleries.values():
             gallery.clear()
         self.audit.setText("")
+        self.pulse_summary.setText("")
+        self.pulse_summary.hide()
         self.pv_btn.setEnabled(False)
         self.statusChanged.emit("")
 
@@ -603,13 +622,66 @@ class ResultsPane(QWidget):
                                  or self._elements_from_audit())
             self._populate_analysis_metrics(dets)
             self._populate_sources(dets)
+            self._populate_pulse_summary(report)
 
         from glob import glob
         for name, gallery in self.galleries.items():
-            gallery.show_images(
-                glob(os.path.join(self.case_dir, name, "*.png")))
+            if name == "time":
+                continue   # partitioned out of images/ below
+            paths = glob(os.path.join(self.case_dir, name, "*.png"))
+            if name == "images":
+                time_paths = [p for p in paths if self._is_time_image(p)]
+                paths = [p for p in paths if p not in set(time_paths)]
+                self.galleries["time"].show_images(time_paths)
+            gallery.show_images(paths)
         self.pv_btn.setEnabled(
             bool(paraview_launcher.viz_files(self.case_dir)))
+
+    @staticmethod
+    def _is_time_image(path):
+        """images/ PNGs that belong on the Time tab: the four per-detector
+        time products and the dispersion-budget table."""
+        base = os.path.basename(path)
+        if base == "gdd_budget.png":
+            return True
+        return base.startswith("det_") and ("_time_" in base)
+
+    @staticmethod
+    def _fmt_fs(fs):
+        """fs -> compact string, promoting to ps/ns when large."""
+        for scale, unit in ((1e6, "ns"), (1e3, "ps")):
+            if abs(fs) >= scale:
+                return "%.4g %s" % (fs / scale, unit)
+        return "%.4g fs" % fs
+
+    def _populate_pulse_summary(self, report):
+        """One line: per pulsed source tau0 -> predicted tau_out + total
+        material GDD (report.json gdd_budget, written by any --gdd-budget
+        or time-product run), then each detector's measured time-profile
+        FWHM (detectors.*.time_products.fwhm_s). Hidden when neither
+        block exists (every pre-existing CW case)."""
+        bits = []
+        budget = report.get("gdd_budget") or {}
+        for p in budget.get("pulses", []):
+            bits.append("%s: τ₀ %s → %s predicted (φ₂ %.4g fs²)"
+                        % (p.get("source", "?"),
+                           self._fmt_fs(p.get("tau0_fs", 0.0)),
+                           self._fmt_fs(p.get("tau_out_fs", 0.0)),
+                           p.get("phi2_fs2", 0.0)))
+        if budget and not budget.get("pulses"):
+            bits.append("total material GDD %.4g fs²"
+                        % budget.get("total", {}).get("gdd_fs2", 0.0))
+        for label, d in sorted((report.get("detectors") or {}).items()):
+            tp = d.get("time_products") or {}
+            if "fwhm_s" in tp:
+                bits.append("%s: measured FWHM %s"
+                            % (label, self._fmt_fs(tp["fwhm_s"] * 1e15)))
+        if bits:
+            self.pulse_summary.setText("pulse/GDD:  " + "  ·  ".join(bits))
+            self.pulse_summary.show()
+        else:
+            self.pulse_summary.setText("")
+            self.pulse_summary.hide()
 
     def _populate_power(self, elements):
         elements = elements or {}

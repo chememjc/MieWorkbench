@@ -854,3 +854,63 @@ def test_sheet_context_menu_none_for_non_length_alias(qtbot, tmp_path):
     pane.set_project(FakeProject(structure, faces))
     pane.set_face_selection("Lens", [])
     assert pane._build_sheet_context_menu("wavelength") is None
+
+
+# ---------------------------------------------------------------------------
+# pulsed-source fields (pulsed-optics P11): derived echo + XOR enforcement
+# ---------------------------------------------------------------------------
+def test_pulse_energy_add_zeroes_power_and_echoes_derived(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    project.set_property("Lens", "power", 5.0)
+    pane.add_prop_combo.setCurrentText("pulse_energy")
+    pane.add_prop_button.click()
+    props = project.body("Lens")["properties"]
+    # power XOR pulse_energy: adding the energy hands power over to the
+    # 0.0 "unset" sentinel instead of leaving a contract violation behind
+    assert props["pulse_energy"]["value"] == 0.01
+    assert props["power"]["value"] == 0.0
+
+    project.set_property("Lens", "pulse_duration", 0.1)   # ps
+    project.set_property("Lens", "rep_rate", 8e7)         # Hz
+    pane._refresh_pulse()
+    assert not pane.pulse_box.isHidden()
+    text = pane.pulse_label.text()
+    # E = 10 nJ, P_avg = E*f = 0.8 W, P_pk = 0.94E/tau = 94 kW
+    assert "E/pulse = 10 nJ" in text
+    assert "P_avg = 800 mW" in text
+    assert "P_pk = 94 kW" in text
+    assert "⚠" not in text
+
+
+def test_pulse_echo_warns_on_xor_violation_and_missing_rep_rate(
+        qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    # both set (hand-authored violation): warn, don't silently mutate
+    project.set_property("Lens", "power", 5.0)
+    project.set_property("Lens", "pulse_energy", 0.01)
+    pane._refresh_pulse()
+    assert "⚠" in pane.pulse_label.text()
+    assert "both set" in pane.pulse_label.text()
+
+    # pulse_energy without rep_rate: average power undefined
+    project.set_property("Lens", "power", 0.0)
+    pane._refresh_pulse()
+    assert "needs rep_rate" in pane.pulse_label.text()
+
+    # CW body: box hidden
+    for name in ("pulse_energy",):
+        project.remove_property("Lens", name)
+    pane._refresh_pulse()
+    assert pane.pulse_box.isHidden()
