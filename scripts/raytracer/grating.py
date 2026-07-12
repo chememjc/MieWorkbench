@@ -452,7 +452,31 @@ def apply_to_batch(tracer, fid, grp):
         prop = keep
         child = grp.select(prop)
         child.dir = d_new[prop]
-        child.s_hat = s_new[prop]
+        # s_hat must be perpendicular to the CHILD's own direction. For
+        # planar diffraction every order shares the TE direction n x d
+        # (along the grooves), which equals the incident s basis up to
+        # sign at non-degenerate incidence -- but at exactly NORMAL
+        # incidence pol_basis's fallback s is arbitrary-transverse, and
+        # inheriting it verbatim leaves a diffracted child whose s_hat
+        # is NOT perpendicular to its direction. The next polarization-
+        # aware interface (e.g. the second grating of a Treacy pair)
+        # then rotate_jones's through a skewed basis and silently loses
+        # cos^2(theta) of the power (9.3% closure leak in the
+        # treacy_compressor demo). Rebuild per child; the specular order
+        # at normal incidence (n x d degenerate) keeps the incident
+        # basis, which IS perpendicular there.
+        cr = np.cross(n_hat[prop], child.dir)
+        nrm = np.linalg.norm(cr, axis=-1)
+        ok_frame = nrm > 1e-9
+        s_child = np.where(
+            ok_frame[:, None],
+            cr / np.maximum(nrm, 1e-300)[:, None], s_new[prop])
+        # keep the sign aligned with the incident s so the (Es, Ep)
+        # amplitudes keep their meaning (a flipped s is a pi phase jump
+        # on the s component = a different polarization state)
+        flip = np.sum(s_child * s_new[prop], axis=-1) < 0.0
+        s_child = np.where((ok_frame & flip)[:, None], -s_child, s_child)
+        child.s_hat = s_child
         child.Es = Es[prop] * np.sqrt(eta_s[prop, j])
         child.Ep = Ep[prop] * np.sqrt(eta_p[prop, j])
         if reflective:

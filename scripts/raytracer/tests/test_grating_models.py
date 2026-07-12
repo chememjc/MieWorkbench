@@ -324,3 +324,57 @@ def test_m0_lamellar_still_snell():
             "efficiencies": None}       # no "model" key -> legacy lamellar
     eta_s, eta_p = gr.order_efficiencies(spec, lam, cos_i, [-1, 0, 1])
     assert np.array_equal(eta_s, eta_p)
+
+
+def test_normal_incidence_grating_pair_closure():
+    """Regression (pulsed-optics round, treacy_compressor demo): grating
+    children inherited the INCIDENT s_hat verbatim; at exactly normal
+    incidence pol_basis's degenerate fallback s is arbitrary-transverse,
+    so a diffracted child's s_hat was not perpendicular to its own
+    direction and the SECOND grating's Jones rotation silently lost
+    cos^2(theta_d) of the power (9.3% closure leak). apply_to_batch now
+    rebuilds each child's frame (n x d, sign-aligned)."""
+    import warnings
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import scenehelpers as sh
+
+    # G1 at normal incidence; the m=-1 order travels down-left and hits
+    # G2 (a full-height slab behind the source plane, grating on its +x
+    # cap) at theta_d = 28.7 deg -- the exact treacy leak topology. The
+    # source sits between the two plates (source bodies are not
+    # intersectable geometry, only the emission point matters).
+    g1 = sh.slab_body("G1", "aluminum", 0.0, 0.002, half=0.01, mirror=1.0)
+    g1["grating"] = {"G1.Pad.Face1": "600:0,1,0:orders=-1..1"}
+    g2 = sh.slab_body("G2", "aluminum", -0.065, -0.063, half=0.06,
+                      mirror=1.0)
+    g2["grating"] = {"G2.Pad.Face2": "600:0,1,0:orders=-1..1"}
+    src = sh.source_body(power_mW=1.0, lambdac_nm=800.0, coherent=False,
+                         half=0.0005, x=-0.03,
+                         polarization={"kind": "linear", "angle_deg": 0.0})
+    # tilt the emit normal by 1e-7 in z: real FreeCAD-extracted scenes
+    # carry ~1e-8 direction noise, so |d x n| at "normal" incidence is
+    # TINY-but-nonzero -- pol_basis then normalizes noise into an
+    # arbitrary transverse s (here forced to ~(0,-1,0)), which is the
+    # exact preconditon of the leak (exact zeros take the clean
+    # degenerate fallback and hide it)
+    f = src["faces"][0]
+    n = [1.0, 0.0, 1e-7]
+    f["fingerprint"]["normal_hint"] = n
+    f["surface"]["normal"] = [c / (1 + 5e-15) for c in n]
+    model = sh.make_model([
+        src,
+        g1, g2,
+        sh.detector_body(x=0.06, half=0.08),
+    ])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result, grids, scene = sh.trace_scene(model, rays=4000,
+                                              max_reflections=8)
+    rep = result.ledger.report(["Src"])
+    # pre-fix this read closure_error ~ 0.05-0.09 (the skewed-basis
+    # rotation at G2); the partition must be exact again
+    assert rep["closure_ok"], rep["sources"]["Src"]
+    # and the twice-diffracted arm really exists (G2's grating fired)
+    assert "G2:grating" in rep["by_surface_W"]
