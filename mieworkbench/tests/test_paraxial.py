@@ -83,6 +83,32 @@ def test_mirrors():
         "mirror_flat", {"width": 25.0, "thickness": 3.0, "round_flag": 0},
         idx, 587.6)
     assert flat["afocal"] is True and flat["mirror"] is True
+    # exactly afocal (IDENT: A=D=1, C=0): angular magnification is the D
+    # element, i.e. 1 for a flat mirror (no power at all)
+    assert flat["angular_magnification"] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# near-afocal EFL suppression (future.md (a2) / UXNOTES_ROUND3 #29)
+# ---------------------------------------------------------------------------
+def test_near_afocal_reports_angular_magnification():
+    """|EFL| beyond NEAR_AFOCAL_EFL_MM must flag afocal and surface the
+    ABCD D element as the angular magnification, even though C != 0."""
+    C = 1e-7          # efl = -1/C = -1e7 mm >> NEAR_AFOCAL_EFL_MM (1e5)
+    D = 2.5
+    A = 1.0 / D       # keeps det(M) = AD - BC = 1 with B = 0
+    card = paraxial.cardinals_from_matrix((A, 0.0, C, D), 0.0)
+    assert card["afocal"] is True
+    assert card["angular_magnification"] == pytest.approx(D)
+    assert abs(card["efl"]) > paraxial.NEAR_AFOCAL_EFL_MM
+
+
+def test_moderate_efl_is_not_flagged_afocal():
+    card = paraxial.element_cardinals(
+        "lens_pcx", {"R_front": 25.0, "ct": 5.0, "aperture": 20.0},
+        idx, 587.6)
+    assert card["afocal"] is False
+    assert "angular_magnification" not in card
 
 
 def test_achromat_close_to_design_focal_length():
@@ -306,6 +332,23 @@ def test_system_iris_becomes_limiting_stop():
     # marginal through the stop: NA = (stop/2) * (h_lens/h_stop) / ...
     # simply: f/# grows vs the lens-limited case
     assert s["fno_working"] > s["efl"] / PCX["aperture"]
+
+
+def test_system_near_afocal_pair_reports_angular_magnification():
+    """Two identical lenses spaced just short of the exact afocal
+    condition (d_pp = 2f) blow the system EFL up past the near-afocal
+    threshold; the summary must flag it and report an angular
+    magnification rather than a meaningless huge EFL number."""
+    card = paraxial.element_cardinals("lens_pcx", PCX, idx, 633.0)
+    f, pp1, pp2 = card["efl"], card["pp1_mm"], card["pp2_mm"]
+    delta = 1e-6   # -> f_sys = f*f/delta, comfortably > NEAR_AFOCAL_EFL_MM
+    spacing = 2.0 * f - delta - pp1 + pp2
+    tm = _two_lens_model(spacing=spacing)
+    s = paraxial.system_summary(tm, index_fn=idx)
+    assert s["afocal"] is True
+    assert abs(s["efl"]) > paraxial.NEAR_AFOCAL_EFL_MM
+    assert s["angular_magnification"] is not None
+    assert s["magnification"] is None   # suppressed alongside the huge EFL
 
 
 def test_finite_conjugate_thin_lens_2f():

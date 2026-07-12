@@ -101,6 +101,143 @@ def test_achromat_scaling():
         SCENES["lens_achromat"]["R1_mm"])
 
 
+def test_achromat_scaling_positive_path_unchanged():
+    """The f > 0 path must stay bit-identical after the f < 0 extension
+    (linear scaling of the shipped design, unaffected by the new branch)."""
+    out = wizards.solve_achromat(100.0)
+    assert out["R_front"] == pytest.approx(62.0)
+    assert out["ct_crown"] == pytest.approx(12.0)
+    out50 = wizards.solve_achromat(50.0)
+    assert out50["R_front"] == pytest.approx(
+        SCENES["lens_achromat"]["R1_mm"])
+
+
+@pytest.mark.parametrize("f", [-60.0, -30.0, -150.0])
+def test_negative_achromat_thin_lens_efl_matches_requested_f(f):
+    """A negative achromat's thin-lens EFL (recomputed from the returned
+    surface radii/materials via the same 2-thin-lens-in-contact formulas
+    used to derive them) must match the requested f within 0.5% — mirrors
+    how test_achromat_scaling pins the positive oracle."""
+    design = wizards.solve_achromat(f)
+    matdb = wizards._default_matdb()
+    n_crown = wizards.index_at(matdb, "bk7", wizards.D_LINE_NM)
+    n_flint = wizards.index_at(matdb, "sf5", wizards.D_LINE_NM)
+    phi_crown = (n_crown - 1.0) * (1.0 / design["R_front"]
+                                   - 1.0 / design["R_iface"])
+    phi_flint = (n_flint - 1.0) * (1.0 / design["R_iface"]
+                                   - 1.0 / design["R_back"])
+    thin_efl = 1.0 / (phi_crown + phi_flint)
+    assert thin_efl == pytest.approx(f, rel=5e-3)
+    assert design["efl"] == pytest.approx(f)
+    # crown-negative doublet: crown diverges harder than the flint
+    # converges (matches make_demos._telephoto_solve's validated rear
+    # group — a "flint-forward" total power split for the glass pair)
+    assert phi_crown < 0 < phi_flint
+    assert abs(phi_crown) > abs(phi_flint)
+    assert design["ct_crown"] > 0 and design["ct_flint"] > 0
+
+
+def test_negative_achromat_thick_lens_efl_reasonably_close():
+    """The real (thick, cemented, gapped) prescription's paraxial EFL —
+    via the SAME ABCD engine core/paraxial uses for lens_achromat — must
+    still land within a few percent of the thin-lens target (the achromat
+    builder's own gap/thickness convention, not a numeric re-solve)."""
+    from mieworkbench.core import paraxial as px
+    f = -60.0
+    design = wizards.solve_achromat(f)
+    matdb = wizards._default_matdb()
+
+    def idx(m, lam):
+        return wizards.index_at(matdb, m, lam)
+
+    params = dict(design, gap=wizards._NEG_ACHROMAT_GAP, aperture=30.0)
+    card = px.element_cardinals("lens_achromat", params, idx, wizards.D_LINE_NM)
+    assert card["efl"] == pytest.approx(f, rel=0.03)
+
+
+def test_negative_achromat_rejects_zero_focal_length():
+    with pytest.raises(ValueError):
+        wizards.solve_achromat(0.0)
+
+
+# ---------------------------------------------------------------------------
+# zoom-pair calculator (future.md (a2), UXNOTES_ROUND3 "nothing computes
+# p,q,r,s for you")
+# ---------------------------------------------------------------------------
+def test_zoom_pair_self_consistency():
+    zp = wizards.solve_zoom_pair(122.484, -47.638)
+    for z in (0.0, 10.0, -5.0):
+        assert zp["track"](z) == pytest.approx(z + zp["bfl"](z))
+        assert zp["efl"](z) == pytest.approx(
+            -1.0 / (zp["pC"] + zp["qC"] * z))
+        # the expression strings must evaluate to the same values
+        assert eval(zp["bfl_expr"].replace("z", "(%.17g)" % z)) \
+            == pytest.approx(zp["bfl"](z), rel=1e-9)
+        assert eval(zp["efl_expr"].replace("z", "(%.17g)" % z)) \
+            == pytest.approx(zp["efl"](z), rel=1e-9)
+    zp2 = wizards.solve_zoom_pair(122.484, -47.638, track_mm=150.0)
+    assert zp2["z_for_track"]
+    for z in zp2["z_for_track"]:
+        assert zp2["track"](z) == pytest.approx(150.0, abs=1e-6)
+
+
+def test_zoom_pair_rejects_zero_focal_length():
+    with pytest.raises(ValueError):
+        wizards.solve_zoom_pair(0.0, 50.0)
+
+
+def test_zoom_pair_matches_telephoto_zoom_demo():
+    """Oracle: reproduce the shipped telephoto_zoom demo's vertex-
+    referenced BFL(z) at 3 z values to 1e-6 (make_demos.demo_telephoto_
+    zoom / _telephoto_solve), converting between the chain's vertex-to-
+    vertex gap and this calculator's thin-lens-equivalent z via the
+    front/rear achromat groups' own EFL + principal planes — the exact
+    correction documented in wizards.solve_zoom_pair's module note."""
+    from mieworkbench.core import paraxial as px
+
+    matdb = wizards._default_matdb()
+
+    def idx(m, lam=wizards.D_LINE_NM):
+        return wizards.index_at(matdb, m, lam)
+
+    ach = wizards.solve_achromat(120.0)
+    front = {"R_front": ach["R_front"], "R_iface": ach["R_iface"],
+            "R_back": ach["R_back"], "ct_crown": ach["ct_crown"],
+            "ct_flint": ach["ct_flint"], "gap": 0.005, "aperture": 56.0}
+    nu = {}
+    for glass in ("bk7", "sf5"):
+        nF, nC = idx(glass, 486.1), idx(glass, 656.3)
+        nu[glass] = (idx(glass) - 1.0) / (nF - nC)
+    phi2 = 1.0 / -60.0
+    phi_crown = phi2 * nu["bk7"] / (nu["bk7"] - nu["sf5"])
+    a_eq = 2.0 * (idx("bk7") - 1.0) / abs(phi_crown)
+    rear = {"R_front": -a_eq, "R_iface": a_eq, "R_back": 75.0,
+           "ct_crown": 2.5, "ct_flint": 3.5, "gap": 0.005, "aperture": 30.0}
+
+    card_front = px.element_cardinals("lens_achromat", front, idx,
+                                      wizards.D_LINE_NM)
+    card_rear = px.element_cardinals("lens_achromat", rear, idx,
+                                     wizards.D_LINE_NM)
+    M_front, _, _ = px.element_matrix("lens_achromat", front, idx,
+                                      wizards.D_LINE_NM)
+    M_rear, _, _ = px.element_matrix("lens_achromat", rear, idx,
+                                     wizards.D_LINE_NM)
+    M_iris = px.mmul(px.translate(2.0), M_front)   # front exit -> 2mm stop
+
+    def bfl_demo(z_chain):
+        A, B, C, D = px.mmul(M_rear, px.mmul(px.translate(z_chain), M_iris))
+        return -A / C
+
+    zp = wizards.solve_zoom_pair(card_front["efl"], card_rear["efl"])
+    pp2_front = card_front["pp2_mm"]
+    pp1_rear, pp2_rear = card_rear["pp1_mm"], card_rear["pp2_mm"]
+    for z_chain in (85.0, 90.537, 95.0):
+        gap_total = z_chain + 2.0          # the iris's fixed 2 mm offset
+        z_equiv = gap_total + pp1_rear - pp2_front
+        predicted = zp["bfl"](z_equiv) + pp2_rear
+        assert predicted == pytest.approx(bfl_demo(z_chain), abs=1e-6)
+
+
 def test_impossible_designs_raise():
     with pytest.raises(ValueError):
         wizards.solve_pcx(-50.0, N_633, 5.0)

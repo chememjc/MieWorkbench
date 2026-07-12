@@ -132,6 +132,38 @@ class Validator:
         return common.parse_facemap_spec(
             str(raw), body=body.get("name"), feature=body.get("tip"))
 
+    def sheet_params(self, body):
+        """This body's dim-sheet aliases (sheet labeled 'dim_<label>'),
+        offline mirror of core.train.TrainModel._sheet_params: the
+        worker's get_structure already returns every sheet flat in
+        structure['sheets'], so no live TrainModel/worker is needed."""
+        label = "dim_%s" % body.get("label")
+        for sheet in self.structure.get("sheets", []):
+            if sheet.get("label") == label:
+                out = {}
+                for alias, cell in (sheet.get("aliases") or {}).items():
+                    try:
+                        out[alias] = float(cell.get("value"))
+                    except (TypeError, ValueError):
+                        pass
+                return out
+        return None
+
+    def aperture_mm(self, body):
+        """Clear-aperture diameter (mm) from this body's dim sheet, same
+        alias preference order as core.paraxial.element_aperture_mm /
+        _APERTURE_ALIASES (hole_diameter wins over outer diameter for
+        iris/pinhole/annular stops); None if no sheet or no positive
+        alias is found."""
+        from . import paraxial
+        params = self.sheet_params(body)
+        if not params:
+            return None
+        for key in paraxial._APERTURE_ALIASES:
+            if key in params and params[key] and params[key] > 0:
+                return float(params[key])
+        return None
+
 
 # ---------------------------------------------------------------------------
 # checks
@@ -573,6 +605,71 @@ def check_sampling(v):
             fix_hint="raise --rays to at least %.0f, lower --nlambda, or "
             "disable the gate" % (min_eff * nlambda),
             check="sampling"))
+    return out
+
+
+@check("gather-preflight")
+def check_gather_preflight(v):
+    """Aperture-diffraction ray-budget preflight (design-usability round
+    UXNOTES_ROUND3 #18/#29, future.md (a2)): a coherent source clipped
+    down to a small transmitted footprint by a downstream aperture (or
+    any element's own clear aperture) needs its TRANSMITTED population —
+    not just its total rays/stratum — above the coherent gather's M_eff
+    gate. Today that only surfaces as a GatherError AFTER a failed
+    trace. This is a deliberately COARSE preflight: a plane aperture-area
+    ratio (smallest downstream clear-aperture opening vs the source's
+    own emitting footprint, both from dim-sheet aliases — see
+    core.paraxial._APERTURE_ALIASES) estimates the transmitted fraction,
+    with no geometry/divergence/propagation considered at all. WARNING
+    only, never gates the Run button — it can both over- and
+    under-estimate the real clipping."""
+    out = []
+    coherent_sources = [b for b in v.bodies()
+                        if v.role(b) == "source"
+                        and bool(v.prop(b, "coherent"))]
+    if not coherent_sources:
+        return out
+    rays = float(v.config.get("rays") or common.PRESETS["quick"]["rays"])
+    nlambda = int(v.config.get("nlambda")
+                  or common.PRESETS["quick"]["nlambda"])
+    # same default as check_sampling above, and the actual hard gate:
+    # raytracer.gather.render_coherent's min_eff_samples kwarg (gather.py,
+    # "SAMPLING GATE" header comment: M_eff >= 1000 by default).
+    min_eff = float(v.config.get("min_eff_samples", 1000.0))
+    per_stratum = rays / max(nlambda, 1)
+
+    smallest_ap, smallest_body = None, None
+    for b in v.bodies():
+        if v.role(b) != "optic":
+            continue
+        d = v.aperture_mm(b)
+        if d is not None and (smallest_ap is None or d < smallest_ap):
+            smallest_ap, smallest_body = d, b
+    if smallest_ap is None:
+        return out
+
+    for src in coherent_sources:
+        beam_d = v.aperture_mm(src)
+        if beam_d is None or beam_d <= 0 or smallest_ap >= beam_d:
+            continue    # no aperture data, or no clipping to estimate
+        transmitted_fraction = (smallest_ap / beam_d) ** 2
+        eff_samples = transmitted_fraction * per_stratum
+        if eff_samples < min_eff:
+            mult = min_eff / max(eff_samples, 1e-9)
+            out.append(Finding(
+                WARNING,
+                "%s (~Ø%.3g mm beam) through %s's ~Ø%.3g mm "
+                "opening: a coarse aperture-area estimate gives only "
+                "~%.0f effective transmitted rays/stratum, below the "
+                "coherent gather's gate of %.0f effective samples — the "
+                "trace may abort with GatherError: undersampled"
+                % (src["label"], beam_d, smallest_body["label"],
+                   smallest_ap, eff_samples, min_eff),
+                body=src["name"],
+                fix_hint="raise --rays by roughly %.0fx (to ~%.0f) to "
+                "clear the gather gate through this aperture"
+                % (mult, rays * mult),
+                check="gather-preflight"))
     return out
 
 

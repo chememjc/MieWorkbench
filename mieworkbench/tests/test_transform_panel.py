@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from mieworkbench.core.geomcache import GeomCache            # noqa: E402
-from mieworkbench.core.project import Project                # noqa: E402
+from mieworkbench.core.project import Project, ProjectError  # noqa: E402
 from mieworkbench.core.transforms import BodyState, FaceInfo, Placement  # noqa: E402,E501
 from mieworkbench.panes.transform_panel import TransformPanel  # noqa: E402
 
@@ -435,3 +435,126 @@ def test_port_change_rechains(qtbot):
     panel.train_port.setCurrentIndex(idx)
     assert project.train().records()["L2"]["port"] == "out"
     assert not np.allclose(pos_of(project, "L2"), p_reflect)
+
+
+# -- polar place-about-point (P10 item 8) ------------------------------------
+def test_place_about_point_positions_on_circle_one_undo_entry(qtbot):
+    panel, project, _view = make_panel(qtbot)
+    ref_spec = {"kind": "fixed", "point_mm": [0.0, 0.0, 0.0]}
+    axis_spec = {"kind": "global", "axis": "z"}
+    ops = project.place_about_point("Lens", ref_spec, axis_spec, "40",
+                                    "90", aim_at_ref=False)
+    assert len(ops) == 1
+    pos = project.current_placement("Lens").pos
+    assert abs(np.linalg.norm(pos) - 40.0) < 1e-9
+    assert abs(pos[2]) < 1e-9
+    # one undo entry rolls all the way back to the original pose
+    project.undo()
+    assert list(project.current_placement("Lens").pos) == [2.0, 0.0, 0.0]
+    project.redo()
+    assert abs(np.linalg.norm(project.current_placement("Lens").pos)
+              - 40.0) < 1e-9
+
+
+def test_place_about_point_aim_at_ref_orients_toward_pivot(qtbot):
+    panel, project, _view = make_panel(qtbot)
+    project.place_about_point(
+        "Lens", {"kind": "fixed", "point_mm": [0.0, 0.0, 0.0]},
+        {"kind": "global", "axis": "z"}, "40", "90", aim_at_ref=True)
+    axis = project.body_states["Lens"].optical_axis_world()
+    pos = project.current_placement("Lens").pos
+    expect = -pos / np.linalg.norm(pos)
+    assert np.allclose(axis, expect, atol=1e-9)
+
+
+def test_place_about_point_r_theta_expressions_over_miewb_vars(qtbot):
+    """r/theta accept the train_solver expression grammar evaluated
+    against the live miewb_vars sheet (same grammar/vars mapping the
+    chain edge fields use)."""
+    panel, project, _view = make_panel(qtbot)
+    project.structure["sheets"] = [{
+        "name": "miewb_vars", "label": "miewb_vars",
+        "aliases": {"ring_r": {"cell": "A1", "raw": "=40", "value": 40.0,
+                               "unit": ""},
+                   "ring_theta": {"cell": "A2", "raw": "=90",
+                                  "value": 90.0, "unit": ""}}}]
+    project.place_about_point(
+        "Lens", {"kind": "fixed", "point_mm": [0.0, 0.0, 0.0]},
+        {"kind": "global", "axis": "z"}, "ring_r * 1",
+        "ring_theta", aim_at_ref=False)
+    pos = project.current_placement("Lens").pos
+    assert abs(np.linalg.norm(pos) - 40.0) < 1e-9
+
+
+def test_place_about_point_refuses_expression_bound_placement(qtbot):
+    panel, project, _view = make_panel(qtbot)
+    project.body("Lens")["placement_bound"] = True
+    with pytest.raises(ProjectError):
+        project.place_about_point(
+            "Lens", {"kind": "origin"}, {"kind": "global", "axis": "z"},
+            "10", "0")
+
+
+def test_place_about_point_bad_expression_raises_project_error(qtbot):
+    panel, project, _view = make_panel(qtbot)
+    with pytest.raises(ProjectError):
+        project.place_about_point(
+            "Lens", {"kind": "origin"}, {"kind": "global", "axis": "z"},
+            "not_a_var", "0")
+
+
+# -- polar place-about-point PANE wiring -------------------------------------
+def test_polar_group_applies_via_panel(qtbot):
+    panel, project, _view = make_panel(qtbot)
+    panel.set_body("Lens")
+    idx = panel.polar_ref.kind.findText("Fixed point…")
+    panel.polar_ref.kind.setCurrentIndex(idx)
+    panel.polar_ref.point.setText("0, 0, 0")
+    panel.polar_axis.setCurrentIndex(2)   # Global Z
+    panel.polar_r.setText("40")
+    panel.polar_theta.setText("90")
+    panel.polar_aim.setChecked(False)
+    panel.polar_apply_btn.click()
+    pos = project.current_placement("Lens").pos
+    assert abs(np.linalg.norm(pos) - 40.0) < 1e-9
+    assert abs(pos[2]) < 1e-9
+    assert "place about point" in panel.history.item(
+        panel.history.count() - 1).text()
+
+
+def test_polar_group_eval_labels_update(qtbot):
+    panel, project, _view = make_panel(qtbot)
+    panel.polar_r.setText("40")
+    panel.polar_theta.setText("90")
+    assert "40" in panel.polar_r_eval.text()
+    assert "90" in panel.polar_theta_eval.text()
+    panel.polar_r.setText("not_a_var")
+    assert "unresolved" in panel.polar_r_eval.text()
+
+
+def test_polar_group_no_selection_shows_message(qtbot, monkeypatch):
+    panel, project, _view = make_panel(qtbot)
+    warned = []
+    monkeypatch.setattr(
+        "mieworkbench.panes.transform_panel.QMessageBox.information",
+        lambda *a, **k: warned.append(a))
+    panel.body_name = None
+    panel.polar_apply_btn.click()
+    assert warned
+
+
+def test_polar_group_custom_axis_vector(qtbot):
+    panel, project, _view = make_panel(qtbot)
+    panel.set_body("Lens")
+    panel.polar_ref.kind.setCurrentIndex(
+        panel.polar_ref.kind.findText("Fixed point…"))
+    panel.polar_ref.point.setText("0, 0, 0")
+    panel.polar_axis.setCurrentIndex(3)   # Custom vector
+    panel.polar_axis_vec.setText("0, 0, 1")
+    panel.polar_r.setText("10")
+    panel.polar_theta.setText("0")
+    panel.polar_aim.setChecked(False)
+    panel.polar_apply_btn.click()
+    pos = project.current_placement("Lens").pos
+    assert abs(np.linalg.norm(pos) - 10.0) < 1e-9
+    assert abs(pos[2]) < 1e-9

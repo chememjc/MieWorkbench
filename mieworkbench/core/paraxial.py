@@ -112,21 +112,45 @@ def thin(power):
     return (1.0, 0.0, -power, 1.0)
 
 
+# |EFL| beyond this is reported as afocal (angular magnification) rather
+# than a meaninglessly huge focal length (UXNOTES_ROUND3 #29 / future.md
+# (a2) "near-afocal EFL suppression") — 100 m is an arbitrary but
+# defensible bound: no cataloged element/system in this library has a
+# legitimate design EFL anywhere near it, while a train that is merely
+# very slightly off collimation (typical of a beam-expander pair a hair
+# off its exact spacing) easily produces C ~ 1e-6 /mm and a formally
+# "finite" EFL of kilometers.
+NEAR_AFOCAL_EFL_MM = 1.0e5
+
+
 def cardinals_from_matrix(M, thickness_mm):
-    """EFL/BFL/FFL/principal planes from an entry->exit element matrix."""
+    """EFL/BFL/FFL/principal planes from an entry->exit element matrix.
+
+    When the system power |C| is at or below NEAR_AFOCAL_EFL_MM's
+    reciprocal (|EFL| > NEAR_AFOCAL_EFL_MM), `afocal` is set True and
+    `angular_magnification` is populated with D (the ABCD matrix's D
+    element): for an EXACTLY afocal system (C == 0 identically) the
+    output reduced angle omega' = D * omega for every ray regardless of
+    height, so D IS the (height-independent) angular magnification; near
+    collimation it is reported as an approximation of the same quantity.
+    """
     a, b, c, d = M
     if abs(c) < 1e-15:
         return {"efl": math.inf, "bfl": math.inf, "ffl": math.inf,
                 "pp1_mm": 0.0, "pp2_mm": 0.0, "afocal": True,
-                "thickness_mm": thickness_mm}
+                "angular_magnification": d, "thickness_mm": thickness_mm}
     efl = -1.0 / c
     bfl = -a / c
     ffl = d / c
-    return {"efl": efl, "bfl": bfl, "ffl": ffl,
-            # principal-plane offsets: H1 from entry vertex (+ = downstream),
-            # H2 from exit vertex (+ = downstream)
-            "pp1_mm": ffl + efl, "pp2_mm": bfl - efl,
-            "afocal": False, "thickness_mm": thickness_mm}
+    afocal = abs(efl) > NEAR_AFOCAL_EFL_MM
+    out = {"efl": efl, "bfl": bfl, "ffl": ffl,
+           # principal-plane offsets: H1 from entry vertex (+ = downstream),
+           # H2 from exit vertex (+ = downstream)
+           "pp1_mm": ffl + efl, "pp2_mm": bfl - efl,
+           "afocal": afocal, "thickness_mm": thickness_mm}
+    if afocal:
+        out["angular_magnification"] = d
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +435,8 @@ def system_summary(train_model, variables=None, index_fn=None, lam_nm=None,
     out = {"efl": None, "bfl": None, "image_distance_mm": None,
            "magnification": None, "fno_working": None, "na": None,
            "limiting_element": None, "lambda_nm": lam_nm,
-           "n_optical_elements": 0, "warnings": warnings, "path": path}
+           "n_optical_elements": 0, "warnings": warnings, "path": path,
+           "afocal": False, "angular_magnification": None}
     if not path:
         return out
 
@@ -473,6 +498,8 @@ def system_summary(train_model, variables=None, index_fn=None, lam_nm=None,
     card = cardinals_from_matrix(M_sys, None)
     out["efl"] = card["efl"]
     out["bfl"] = card["bfl"]
+    out["afocal"] = card["afocal"]
+    out["angular_magnification"] = card.get("angular_magnification")
 
     # ---- image distance + magnification for the given object ------------
     # object_distance_mm is measured to the FIRST element's entry vertex;

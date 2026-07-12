@@ -337,3 +337,109 @@ def test_snap_to_axis_noop_when_already_on_axis():
     ops = snap_to_axis_ops(b, np.array([0.0, 0.0, 0.0]),
                            np.array([0.0, 1.0, 0.0]))
     assert ops == []
+
+
+# ---------------------------------------------------------------------------
+# polar/spherical place-about-point (future.md (a2), P10 item 8)
+# ---------------------------------------------------------------------------
+from mieworkbench.core.transforms import (  # noqa: E402
+    perp_basis, place_about_ops, polar_point,
+)
+
+
+def test_perp_basis_is_orthonormal_and_right_handed():
+    for axis in ([1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1], [0.9, 0.1, 0]):
+        a = np.asarray(axis, float)
+        a = a / np.linalg.norm(a)
+        u, v = perp_basis(a)
+        approx(np.dot(u, u), 1.0)
+        approx(np.dot(v, v), 1.0)
+        approx(np.dot(u, a), 0.0)
+        approx(np.dot(v, a), 0.0)
+        approx(np.cross(u, v), a)
+
+
+def test_polar_point_on_circle_in_perpendicular_plane():
+    pivot = np.array([1.0, 2.0, 3.0])
+    axis = np.array([0.0, 0.0, 1.0])   # z axis: circle lies in the XY plane
+    for theta in (0.0, 90.0, 180.0, 270.0, 37.0):
+        p = polar_point(pivot, axis, 5.0, theta)
+        # radius preserved and stays in the plane through pivot perp to axis
+        approx(np.linalg.norm(p - pivot), 5.0)
+        approx(np.dot(p - pivot, axis), 0.0)
+    # 90 deg apart points are perpendicular from the pivot
+    p0 = polar_point(pivot, axis, 5.0, 0.0)
+    p90 = polar_point(pivot, axis, 5.0, 90.0)
+    approx(np.dot(p0 - pivot, p90 - pivot), 0.0)
+    # 180 deg is diametrically opposite
+    p180 = polar_point(pivot, axis, 5.0, 180.0)
+    approx(p180 - pivot, -(p0 - pivot))
+
+
+def test_polar_point_rejects_zero_axis():
+    with pytest.raises(ValueError):
+        polar_point([0, 0, 0], [0, 0, 0], 5.0, 0.0)
+
+
+def test_place_about_ops_positions_on_circle():
+    """Nephelometer-ring scenario: a detector placed 40 mm at 90 deg from
+    a fixed point, about the world Z axis."""
+    b = _axis_body(normal=(1, 0, 0), center=(0, 0, 0), pos=(5, 5, 5))
+    res = ReferenceResolver({"b": b})
+    ref_spec = {"kind": "fixed", "point_mm": [0.0, 0.0, 0.0]}
+    axis_spec = {"kind": "global", "axis": "z"}
+    ops = place_about_ops(b, res, ref_spec, axis_spec, 40.0, 90.0,
+                          aim_at_ref=False)
+    assert len(ops) == 1 and ops[0].kind == "set_placement"
+    for op in ops:
+        op.apply(res, b)
+    approx(np.linalg.norm(b.current.pos), 40.0)
+    approx(b.current.pos[2], 0.0)          # stays in the XY plane (axis=z)
+    # theta=90 lands on the basis's v vector (u,v from perp_basis(z))
+    u, v = perp_basis(np.array([0.0, 0.0, 1.0]))
+    approx(b.current.pos, 40.0 * v)
+
+
+def test_place_about_ops_aim_at_ref_faces_the_pivot():
+    b = _axis_body(normal=(1, 0, 0), center=(0, 0, 0), pos=(5, 5, 5))
+    res = ReferenceResolver({"b": b})
+    ref_spec = {"kind": "fixed", "point_mm": [0.0, 0.0, 0.0]}
+    axis_spec = {"kind": "global", "axis": "z"}
+    ops = place_about_ops(b, res, ref_spec, axis_spec, 40.0, 90.0,
+                          aim_at_ref=True)
+    for op in ops:
+        op.apply(res, b)
+    # the body's optical axis must now point from its new position back
+    # toward the pivot (the origin)
+    approx(b.optical_axis_world(),
+          -b.current.pos / np.linalg.norm(b.current.pos))
+
+
+def test_place_about_ops_no_aim_keeps_orientation():
+    b = _axis_body(normal=(1, 0, 0), center=(0, 0, 0), pos=(5, 5, 5))
+    q0 = b.current.quat.copy()
+    res = ReferenceResolver({"b": b})
+    ops = place_about_ops(b, res, {"kind": "origin"},
+                          {"kind": "global", "axis": "x"}, 10.0, 45.0,
+                          aim_at_ref=False)
+    for op in ops:
+        op.apply(res, b)
+    approx(b.current.quat, q0)
+
+
+def test_place_about_ops_axis_from_element():
+    """axis_spec can reference an element's own optical/face-normal axis
+    (a pivot ring perpendicular to some OTHER element's beam), not just a
+    global axis."""
+    pivot_body = _axis_body(normal=(0, 0, 1), center=(0, 0, 0), pos=(1, 2, 3))
+    b = _axis_body(normal=(1, 0, 0), center=(0, 0, 0), pos=(9, 9, 9))
+    res = ReferenceResolver({"b": b, "pivot": pivot_body})
+    ops = place_about_ops(
+        b, res, {"kind": "com", "body": "pivot"},
+        {"kind": "optical_axis", "body": "pivot"}, 20.0, 0.0,
+        aim_at_ref=False)
+    for op in ops:
+        op.apply(res, b)
+    approx(np.dot(b.current.pos - pivot_body.com_world(),
+                  pivot_body.optical_axis_world()), 0.0)
+    approx(np.linalg.norm(b.current.pos - pivot_body.com_world()), 20.0)

@@ -403,9 +403,18 @@ def parse_particles_spec(spec):
     """'box=x0,y0,z0:dx,dy,dz;material=water;phi=1e-4;median_um=10;gsd=1.6'
 
     box is corner:size in mm (project CAD units).  Returns SI (m) box.
+
+    'phi' (mass fraction) and 'tau' (target Beer-Lambert optical depth
+    along the box's along-beam length, box_size dx) are mutually
+    exclusive — supply one. 'tau' is only PARSED here (this module is
+    pure stdlib by contract); it is resolved to a phi by the Mie ensemble
+    in raytracer.particles.ParticleCloud (needs the material's Qext,
+    which needs numpy/scipy), and the resolved value + the tau it came
+    from are echoed back via ParticleCloud.diagnostics()['tau_resolved']
+    (hence into case.json).
     """
     out = {"box_corner_m": None, "box_size_m": None, "material": None,
-           "phi": None, "median_um": None, "gsd": 1.6}
+           "phi": None, "tau": None, "median_um": None, "gsd": 1.6}
     for kv in spec.strip().split(";"):
         if not kv:
             continue
@@ -425,6 +434,8 @@ def parse_particles_spec(spec):
             out["material"] = v
         elif k == "phi":
             out["phi"] = float(v)
+        elif k == "tau":
+            out["tau"] = float(v)
         elif k == "median_um":
             out["median_um"] = float(v)
         elif k == "gsd":
@@ -433,11 +444,21 @@ def parse_particles_spec(spec):
             out["seed"] = int(v)
         else:
             raise ValueError("unknown particles field %r in %r" % (k, spec))
-    missing = [k for k in ("material", "phi", "median_um") if out[k] is None]
+    missing = [k for k in ("material", "median_um") if out[k] is None]
     if missing:
         raise ValueError("particles spec %r missing %s" % (spec, missing))
-    if not (0 < out["phi"] < 1):
+    if out["phi"] is None and out["tau"] is None:
+        raise ValueError("particles spec %r missing ['phi (or tau)']" % spec)
+    if out["phi"] is not None and out["tau"] is not None:
+        raise ValueError(
+            "particles spec %r: 'phi' and 'tau' are mutually exclusive "
+            "(phi=%r, tau=%r) — pick one: an explicit mass fraction, or a "
+            "target optical depth to solve phi for"
+            % (spec, out["phi"], out["tau"]))
+    if out["phi"] is not None and not (0 < out["phi"] < 1):
         raise ValueError("particles phi (mass fraction) must be in (0,1)")
+    if out["tau"] is not None and not out["tau"] > 0:
+        raise ValueError("particles tau (target optical depth) must be > 0")
     if out["gsd"] < 1.0:
         raise ValueError("particles gsd (geometric std dev) must be >= 1")
     # default box: 10x20x20 mm centered on the x-axis just before the origin
@@ -1209,6 +1230,20 @@ def _selfcheck():
     check("particles default box",
           abs(p["box_size_m"][0] - 0.010) < 1e-12
           and abs(p["box_size_m"][1] - 0.020) < 1e-12)
+    pt = parse_particles_spec("material=water;tau=1.0;median_um=10")
+    check("particles tau parses, phi left unresolved",
+          pt["tau"] == 1.0 and pt["phi"] is None)
+    try:
+        parse_particles_spec(
+            "material=water;phi=1e-4;tau=1.0;median_um=10")
+        check("reject phi+tau together", False)
+    except ValueError:
+        check("reject phi+tau together", True)
+    try:
+        parse_particles_spec("material=water;median_um=10")
+        check("reject neither phi nor tau", False)
+    except ValueError:
+        check("reject neither phi nor tau", True)
     for bad in ("Body.Face2", "Body..Face2", "Body.Pad.Face"):
         try:
             parse_face_spec(bad)

@@ -65,7 +65,7 @@ from .panes.scene3d import Scene3DPane
 from .panes.train_editor import TrainEditorPane
 from .panes.transform_panel import TransformPanel
 from .panes.element_wizard import TypeChooserDialog
-from .panes.wizard_dialog import ElementWizardDialog
+from .panes.wizard_dialog import ElementWizardDialog, ZoomPairDialog
 
 try:
     # a parallel round authors this pane; the optical-train wiring degrades
@@ -453,6 +453,12 @@ class MainWindow(QMainWindow):
         act.setToolTip("Launch interactive ParaView on the loaded case's "
                        ".vtp data")
         act.triggered.connect(self.results._open_paraview)
+
+        act = tools_menu.addAction("&Zoom-pair Calculator…")
+        act.setToolTip("Two-group zoom relationship: BFL(z)/EFL(z)/total "
+                       "track for a front+rear focal-length pair, with a "
+                       "copyable train-grammar expression string")
+        act.triggered.connect(self._open_zoom_pair_calculator)
 
         view_menu = menubar.addMenu("&View")
         dock_toggles = [self.outliner_dock, self.train_editor_dock,
@@ -1689,6 +1695,15 @@ class MainWindow(QMainWindow):
                 category, which_library or "system")
         self._prop_editor_window.show()
         self._prop_editor_window.raise_()
+
+    def _open_zoom_pair_calculator(self):
+        # non-modal like the prop editor; a fresh instance each time is
+        # cheap (no state to preserve) and avoids a stale singleton
+        # holding onto a closed C++ widget.
+        dlg = ZoomPairDialog(self)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.show()
+        dlg.raise_()
 
     # -- runner wiring -----------------------------------------------------------
     def _wire_runner(self):

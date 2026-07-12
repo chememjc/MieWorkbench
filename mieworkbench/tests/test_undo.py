@@ -342,9 +342,12 @@ def test_undo_torture_real_worker(tmp_path):
         project.set_element_parameters(
             "dim_L1", {"ct": "=6 mm"}, rebuild_group="L1")
         project.end_macro()
-        # move, edit, duplicate, delete
+        # move, place-about-point (polar), edit, duplicate, delete
         project.apply_operation(
             "L1", Operation("translate", {"vector_mm": [0, 10, 0]}))
+        project.place_about_point(
+            "L1", {"kind": "origin"}, {"kind": "global", "axis": "z"},
+            "50", "30", aim_at_ref=True)
         project.set_property("L1", "roughness", "25")
         project.duplicate_element("L1", "L2")
         project.delete_element("L2")

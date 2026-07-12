@@ -34,6 +34,12 @@ import re
 from . import paraxial, wizards
 import train_solver  # noqa: E402  (scripts/ on sys.path via paraxial)
 
+# "span N Airy zeros" detector-sizing entries: N * 1.22 * lambda *
+# image_distance / aperture_diameter, offered for these N (a coarse
+# linear-in-N scaling of the first Airy null radius, not the exact
+# non-uniformly-spaced zero positions of the Airy pattern).
+AIRY_ZERO_COUNTS = (2, 4, 8)
+
 # which optical-value kind fits each train edge field
 FIELD_KIND = {
     "distance": "length",
@@ -151,10 +157,25 @@ def value_menu_model(train_model, element, field, variables=None,
     if kind == "length" and ref:
         c_ref = _card(ref)
         if c_ref:
+            # UXNOTES_ROUND3 #28: for a NEGATIVE rear group (diverging
+            # element, BFL < 0) "distance to its focus" reads like a
+            # forward placement distance, but the value is actually
+            # negative — the focus is a VIRTUAL one upstream of the exit
+            # vertex, and chaining the next element "at" that distance
+            # doesn't track the real image (use "Paraxial image distance
+            # after X" / "System BFL" for that). Make the sign explicit
+            # instead of implying a placement distance.
+            if c_ref["bfl"] < 0:
+                bfl_label = ("BFL of %s (%s mm — NEGATIVE: a virtual "
+                            "focus upstream of %s's exit vertex, not a "
+                            "forward placement distance)"
+                            % (ref, _fmt(c_ref["bfl"]), ref))
+            else:
+                bfl_label = ("BFL of %s — distance to its focus (%s mm)"
+                            % (ref, _fmt(c_ref["bfl"])))
             entries.append({
                 "group": "Previous element (%s)" % ref,
-                "label": "BFL of %s — distance to its focus (%s mm)"
-                         % (ref, _fmt(c_ref["bfl"])),
+                "label": bfl_label,
                 "value": c_ref["bfl"], "kind": "length",
                 "suggest_var": _var_name("bfl", ref), "expr": None})
             entries.append({
@@ -195,7 +216,7 @@ def value_menu_model(train_model, element, field, variables=None,
                                     lam_nm)
     except Exception:
         s = None
-    if s and s.get("n_optical_elements"):
+    if s and s.get("n_optical_elements") and not s.get("afocal"):
         if kind == "length":
             for key, label, prefix in (
                     ("efl", "System EFL", "sys_efl"),
@@ -209,6 +230,28 @@ def value_menu_model(train_model, element, field, variables=None,
                         "label": "%s (%s mm)" % (label, _fmt(v)),
                         "value": v, "kind": "length",
                         "suggest_var": prefix, "expr": None})
+
+            # ---- diffraction-scale detector sizing: "span N Airy zeros"
+            # (future.md (a2) / UXNOTES_ROUND3 #17). Needs the same
+            # limiting-aperture stop search system_summary already ran,
+            # plus a finite image distance — both already computed above,
+            # so this only ever appears when they resolve.
+            img_mm = s.get("image_distance_mm")
+            lim = s.get("limiting_element")
+            ap_mm = (paraxial.element_aperture_mm(train_model, lim)
+                    if lim else None)
+            if ap_mm and ap_mm > 0 and img_mm is not None \
+                    and math.isfinite(img_mm):
+                lam_mm = lam_nm * 1e-6
+                for n in AIRY_ZERO_COUNTS:
+                    r = n * 1.22 * lam_mm * img_mm / ap_mm
+                    entries.append({
+                        "group": "System",
+                        "label": "Span %d Airy zeros @ %.0f nm, stop %s "
+                                 "(%s mm radius)"
+                                 % (n, lam_nm, lim, _fmt(r)),
+                        "value": r, "kind": "length",
+                        "suggest_var": "airy_%d" % n, "expr": None})
 
     # ---- grating / prism angles (angle fields) ----------------------------
     if kind == "angle" and ref:

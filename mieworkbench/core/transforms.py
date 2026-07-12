@@ -551,6 +551,81 @@ def snap_to_axis_ops(body_state, target_point, target_axis,
     return ops
 
 
+def perp_basis(axis):
+    """Two unit vectors (u, v) spanning the plane perpendicular to unit
+    `axis`, right-handed (u x v == axis). `u` is picked from a stable
+    reference (global X, or Y if axis is too close to X) so it varies
+    continuously with axis except at the one unavoidable pole."""
+    axis = np.asarray(axis, dtype=float)
+    ref = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 \
+        else np.array([0.0, 1.0, 0.0])
+    u = np.cross(axis, ref)
+    nu = np.linalg.norm(u)
+    if nu < _EPS:
+        raise ValueError("degenerate perpendicular basis for axis %r"
+                         % (axis,))
+    u = u / nu
+    v = np.cross(axis, u)
+    return u, v
+
+
+def polar_point(pivot, axis, r_mm, theta_deg):
+    """World point at radius `r_mm` from `pivot`, angle `theta_deg`
+    (right-hand rule about unit `axis`, measured from perp_basis's
+    stable u vector), in the plane through `pivot` perpendicular to
+    `axis`."""
+    pivot = np.asarray(pivot, dtype=float)
+    axis = np.asarray(axis, dtype=float)
+    n = np.linalg.norm(axis)
+    if n < _EPS:
+        raise ValueError("zero axis")
+    u, v = perp_basis(axis / n)
+    t = np.radians(float(theta_deg))
+    return pivot + float(r_mm) * (np.cos(t) * u + np.sin(t) * v)
+
+
+def place_about_ops(body_state, resolver, ref_spec, axis_spec, r_mm,
+                    theta_deg, aim_at_ref=True, keep_hemisphere=True):
+    """Polar/spherical place-about-point (future.md (a2): "a polar/
+    spherical place-about-point operation in core/transforms.py" — the
+    nephelometer-ring / field-angle-fan affordance: "detector 40 mm at
+    90 deg from the cloud center"). Places `body_state` at world point
+    polar_point(pivot, axis, r_mm, theta_deg), where pivot/axis resolve
+    through `resolver` (element/face/world point; world/element/face-
+    normal axis). When `aim_at_ref`, the body is also rotated (about its
+    OWN current orientation — a pure rotation, so this composes with the
+    translate below in either order) so its optical axis points from the
+    new position back toward the pivot; bodies with no usable optical
+    axis (BodyState.optical_axis_world() -> None) keep their current
+    orientation.
+
+    r_mm/theta_deg are plain floats here (pure numpy module, no FreeCAD/
+    train_solver dependency) — expression-grammar evaluation over
+    miewb_vars happens one layer up, in Project.place_about_point.
+
+    Returns a single-element Operation list (`set_placement` is
+    absolute, so no composition with the current pose is needed at
+    apply time — unlike snap_to_axis_ops's relative rotate+translate
+    pair)."""
+    pivot = resolver.resolve_point(ref_spec)
+    axis = resolver.resolve_axis(axis_spec)
+    pos = polar_point(pivot, axis, r_mm, theta_deg)
+    quat = np.array(body_state.current.quat, dtype=float)
+    if aim_at_ref:
+        src_axis = body_state.optical_axis_world()
+        if src_axis is not None:
+            aim_dir = np.asarray(pivot, dtype=float) - pos
+            n = np.linalg.norm(aim_dir)
+            if n > _EPS:
+                q_delta = align_rotation(src_axis, aim_dir / n,
+                                         keep_hemisphere=keep_hemisphere)
+                quat = matrix_to_quat(
+                    quat_to_matrix(q_delta) @ quat_to_matrix(quat))
+    return [Operation("set_placement",
+                      {"pos_mm": [float(v) for v in pos],
+                       "quat": [float(v) for v in quat]})]
+
+
 def element_bounds(bodies, body_states, names):
     """World AABB (mm) of the named bodies as ([xmin,ymin,zmin],
     [xmax,ymax,zmax]), or None if nothing had a bbox.

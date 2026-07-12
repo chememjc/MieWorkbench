@@ -86,12 +86,59 @@ def _sample_phi_polarized(pa, pb, pc, rng, ngrid=256):
     return edges[k] + frac * dphi
 
 
+def resolve_tau_phi(tau, box_length_m, evaluator, dist, rho_p, rho_h,
+                    lam_list, n_quad=48):
+    """Solve the particle mass fraction phi that gives a target ballistic
+    (Beer-Lambert) optical depth `tau` along a box of length
+    `box_length_m`, evaluated at the mean of `lam_list`.
+
+    EnsembleTables defines mu_ext(lambda) = N * Int pi r^2 Qext(r) p(r) dr
+    with N = f_v / dist.mean_volume() (see `number_density`) — i.e.
+    mu_ext is EXACTLY linear in the volume fraction f_v (the quadrature
+    integral K = Int pi r^2 Qext p dr doesn't depend on any assumed
+    phi/N at all). That makes
+        mu_ext_per_funit = K / mean_volume
+    a single per-ensemble constant, so f_v_target = tau / (box_length_m *
+    mu_ext_per_funit) is exact, not a small-phi linearization. What IS
+    nonlinear is the mass-fraction -> volume-fraction map
+        f_v = (phi/rho_p) / (phi/rho_p + (1-phi)/rho_h)
+    (number_density's formula); inverting it in closed form then gives
+    phi exactly for the target f_v, with no iterative root-find needed.
+    """
+    if box_length_m <= 0:
+        raise ValueError("particles tau resolution needs a box length > 0 "
+                         "(got %.3g m)" % box_length_m)
+    lam_ref = float(np.mean(np.asarray(list(lam_list), dtype=float)))
+    radii, weights = dist.quadrature(n_quad)
+    qext, _, _ = evaluator.efficiencies(radii, np.full_like(radii, lam_ref))
+    K = float(np.sum(np.pi * radii ** 2 * qext * weights))
+    mean_vol = dist.mean_volume()
+    mu_ext_per_funit = K / mean_vol if mean_vol > 0 else 0.0
+    if mu_ext_per_funit <= 0:
+        raise ValueError("particles tau resolution: degenerate ensemble "
+                         "(zero extinction) at %.1f nm" % (lam_ref * 1e9))
+    f_v = tau / (box_length_m * mu_ext_per_funit)
+    if not (0.0 < f_v < 1.0):
+        raise ValueError(
+            "particles tau=%.4g is not achievable in a %.4g mm box (would "
+            "need volume fraction %.3g, must be in (0,1)) — shrink the "
+            "box, raise the particle density, or lower tau"
+            % (tau, box_length_m * 1e3, f_v))
+    a, b = 1.0 / rho_p, 1.0 / rho_h
+    phi = (f_v * b) / (a * (1.0 - f_v) + f_v * b)
+    return phi, {"tau_target": tau, "mu_ext_target_per_m": tau / box_length_m,
+                "volume_fraction": f_v, "lambda_ref_nm": lam_ref * 1e9,
+                "box_length_mm": box_length_m * 1e3}
+
+
 class ParticleCloud:
     """Facade: builds the right mode from a parsed --particles spec."""
 
     def __init__(self, spec, scene, threshold=1e6, seed=0,
                  lam_list=(633e-9,), pol_scatter=True):
-        self.spec = spec
+        # local copy: a tau= spec gets its resolved phi filled in below,
+        # without mutating the caller's dict.
+        self.spec = spec = dict(spec)
         # explicit-mode azimuth: True samples phi from the polarized Mie
         # differential cross-section; False = legacy uniform azimuth. The
         # lead wires this to the --pol-scatter CLI flag.
@@ -106,6 +153,21 @@ class ParticleCloud:
         rho_p = mat_p.density
         rho_h = scene.ambient.density if scene.ambient.density > 0 else 1.204
         self.evaluator = MieEvaluator(mat_p, scene.ambient)
+        self.tau_resolved = None
+        if spec.get("phi") is None:
+            tau = spec.get("tau")
+            if tau is None:
+                raise ValueError(
+                    "particles spec has neither 'phi' nor 'tau' — nothing "
+                    "to solve a number density from")
+            # along-beam box length is the FIRST box dimension (the
+            # default/documented box convention: dx is the through-beam
+            # thickness, dy/dz are the cross-section).
+            box_length_m = float(spec["box_size_m"][0])
+            phi, info = resolve_tau_phi(tau, box_length_m, self.evaluator,
+                                        self.dist, rho_p, rho_h, lam_list)
+            spec["phi"] = phi
+            self.tau_resolved = info
         self.N, self.f_v = number_density(spec["phi"], rho_p, rho_h,
                                           self.dist)
         self.count = self.N * self.box_volume
@@ -139,7 +201,11 @@ class ParticleCloud:
             "box_hi_mm": (self.hi / 1e-3).tolist(),
             "median_diameter_um": self.spec["median_um"],
             "gsd": self.spec["gsd"],
+            "phi": self.spec["phi"],
         })
+        if self.tau_resolved is not None:
+            d["tau_resolved"] = dict(self.tau_resolved, resolved_phi=
+                                     self.spec["phi"])
         return d
 
     # ------------------------------------------------------------------

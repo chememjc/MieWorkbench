@@ -175,6 +175,9 @@ class TransformPanel(QWidget):
         # -- snap to optical axis -------------------------------------------
         lay.addWidget(self._build_snap_group())
 
+        # -- place about point (polar/spherical) -----------------------------
+        lay.addWidget(self._build_polar_group())
+
         # -- translate (collapsed nudge tools; the Position section above
         # is the primary surface) --------------------------------------------
         tg = QGroupBox("Nudge (world frame)")
@@ -844,6 +847,123 @@ class TransformPanel(QWidget):
         gl.addWidget(self.snap_status, 3, 0, 1, 3)
         return g
 
+    # -- place about point (polar/spherical) ------------------------------------
+    def _build_polar_group(self):
+        """The nephelometer-ring / field-angle-fan affordance (future.md
+        (a2)): place the selected element on a circle of radius r about a
+        reference point, in the plane perpendicular to an axis, at angle
+        theta — r and theta accept the train_solver expression grammar
+        over the live miewb_vars (same "expr (= value)" convention as the
+        Train editor's chain edge cells)."""
+        g = QGroupBox("Place about point (polar)")
+        gl = QGridLayout(g)
+        self.polar_ref = ReferencePointPicker("About:")
+        gl.addWidget(self.polar_ref, 0, 0, 1, 4)
+
+        gl.addWidget(QLabel("Axis"), 1, 0)
+        self.polar_axis = QComboBox()
+        for label in ("Global X", "Global Y", "Global Z",
+                      "Custom vector…", "Pivot element's optical axis"):
+            self.polar_axis.addItem(label)
+        self.polar_axis.setToolTip(
+            "Axis perpendicular to the placement circle")
+        gl.addWidget(self.polar_axis, 1, 1)
+        self.polar_axis_vec = QLineEdit("0, 0, 1")
+        self.polar_axis_vec.setToolTip("Custom axis vector x, y, z")
+        self.polar_axis_vec.setEnabled(False)
+        gl.addWidget(self.polar_axis_vec, 1, 2, 1, 2)
+        self.polar_axis.currentIndexChanged.connect(
+            lambda i: self.polar_axis_vec.setEnabled(i == 3))
+
+        gl.addWidget(QLabel("r"), 2, 0)
+        self.polar_r = QLineEdit("10")
+        self.polar_r.setToolTip("Radius, mm. %s" % train_solver.EXPR_HELP)
+        self.polar_r.textChanged.connect(self._update_polar_eval)
+        gl.addWidget(self.polar_r, 2, 1)
+        self.polar_r_eval = QLabel("")
+        self.polar_r_eval.setStyleSheet("color: gray;")
+        gl.addWidget(self.polar_r_eval, 2, 2, 1, 2)
+
+        gl.addWidget(QLabel("θ"), 3, 0)
+        self.polar_theta = QLineEdit("0")
+        self.polar_theta.setToolTip(
+            "Angle about the axis, degrees (right-hand rule). %s"
+            % train_solver.EXPR_HELP)
+        self.polar_theta.textChanged.connect(self._update_polar_eval)
+        gl.addWidget(self.polar_theta, 3, 1)
+        self.polar_theta_eval = QLabel("")
+        self.polar_theta_eval.setStyleSheet("color: gray;")
+        gl.addWidget(self.polar_theta_eval, 3, 2, 1, 2)
+
+        self.polar_aim = QCheckBox("Aim at pivot")
+        self.polar_aim.setChecked(True)
+        self.polar_aim.setToolTip(
+            "Also rotate the element so its optical axis points from the "
+            "new position back toward the pivot")
+        gl.addWidget(self.polar_aim, 4, 0, 1, 2)
+        self.polar_apply_btn = QPushButton("Apply")
+        self.polar_apply_btn.setToolTip(
+            "Place the selected element on the circle (one undo entry)")
+        self.polar_apply_btn.clicked.connect(self._apply_polar_place)
+        gl.addWidget(self.polar_apply_btn, 4, 2, 1, 2)
+        self.polar_status = QLabel("")
+        self.polar_status.setStyleSheet("color: gray;")
+        self.polar_status.setWordWrap(True)
+        gl.addWidget(self.polar_status, 5, 0, 1, 4)
+        return g
+
+    def _polar_axis_spec(self):
+        i = self.polar_axis.currentIndex()
+        if i < 3:
+            return {"kind": "global", "axis": "xyz"[i]}
+        if i == 3:
+            vec = [float(v) for v in self.polar_axis_vec.text().split(",")]
+            if len(vec) != 3:
+                raise ValueError("axis vector needs 3 components")
+            return {"kind": "vector", "vector": vec}
+        body = self.polar_ref.body.currentData()
+        if not body:
+            raise ValueError(
+                "the pivot reference has no element to take an optical "
+                "axis from — pick an element-based reference kind above, "
+                "or use Global/Custom axis instead")
+        return {"kind": "optical_axis", "body": body}
+
+    def _update_polar_eval(self):
+        variables = self.project.train_variables() if self.project else {}
+        for edit, label, unit in ((self.polar_r, self.polar_r_eval, "mm"),
+                                  (self.polar_theta, self.polar_theta_eval,
+                                   "deg")):
+            try:
+                v = train_solver.eval_expr(edit.text(), variables)
+                label.setText("(= %.4g %s)" % (v, unit))
+            except train_solver.TrainError:
+                label.setText("(unresolved)")
+
+    def _apply_polar_place(self):
+        if self.project is None or not self.body_name:
+            QMessageBox.information(self, "MieWorkbench",
+                                    "Select an element first.")
+            return
+        try:
+            axis_spec = self._polar_axis_spec()
+            ops = self.project.place_about_point(
+                self.body_name, self.polar_ref.spec(), axis_spec,
+                self.polar_r.text(), self.polar_theta.text(),
+                aim_at_ref=self.polar_aim.isChecked())
+        except Exception as exc:
+            # isVisible() guard (UI_TESTING doctrine): a modal in this
+            # path hangs offscreen test runs
+            if self.isVisible():
+                QMessageBox.warning(self, "MieWorkbench", str(exc))
+            else:
+                self.polar_status.setText("Place failed: %s" % exc)
+            return
+        if ops:
+            self.history.addItem("%s: place about point" % self.body_name)
+            self.history.scrollToBottom()
+        self.polar_status.setText("Placed.")
+
     def _along_axis_t(self, point=None):
         """The selected element's optical-center coordinate along the
         armed snap axis (signed mm from the reference point), or None."""
@@ -1000,8 +1120,10 @@ class TransformPanel(QWidget):
         self.project = project
         self.toward.set_project(project)
         self.about.set_project(project)
+        self.polar_ref.set_project(project)
         project.sceneLoaded.connect(self.toward.notify_scene_changed)
         project.sceneLoaded.connect(self.about.notify_scene_changed)
+        project.sceneLoaded.connect(self.polar_ref.notify_scene_changed)
         project.sceneLoaded.connect(
             lambda: (self._refresh_ref_combo(), self._refresh_absolute(),
                      self._refresh_positioning()))
@@ -1013,6 +1135,7 @@ class TransformPanel(QWidget):
                         self._refresh_snap_position()))
         self._refresh_ref_combo()
         self._refresh_positioning()
+        self._update_polar_eval()
 
     def set_body(self, body_name):
         # armed reference pick: the NEXT selection (outliner or 3D click,

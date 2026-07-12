@@ -36,6 +36,14 @@ def good_structure():
     ]}
 
 
+def sheet(element_label, aliases):
+    """A structure['sheets'] entry for element_label's dim sheet ('dim_X'),
+    aliases: {alias: value}."""
+    return {"name": "dim_%s" % element_label, "label": "dim_%s" % element_label,
+           "aliases": {k: {"cell": "A1", "raw": str(v), "value": v,
+                          "unit": "mm"} for k, v in aliases.items()}}
+
+
 def run(structure, config=None, optprops=OPTPROPS):
     return validation.Validator(structure, optprops, config).validate()
 
@@ -276,6 +284,49 @@ def test_sampling_gate_warning():
                            "min_eff_samples": 1000})
     warns = messages(findings, validation.WARNING)
     assert any("below the gather gate" in m for m in warns)
+
+
+def test_gather_preflight_warns_on_clipped_aperture():
+    """A Ø6 mm coherent beam through a Ø0.2 mm pinhole (the UXNOTES_ROUND3
+    #18 example) at 'quick' ray budgets must warn ahead of a failed
+    trace, naming the ray multiplier needed."""
+    s = good_structure()
+    s["bodies"][0]["properties"]["diameter"] = {
+        "type": "t", "group": "Base", "value": 6.0}
+    s["bodies"][1]["properties"]["miewb_primitive"] = {
+        "type": "t", "group": "Base", "value": "pinhole"}
+    s["sheets"] = [sheet("Lens", {"hole_diameter": 0.2}),
+                  sheet("Laser", {"diameter": 6.0})]
+    findings = run(s, config={"rays": 1e5, "nlambda": 5})
+    warns = messages(findings, validation.WARNING)
+    assert any("gather" in m and "Ø0.2" in m for m in warns)
+    assert not validation.has_errors(findings)   # WARNING only, never fails
+
+
+def test_gather_preflight_clean_when_aperture_clears_beam():
+    """A generous aperture relative to the beam must not warn."""
+    s = good_structure()
+    s["bodies"][0]["properties"]["diameter"] = {
+        "type": "t", "group": "Base", "value": 1.0}
+    s["sheets"] = [sheet("Lens", {"aperture": 25.0}),
+                  sheet("Laser", {"diameter": 1.0})]
+    findings = run(s, config={"rays": 1e5, "nlambda": 5})
+    warns = messages(findings, validation.WARNING)
+    assert not any("gather" in m and "aperture" in m for m in warns)
+
+
+def test_gather_preflight_skips_incoherent_sources():
+    """The preflight only concerns the coherent gather; an incoherent
+    source clipped the same way must not warn."""
+    s = good_structure()
+    s["bodies"][0]["properties"]["coherent"] = {
+        "type": "t", "group": "Base", "value": False}
+    s["bodies"][0]["properties"]["diameter"] = {
+        "type": "t", "group": "Base", "value": 6.0}
+    s["sheets"] = [sheet("Lens", {"hole_diameter": 0.2}),
+                  sheet("Laser", {"diameter": 6.0})]
+    findings = run(s, config={"rays": 1e5, "nlambda": 5})
+    assert not any(f.check == "gather-preflight" for f in findings)
 
 
 def test_no_library_degrades_gracefully():

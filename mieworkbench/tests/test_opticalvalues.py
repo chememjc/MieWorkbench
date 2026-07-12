@@ -126,6 +126,40 @@ def test_prism_min_deviation():
     assert expected == pytest.approx(38.65, abs=0.05)
 
 
+def test_negative_bfl_label_is_sign_explicit():
+    """UXNOTES_ROUND3 #28: on a negative rear group, 'BFL of X' must not
+    read like a forward placement distance — the wording must make the
+    sign explicit rather than implying a chainable distance."""
+    bodies = [
+        _body("SRC", kind="laser_collimated",
+              props={"power": _fprop(5.0), "lambdac": _fprop(633.0)}),
+        _body("L1", kind="lens_pcv", material="bk7",
+              chain={"mode": "chained", "ref": "SRC", "distance": "30"}),
+        _body("L2", kind="lens_pcx", material="bk7",
+              chain={"mode": "chained", "ref": "L1", "distance": "40"}),
+    ]
+    sheets = [_sheet("SRC", {"diameter": 6.0}),
+             _sheet("L1", {"R_back": 25.0, "ct": 3.0, "aperture": 20.0}),
+             _sheet("L2", PCX)]
+    tm = _tm(bodies, sheets)
+    entries = ov.value_menu_model(tm, "L2", "distance", index_fn=idx)
+    by_var = {e["suggest_var"]: e for e in entries}
+    assert by_var["bfl_l1"]["value"] < 0
+    assert "NEGATIVE" in by_var["bfl_l1"]["label"]
+    assert "not a forward placement distance" in by_var["bfl_l1"]["label"]
+
+
+def test_positive_bfl_label_unchanged():
+    """The positive-BFL wording stays exactly as before (regression)."""
+    tm = _two_lens()
+    entries = ov.value_menu_model(tm, "L2", "distance", index_fn=idx)
+    by_var = {e["suggest_var"]: e for e in entries}
+    assert by_var["bfl_l1"]["value"] > 0
+    assert by_var["bfl_l1"]["label"] == (
+        "BFL of L1 — distance to its focus (%s mm)"
+        % ov._fmt(by_var["bfl_l1"]["value"]))
+
+
 def test_anchored_element_gets_only_system_entries():
     bodies = [
         _body("SRC", kind="laser_collimated",
@@ -139,3 +173,41 @@ def test_anchored_element_gets_only_system_entries():
     tm = _tm(bodies, sheets)
     entries = ov.value_menu_model(tm, "FREE", "distance", index_fn=idx)
     assert entries and all(e["group"] == "System" for e in entries)
+
+
+# ---------------------------------------------------------------------------
+# "span N Airy zeros" detector-sizing entries (future.md (a2))
+# ---------------------------------------------------------------------------
+def test_airy_zero_entries_present_and_valued():
+    tm = _two_lens()
+    entries = ov.value_menu_model(tm, "L2", "distance", index_fn=idx)
+    by_var = {e["suggest_var"]: e for e in entries}
+    s = paraxial.system_summary(tm, index_fn=idx)
+    ap = paraxial.element_aperture_mm(tm, s["limiting_element"])
+    lam_mm = 633.0 * 1e-6
+    assert set(ov.AIRY_ZERO_COUNTS) == {2, 4, 8}
+    for n in ov.AIRY_ZERO_COUNTS:
+        key = "airy_%d" % n
+        assert key in by_var, sorted(by_var)
+        expected = n * 1.22 * lam_mm * s["image_distance_mm"] / ap
+        assert by_var[key]["value"] == pytest.approx(expected, rel=1e-9)
+        assert by_var[key]["kind"] == "length"
+    # monotonic in N (bigger span for more zeros)
+    assert by_var["airy_2"]["value"] < by_var["airy_4"]["value"] \
+        < by_var["airy_8"]["value"]
+
+
+def test_airy_zero_entries_absent_without_aperture_context():
+    """No dim-sheet aperture anywhere -> the stop search finds nothing,
+    so the Airy-zero entries must not appear (never crash either)."""
+    bodies = [
+        _body("SRC", kind="laser_collimated",
+              props={"power": _fprop(5.0), "lambdac": _fprop(633.0)}),
+        _body("L1", kind="lens_pcx", material="bk7",
+              chain={"mode": "chained", "ref": "SRC", "distance": "30"}),
+    ]
+    sheets = [_sheet("SRC", {"diameter": 6.0}),
+             _sheet("L1", {"R_front": 25.0, "ct": 5.0})]   # no aperture
+    tm = _tm(bodies, sheets)
+    entries = ov.value_menu_model(tm, "L1", "distance", index_fn=idx)
+    assert not any(e["suggest_var"].startswith("airy_") for e in entries)

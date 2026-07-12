@@ -259,3 +259,93 @@ class ElementWizardDialog(QDialog):
         """Device properties that differ from the primitive's baked
         defaults (these need set_property calls after import)."""
         return self.props_form.changed_values() if self.props_form else {}
+
+
+class ZoomPairDialog(QDialog):
+    """Standalone two-group zoom-pair calculator (core.wizards.
+    solve_zoom_pair) — future.md (a2) / UXNOTES_ROUND3 "nothing computes
+    p,q,r,s for you". Not tied to any one primitive (unlike
+    ElementWizardDialog): inputs f1/f2/z, outputs BFL/EFL/track readouts
+    plus a copyable train-grammar expression string for BFL(z), following
+    the same "Design by ..." section pattern as the lens/waveplate
+    designers above (Compute button, gray result label)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Zoom-pair Calculator")
+        lay = QVBoxLayout(self)
+
+        note = QLabel(
+            "Idealized thin-lens groups of focal length f1 (front) / f2 "
+            "(rear); z is the gap between the groups' own principal "
+            "planes, not the chain's vertex-to-vertex distance — for a "
+            "real (thick) group, add pp1_rear - pp2_front from its own "
+            "paraxial readout to the chain gap first.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray;")
+        lay.addWidget(note)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("f1 (front) [mm]:"), 0, 0)
+        self.f1_edit = QLineEdit("100")
+        self.f1_edit.setValidator(QDoubleValidator())
+        grid.addWidget(self.f1_edit, 0, 1)
+        grid.addWidget(QLabel("f2 (rear) [mm]:"), 0, 2)
+        self.f2_edit = QLineEdit("-50")
+        self.f2_edit.setValidator(QDoubleValidator())
+        grid.addWidget(self.f2_edit, 0, 3)
+        grid.addWidget(QLabel("z [mm]:"), 1, 0)
+        self.z_edit = QLineEdit("30")
+        self.z_edit.setValidator(QDoubleValidator())
+        self.z_edit.setToolTip("Inter-group gap to evaluate BFL/EFL/track "
+                               "at (principal-plane referenced)")
+        grid.addWidget(self.z_edit, 1, 1)
+        btn = QPushButton("Compute")
+        btn.setToolTip("Solve BFL(z)/EFL(z)/track(z) and the general "
+                       "rational expression for this f1/f2 pair")
+        btn.clicked.connect(self._compute)
+        grid.addWidget(btn, 1, 2, 1, 2)
+        lay.addLayout(grid)
+
+        self.result_label = QLabel("")
+        self.result_label.setStyleSheet("color: gray;")
+        self.result_label.setWordWrap(True)
+        lay.addWidget(self.result_label)
+
+        lay.addWidget(QLabel("BFL(z) expression (train grammar):"))
+        self.bfl_expr_edit = QLineEdit()
+        self.bfl_expr_edit.setReadOnly(True)
+        lay.addWidget(self.bfl_expr_edit)
+
+        lay.addWidget(QLabel("EFL(z) expression:"))
+        self.efl_expr_edit = QLineEdit()
+        self.efl_expr_edit.setReadOnly(True)
+        lay.addWidget(self.efl_expr_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        lay.addWidget(buttons)
+        self.resize(480, 320)
+        self._last = None
+
+    def _compute(self):
+        try:
+            f1 = float(self.f1_edit.text())
+            f2 = float(self.f2_edit.text())
+            z = float(self.z_edit.text())
+            design = wizards.solve_zoom_pair(f1, f2, z_mm=z)
+        except Exception as exc:
+            self.result_label.setText(str(exc))
+            self._last = None
+            return
+        self._last = design
+        self.result_label.setText(
+            "BFL %.4g mm   EFL %.4g mm   total track %.4g mm"
+            % (design["bfl_mm"], design["efl_mm"], design["track_mm"]))
+        self.bfl_expr_edit.setText(design["bfl_expr"])
+        self.efl_expr_edit.setText(design["efl_expr"])
+
+    def result(self):
+        """The last computed solve_zoom_pair() dict, or None."""
+        return self._last

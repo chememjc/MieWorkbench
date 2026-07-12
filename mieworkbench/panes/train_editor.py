@@ -479,7 +479,11 @@ class TrainEditorPane(QWidget):
                 "; ".join(s.get("warnings") or []) if s else "")
             return
         bits = []
-        if s["efl"] is not None and math.isfinite(s["efl"]):
+        if s.get("afocal"):
+            m_ang = s.get("angular_magnification")
+            bits.append("afocal" if m_ang is None
+                        else "afocal (angular magnification M=%.3g)" % m_ang)
+        elif s["efl"] is not None and math.isfinite(s["efl"]):
             bits.append("EFL %.4g mm" % s["efl"])
         else:
             bits.append("afocal")
@@ -488,7 +492,7 @@ class TrainEditorPane(QWidget):
         if s.get("na"):
             bits.append("NA %.3g" % s["na"])
         img = s.get("image_distance_mm")
-        if img is not None and math.isfinite(img):
+        if not s.get("afocal") and img is not None and math.isfinite(img):
             bits.append("image %.4g mm past %s"
                         % (img, s["path"][-1]["element"]
                            if s.get("path") else "last element"))

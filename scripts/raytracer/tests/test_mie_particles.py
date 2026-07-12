@@ -271,3 +271,69 @@ def test_explicit_realization():
     assert p_after == pytest.approx(p0, rel=1e-9)
     # scattered off forward direction on average
     assert np.mean(child.dir[:, 0]) < 0.9999
+
+
+# ---------------------------------------------------------------------------
+# tau= (target optical depth) knob — P10 item 2
+# ---------------------------------------------------------------------------
+class _FakeScene:
+    pass
+
+
+class _FakeDB:
+    def __init__(self):
+        self.mats = {"water": _ConstMat(1.33, 0.0, 998.0)}
+
+    def get(self, name):
+        return self.mats[name]
+
+
+def _fake_scene():
+    scene = _FakeScene()
+    scene.matdb = _FakeDB()
+    scene.ambient = _ConstMat(1.0, 0.0, 1.204)
+    scene.bodies = []
+    return scene
+
+
+def test_resolve_tau_phi_reproduces_target_tau():
+    """A synthetic tau= spec must resolve to a phi whose ensemble mu_ext
+    reproduces the requested tau (within 1%), along the box's first
+    (along-beam) dimension."""
+    from raytracer.particles import ParticleCloud
+
+    scene = _fake_scene()
+    box_len_m = 40e-3
+    spec = {"box_corner_m": [0.0, -20e-3, -20e-3],
+            "box_size_m": [box_len_m, 40e-3, 40e-3],
+            "material": "water", "tau": 1.14,
+            "median_um": 2.0, "gsd": 1.6}
+    cloud = ParticleCloud(spec, scene, threshold=1.0,   # force continuum
+                          seed=1, lam_list=[532e-9])
+    assert cloud.tau_resolved is not None
+    assert cloud.tau_resolved["tau_target"] == pytest.approx(1.14)
+    assert cloud.spec["phi"] is not None and 0 < cloud.spec["phi"] < 1
+    tau_actual = cloud.tables.mu_ext(532e-9) * box_len_m
+    assert tau_actual == pytest.approx(1.14, rel=1e-2)
+    # echoed into diagnostics() (-> case.json)
+    diag = cloud.diagnostics()
+    assert diag["tau_resolved"]["resolved_phi"] == pytest.approx(
+        cloud.spec["phi"])
+    assert diag["phi"] == pytest.approx(cloud.spec["phi"])
+
+
+def test_particles_phi_tau_mutually_exclusive():
+    """common.parse_particles_spec rejects phi+tau together, and requires
+    at least one of them."""
+    import common  # scripts/ root, already on sys.path via SCRIPTS insert
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        common.parse_particles_spec(
+            "box=0,0,0:1,1,1;material=water;phi=1e-4;tau=1.0;median_um=5")
+    with pytest.raises(ValueError):
+        common.parse_particles_spec(
+            "box=0,0,0:1,1,1;material=water;median_um=5")
+    spec = common.parse_particles_spec(
+        "box=0,0,0:1,1,1;material=water;tau=0.5;median_um=5")
+    assert spec["tau"] == pytest.approx(0.5)
+    assert spec["phi"] is None

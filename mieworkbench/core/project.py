@@ -29,7 +29,8 @@ from .train import (
     variables_from_sheets,
 )
 from .transforms import (
-    BodyState, Operation, Placement, ReferenceResolver, snap_to_axis_ops,
+    BodyState, Operation, Placement, ReferenceResolver, place_about_ops,
+    snap_to_axis_ops,
 )
 from .undostack import Command, UndoStack
 
@@ -536,6 +537,62 @@ class Project(QObject):
         element = self.element_group(body_name)
         tm = self.train()
         self.begin_macro("Snap %s to axis" % self._body_label(body_name))
+        try:
+            for op in ops:
+                self.apply_operation(body_name, op)
+            # keep the optical train consistent, exactly like move_element
+            if element in tm.records():
+                if tm.is_chained(element):
+                    edge = {k: float(v) for k, v in self.train().derive_edge(
+                        element, self.train_variables()).items()
+                            if k in EDGE_FIELDS}
+                    body = tm.primary_body_name(element)
+                    for name, value in sorted(edge_props(edge).items()):
+                        self.set_property(body, name, value, ptype="string",
+                                          group=TRAIN_GROUP)
+                if tm.is_chained(element) or tm.downstream_of(element):
+                    self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        return ops
+
+    def place_about_point(self, body_name, ref_spec, axis_spec, r_expr,
+                          theta_expr, aim_at_ref=True):
+        """Polar/spherical place-about-point (future.md (a2): the "detector
+        40 mm at 90 deg from the cloud center" nephelometer-ring /
+        field-angle-fan affordance) — puts `body_name` on the circle of
+        radius r_expr about the point `ref_spec` resolves to, in the plane
+        perpendicular to `axis_spec`, at angle theta_expr. r_expr/
+        theta_expr accept the train_solver expression grammar
+        (train_solver.EXPR_HELP) evaluated against the live miewb_vars
+        sheet — same grammar and vars mapping the chain edge fields use
+        (mm / degrees, DEGREES-native trig). One undo entry; keeps the
+        optical train consistent exactly like snap_to_axis (a chained
+        downstream element ripples). Refuses expression-bound
+        placements. Returns the applied Operation list."""
+        import train_solver
+        state = self.body_states.get(body_name)
+        if state is None:
+            raise ProjectError("no body state for %r" % body_name)
+        if self.body(body_name).get("placement_bound"):
+            raise ProjectError(
+                "%s's position is driven by a spreadsheet expression; "
+                "edit the driving alias instead"
+                % self.body(body_name)["label"])
+        variables = self.train_variables()
+        try:
+            r_mm = train_solver.eval_expr(r_expr, variables)
+            theta_deg = train_solver.eval_expr(theta_expr, variables)
+        except train_solver.TrainError as exc:
+            raise ProjectError(str(exc))
+        ops = place_about_ops(state, self.resolver(), ref_spec, axis_spec,
+                              r_mm, theta_deg, aim_at_ref=aim_at_ref)
+        element = self.element_group(body_name)
+        tm = self.train()
+        self.begin_macro("Place %s about point"
+                         % self._body_label(body_name))
         try:
             for op in ops:
                 self.apply_operation(body_name, op)
