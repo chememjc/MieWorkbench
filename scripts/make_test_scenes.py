@@ -453,6 +453,24 @@ SCENES = {
                 "detector_face.",
         "faces": {"cylinder": 1, "plane": 3},
     },
+    "auto_designed_lens": {
+        "description": "optimizer demo: the lens_pcx singlet with its "
+                       "axial position spreadsheet-driven (dim.lenspos "
+                       "alias, expression-bound Placement.Base.x). The "
+                       "detector sits 4mm PAST the lenspos=0 focal plane, "
+                       "so the spot-minimizing lens position is lenspos="
+                       "+4mm (collimated input: the focus translates 1:1 "
+                       "with the lens). coherent=False (geometric focus).",
+        "material": "bk7", "lambda_nm": 633.0,
+        "R1_mm": 25.0, "R2_mm": None, "thickness_mm": 5.0,
+        "aperture_mm": 20.0, "beam_dia_mm": 10.0,
+        "n_633": 1.51508, "expected_efl_mm": 48.536,
+        "expected_bfl_mm": 45.236,
+        "focus_x_at_lenspos0_mm": 50.236,
+        "detector_x_mm": 54.236,
+        "expected_focus_lenspos_mm": 4.0,
+        "faces": {"sphere": 1, "plane": 1, "cylinder": 1},
+    },
 }
 
 
@@ -739,6 +757,33 @@ def make_lens_scene(name, outpath):
 
 def make_lens_sphere_control(outpath):
     make_lens_scene("lens_sphere_control", outpath)
+
+
+def make_auto_designed_lens(outpath):
+    """The optimizer round's demo scene (see the SCENES entry): lens_pcx
+    whose body Placement.Base.x is expression-bound to a 'dim' spreadsheet
+    'lenspos' alias — exactly the example.FCStd pattern, so permute_model
+    --var / fast_eval apply_params drive it. Detector fixed 4mm past the
+    lenspos=0 focus; scripts/optimize.py should find lenspos ~= +4."""
+    s = SCENES["auto_designed_lens"]
+    doc = App.newDocument("auto_designed_lens")
+    try:
+        sh = doc.addObject("Spreadsheet::Sheet", "dim")
+        sh.Label = "dim"
+        sh.set("A1", "lens axial offset [mm]")
+        sh.set("B1", "=0 mm")
+        sh.setAlias("B1", "lenspos")
+        doc.recompute()
+        _build_simple_lens(doc, s)
+        lens = doc.getObject("Lens")
+        lens.setExpression(".Placement.Base.x", "<<dim>>.lenspos")
+        add_source(doc, "Source", -30.0, s["beam_dia_mm"] / 2.0,
+                   {"power": 5.0, "lambdac": s["lambda_nm"],
+                    "coherent": False})
+        add_detector(doc, "Screen", s["detector_x_mm"], 15.0)
+        finalize(doc, outpath)
+    finally:
+        App.closeDocument(doc.Name)
 
 
 def make_lens_achromat(outpath):
@@ -1495,6 +1540,7 @@ BUILDERS = {
     "lens_dcv": lambda p: make_lens_scene("lens_dcv", p),
     "lens_achromat": make_lens_achromat,
     "lens_sphere_control": make_lens_sphere_control,
+    "auto_designed_lens": make_auto_designed_lens,
     "lens_asphere": make_lens_asphere,
     "lens_cyl_pos": lambda p: make_cyl_lens("lens_cyl_pos", p),
     "lens_cyl_neg": lambda p: make_cyl_lens("lens_cyl_neg", p),
