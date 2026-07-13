@@ -27,9 +27,12 @@ so several claims are search-indexed excerpts) — both flag dated/secondary cla
 > **Honesty note.** MieWorkbench is a physically-based **coherent Monte-Carlo,
 > fully-vectorial non-sequential ray tracer** — first and foremost a *physics simulation
 > engine*. As of the 2026-07-13 design-apparatus round it has *also* grown a **v1
-> lens-design apparatus** (a weighted-merit optimizer with a global CMA-ES stage, sensitivity
+> lens-design apparatus** (a weighted-merit optimizer with a demo-backed local stage and a
+> bowl-tested global CMA-ES stage, sensitivity
 > + Monte-Carlo tolerancing, dn/dT thermal index, exit-pupil/PSF-peak Strehl, image
-> simulation, an in-app Python console) — real, tested, and demo-backed, but **nascent**: a
+> simulation, an in-app Python console) — real and tested (the local optimizer, tolerancer,
+> thermal and imaging stages demo-backed end-to-end; the global CMA-ES stage unit-tested on
+> analytic bowls only), but **nascent**: a
 > single local + single global algorithm, focus-only compensation, no glass substitution,
 > multi-config, compensator chains, or operand library. It is **not yet competitive with the
 > mature design suites** (Zemax, CODE V, OSLO, QUADOA), and it remains a *simulation engine*
@@ -110,11 +113,13 @@ data locality, Linux-native, headless-CLI, text-based (ZIP-container) formats.**
 
 **What changed with the design-apparatus round (2026-07-13).** MieWorkbench used to lose the
 optimization (I) and tolerancing (J) blocks to all four design suites as a clean ❌-sweep. That
-sweep is now broken: it holds a **global optimizer** (nevergrad CMA-ES), a **weighted-merit local
-optimizer** (scipy Nelder-Mead), **sensitivity + Monte-Carlo yield tolerancing** with a focus
+sweep is now broken: it holds a **weighted-merit local
+optimizer** (scipy Nelder-Mead) with a **global CMA-ES stage** (nevergrad; unit-tested on analytic
+bowls, no end-to-end design demo yet), **sensitivity + Monte-Carlo yield tolerancing** with a focus
 compensator, **dn/dT thermal index** (Schott TIE-19, 847 glasses), **true exit-pupil / PSF-peak
 Strehl** with partial-coherence **image simulation**, and an **in-app Python console** bound to the
-live session — each tested, demo-backed, and physics-oracle-gated. This is a genuine, functioning
+live session — each tested (the local optimizer, tolerancer and imaging stages demo-backed and
+physics-oracle-gated end-to-end). This is a genuine, functioning
 **v1 design apparatus**, and it moves MieWorkbench from ❌ to 🟡/✅ across a dozen formerly-empty
 cells. It is emphatically **not** yet Zemax/CODE V-class: one local + one global algorithm, a
 handful of hard-coded merit operands (no ~300-operand library), focus-only compensation, and **no
@@ -499,7 +504,7 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 |--|--|:--:|:--:|:--:|:--:|:--:|:--:|--|
 |I1|Merit function / operands|🟡weighted|✅300+|✅60+|✅auto-EF|✅named|⚠️scipy|**Zemax** — 300+ operands + wizard; CODE V/OSLO full; MWB 🟡 weighted spot-RMS/EE/MTF50/power merit (no ~300-operand library), driven by the persistent-worker fast evaluator (`fast_eval.py`, ~10× geometry speedup)|
 |I2|Local optimizer (DLS)|🟡NM|✅|✅|✅DLS|✅|⚠️|**Zemax/CODE V/OSLO/QUADOA** — true DLS/Levenberg; MWB 🟡 scipy Nelder-Mead local (derivative-free, not DLS) on the fast evaluator|
-|I3|Global optimizer|✅CMA|✅Hammer|✅GS|✅ASA|🟡restart|❌|**Zemax/CODE V/MWB** — Global Search+Hammer / Global Synthesis / MWB nevergrad CMA-ES; OSLO ASA (all global-capable; MWB via `optimize.py`)|
+|I3|Global optimizer|🟡CMA|✅Hammer|✅GS|✅ASA|🟡restart|❌|**Zemax/CODE V** — Global Search+Hammer / directed Global Synthesis (mature); OSLO ASA; MWB 🟡 a single nevergrad CMA-ES call (`optimize.py`), unit-tested on analytic bowls only — no end-to-end design demo (the local path is the demo-backed one)|
 |I4|Glass substitution|❌|✅|✅Expert|🟡|✅|❌|**Zemax/CODE V/QUADOA** — CODE V Glass Expert|
 |I5|Multi-config optimization|❌|✅|✅|✅|✅|❌|**Zemax/CODE V/OSLO/QUADOA**|
 |I6|Directed global synthesis (many minima)|❌|🟡Hammer|✅GS|🟡ASA|❌|❌|**CODE V** — Global Synthesis surfaces many distinct design forms in one run|
@@ -613,7 +618,7 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 |F Detectors & analysis|Zemax|CODE V / QUADOA|Wins energy-ledger F8 + Stokes F7; now full on PSF/MTF/EE/spot/fan|
 |G Materials & coatings|Zemax|OSLO|Improved — 847 glasses + dn/dT (G3✅) now; still below vendor thousands; strong on TMM/birefringence (17 crystals)|
 |H Scattering & stray light|**Split: Zemax (tools) / MWB (physics)**|—|Wins Mie H5 + volume H4|
-|I Optimization|CODE V / Zemax|OSLO / QUADOA|Now a participant — global I3✅ (CMA-ES), merit + local I1/I2🟡; no glass-sub (I4)/multi-config (I5)/operand-library|
+|I Optimization|CODE V / Zemax|OSLO / QUADOA|Now a participant — merit + local I1/I2🟡, a global CMA-ES stage I3🟡 (bowl-tested only, no design demo); no glass-sub (I4)/multi-config (I5)/operand-library|
 |J Tolerancing|CODE V|Zemax / OSLO / QUADOA|Now a full participant — sensitivity/MC/yield ✅ (J1/J2/J4), focus compensator 🟡 (J3); no fast-differential (J5) or compensator chains|
 |K Thermal / STOP|CODE V|Zemax / OSLO|Now 🟡 — bulk-T dn/dT index (K1); no CTE/athermalization/STOP|
 |L Illumination / photometry|Zemax|—|Wins photometric L1 (tie w/ Zemax); no illumination design|
@@ -625,7 +630,7 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 |R Commercial|MWB|3DOptix / OSLO|Wins cost R1 + locality R2/R7|
 |S Ultrafast / time-domain / nonlinear|**MWB**|—|Sole implementer — a whole axis no competitor here touches|
 
-**Verdict.** Across the 19 axes: **Zemax leads or co-leads ~10** (A, B, D, E, F, G, H-tools, L, M, P), **CODE V ~3–4** (I, J, K, co-B), **QUADOA ~2** (M, O), **3DOptix ~3** (N, Q, catalog G8), **OSLO 0 sole leads** (co-leads B/E/G/I/J), and **MieWorkbench ~4** (C, R, S, H-physics; co-leads F/N/O/Q). The axis *leaders* are unchanged by MieWorkbench's new design apparatus — CODE V/Zemax still lead I/J/K on depth — but MieWorkbench is **no longer shut out of the I/J/K and thermal-G blocks it formerly swept as ❌**: it now holds a global optimizer (I3✅), full sensitivity/MC/yield tolerancing (J1/J2/J4✅), dn/dT thermal index (G3✅/K1🟡), a true exit-pupil and PSF-peak Strehl (B6🟡/B7✅), image-sim (B8🟡/F10🟡), and an in-app scripting console (P3🟡) — a v1 apparatus, not yet the mature suites' depth (no glass substitution, multi-config, compensator chains, fast-differential tolerancing, or operand library). **The overall winner of the general single-product feature set is Ansys Zemax OpticStudio (Premium), now narrowly over Keysight CODE V** — Zemax is the only package excellent across *both* sequential design *and* non-sequential/illumination in one product, whereas CODE V (which matches or beats Zemax on pure optimization/tolerancing) offloads non-sequential, illumination, and scatter to the *separate* LightTools product. **CODE V + LightTools together would rival or exceed Zemax's breadth; as single products, Zemax wins.**
+**Verdict.** Across the 19 axes: **Zemax leads or co-leads ~10** (A, B, D, E, F, G, H-tools, L, M, P), **CODE V ~3–4** (I, J, K, co-B), **QUADOA ~2** (M, O), **3DOptix ~3** (N, Q, catalog G8), **OSLO 0 sole leads** (co-leads B/E/G/I/J), and **MieWorkbench ~4** (C, R, S, H-physics; co-leads F/N/O/Q). The axis *leaders* are unchanged by MieWorkbench's new design apparatus — CODE V/Zemax still lead I/J/K on depth — but MieWorkbench is **no longer shut out of the I/J/K and thermal-G blocks it formerly swept as ❌**: it now holds a nascent global-optimizer stage (I3🟡, CMA-ES, bowl-tested only), full sensitivity/MC/yield tolerancing (J1/J2/J4✅), dn/dT thermal index (G3✅/K1🟡), a true exit-pupil and PSF-peak Strehl (B6🟡/B7✅), image-sim (B8🟡/F10🟡), and an in-app scripting console (P3🟡) — a v1 apparatus, not yet the mature suites' depth (no glass substitution, multi-config, compensator chains, fast-differential tolerancing, or operand library). **The overall winner of the general single-product feature set is Ansys Zemax OpticStudio (Premium), now narrowly over Keysight CODE V** — Zemax is the only package excellent across *both* sequential design *and* non-sequential/illumination in one product, whereas CODE V (which matches or beats Zemax on pure optimization/tolerancing) offloads non-sequential, illumination, and scatter to the *separate* LightTools product. **CODE V + LightTools together would rival or exceed Zemax's breadth; as single products, Zemax wins.**
 
 **The honest nuance the tally hides:** MieWorkbench is a *specialist engine*, not a suite. On the specific axes it targets — **coherent non-sequential field fidelity, exact Mie/volume scattering, closed energy accounting, polarization/biaxial physics, ultrafast/time-domain/nonlinear modeling, GPU throughput, and cost/locality — it wins or ties the entire field, market leaders included.** It "loses overall" the way a precision interferometry-and-ultrafast bench "loses" to a full machine shop: fewer tools, but the ones it has are best-in-class, and several (the closed ledger, first-class Mie, biaxial, the whole time-domain axis) exist nowhere else here.
 
@@ -671,7 +676,7 @@ block goes one way. Reflects the refreshed MWB column (post lowhanging/pulsed ro
 |H4 Volume scatter|**MWB**|
 |H5 Rigorous Mie|**MWB**|Wiscombe-validated; Zemax MSP-DLL only|
 |I1,I2,I4,I5,I6 Optimization|Zemax|300+ operands + glass-sub + multi-config; MWB 🟡 weighted merit + Nelder-Mead local, no glass-sub/multi-config/operand-library|
-|I3 Global optimizer|tie|Zemax Global Search+Hammer / MWB nevergrad CMA-ES|
+|I3 Global optimizer|Zemax|mature Global Search+Hammer; MWB 🟡 a single CMA-ES call, bowl-tested only (no end-to-end design demo)|
 |J1,J2,J4 Sensitivity/MC/yield|tie|both full sensitivity/Monte-Carlo/yield|
 |J3,J5 Compensators/differential|Zemax|MWB 🟡 focus compensator only, no fast-differential|
 |K1 Thermal|Zemax|full CTE/athermalization; MWB 🟡 bulk-T dn/dT only|
@@ -699,8 +704,9 @@ block goes one way. Reflects the refreshed MWB column (post lowhanging/pulsed ro
 items — coherent-absolute field, Stokes maps, biaxial, the energy ledger, volume + first-class Mie,
 birefringent library, granular undo, ray animation, snap-to-axis, the fold operator, cost, and the
 entire four-line time-domain axis — a meaningful physics/ultrafast/cost cluster. It now *also ties*
-Zemax on the global optimizer (I3), sensitivity/MC/yield tolerancing (J1/J2/J4), dn/dT thermal index
-(G3), and PSF-peak Strehl (B7) — a nascent design apparatus that no longer cedes those blocks
+Zemax on sensitivity/MC/yield tolerancing (J1/J2/J4), dn/dT thermal index
+(G3), and PSF-peak Strehl (B7), and carries a nascent global-optimizer stage (I3🟡, a bowl-tested
+CMA-ES call) — a design apparatus that no longer cedes those blocks
 wholesale. But Zemax still wins the large majority on breadth and on the *depth* of every one of
 those blocks (300+ operands, glass substitution, multi-config, compensator chains, CTE
 athermalization, gridded POP, illumination, materials breadth, interop).
@@ -760,7 +766,7 @@ athermalization, gridded POP, illumination, materials breadth, interop).
 |H4 Volume scatter|**MWB**|CODE V none native|
 |H5 Rigorous Mie|**MWB**|CODE V none native (→LightTools)|
 |I1,I2,I4,I5,I6 Optimization|CODE V|Global Synthesis + Glass Expert; MWB 🟡 weighted merit + Nelder-Mead local, no glass-sub/multi-config|
-|I3 Global optimizer|tie|CODE V GS / MWB nevergrad CMA-ES (CODE V's directed I6 still unique)|
+|I3 Global optimizer|CODE V|mature directed Global Synthesis; MWB 🟡 a single bowl-tested CMA-ES call (CODE V's directed I6 also unique)|
 |J1,J2,J4 Sensitivity/MC/yield|tie|both full sensitivity/Monte-Carlo/yield|
 |J3,J5 Compensators/differential|CODE V|Wavefront Differential + compensator chains; MWB 🟡 focus compensator only|
 |K1 Thermal|CODE V|MECo athermalization; MWB 🟡 bulk-T dn/dT only|
@@ -793,8 +799,9 @@ athermalization, gridded POP, illumination, materials breadth, interop).
 
 **CODE V vs MieWorkbench overall winner: CODE V** — it wins the design/optimization/tolerancing/
 thermal/analysis bulk decisively (and its Global Synthesis + Wavefront Differential are genuinely
-best-in-class). MieWorkbench has *narrowed* the design gap — it now ties CODE V's basic global
-optimizer, sensitivity/MC/yield tolerancing, dn/dT, and PSF-peak Strehl — but CODE V's directed
+best-in-class). MieWorkbench has *narrowed* the design gap — it now ties CODE V's
+sensitivity/MC/yield tolerancing, dn/dT, and PSF-peak Strehl, and carries a nascent CMA-ES global
+stage — but CODE V's directed
 Global Synthesis, Wavefront-Differential tolerancing, Glass Expert substitution, and compensator
 chains remain a class apart. **And on the other axis the split is clean and complementary:**
 MieWorkbench wins *every*
@@ -858,7 +865,7 @@ LightTools). The two are almost non-overlapping.
 |G7 Birefringent lib|**MWB**|17 crystals vs OSLO 5|
 |H1–H6 Scatter/stray-light|OSLO/MWB split|OSLO delegates to TracePro (⚠️/❌); MWB wins volume H4 + Mie H5 outright|
 |I1,I2,I4,I5 Optimization|OSLO|DLS + glass-sub; MWB 🟡 weighted merit + Nelder-Mead local|
-|I3 Global optimizer|tie|OSLO ASA / MWB nevergrad CMA-ES|
+|I3 Global optimizer|OSLO|mature ASA; MWB 🟡 a single bowl-tested CMA-ES call|
 |J1,J2,J4 Sensitivity/MC/yield|tie|both full ISO-style sensitivity/MC/yield|
 |J3 Compensators|OSLO|full vs MWB 🟡 focus compensator only|
 |K1 Thermal|OSLO|athermalization; MWB 🟡 bulk-T dn/dT only|
@@ -891,8 +898,8 @@ LightTools). The two are almost non-overlapping.
 
 **OSLO vs MieWorkbench overall winner: OSLO Premium** on classical design breadth (optimization,
 tolerancing, GRIN, Gaussian-beam/ABCD, partial coherence, the analysis suite, 3000+ prescriptions).
-MieWorkbench now ties OSLO's *basic* global optimizer, sensitivity/MC/yield tolerancing, dn/dT,
-PSF-peak Strehl, and partial image-sim — a v1 design apparatus — though OSLO's DLS + ASA, deep
+MieWorkbench now ties OSLO's sensitivity/MC/yield tolerancing, dn/dT,
+PSF-peak Strehl, and partial image-sim, and carries a nascent CMA-ES global stage — a v1 design apparatus — though OSLO's DLS + ASA, deep
 classical-aberration theory, Gaussian-beam/ABCD, and VCZ projector stay deeper.
 **MieWorkbench wins every non-sequential/volume-scatter/coherent-default/Stokes/biaxial line, the
 energy ledger, GPU/multithread, Linux/cost, and the whole time-domain axis** — again OSLO's
@@ -925,7 +932,7 @@ free tier, but OSLO's EDU is 10-surface-capped while MieWorkbench is fully free 
 |G3 dn/dT|tie|both dn/dT thermo-optic now|G7 Birefringent lib **MWB**|
 |H4 Volume · H5 Mie|**MWB**|QUADOA none|
 |I1,I2,I4,I5 Optimization|QUADOA|named merit + glass-sub + multi-config; MWB 🟡 weighted merit + Nelder-Mead local|
-|I3 Global optimizer|**MWB**|MWB nevergrad CMA-ES vs QUADOA multi-start restart only|
+|I3 Global optimizer|tie|MWB 🟡 a bowl-tested CMA-ES call vs QUADOA multi-start restart — neither a directed global synthesis|
 |J1 Sensitivity|tie|both full|
 |J2 Monte-Carlo|QUADOA|9-distribution MC vs MWB single-distribution|
 |J3 Compensators|QUADOA|chainable vs MWB 🟡 focus only|
@@ -943,8 +950,8 @@ free tier, but OSLO's EDU is 10-surface-capped while MieWorkbench is fully free 
 
 **QUADOA vs MieWorkbench overall winner: QUADOA** — it wins the design/optimization/tolerancing/
 analysis/surfaces/interop bulk (named-operand merit, glass substitution, multi-config, 9-distribution
-MC, config editor). Notably, though, MieWorkbench now *takes* the global-optimizer line (CMA-ES vs
-QUADOA's restart-only) and the yield line, and ties sensitivity/dn/dT/PSF-peak-Strehl — QUADOA's
+MC, config editor). Notably, though, MieWorkbench now *ties* the global-optimizer line (a bowl-tested CMA-ES stage vs
+QUADOA's restart-only) and *takes* the yield line, and ties sensitivity/dn/dT/PSF-peak-Strehl — QUADOA's
 design lead has narrowed to depth, not a clean sweep. **And on the physics axis the split is still
 unusually clean and complementary:**
 MieWorkbench wins every non-sequential/physical-transport line, volume + rigorous Mie, grating
@@ -1041,7 +1048,9 @@ architecture (FreeCAD worker + numpy/torch MC engine + C engine + PySide GUI), c
 ### 7.1 Optimization (I1–I6) — *v1 landed; remaining depth gaps*
 A **v1 optimizer landed** (`optimize.py`: weighted spot-RMS/EE/MTF50/power merit, scipy Nelder-Mead
 local + nevergrad CMA-ES global, on the persistent-worker fast evaluator `fast_eval.py`) — so
-MieWorkbench now holds I3 (✅ global) and I1/I2 (🟡 merit/local). **What remains** to match the four
+MieWorkbench now holds a nascent global stage (I3🟡, a single CMA-ES call — unit-tested on analytic
+bowls, no end-to-end design demo yet, the local path being the demo-backed one) and I1/I2 (🟡
+merit/local). **What remains** to match the four
 design suites: a **named-operand library** (I1 depth), a **true DLS/Levenberg** local mode (I2), and
 above all **glass substitution (I4)**, **multi-config optimization (I5)**, and **directed global
 synthesis (I6, CODE V Global-Synthesis-style, many distinct minima)** — all still ❌.
@@ -1282,7 +1291,9 @@ document called the remaining Must-Have gap. MieWorkbench now carries a **v1 des
 weighted-merit optimizer (Nelder-Mead local + CMA-ES global), sensitivity + Monte-Carlo yield
 tolerancing with a focus compensator, dn/dT thermal index (Schott TIE-19, 847 glasses), a true
 exit-pupil + PSF-peak Strehl with partial-coherence image simulation, and an in-app Python console —
-each tested, demo-backed, and physics-oracle-gated. This **broke the former ❌-sweep in optimization
+each tested: the local optimizer, tolerancer, thermal, Strehl and image-sim stages demo-backed and
+physics-oracle-gated end-to-end, the global CMA-ES stage unit-tested on analytic bowls only. This
+**broke the former ❌-sweep in optimization
 and tolerancing**: MieWorkbench is no longer *absent* from the I/J/K blocks, and across a dozen
 formerly-empty §4 cells it now reads 🟡 or ✅.
 

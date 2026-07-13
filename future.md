@@ -145,7 +145,7 @@ The round that closed the former optimization/tolerancing ❌-sweep in
 
 | Item | STATUS | Code seam |
 |--|--|--|
-|Weighted-merit optimizer (spot-RMS/EE/MTF50/power)|**done, v1** — scipy Nelder-Mead **local** + nevergrad CMA-ES **global**; NO named-operand library, NO glass substitution, NO multi-config|`scripts/optimize.py`; Optimize GUI dock; `auto_designed_lens` demo|
+|Weighted-merit optimizer (spot-RMS/EE/MTF50/power)|**done, v1** — scipy Nelder-Mead **local** (demo-backed end-to-end) + nevergrad CMA-ES **global** (unit-tested on analytic bowls only — the `auto_designed_lens` demo exercises the local path); NO named-operand library, NO glass substitution, NO multi-config|`scripts/optimize.py`; Optimize GUI dock; `auto_designed_lens` demo|
 |Persistent-worker fast evaluator|**done** — ~10× geometry-stage speedup, fingerprint-cache, crash-recovery, parity-oracle-verified (the shared optimizer/tolerancer inner loop)|`scripts/fast_eval.py`|
 |Sensitivity + Monte-Carlo yield tolerancing|**done, v1** — sensitivity ranking + MC yield histogram + a **focus compensator** (single, nested optimize call); NO distribution library, NO compensator chains, NO fast-differential|`scripts/tolerance.py`; Tolerance GUI dock; `tolerance_yield` demo|
 |dn/dT thermo-optic index + AGF catalog import|**done** — Schott TIE-19 `n(λ,T)` + `--temperature`; **168→847 materials** (Schott/Ohara AGF importer)|`materials.py` TIE-19 term; `scripts/tools/import_agf.py`; `opticalproperties/materials.miemat`|
@@ -601,7 +601,7 @@ Backlog above are cross-referenced, not repeated.)
 
 | Feature | Closes | Effort | Impact | Seam / path |
 |--|--|:--:|:--:|--|
-|**Headless optimization loop** (merit function + local/global)|I1🟡/I2🟡/I3✅|**DONE v1**|—|**DELIVERED** `scripts/optimize.py` (Nelder-Mead + CMA-ES) on `fast_eval.py`; maturation (I1 operands / I4 glass-sub / I5 multi-config) = priority list #1–3|
+|**Headless optimization loop** (merit function + local/global)|I1🟡/I2🟡/I3🟡|**DONE v1**|—|**DELIVERED** `scripts/optimize.py` (Nelder-Mead local, demo-backed; CMA-ES global, bowl-tested only) on `fast_eval.py`; maturation (I1 operands / I4 glass-sub / I5 multi-config) = priority list #1–3|
 |**Directed global synthesis** (many distinct minima, CODE V-style)|I6|XL|Med|OPEN — stretch goal on the shipped optimizer; surfaces multiple design forms per run (priority #10)|
 |**Sensitivity + Monte-Carlo tolerancing**|J1✅/J2✅/J4✅|**DONE v1**|—|**DELIVERED** `scripts/tolerance.py`; sensitivity ranking + MC yield + focus compensator (J3🟡). Chains/J5 = priority #5/#9|
 |**Fast differential wavefront tolerancing** (CODE V Wavefront-Differential)|J5|L|Med|OPEN — finite-difference perturbation of the (now-shipped) exit-pupil Zernike vector, for in-loop desensitization (priority #9)|
