@@ -1596,14 +1596,21 @@ reference`.
   a body sets `material=calcite` (the crystal name in `uniaxial.miebrf`, §7.6),
   which resolves to the `calcite_o`/`calcite_e` pair internally.
 
-168 materials ship today (expanded from 24): optical glasses (41 Schott/Ohara
-crowns/flints), metals/semiconductors/IR windows (17), polymers/liquids/gases/
-biological (35), coating-film materials (5), crystals with o/e pairs (46 uniaxial
-axis rows), plus foundational `vacuum`, `air`, `bk7`, `fused_silica`, `sapphire_o/e`,
-`water`, `glass`, `polystyrene`, `latex`, `pmma`, `polycarbonate`, `tio2`, `mgf2`,
-`sio2_film`, `detector`, `calcite`, `quartz`, `sf5`, and `fiber_core_na22`. All
-entries are spot-checked against authoritative sources (NIST, peer-reviewed
-publications, manufacturer datasheets) per §7.10 citation policy.
+847 materials ship today: a 168-row hand-curated core (24 originals + a
+`library-expansion` round) plus 679 Schott + Ohara optical glasses imported from
+the vendor Zemax AGF catalogs by `scripts/tools/import_agf.py` (formula code
+1→`schott`, 2→`sellmeier`; unsupported formulas skipped, never approximated),
+carrying Schott TIE-19 dn/dT where the catalog provides it. The curated core:
+optical glasses (41 Schott/Ohara crowns/flints), metals/semiconductors/IR windows
+(17), polymers/liquids/gases/biological (35), coating-film materials (5), crystals
+with o/e pairs (46 uniaxial axis rows), plus foundational `vacuum`, `air`, `bk7`,
+`fused_silica`, `sapphire_o/e`, `water`, `glass`, `polystyrene`, `latex`, `pmma`,
+`polycarbonate`, `tio2`, `mgf2`, `sio2_film`, `detector`, `calcite`, `quartz`,
+`sf5`, and `fiber_core_na22`. Every row carries a required `reference`; the
+imported glasses' provenance is `library_data/agf/` (with a preservation guardrail,
+`scripts/tools/verify_miemat_preserved.py`, proving the import never altered a
+pre-existing row). Curated entries are spot-checked against authoritative sources
+(NIST, peer-reviewed publications, manufacturer datasheets) per §7.10.
 
 **To add a material**: append a row with a unique `name`; pick `class`
 descriptively; pick `model` and supply the required parameters for it
