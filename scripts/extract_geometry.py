@@ -133,6 +133,16 @@ ASPHERE_VERIFY_GRID = 15        # ~15x14 (u,v) grid ~= 200 samples
 ASPHERE_TOL_M = 1e-6            # 1 micron sag-declaration tolerance
 
 
+class ExtractError(RuntimeError):
+    """A fatal extraction error (die()).
+
+    Raised instead of exiting the process so this module is importable as a
+    library (scripts/fcserver/fcops.py extracts an already-open document
+    in-place for the fast evaluator, and the persistent worker must survive
+    a failed extraction). The CLI entry point at the bottom of this file
+    catches it and turns it into the historical exit(1)."""
+
+
 def log(msg):
     # print() alone has been observed to buffer/drop under the AppImage
     # console in some invocations; use both PrintMessage and print.
@@ -150,7 +160,7 @@ def warn(msg, warnings_list=None):
 def die(msg):
     FreeCAD.Console.PrintError("ERROR: " + msg + "\n")
     print("ERROR: " + msg, flush=True)
-    os._exit(1)
+    raise ExtractError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -1017,515 +1027,562 @@ def extract_faces(body, shape, tip_name, out_dir, strict, warnings,
 # One FCStd -> one geometry/<stem>/model.json
 # ---------------------------------------------------------------------------
 def extract_one(fcstd_path, outdir, strict):
+    """CLI wrapper: open the .FCStd, extract, close. The real work lives in
+    extract_document() so scripts/fcserver/fcops.py can extract an
+    ALREADY-OPEN document in place (the fast evaluator's persistent-worker
+    path) and produce byte-identical output."""
     fcstd_path = Path(fcstd_path).resolve()
     if not fcstd_path.exists():
         die("file not found: %s" % fcstd_path)
-
     stem = fcstd_path.stem
-    out_dir = outdir / stem
+    doc = FreeCAD.openDocument(str(fcstd_path))
+    try:
+        return extract_document(doc, stem, outdir / stem, strict,
+                                fcstd_path)
+    finally:
+        FreeCAD.closeDocument(doc.Name)
+
+
+def extract_document(doc, stem, out_dir, strict, source_fcstd,
+                     face_cache=None):
+    """Build, write and contract-validate <out_dir>/model.json (+ per-face
+    faces/*.stl) from an already-open FreeCAD document.
+
+    This is the WHOLE extraction contract: extract_one() above is a thin
+    open/close wrapper around it, and fcops.op_extract_model() calls it on
+    the fast evaluator's persistent in-memory document. `stem` is used only
+    for log/warning text (must match the variant stem for byte-identical
+    warnings); `source_fcstd` is echoed verbatim into the model's
+    provenance field.
+
+    face_cache (optional) skips re-tessellation/re-classification of bodies
+    whose geometry did not change between calls. Protocol (implemented by
+    fcops._ExtractFaceCache; keyed on shape fingerprint + placement +
+    surface_override + strict):
+        payload_or_None = face_cache.lookup(body, tip_name, override_raw)
+        face_cache.store(body, tip_name, override_raw, payload)
+    where payload = {"faces": [...face dicts...], "closest_face_id": str,
+    "warnings": [warning strings emitted while walking this body's faces]}
+    and lookup() has already placed every referenced faces/*.stl file in
+    out_dir when it returns a payload. Raises ExtractError on any fatal
+    problem (never exits the process).
+    """
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     warnings = []
-    doc = FreeCAD.openDocument(str(fcstd_path))
-    try:
-        doc.recompute()
+    doc.recompute()
 
-        sheets = [o for o in doc.Objects if o.TypeId == "Spreadsheet::Sheet"]
-        # Primary sheet ('dim' by convention, else the first) echoes FLAT
-        # (back-compat: permute_model / sweeps address bare aliases).
-        # Every sheet ALSO echoes namespaced as '<sheet label>.<alias>' so
-        # per-element parameter sheets (dim_<element>, from MieWorkbench
-        # primitives) are addressable without collisions.
-        spreadsheet = {}
-        if sheets:
-            primary = next((s for s in sheets if s.Label == "dim"),
-                           sheets[0])
-            spreadsheet.update(sheet_echo(primary, warnings))
-            for sheet in sheets:
-                for alias, rec in sheet_echo(sheet, warnings).items():
-                    spreadsheet["%s.%s" % (sheet.Label, alias)] = rec
+    sheets = [o for o in doc.Objects if o.TypeId == "Spreadsheet::Sheet"]
+    # Primary sheet ('dim' by convention, else the first) echoes FLAT
+    # (back-compat: permute_model / sweeps address bare aliases).
+    # Every sheet ALSO echoes namespaced as '<sheet label>.<alias>' so
+    # per-element parameter sheets (dim_<element>, from MieWorkbench
+    # primitives) are addressable without collisions.
+    spreadsheet = {}
+    if sheets:
+        primary = next((s for s in sheets if s.Label == "dim"),
+                       sheets[0])
+        spreadsheet.update(sheet_echo(primary, warnings))
+        for sheet in sheets:
+            for alias, rec in sheet_echo(sheet, warnings).items():
+                spreadsheet["%s.%s" % (sheet.Label, alias)] = rec
+    else:
+        warn("%s: no Spreadsheet::Sheet object found" % stem, warnings)
+
+    bodies_solids = []   # (body, shape, role) for overlap checking
+    bodies_out = []
+    n_sources = n_detectors = 0
+
+    for obj in doc.Objects:
+        if obj.TypeId != "PartDesign::Body":
+            continue
+        role = classify_body(obj)
+        if role == "ignored":
+            log("%s is ignored" % obj.Label)
+            continue
+
+        shape = obj.Shape
+        tip_name = obj.Tip.Name if obj.Tip else obj.Name
+
+        # surface_override must be parsed before extract_faces() since
+        # it steers per-face surface classification (asphere override).
+        surf_override_raw = str_prop_or_none(obj, "surface_override")
+        surf_override_map = {}
+        if surf_override_raw is not None:
+            try:
+                surf_override_map = parse_facemap_value_safe(
+                    surf_override_raw, obj.Name, tip_name)
+            except ValueError as e:
+                die("%s: bad surface_override spec %r: %s"
+                    % (obj.Label, surf_override_raw, e))
+
+        # face cache (fast evaluator, see docstring): replay an unchanged
+        # body's faces + warnings verbatim instead of re-tessellating.
+        cached = (face_cache.lookup(obj, tip_name, surf_override_raw)
+                  if face_cache is not None else None)
+        if cached is not None:
+            faces = cached["faces"]
+            closest_face_id = cached["closest_face_id"]
+            for w in cached.get("warnings", []):
+                warn(w, warnings)
         else:
-            warn("%s: no Spreadsheet::Sheet object found" % stem, warnings)
-
-        bodies_solids = []   # (body, shape, role) for overlap checking
-        bodies_out = []
-        n_sources = n_detectors = 0
-
-        for obj in doc.Objects:
-            if obj.TypeId != "PartDesign::Body":
-                continue
-            role = classify_body(obj)
-            if role == "ignored":
-                log("%s is ignored" % obj.Label)
-                continue
-
-            shape = obj.Shape
-            tip_name = obj.Tip.Name if obj.Tip else obj.Name
-
-            # surface_override must be parsed before extract_faces() since
-            # it steers per-face surface classification (asphere override).
-            surf_override_raw = str_prop_or_none(obj, "surface_override")
-            surf_override_map = {}
-            if surf_override_raw is not None:
-                try:
-                    surf_override_map = parse_facemap_value_safe(
-                        surf_override_raw, obj.Name, tip_name)
-                except ValueError as e:
-                    die("%s: bad surface_override spec %r: %s"
-                        % (obj.Label, surf_override_raw, e))
-
+            n_warn_mark = len(warnings)
             faces, closest_face_id = extract_faces(
                 obj, shape, tip_name, out_dir, strict, warnings,
                 surf_override_map)
+            if face_cache is not None:
+                face_cache.store(obj, tip_name, surf_override_raw, {
+                    "faces": faces,
+                    "closest_face_id": closest_face_id,
+                    "warnings": warnings[n_warn_mark:]})
 
-            bbox = shape.BoundBox
-            body_dict = {
-                "name": obj.Name,
-                "label": obj.Label,
-                "role": role,
-                "faces": faces,
-                "volume_m3": shape.Volume / 1e9,
-                "solid_closed": bool(shape.isClosed()),
-                "bbox_m": {
-                    "min": [bbox.XMin / 1000.0, bbox.YMin / 1000.0, bbox.ZMin / 1000.0],
-                    "max": [bbox.XMax / 1000.0, bbox.YMax / 1000.0, bbox.ZMax / 1000.0],
-                },
-            }
-
-            if hasattr(obj, "mirror"):
-                body_dict["mirror"] = capped01("mirror", obj.mirror, obj.Label, warnings)
-            if hasattr(obj, "absorbance"):
-                body_dict["absorbance"] = capped01(
-                    "absorbance", obj.absorbance, obj.Label, warnings)
-
-            # optional per-body operating temperature (deg C); shifts glasses
-            # carrying a thermo-optic model. Blank/none -> scene-global temp.
-            if hasattr(obj, "temperature"):
-                tv = obj.temperature
-                if not (isinstance(tv, str) and tv.strip().lower() in ("", "none")):
-                    try:
-                        body_dict["temperature"] = float(tv)
-                    except (TypeError, ValueError):
-                        die("%s: temperature %r is not a number" % (obj.Label, tv))
-
-            # roughness: legacy App::PropertyFloat (whole-body RMS nm) OR
-            # (schema v2) App::PropertyString per-face map
-            # 'Face1=200:lcorr=5;Face2=80'.
-            if hasattr(obj, "roughness"):
-                rv = obj.roughness
-                if isinstance(rv, str):
-                    raw = rv.strip()
-                    if raw and raw.lower() != "none":
-                        try:
-                            rmap = parse_facemap_value_safe(
-                                raw, obj.Name, tip_name)
-                            for fk, fv in rmap.items():
-                                common.parse_rough_value(fv)
-                        except ValueError as e:
-                            die("%s: bad roughness spec %r: %s"
-                                % (obj.Label, raw, e))
-                        body_dict["roughness_faces"] = rmap
-                else:
-                    body_dict["roughness_nm"] = float(rv)
-
-            # diffuser: per-face map (or whole-body) of ground-glass specs
-            # 'grit:120' | 'slope:0.08' | '@dg_600' (common.
-            # parse_diffuser_value grammar; deep-rough scatter at trace).
-            diffuser_raw = str_prop_or_none(obj, "diffuser")
-            if diffuser_raw is not None:
-                try:
-                    dmap = parse_facemap_value_safe(
-                        diffuser_raw, obj.Name, tip_name)
-                    for fk, fv in dmap.items():
-                        common.parse_diffuser_value(fv)
-                except ValueError as e:
-                    die("%s: bad diffuser spec %r: %s"
-                        % (obj.Label, diffuser_raw, e))
-                body_dict["diffuser_faces"] = dmap
-
-            # scatter: per-face map (or whole-body) of ABg/BSDF registry
-            # names 'name' | 'FaceN=polished_bk7_glass;...' (validated
-            # against opticalproperties/scatter/ at scene build; measured
-            # reflected-side scatter at trace). Names only, no value grammar
-            # (like coating).
-            scatter_raw = str_prop_or_none(obj, "scatter")
-            if scatter_raw is not None:
-                try:
-                    smap = parse_facemap_value_safe(
-                        scatter_raw, obj.Name, tip_name)
-                except ValueError as e:
-                    die("%s: bad scatter spec %r: %s"
-                        % (obj.Label, scatter_raw, e))
-                body_dict["scatter_faces"] = smap
-
-            # coating (schema v2): per-face map, {'__all__': name} for the
-            # legacy "whole body, one coating" form.
-            coating_raw = coating_value(obj)
-            if coating_raw is not None:
-                try:
-                    body_dict["coating"] = parse_facemap_value_safe(
-                        coating_raw, obj.Name, tip_name)
-                except ValueError as e:
-                    die("%s: bad coating spec %r: %s"
-                        % (obj.Label, coating_raw, e))
-
-            # ---- schema v2 optics-only properties ----
-            polarizer_raw = str_prop_or_none(obj, "polarizer")
-            if polarizer_raw is not None:
-                if role != "optic":
-                    warn("%s: polarizer is only meaningful on optic bodies "
-                         "(role=%s); ignoring" % (obj.Label, role), warnings)
-                else:
-                    body_dict["polarizer"] = polarizer_raw
-                    axis_raw = str_prop_or_none(obj, "polarizer_axis")
-                    try:
-                        local = (common.parse_axis_spec(axis_raw)
-                                if axis_raw is not None else [0.0, 0.0, 1.0])
-                    except ValueError as e:
-                        die("%s: bad polarizer_axis spec %r: %s"
-                            % (obj.Label, axis_raw, e))
-                    body_dict["polarizer_axis"] = rotated_local_axis(obj, local)
-
-            filter_raw = str_prop_or_none(obj, "filter")
-            if filter_raw is not None:
-                if role != "optic":
-                    warn("%s: filter is only meaningful on optic bodies "
-                         "(role=%s); ignoring" % (obj.Label, role), warnings)
-                else:
-                    body_dict["filter"] = filter_raw
-
-            crystal_axis_raw = str_prop_or_none(obj, "crystal_axis")
-            if role == "optic":
-                # ALWAYS emitted for optics (tracer default is local +x, but
-                # local frame is unknown at trace time) so every optic gets
-                # an unambiguous global crystal_axis.
-                try:
-                    local = (common.parse_axis_spec(crystal_axis_raw)
-                            if crystal_axis_raw is not None else [1.0, 0.0, 0.0])
-                except ValueError as e:
-                    die("%s: bad crystal_axis spec %r: %s"
-                        % (obj.Label, crystal_axis_raw, e))
-                body_dict["crystal_axis"] = rotated_local_axis(obj, local)
-            elif crystal_axis_raw is not None:
-                warn("%s: crystal_axis is only meaningful on optic bodies "
-                     "(role=%s); ignoring" % (obj.Label, role), warnings)
-
-            # biaxial crystals need a full principal frame: crystal_axis is
-            # the X principal axis, crystal_axis2 the Y axis (Z = X x Y;
-            # orthogonalization happens tracer-side). Emitted only when
-            # authored — the scene loader errors if a biaxial material
-            # lacks it.
-            axis2_raw = str_prop_or_none(obj, "crystal_axis2")
-            if axis2_raw is not None:
-                if role != "optic":
-                    warn("%s: crystal_axis2 is only meaningful on optic "
-                         "bodies (role=%s); ignoring" % (obj.Label, role),
-                         warnings)
-                else:
-                    try:
-                        local2 = common.parse_axis_spec(axis2_raw)
-                    except ValueError as e:
-                        die("%s: bad crystal_axis2 spec %r: %s"
-                            % (obj.Label, axis2_raw, e))
-                    body_dict["crystal_axis2"] = rotated_local_axis(
-                        obj, local2)
-
-            # ---- pulsed-optics Phase P8: Pockels / saturable / TPA / -----
-            # ---- Kerr n2 --------------------------------------------------
-            nonlinear_raw = str_prop_or_none(obj, "nonlinear")
-            if nonlinear_raw is not None:
-                if role != "optic":
-                    warn("%s: nonlinear is only meaningful on optic bodies "
-                         "(role=%s); ignoring" % (obj.Label, role), warnings)
-                else:
-                    body_dict["nonlinear"] = nonlinear_raw
-
-            if hasattr(obj, "pockels_voltage"):
-                if role != "optic":
-                    warn("%s: pockels_voltage is only meaningful on optic "
-                         "bodies (role=%s); ignoring" % (obj.Label, role),
-                         warnings)
-                else:
-                    body_dict["pockels_voltage"] = float(obj.pockels_voltage)
-
-            if hasattr(obj, "pockels_gap"):
-                if role != "optic":
-                    warn("%s: pockels_gap is only meaningful on optic "
-                         "bodies (role=%s); ignoring" % (obj.Label, role),
-                         warnings)
-                else:
-                    gap = float(obj.pockels_gap)
-                    if gap <= 0:
-                        die("%s: pockels_gap must be > 0 mm (got %g)"
-                            % (obj.Label, gap))
-                    body_dict["pockels_gap_mm"] = gap
-
-            saturable_raw = str_prop_or_none(obj, "saturable")
-            if saturable_raw is not None:
-                if role != "optic":
-                    warn("%s: saturable is only meaningful on optic bodies "
-                         "(role=%s); ignoring" % (obj.Label, role), warnings)
-                else:
-                    try:
-                        common.parse_saturable_value(saturable_raw)
-                    except ValueError as e:
-                        die("%s: bad saturable spec %r: %s"
-                            % (obj.Label, saturable_raw, e))
-                    body_dict["saturable"] = saturable_raw
-
-            if hasattr(obj, "tpa_beta"):
-                if role != "optic":
-                    warn("%s: tpa_beta is only meaningful on optic bodies "
-                         "(role=%s); ignoring" % (obj.Label, role), warnings)
-                else:
-                    body_dict["tpa_beta"] = float(obj.tpa_beta)
-
-            kerr_n2_raw = str_prop_or_none(obj, "kerr_n2")
-            if kerr_n2_raw is not None:
-                if role != "optic":
-                    warn("%s: kerr_n2 is only meaningful on optic bodies "
-                         "(role=%s); ignoring" % (obj.Label, role), warnings)
-                else:
-                    try:
-                        common.parse_kerr_n2_value(kerr_n2_raw)
-                    except ValueError as e:
-                        die("%s: bad kerr_n2 spec %r: %s"
-                            % (obj.Label, kerr_n2_raw, e))
-                    body_dict["kerr_n2"] = kerr_n2_raw
-
-            grating_raw = str_prop_or_none(obj, "grating")
-            if grating_raw is not None:
-                if role != "optic":
-                    warn("%s: grating is only meaningful on optic bodies "
-                         "(role=%s); ignoring" % (obj.Label, role), warnings)
-                else:
-                    try:
-                        gmap = parse_facemap_value_safe(
-                            grating_raw, obj.Name, tip_name)
-                        if common.FACEMAP_ALL in gmap:
-                            raise ValueError(
-                                "grating property must name specific faces "
-                                "(FaceN=...), not apply to every face")
-                        for fk, fv in gmap.items():
-                            common.parse_grating_value(fv)
-                    except ValueError as e:
-                        die("%s: bad grating spec %r: %s"
-                            % (obj.Label, grating_raw, e))
-                    body_dict["grating"] = gmap
-
-            if surf_override_raw is not None:
-                body_dict["surface_override_raw"] = surf_override_raw
-
-            if role == "source":
-                n_sources += 1
-                # power may be absent on a pulse_energy-only source (see
-                # classify_body's OR-gate). 0.0 (not None) is the "unset"
-                # sentinel here -- same convention as mirror/absorbance/
-                # roughness_nm elsewhere in this contract -- because
-                # common.validate_model requires source.power_mW to
-                # already be a real float (_req(src, "power_mW", float,
-                # ...), a pre-existing schema gate this phase doesn't
-                # touch). scene.py's power/pulse_energy XOR + derivation
-                # treats power_mW == 0.0 as "not authored" and overwrites
-                # it with the real derived average power.
-                power_mw = float(obj.power) if hasattr(obj, "power") else 0.0
-                lambdac_nm = float(obj.lambdac)
-                lambdamin = float(obj.lambdamin) if hasattr(obj, "lambdamin") else None
-                lambdamax = float(obj.lambdamax) if hasattr(obj, "lambdamax") else None
-                coherent = bool(obj.coherent) if hasattr(obj, "coherent") else False
-                source_dict = {
-                    "power_mW": power_mw,
-                    "lambdac_nm": lambdac_nm,
-                    "lambdamin_nm": lambdamin,
-                    "lambdamax_nm": lambdamax,
-                    "coherent": coherent,
-                    "emit_face": closest_face_id,
-                    "emit_face_autodetected": True,
-                }
-                # design-angle annotation (core.wizards.design_field_fan);
-                # optional, consumed by
-                # analysis_imaging.field_angle_annotations_from_model.
-                if hasattr(obj, "field_angle_deg"):
-                    source_dict["field_angle_deg"] = float(obj.field_angle_deg)
-                pol_raw = str_prop_or_none(obj, "polarization")
-                if pol_raw is not None:
-                    try:
-                        source_dict["polarization"] = \
-                            common.parse_polarization_spec(pol_raw)
-                    except ValueError as e:
-                        die("%s: bad polarization spec %r: %s"
-                            % (obj.Label, pol_raw, e))
-                apod_raw = str_prop_or_none(obj, "apodization")
-                if apod_raw is not None:
-                    try:
-                        source_dict["apodization"] = \
-                            common.parse_apodization_spec(apod_raw)
-                    except ValueError as e:
-                        die("%s: bad apodization spec %r: %s"
-                            % (obj.Label, apod_raw, e))
-                spectrum_raw = str_prop_or_none(obj, "spectrum")
-                if spectrum_raw is not None:
-                    source_dict["spectrum"] = spectrum_raw
-                    # a tabulated emission spectrum defines the full lambda
-                    # distribution; a lambdamin/lambdamax Gaussian would
-                    # contradict it -- the table wins, drop the bounds.
-                    if lambdamin is not None or lambdamax is not None:
-                        warn("%s: spectrum %r takes precedence over "
-                             "lambdamin/lambdamax (dropping the Gaussian "
-                             "bounds)" % (obj.Label, spectrum_raw), warnings)
-                        source_dict["lambdamin_nm"] = None
-                        source_dict["lambdamax_nm"] = None
-                if hasattr(obj, "beam_waist"):
-                    waist_mm = float(obj.beam_waist)
-                    if waist_mm <= 0:
-                        die("%s: beam_waist must be > 0 mm (got %g)"
-                            % (obj.Label, waist_mm))
-                    m2 = float(obj.m2) if hasattr(obj, "m2") else 1.0
-                    if m2 < 1.0:
-                        die("%s: m2 must be >= 1.0 (got %g)"
-                            % (obj.Label, m2))
-                    source_dict["beam"] = {"waist_mm": waist_mm, "m2": m2}
-                # pulsed-source properties (Phase P3): optional and
-                # independently omitted when absent, same as
-                # polarization/apodization/spectrum/beam above. scene.py
-                # enforces the power/pulse_energy XOR, requires rep_rate
-                # alongside pulse_energy, and derives whichever of
-                # {power_mW, pulse_energy_uJ} is missing.
-                if hasattr(obj, "pulse_energy"):
-                    source_dict["pulse_energy_uJ"] = float(obj.pulse_energy)
-                if hasattr(obj, "pulse_duration"):
-                    source_dict["pulse_duration_ps"] = float(obj.pulse_duration)
-                if hasattr(obj, "rep_rate"):
-                    source_dict["rep_rate_hz"] = float(obj.rep_rate)
-                # spm (string, Phase P6): source-side self-phase-modulation
-                # spec ('phimax:<rad>' or 'gamma:<W^-1km^-1>:length:<m>');
-                # string passthrough — raytracer.sources.install_spm
-                # parses/validates (it needs the derived pulse block,
-                # which only exists engine-side)
-                spm_raw = str_prop_or_none(obj, "spm")
-                if spm_raw is not None:
-                    source_dict["spm"] = spm_raw
-                body_dict["source"] = source_dict
-            elif role == "detector":
-                n_detectors += 1
-                det_dict = {
-                    "face": closest_face_id,
-                    "autodetected": True,
-                }
-                # detector_face (string): pin the detector's PRIMARY face,
-                # overriding the closest-to-world-origin auto-pick (which
-                # lands on a thin edge face on rotated/off-axis detectors and
-                # silently detects 0 mW). Accepts a bare 'FaceN' (resolved
-                # against THIS body's extracted faces, same id form as
-                # extract_faces: Body.Tip.FaceN) or an already-full face id.
-                # Unlike the CLI --detector-face this replaces the primary
-                # face in place (no extra transparent screen), so the scene
-                # stays C-engine-routable.
-                det_face_raw = str_prop_or_none(obj, "detector_face")
-                if det_face_raw is not None:
-                    face_ids = [f["id"] for f in faces]
-                    df = det_face_raw.strip()
-                    if re.match(r"^Face\d+$", df):
-                        resolved = "%s.%s.%s" % (obj.Name, tip_name, df)
-                    else:
-                        resolved = df
-                    if resolved not in face_ids:
-                        die("%s: detector_face %r resolves to %r which is "
-                            "not one of this body's faces: %s"
-                            % (obj.Label, det_face_raw, resolved,
-                               ", ".join(face_ids)))
-                    det_dict["face"] = resolved
-                    det_dict["autodetected"] = False
-                qe_curve = str_prop_or_none(obj, "qe_curve")
-                if qe_curve is not None:
-                    det_dict["qe_curve"] = qe_curve
-                body_dict["detector"] = det_dict
-            elif role == "optic":
-                body_dict["material"] = str(obj.material)
-
-            if role != "source" and str_prop_or_none(obj, "polarization") is not None:
-                warn("%s: polarization property is only meaningful on "
-                     "source bodies (role=%s); ignoring"
-                     % (obj.Label, role), warnings)
-
-            if role != "source" and str_prop_or_none(obj, "apodization") is not None:
-                warn("%s: apodization property is only meaningful on "
-                     "source bodies (role=%s); ignoring"
-                     % (obj.Label, role), warnings)
-
-            if role != "source" and hasattr(obj, "beam_waist"):
-                warn("%s: beam_waist property is only meaningful on "
-                     "source bodies (role=%s); ignoring"
-                     % (obj.Label, role), warnings)
-
-            if role != "source" and str_prop_or_none(obj, "spectrum") is not None:
-                warn("%s: spectrum property is only meaningful on "
-                     "source bodies (role=%s); ignoring"
-                     % (obj.Label, role), warnings)
-
-            if role != "detector" and \
-                    str_prop_or_none(obj, "detector_face") is not None:
-                warn("%s: detector_face property is only meaningful on "
-                     "detector bodies (role=%s); ignoring"
-                     % (obj.Label, role), warnings)
-
-            bodies_out.append(body_dict)
-            bodies_solids.append((obj.Name, shape))
-
-        if not bodies_out:
-            die("%s: no non-ignored bodies found" % stem)
-        if n_sources == 0:
-            die("%s: no light sources found (need lambdac plus power or "
-                "pulse_energy properties on a body)" % stem)
-        if n_detectors == 0:
-            die("%s: no detectors found (material=detector)" % stem)
-
-        overlaps = []
-        nested = []
-        for i in range(len(bodies_solids)):
-            ni, si = bodies_solids[i]
-            bi = si.BoundBox
-            for j in range(i + 1, len(bodies_solids)):
-                nj, sj = bodies_solids[j]
-                bj = sj.BoundBox
-                if (bi.XMax < bj.XMin or bi.XMin > bj.XMax
-                        or bi.YMax < bj.YMin or bi.YMin > bj.YMax
-                        or bi.ZMax < bj.ZMin or bi.ZMin > bj.ZMax):
-                    continue   # bboxes disjoint -> solids can't overlap
-                common_vol = si.common(sj).Volume
-                if common_vol > 1e-12:
-                    # PROPER NESTING (one solid strictly inside another) is
-                    # supported by the tracer's LIFO medium stack and is how
-                    # the beamsplitter cubes model their coated internal
-                    # interface (a nested thin plate: glass-glass, no gap,
-                    # no TIR); only PARTIAL overlap is non-manifold and
-                    # rejected.
-                    vi, vj = si.Volume, sj.Volume
-                    inner = min(vi, vj)
-                    if abs(common_vol - inner) <= 1e-6 * inner:
-                        nested.append({"outer": ni if vi > vj else nj,
-                                       "inner": nj if vi > vj else ni,
-                                       "volume_mm3": common_vol})
-                    else:
-                        overlaps.append({"a": ni, "b": nj,
-                                         "volume_mm3": common_vol})
-
-        model = {
-            "schema_version": 2,
-            "source_fcstd": str(fcstd_path),
-            "extracted_note": "generated by extract_geometry.py",
-            "units_note": "all lengths SI metres; wavelengths nm; power mW; angles radians",
-            "ambient_material": "air",
-            "spreadsheet": spreadsheet,
-            "bodies": bodies_out,
-            "validation": {
-                "overlapping_solids": overlaps,
-                "nested_solids": nested,
-                "warnings": warnings,
+        bbox = shape.BoundBox
+        body_dict = {
+            "name": obj.Name,
+            "label": obj.Label,
+            "role": role,
+            "faces": faces,
+            "volume_m3": shape.Volume / 1e9,
+            "solid_closed": bool(shape.isClosed()),
+            "bbox_m": {
+                "min": [bbox.XMin / 1000.0, bbox.YMin / 1000.0, bbox.ZMin / 1000.0],
+                "max": [bbox.XMax / 1000.0, bbox.YMax / 1000.0, bbox.ZMax / 1000.0],
             },
         }
-    finally:
-        FreeCAD.closeDocument(doc.Name)
+
+        if hasattr(obj, "mirror"):
+            body_dict["mirror"] = capped01("mirror", obj.mirror, obj.Label, warnings)
+        if hasattr(obj, "absorbance"):
+            body_dict["absorbance"] = capped01(
+                "absorbance", obj.absorbance, obj.Label, warnings)
+
+        # optional per-body operating temperature (deg C); shifts glasses
+        # carrying a thermo-optic model. Blank/none -> scene-global temp.
+        if hasattr(obj, "temperature"):
+            tv = obj.temperature
+            if not (isinstance(tv, str) and tv.strip().lower() in ("", "none")):
+                try:
+                    body_dict["temperature"] = float(tv)
+                except (TypeError, ValueError):
+                    die("%s: temperature %r is not a number" % (obj.Label, tv))
+
+        # roughness: legacy App::PropertyFloat (whole-body RMS nm) OR
+        # (schema v2) App::PropertyString per-face map
+        # 'Face1=200:lcorr=5;Face2=80'.
+        if hasattr(obj, "roughness"):
+            rv = obj.roughness
+            if isinstance(rv, str):
+                raw = rv.strip()
+                if raw and raw.lower() != "none":
+                    try:
+                        rmap = parse_facemap_value_safe(
+                            raw, obj.Name, tip_name)
+                        for fk, fv in rmap.items():
+                            common.parse_rough_value(fv)
+                    except ValueError as e:
+                        die("%s: bad roughness spec %r: %s"
+                            % (obj.Label, raw, e))
+                    body_dict["roughness_faces"] = rmap
+            else:
+                body_dict["roughness_nm"] = float(rv)
+
+        # diffuser: per-face map (or whole-body) of ground-glass specs
+        # 'grit:120' | 'slope:0.08' | '@dg_600' (common.
+        # parse_diffuser_value grammar; deep-rough scatter at trace).
+        diffuser_raw = str_prop_or_none(obj, "diffuser")
+        if diffuser_raw is not None:
+            try:
+                dmap = parse_facemap_value_safe(
+                    diffuser_raw, obj.Name, tip_name)
+                for fk, fv in dmap.items():
+                    common.parse_diffuser_value(fv)
+            except ValueError as e:
+                die("%s: bad diffuser spec %r: %s"
+                    % (obj.Label, diffuser_raw, e))
+            body_dict["diffuser_faces"] = dmap
+
+        # scatter: per-face map (or whole-body) of ABg/BSDF registry
+        # names 'name' | 'FaceN=polished_bk7_glass;...' (validated
+        # against opticalproperties/scatter/ at scene build; measured
+        # reflected-side scatter at trace). Names only, no value grammar
+        # (like coating).
+        scatter_raw = str_prop_or_none(obj, "scatter")
+        if scatter_raw is not None:
+            try:
+                smap = parse_facemap_value_safe(
+                    scatter_raw, obj.Name, tip_name)
+            except ValueError as e:
+                die("%s: bad scatter spec %r: %s"
+                    % (obj.Label, scatter_raw, e))
+            body_dict["scatter_faces"] = smap
+
+        # coating (schema v2): per-face map, {'__all__': name} for the
+        # legacy "whole body, one coating" form.
+        coating_raw = coating_value(obj)
+        if coating_raw is not None:
+            try:
+                body_dict["coating"] = parse_facemap_value_safe(
+                    coating_raw, obj.Name, tip_name)
+            except ValueError as e:
+                die("%s: bad coating spec %r: %s"
+                    % (obj.Label, coating_raw, e))
+
+        # ---- schema v2 optics-only properties ----
+        polarizer_raw = str_prop_or_none(obj, "polarizer")
+        if polarizer_raw is not None:
+            if role != "optic":
+                warn("%s: polarizer is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                body_dict["polarizer"] = polarizer_raw
+                axis_raw = str_prop_or_none(obj, "polarizer_axis")
+                try:
+                    local = (common.parse_axis_spec(axis_raw)
+                            if axis_raw is not None else [0.0, 0.0, 1.0])
+                except ValueError as e:
+                    die("%s: bad polarizer_axis spec %r: %s"
+                        % (obj.Label, axis_raw, e))
+                body_dict["polarizer_axis"] = rotated_local_axis(obj, local)
+
+        filter_raw = str_prop_or_none(obj, "filter")
+        if filter_raw is not None:
+            if role != "optic":
+                warn("%s: filter is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                body_dict["filter"] = filter_raw
+
+        crystal_axis_raw = str_prop_or_none(obj, "crystal_axis")
+        if role == "optic":
+            # ALWAYS emitted for optics (tracer default is local +x, but
+            # local frame is unknown at trace time) so every optic gets
+            # an unambiguous global crystal_axis.
+            try:
+                local = (common.parse_axis_spec(crystal_axis_raw)
+                        if crystal_axis_raw is not None else [1.0, 0.0, 0.0])
+            except ValueError as e:
+                die("%s: bad crystal_axis spec %r: %s"
+                    % (obj.Label, crystal_axis_raw, e))
+            body_dict["crystal_axis"] = rotated_local_axis(obj, local)
+        elif crystal_axis_raw is not None:
+            warn("%s: crystal_axis is only meaningful on optic bodies "
+                 "(role=%s); ignoring" % (obj.Label, role), warnings)
+
+        # biaxial crystals need a full principal frame: crystal_axis is
+        # the X principal axis, crystal_axis2 the Y axis (Z = X x Y;
+        # orthogonalization happens tracer-side). Emitted only when
+        # authored — the scene loader errors if a biaxial material
+        # lacks it.
+        axis2_raw = str_prop_or_none(obj, "crystal_axis2")
+        if axis2_raw is not None:
+            if role != "optic":
+                warn("%s: crystal_axis2 is only meaningful on optic "
+                     "bodies (role=%s); ignoring" % (obj.Label, role),
+                     warnings)
+            else:
+                try:
+                    local2 = common.parse_axis_spec(axis2_raw)
+                except ValueError as e:
+                    die("%s: bad crystal_axis2 spec %r: %s"
+                        % (obj.Label, axis2_raw, e))
+                body_dict["crystal_axis2"] = rotated_local_axis(
+                    obj, local2)
+
+        # ---- pulsed-optics Phase P8: Pockels / saturable / TPA / -----
+        # ---- Kerr n2 --------------------------------------------------
+        nonlinear_raw = str_prop_or_none(obj, "nonlinear")
+        if nonlinear_raw is not None:
+            if role != "optic":
+                warn("%s: nonlinear is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                body_dict["nonlinear"] = nonlinear_raw
+
+        if hasattr(obj, "pockels_voltage"):
+            if role != "optic":
+                warn("%s: pockels_voltage is only meaningful on optic "
+                     "bodies (role=%s); ignoring" % (obj.Label, role),
+                     warnings)
+            else:
+                body_dict["pockels_voltage"] = float(obj.pockels_voltage)
+
+        if hasattr(obj, "pockels_gap"):
+            if role != "optic":
+                warn("%s: pockels_gap is only meaningful on optic "
+                     "bodies (role=%s); ignoring" % (obj.Label, role),
+                     warnings)
+            else:
+                gap = float(obj.pockels_gap)
+                if gap <= 0:
+                    die("%s: pockels_gap must be > 0 mm (got %g)"
+                        % (obj.Label, gap))
+                body_dict["pockels_gap_mm"] = gap
+
+        saturable_raw = str_prop_or_none(obj, "saturable")
+        if saturable_raw is not None:
+            if role != "optic":
+                warn("%s: saturable is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                try:
+                    common.parse_saturable_value(saturable_raw)
+                except ValueError as e:
+                    die("%s: bad saturable spec %r: %s"
+                        % (obj.Label, saturable_raw, e))
+                body_dict["saturable"] = saturable_raw
+
+        if hasattr(obj, "tpa_beta"):
+            if role != "optic":
+                warn("%s: tpa_beta is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                body_dict["tpa_beta"] = float(obj.tpa_beta)
+
+        kerr_n2_raw = str_prop_or_none(obj, "kerr_n2")
+        if kerr_n2_raw is not None:
+            if role != "optic":
+                warn("%s: kerr_n2 is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                try:
+                    common.parse_kerr_n2_value(kerr_n2_raw)
+                except ValueError as e:
+                    die("%s: bad kerr_n2 spec %r: %s"
+                        % (obj.Label, kerr_n2_raw, e))
+                body_dict["kerr_n2"] = kerr_n2_raw
+
+        grating_raw = str_prop_or_none(obj, "grating")
+        if grating_raw is not None:
+            if role != "optic":
+                warn("%s: grating is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                try:
+                    gmap = parse_facemap_value_safe(
+                        grating_raw, obj.Name, tip_name)
+                    if common.FACEMAP_ALL in gmap:
+                        raise ValueError(
+                            "grating property must name specific faces "
+                            "(FaceN=...), not apply to every face")
+                    for fk, fv in gmap.items():
+                        common.parse_grating_value(fv)
+                except ValueError as e:
+                    die("%s: bad grating spec %r: %s"
+                        % (obj.Label, grating_raw, e))
+                body_dict["grating"] = gmap
+
+        if surf_override_raw is not None:
+            body_dict["surface_override_raw"] = surf_override_raw
+
+        if role == "source":
+            n_sources += 1
+            # power may be absent on a pulse_energy-only source (see
+            # classify_body's OR-gate). 0.0 (not None) is the "unset"
+            # sentinel here -- same convention as mirror/absorbance/
+            # roughness_nm elsewhere in this contract -- because
+            # common.validate_model requires source.power_mW to
+            # already be a real float (_req(src, "power_mW", float,
+            # ...), a pre-existing schema gate this phase doesn't
+            # touch). scene.py's power/pulse_energy XOR + derivation
+            # treats power_mW == 0.0 as "not authored" and overwrites
+            # it with the real derived average power.
+            power_mw = float(obj.power) if hasattr(obj, "power") else 0.0
+            lambdac_nm = float(obj.lambdac)
+            lambdamin = float(obj.lambdamin) if hasattr(obj, "lambdamin") else None
+            lambdamax = float(obj.lambdamax) if hasattr(obj, "lambdamax") else None
+            coherent = bool(obj.coherent) if hasattr(obj, "coherent") else False
+            source_dict = {
+                "power_mW": power_mw,
+                "lambdac_nm": lambdac_nm,
+                "lambdamin_nm": lambdamin,
+                "lambdamax_nm": lambdamax,
+                "coherent": coherent,
+                "emit_face": closest_face_id,
+                "emit_face_autodetected": True,
+            }
+            # design-angle annotation (core.wizards.design_field_fan);
+            # optional, consumed by
+            # analysis_imaging.field_angle_annotations_from_model.
+            if hasattr(obj, "field_angle_deg"):
+                source_dict["field_angle_deg"] = float(obj.field_angle_deg)
+            pol_raw = str_prop_or_none(obj, "polarization")
+            if pol_raw is not None:
+                try:
+                    source_dict["polarization"] = \
+                        common.parse_polarization_spec(pol_raw)
+                except ValueError as e:
+                    die("%s: bad polarization spec %r: %s"
+                        % (obj.Label, pol_raw, e))
+            apod_raw = str_prop_or_none(obj, "apodization")
+            if apod_raw is not None:
+                try:
+                    source_dict["apodization"] = \
+                        common.parse_apodization_spec(apod_raw)
+                except ValueError as e:
+                    die("%s: bad apodization spec %r: %s"
+                        % (obj.Label, apod_raw, e))
+            spectrum_raw = str_prop_or_none(obj, "spectrum")
+            if spectrum_raw is not None:
+                source_dict["spectrum"] = spectrum_raw
+                # a tabulated emission spectrum defines the full lambda
+                # distribution; a lambdamin/lambdamax Gaussian would
+                # contradict it -- the table wins, drop the bounds.
+                if lambdamin is not None or lambdamax is not None:
+                    warn("%s: spectrum %r takes precedence over "
+                         "lambdamin/lambdamax (dropping the Gaussian "
+                         "bounds)" % (obj.Label, spectrum_raw), warnings)
+                    source_dict["lambdamin_nm"] = None
+                    source_dict["lambdamax_nm"] = None
+            if hasattr(obj, "beam_waist"):
+                waist_mm = float(obj.beam_waist)
+                if waist_mm <= 0:
+                    die("%s: beam_waist must be > 0 mm (got %g)"
+                        % (obj.Label, waist_mm))
+                m2 = float(obj.m2) if hasattr(obj, "m2") else 1.0
+                if m2 < 1.0:
+                    die("%s: m2 must be >= 1.0 (got %g)"
+                        % (obj.Label, m2))
+                source_dict["beam"] = {"waist_mm": waist_mm, "m2": m2}
+            # pulsed-source properties (Phase P3): optional and
+            # independently omitted when absent, same as
+            # polarization/apodization/spectrum/beam above. scene.py
+            # enforces the power/pulse_energy XOR, requires rep_rate
+            # alongside pulse_energy, and derives whichever of
+            # {power_mW, pulse_energy_uJ} is missing.
+            if hasattr(obj, "pulse_energy"):
+                source_dict["pulse_energy_uJ"] = float(obj.pulse_energy)
+            if hasattr(obj, "pulse_duration"):
+                source_dict["pulse_duration_ps"] = float(obj.pulse_duration)
+            if hasattr(obj, "rep_rate"):
+                source_dict["rep_rate_hz"] = float(obj.rep_rate)
+            # spm (string, Phase P6): source-side self-phase-modulation
+            # spec ('phimax:<rad>' or 'gamma:<W^-1km^-1>:length:<m>');
+            # string passthrough — raytracer.sources.install_spm
+            # parses/validates (it needs the derived pulse block,
+            # which only exists engine-side)
+            spm_raw = str_prop_or_none(obj, "spm")
+            if spm_raw is not None:
+                source_dict["spm"] = spm_raw
+            body_dict["source"] = source_dict
+        elif role == "detector":
+            n_detectors += 1
+            det_dict = {
+                "face": closest_face_id,
+                "autodetected": True,
+            }
+            # detector_face (string): pin the detector's PRIMARY face,
+            # overriding the closest-to-world-origin auto-pick (which
+            # lands on a thin edge face on rotated/off-axis detectors and
+            # silently detects 0 mW). Accepts a bare 'FaceN' (resolved
+            # against THIS body's extracted faces, same id form as
+            # extract_faces: Body.Tip.FaceN) or an already-full face id.
+            # Unlike the CLI --detector-face this replaces the primary
+            # face in place (no extra transparent screen), so the scene
+            # stays C-engine-routable.
+            det_face_raw = str_prop_or_none(obj, "detector_face")
+            if det_face_raw is not None:
+                face_ids = [f["id"] for f in faces]
+                df = det_face_raw.strip()
+                if re.match(r"^Face\d+$", df):
+                    resolved = "%s.%s.%s" % (obj.Name, tip_name, df)
+                else:
+                    resolved = df
+                if resolved not in face_ids:
+                    die("%s: detector_face %r resolves to %r which is "
+                        "not one of this body's faces: %s"
+                        % (obj.Label, det_face_raw, resolved,
+                           ", ".join(face_ids)))
+                det_dict["face"] = resolved
+                det_dict["autodetected"] = False
+            qe_curve = str_prop_or_none(obj, "qe_curve")
+            if qe_curve is not None:
+                det_dict["qe_curve"] = qe_curve
+            body_dict["detector"] = det_dict
+        elif role == "optic":
+            body_dict["material"] = str(obj.material)
+
+        if role != "source" and str_prop_or_none(obj, "polarization") is not None:
+            warn("%s: polarization property is only meaningful on "
+                 "source bodies (role=%s); ignoring"
+                 % (obj.Label, role), warnings)
+
+        if role != "source" and str_prop_or_none(obj, "apodization") is not None:
+            warn("%s: apodization property is only meaningful on "
+                 "source bodies (role=%s); ignoring"
+                 % (obj.Label, role), warnings)
+
+        if role != "source" and hasattr(obj, "beam_waist"):
+            warn("%s: beam_waist property is only meaningful on "
+                 "source bodies (role=%s); ignoring"
+                 % (obj.Label, role), warnings)
+
+        if role != "source" and str_prop_or_none(obj, "spectrum") is not None:
+            warn("%s: spectrum property is only meaningful on "
+                 "source bodies (role=%s); ignoring"
+                 % (obj.Label, role), warnings)
+
+        if role != "detector" and \
+                str_prop_or_none(obj, "detector_face") is not None:
+            warn("%s: detector_face property is only meaningful on "
+                 "detector bodies (role=%s); ignoring"
+                 % (obj.Label, role), warnings)
+
+        bodies_out.append(body_dict)
+        bodies_solids.append((obj.Name, shape))
+
+    if not bodies_out:
+        die("%s: no non-ignored bodies found" % stem)
+    if n_sources == 0:
+        die("%s: no light sources found (need lambdac plus power or "
+            "pulse_energy properties on a body)" % stem)
+    if n_detectors == 0:
+        die("%s: no detectors found (material=detector)" % stem)
+
+    overlaps = []
+    nested = []
+    for i in range(len(bodies_solids)):
+        ni, si = bodies_solids[i]
+        bi = si.BoundBox
+        for j in range(i + 1, len(bodies_solids)):
+            nj, sj = bodies_solids[j]
+            bj = sj.BoundBox
+            if (bi.XMax < bj.XMin or bi.XMin > bj.XMax
+                    or bi.YMax < bj.YMin or bi.YMin > bj.YMax
+                    or bi.ZMax < bj.ZMin or bi.ZMin > bj.ZMax):
+                continue   # bboxes disjoint -> solids can't overlap
+            common_vol = si.common(sj).Volume
+            if common_vol > 1e-12:
+                # PROPER NESTING (one solid strictly inside another) is
+                # supported by the tracer's LIFO medium stack and is how
+                # the beamsplitter cubes model their coated internal
+                # interface (a nested thin plate: glass-glass, no gap,
+                # no TIR); only PARTIAL overlap is non-manifold and
+                # rejected.
+                vi, vj = si.Volume, sj.Volume
+                inner = min(vi, vj)
+                if abs(common_vol - inner) <= 1e-6 * inner:
+                    nested.append({"outer": ni if vi > vj else nj,
+                                   "inner": nj if vi > vj else ni,
+                                   "volume_mm3": common_vol})
+                else:
+                    overlaps.append({"a": ni, "b": nj,
+                                     "volume_mm3": common_vol})
+
+    model = {
+        "schema_version": 2,
+        "source_fcstd": str(source_fcstd),
+        "extracted_note": "generated by extract_geometry.py",
+        "units_note": "all lengths SI metres; wavelengths nm; power mW; angles radians",
+        "ambient_material": "air",
+        "spreadsheet": spreadsheet,
+        "bodies": bodies_out,
+        "validation": {
+            "overlapping_solids": overlaps,
+            "nested_solids": nested,
+            "warnings": warnings,
+        },
+    }
 
     out_json = out_dir / "model.json"
     common.write_json(out_json, model)
@@ -1569,6 +1626,22 @@ def main():
 
 # NOTE: no `if __name__ == "__main__"` guard — FreeCAD's console mode (-c)
 # executes scripts with __name__ set to the module's basename, not
-# "__main__", which would silently skip main() if guarded.
-main()
-sys.exit(0)
+# "__main__", which would silently skip main() if guarded. Instead, run
+# main() only when THIS file is the script FreeCAD (or plain python) was
+# asked to execute: under `AppImage -c scripts/extract_geometry.py -- ...`
+# sys.argv contains this file's path, while a library import (fcops'
+# in-place extraction op inside fc_server.py) has fc_server.py there
+# instead — so importing this module never triggers a batch extraction.
+def _run_as_script():
+    base = os.path.basename(__file__)
+    return any(os.path.basename(str(a)) == base for a in sys.argv)
+
+
+if _run_as_script():
+    try:
+        main()
+    except ExtractError:
+        # die() already printed the ERROR line; preserve the historical
+        # hard exit(1) (sys.exit is swallowed under FreeCAD -c).
+        os._exit(1)
+    sys.exit(0)

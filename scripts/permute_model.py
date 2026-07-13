@@ -68,6 +68,16 @@ FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Document").SetBool(
     "CreateBackupFiles", False)
 
 
+class PermuteError(ValueError):
+    """A fatal permutation error (die()).
+
+    Raised instead of exiting the process so this module is importable as
+    a library: scripts/fcserver/fcops.py applies parameter assignments to
+    an already-open document (the fast evaluator's persistent worker),
+    which must survive a bad alias/sheet name. The CLI entry point at the
+    bottom of this file catches it and preserves the historical exit(1)."""
+
+
 def log(msg):
     # print() alone has been observed to buffer/drop under the AppImage
     # console in some invocations; use both PrintMessage and print.
@@ -83,7 +93,7 @@ def warn(msg):
 def die(msg):
     FreeCAD.Console.PrintError("ERROR: %s\n" % msg)
     print("ERROR: %s" % msg, flush=True)
-    os._exit(1)   # sys.exit() is swallowed under FreeCAD -c; force a real exit.
+    raise PermuteError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +284,56 @@ def check_recompute(doc):
              % (len(bad), "; ".join(bad)))
 
 
+def apply_assignments(doc, assignments, unit="mm"):
+    """Apply parameter assignments to an OPEN document exactly like one
+    sweep-variant iteration of permute() below: set each aliased cell
+    ("alias" on the default 'dim' sheet, or "sheetlabel.alias"), recompute,
+    rebuild any touched primitive groups (including miewb_vars-driven
+    ones), then re-solve the optical train.
+
+    `assignments`: iterable of (var, value) in --var order. Raises
+    PermuteError (via die()) on an unknown sheet/alias. Returns the number
+    of train-solved elements.
+
+    Shared BY CONTRACT with fcops.op_apply_params (the fast evaluator's
+    persistent-worker path): both the write-a-variant-file flow and the
+    in-place flow MUST mutate the document through this one function so
+    they can never drift apart (the fast evaluator's parity oracle pins
+    this equivalence end-to-end)."""
+    default_sheet = None
+    touched_sheets = []
+    for var, value in assignments:
+        sheet_label, alias = split_var(var)
+        if sheet_label is None:
+            if default_sheet is None:
+                default_sheet = find_sheet(doc)
+            sheet = default_sheet
+        else:
+            sheet = find_sheet(doc, sheet_label)
+        cell = resolve_alias_cell(sheet, alias)
+        # global-variables cells are UNITLESS by contract (they feed
+        # expressions and train fields that expect plain numbers); dim
+        # cells keep the length unit
+        if sheet.Label == train_fcstd.VARIABLES_SHEET:
+            sheet.set(cell, "=%.10g" % value)
+        else:
+            sheet.set(cell, "=%.10g %s" % (value, unit))
+        if sheet not in touched_sheets:
+            touched_sheets.append(sheet)
+    doc.recompute()
+    extend_touched_for_miewb_vars(doc, touched_sheets)
+    rebuild_primitive_groups(doc, touched_sheets)
+    # optical train: re-bake expression-driven props and re-solve every
+    # chained placement against the variant's variable values (the GUI's
+    # exact solver — see train_fcstd.py)
+    n_train = train_fcstd.apply_train(doc, log=log)
+    if n_train:
+        doc.recompute()
+        log("train: re-solved %d chained element(s)" % n_train)
+    check_recompute(doc)
+    return n_train
+
+
 def permute(model_path, varspecs, outdir, unit, sweep_mode="product"):
     """varspecs: list of (var, vmin, vmax, n) in --var order.
 
@@ -300,37 +360,7 @@ def permute(model_path, varspecs, outdir, unit, sweep_mode="product"):
 
         doc = FreeCAD.openDocument(str(model_path))
         try:
-            default_sheet = None
-            touched_sheets = []
-            for var, value in zip(names, combo):
-                sheet_label, alias = split_var(var)
-                if sheet_label is None:
-                    if default_sheet is None:
-                        default_sheet = find_sheet(doc)
-                    sheet = default_sheet
-                else:
-                    sheet = find_sheet(doc, sheet_label)
-                cell = resolve_alias_cell(sheet, alias)
-                # global-variables cells are UNITLESS by contract (they
-                # feed expressions and train fields that expect plain
-                # numbers); dim cells keep the length unit
-                if sheet.Label == train_fcstd.VARIABLES_SHEET:
-                    sheet.set(cell, "=%.10g" % value)
-                else:
-                    sheet.set(cell, "=%.10g %s" % (value, unit))
-                if sheet not in touched_sheets:
-                    touched_sheets.append(sheet)
-            doc.recompute()
-            extend_touched_for_miewb_vars(doc, touched_sheets)
-            rebuild_primitive_groups(doc, touched_sheets)
-            # optical train: re-bake expression-driven props and re-solve
-            # every chained placement against the variant's variable
-            # values (the GUI's exact solver — see train_fcstd.py)
-            n_train = train_fcstd.apply_train(doc, log=log)
-            if n_train:
-                doc.recompute()
-                log("train: re-solved %d chained element(s)" % n_train)
-            check_recompute(doc)
+            apply_assignments(doc, list(zip(names, combo)), unit=unit)
 
             doc.saveAs(str(out_path))
             log("wrote %s (%s)"
@@ -365,6 +395,22 @@ def main():
 
 # NOTE: no `if __name__ == "__main__"` guard — FreeCAD's console mode (-c)
 # executes scripts with __name__ set to the module's basename, not
-# "__main__", which would silently skip main() if guarded.
-main()
-sys.exit(0)
+# "__main__", which would silently skip main() if guarded. Instead, run
+# main() only when THIS file is the script FreeCAD (or plain python) was
+# asked to execute: under `AppImage -c scripts/permute_model.py -- ...`
+# sys.argv contains this file's path, while a library import (fcops'
+# apply_params op inside fc_server.py) has fc_server.py there instead —
+# so importing this module never triggers a permutation run.
+def _run_as_script():
+    base = os.path.basename(__file__)
+    return any(os.path.basename(str(a)) == base for a in sys.argv)
+
+
+if _run_as_script():
+    try:
+        main()
+    except PermuteError:
+        # die() already printed the ERROR line; preserve the historical
+        # hard exit(1) (sys.exit is swallowed under FreeCAD -c).
+        os._exit(1)
+    sys.exit(0)
