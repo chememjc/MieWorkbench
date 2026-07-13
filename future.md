@@ -138,6 +138,94 @@ dependency from the optics env; (3) eventually sunset the Python compute
 paths for day-to-day use — the numpy engine remains indefinitely as the
 slow, readable parity reference.
 
+### Design-apparatus round (landed 2026-07-13) — the v1 design tools
+
+The round that closed the former optimization/tolerancing ❌-sweep in
+`features.md` §4. STATUS facts only:
+
+| Item | STATUS | Code seam |
+|--|--|--|
+|Weighted-merit optimizer (spot-RMS/EE/MTF50/power)|**done, v1** — scipy Nelder-Mead **local** + nevergrad CMA-ES **global**; NO named-operand library, NO glass substitution, NO multi-config|`scripts/optimize.py`; Optimize GUI dock; `auto_designed_lens` demo|
+|Persistent-worker fast evaluator|**done** — ~10× geometry-stage speedup, fingerprint-cache, crash-recovery, parity-oracle-verified (the shared optimizer/tolerancer inner loop)|`scripts/fast_eval.py`|
+|Sensitivity + Monte-Carlo yield tolerancing|**done, v1** — sensitivity ranking + MC yield histogram + a **focus compensator** (single, nested optimize call); NO distribution library, NO compensator chains, NO fast-differential|`scripts/tolerance.py`; Tolerance GUI dock; `tolerance_yield` demo|
+|dn/dT thermo-optic index + AGF catalog import|**done** — Schott TIE-19 `n(λ,T)` + `--temperature`; **168→847 materials** (Schott/Ohara AGF importer)|`materials.py` TIE-19 term; `scripts/tools/import_agf.py`; `opticalproperties/materials.miemat`|
+|True exit-pupil / chief-ray + PSF-peak Strehl|**done** — exit-pupil reference sphere; PSF-peak-ratio Strehl (was Maréchal-only)|`scripts/raytracer/analysis_imaging.py`, `--wavefront-pupil exit_pupil`|
+|Partial-coherence + image simulation|**done, v1** — coherent/incoherent/partial image-sim, **single space-invariant PSF convolution** (NOT field-varying, NOT a VCZ projector)|`analysis_field.image_*`|
+|In-app Python console bound to `Project`|**done** — real interactive scripting (not a 4-mode SDK)|`mieworkbench/panes/py_console.py`|
+
+**What this does NOT include** (the v1-maturation gaps, now the top of the
+priority list below): named-operand library + true DLS local (I1/I2 depth),
+glass substitution (I4), multi-config optimization + a config editor
+(I5/M1–M3), compensator chains (J3), fast-differential tolerancing (J5),
+directed global synthesis (I6), annular/multi-basis Zernike (B6 depth),
+field-varying image-sim + VCZ partial coherence (F10/B8 depth).
+
+## Priority ranking — impact × leverage (2026-07-13, post design-apparatus round)
+
+The former "Must-Have" list (optimizer, tolerancer, dn/dT, exit-pupil,
+console) is **DELIVERED** (above). This is the rebuilt single ordered
+priority list, **interleaving v1-maturation of the new design apparatus with
+the still-open categorical gaps**, ranked by **(impact on closing a
+competitor-won `features.md` line) × (leverage over existing code)**. Effort ·
+impact per the legend. Each item's narrative + code seam lives in its own
+Backlog/§ below (or `features.md` §7).
+
+1. **Glass substitution (I4)** — **[M · High]**. Discrete catalog search
+   wrapping the shipped `optimize.py` over the 847-row material registry;
+   all of Zemax/CODE V/QUADOA win it and it is central to real lens design.
+   Highest leverage-to-impact: the optimizer and the catalog already exist.
+2. **More + named merit operands (I1 depth)** — **[S-M · High]**. Extend the
+   weighted merit in `optimize.py` with a named-operand set (EFL, RMS
+   wavefront, MTF@freq, edge/boundary constraints). Pure extension of shipped
+   code; moves I1 🟡→toward ✅.
+3. **Multi-config optimization + config-table editor (I5 · M1–M3)** —
+   **[M · High]**. Wrap the `--var` sweep + Variables dock as a named-config
+   table the optimizer iterates; all four suites win M and I5. Reuses the
+   sweep machinery + fast evaluator.
+4. **CAD (STEP/IGES) import as traceable elements (D9/D10 · P2)** —
+   **[M / L(analytic) · High]**. FreeCAD already imports STEP/IGES; expose
+   via the fc_server worker, fall back to the shipped incoherent mesh-BVH.
+   Removes a hard ❌ and unlocks optomechanical/stray-light scenes.
+5. **Compensator chains (J3 full)** — **[M · Med-High]**. Generalize the
+   shipped single focus compensator to N chained compensators (nested
+   optimize over the compensator set per MC draw); moves J3 🟡→✅.
+6. **Annular / multi-basis Zernike + exit-pupil polish (B6 depth)** —
+   **[M · Med]**. Add annular + Standard/Fringe bases on top of the shipped
+   exit-pupil stage; moves B6 🟡→✅. High leverage (extends analysis_imaging).
+7. **Ray-aiming to a stop + measured source files (E6/E7)** — **[M · Med]**.
+   `sources.py` already samples faces; iterate emission to hit a named
+   aperture (E6), add an IES/TM-25/rayfile importer (E7). The last source
+   gaps vs Zemax/OSLO/QUADOA.
+8. **Analytic Q-type (Forbes) / XY-Zernike freeform with coherent phase
+   (D3/D4)** — **[M-L · Med]**. Extend the `surfaces.py` asphere machinery
+   (Newton-intersect + `<1µm` verify) to Qbfs/Qcon + freeform sag; matters
+   for freeform/AR-VR.
+9. **Fast-differential wavefront tolerancing (J5)** — **[L · Med]**. Finite-
+   difference perturbation of the exit-pupil Zernike vector (the exit-pupil
+   stage it needs is now shipped), cheap enough for in-loop desensitization;
+   CODE V's unique bar.
+10. **Directed global synthesis / multi-start (I6)** — **[XL · Med]**. Stretch
+    on `optimize.py`: surface many distinct minima per run (CODE V Global-
+    Synthesis-style). Lower leverage (research-grade), CODE V-unique.
+11. **BTDF scatter + fuller stray-light report (H2/H6)** — **[M · Med]**.
+    BTDF beside the shipped BRDF ABg sampler + a Path-Analysis-style report on
+    the shipped ghost ranking; MieWorkbench already wins the scatter *physics*.
+12. **Field-varying image-sim + VCZ partial coherence (F10/B8 depth)** —
+    **[L · Med]**. Upgrade the shipped space-invariant image-sim to
+    field-varying, add a Van Cittert–Zernike projector; rides on the exit-pupil
+    field pipeline. Depth polish on a shipped v1.
+13. **GRIN media (D8)** — **[XL · High]**. High impact (every design suite
+    except 3DOptix has it) but **low leverage** — genuinely new curved-ray
+    eikonal (Runge–Kutta) integration replacing the straight-segment loop in
+    `tracer.py`. Impact-worthy but expensive, hence mid-list by impact×leverage.
+14. **Nestable assemblies + cross-platform packaging (O7 · N7/R3)** —
+    **[M / L · Med]**. First-class assembly object over `miewb_group`;
+    Windows/Mac build (blocker is the FreeCAD/optics-env/ParaView stack, not
+    the GUI).
+15. **Gridded POP / beamlet propagator (B3/B10/B11)** — **[L-XL · Low]**.
+    Propagate a gridded field surface-to-surface on the existing gather kernel;
+    the coherent gather already covers most cases, so lowest priority.
+
 ## Backlog
 
 ### (a) Near-term, carried forward from `lowhanging.md` §6
@@ -368,29 +456,18 @@ reflects rigidly) is **not** listed here — the fold operator landed
 (§11 above) and the demo itself is being built in the design-usability
 round.
 
-- **auto_designed_lens** (optimizer, `features.md` §7.2 — *the biggest
-  categorical gap*). Start from a poor doublet; a merit-function optimize
-  (spot RMS / encircled energy) + glass substitution converges to a
-  corrected design. Pragmatic path: wrap the existing FreeCAD
-  spreadsheet-parameter sweep (`permute_model.py`/`--var`) as an
-  optimization loop — scipy.optimize (least_squares/differential_evolution)
-  or nevergrad/CMA over a merit function built from the named analysis
-  products (spot RMS, encircled energy, detected power); start with a
-  headless `scripts/optimize.py`, add a GUI merit-function panel later.
-  Per-iteration cost is a full FreeCAD rebuild -> extract -> trace via
-  `permute_model.py` plus the coherent gather — mitigate with geometry
-  caching for unchanged bodies and a geometric-only fast mode
-  (`coherent=false`, direct deposit) for the inner loop, refining
-  coherently at the end. Effort: headless optimizer L; GUI M; global XL.
-- **tolerance_yield** (tolerancing, `features.md` §7.3). Take
-  `camera_triplet`; a Monte-Carlo tolerance run over radius/thickness/
-  decenter/tilt with a focus compensator -> yield histogram. Pragmatic
-  path: `scripts/tolerance.py` perturbs the FreeCAD model per a tolerance
-  table, runs the (geometric-fast) pipeline N times using the existing
-  `--seeds` + `permute_model.py` machinery, aggregates a merit-metric
-  distribution + sensitivity ranking; compensators = a nested §7.2
-  optimize call per draw. Effort: sensitivity M; MC tolerancing L;
-  compensators L.
+- **auto_designed_lens** (optimizer) — **DELIVERED (design-apparatus round,
+  2026-07-13).** `scripts/optimize.py` (weighted spot-RMS/EE/MTF50/power
+  merit, scipy Nelder-Mead local + nevergrad CMA-ES global, on the
+  `fast_eval.py` persistent worker) + an Optimize GUI dock + the demo all
+  shipped. The v1 excludes glass substitution / multi-config / a named
+  operand library — now the top of the priority list.
+- **tolerance_yield** (tolerancing) — **DELIVERED (design-apparatus round,
+  2026-07-13).** `scripts/tolerance.py` (sensitivity ranking + Monte-Carlo
+  yield histogram + a focus compensator via a nested optimize call) + a
+  Tolerance GUI dock + the demo all shipped. The v1 excludes a distribution
+  library, compensator chains, and CODE V-style fast-differential
+  tolerancing — priority-list follow-ons.
 - **cad_import_scene** (CAD import, `features.md` §7.4). A STEP-imported
   lens barrel + baffles traced as optomechanics (stray light) around an
   existing optical train. FreeCAD already imports STEP/IGES; the missing
@@ -399,12 +476,12 @@ round.
   extractor canonicalizing imported faces (falling back to the existing
   mesh-BVH path for non-canonical ones — already shipped, incoherent-
   only). Effort: M for mesh-import; L for analytic-face recovery.
-- **freeform_illuminator** (illumination design, `features.md` §7.9). An
-  LED + freeform reflector/TIR lens optimized to a prescribed irradiance
-  target with photometric units. Non-imaging design (freeform tailoring)
-  rides on the §7.2 optimizer above; photometric units (lux/lumen/candela
-  via CIE V(λ)) already landed (item #2 above). Effort: L (depends on
-  §7.2 landing first).
+- **freeform_illuminator** (illumination design, `features.md` §7.9) — now
+  **UNBLOCKED** (the optimizer it rides on landed 2026-07-13). An LED +
+  freeform reflector/TIR lens optimized to a prescribed irradiance target
+  with photometric units. Non-imaging freeform tailoring wraps the shipped
+  `optimize.py`; photometric units (lux/lumen/candela via CIE V(λ)) already
+  landed. Effort: L.
 
 ## Roadmap rating index (every open item, 2-axis)
 
@@ -418,10 +495,10 @@ narrative + exact code seam for each stays in its own section above (or in
 | Item | Effort | Impact | Note |
 |--|:--:|:--:|--|
 |Stress/spatially-varying birefringence|L-XL|Med|first cut (constant axis, position-dependent Δn) closer to L; full stress-optic + FEA XL; niche photoelastic|
-|Exit-pupil / chief-ray search stage|L|**High**|unlocks true-pupil Zernike/Strehl, PSF-peak Strehl, partial coherence, image-sim (`features.md` §7.3)|
-|BTDF (transmitted-side) measured scatter|M|Med|completes the ABg scatter model; scattering exit faces|
+|Exit-pupil / chief-ray search stage|—|—|**DONE (design-apparatus round, 2026-07-13)** — `analysis_imaging.py`, `--wavefront-pupil exit_pupil`; PSF-peak Strehl + partial image-sim shipped. Depth follow-on (annular Zernike, field-varying image-sim) in the priority list #6/#12|
+|BTDF (transmitted-side) measured scatter|M|Med|completes the ABg scatter model; scattering exit faces (priority list #11)|
 |Coherent gather on curved detectors|L|Med|curved-aperture obliquity terms; `curved_focal_surface` demo|
-|Materials dn/dT (thermo-optic) hook|M|**High**|unlocks thermal G3/K1 — all four design suites win it; data already compiled|
+|Materials dn/dT (thermo-optic) hook|—|—|**DONE (design-apparatus round, 2026-07-13)** — Schott TIE-19 `n(λ,T)` + `--temperature` + 847-glass AGF import (`materials.py`, `import_agf.py`)|
 |Line-spectrum + blackbody/lamp sources|M|Med|continuous-tabulated + white LED landed; discrete-line & Planck kinds remain|
 
 ### Backlog (a2) — placement/authoring affordances
@@ -457,13 +534,25 @@ narrative + exact code seam for each stays in its own section above (or in
 |Mesh-type source/detector faces|M|Low|needs a UV parameterization the paths lack|
 |Aspherical particles (T-matrix)|M|Low|`pytmatrix` drop-in behind `MieEvaluator`|
 
+### Design-apparatus v1-maturation follow-ons (NEW — the top of the priority list)
+| Item | Closes | Effort | Impact | Note |
+|--|--|:--:|:--:|--|
+|Glass substitution|I4|M|**High**|discrete catalog search wrapping `optimize.py` over the 847-row registry; all of Zemax/CODE V/QUADOA win it (priority #1)|
+|Named-operand merit library + true DLS local|I1/I2 depth|S-M|**High**|extend the weighted merit in `optimize.py`; EFL/RMS-wavefront/MTF@freq/edge operands (priority #2)|
+|Multi-config optimization + config-table editor|I5 · M1–M3|M|**High**|wrap `--var` sweep + Variables dock as a named-config table the optimizer iterates (priority #3)|
+|Compensator chains|J3 full|M|Med-High|generalize the shipped single focus compensator to N chained compensators (priority #5)|
+|Annular / multi-basis Zernike|B6 depth|M|Med|add annular + Standard/Fringe bases on the shipped exit-pupil stage; B6 🟡→✅ (priority #6)|
+|Fast-differential wavefront tolerancing|J5|L|Med|finite-difference perturbation of the (now-shipped) exit-pupil Zernike vector; CODE V's unique bar (priority #9)|
+|Directed global synthesis / multi-start|I6|XL|Med|stretch on `optimize.py`; surface many distinct minima per run (priority #10)|
+|Field-varying image-sim + VCZ partial coherence|F10/B8 depth|L|Med|upgrade the shipped space-invariant image-sim; add a VCZ projector (priority #12)|
+
 ### Backlog (d) — big-roadmap acceptance-target demos
 | Item | Effort | Impact | Note |
 |--|:--:|:--:|--|
-|`auto_designed_lens` (optimizer)|L(headless)/XL(global)|**High**|**the biggest categorical gap** (`features.md` §7.1); all four design suites win the I block|
-|`tolerance_yield` (tolerancing)|L|**High**|MC tolerance + compensators (`features.md` §7.2); CODE V's Wavefront-Differential sets the bar|
-|`cad_import_scene` (CAD import)|M/L|Med|FreeCAD already imports STEP; expose as element (`features.md` §7.4)|
-|`freeform_illuminator` (illumination design)|L|Med|rides on the optimizer; photometric units already landed|
+|`auto_designed_lens` (optimizer)|—|—|**DONE (design-apparatus round, 2026-07-13)** — `optimize.py` (Nelder-Mead + CMA-ES) + demo; v1-maturation (glass-sub/multi-config/operands) in the follow-ons table above|
+|`tolerance_yield` (tolerancing)|—|—|**DONE (design-apparatus round, 2026-07-13)** — `tolerance.py` (sensitivity + MC yield + focus compensator) + demo; compensator-chains/J5 in the follow-ons table above|
+|`cad_import_scene` (CAD import)|M/L|Med|FreeCAD already imports STEP; expose as element (`features.md` §7.4; priority list #4)|
+|`freeform_illuminator` (illumination design)|L|Med|rides on the optimizer (now shipped); photometric units already landed|
 
 ### Pulsed-optics round follow-ups (moat-widening on the S axis MieWorkbench uniquely owns)
 | Item | Effort | Impact | Note |
@@ -497,31 +586,36 @@ narrative + exact code seam for each stays in its own section above (or in
 > ray-aiming, measured source files, multi-config editor, cross-platform packaging) are the
 > genuinely-still-open items.
 
-The `features.md` refresh (now vs Zemax, CODE V, OSLO, QUADOA, 3DOptix) exposes one
-coherent theme: MieWorkbench has closed the *analysis-product* gap (PSF/MTF/EE/spot/
-fans/Zernike/Strehl, photometry, ghost analysis all landed) but still lacks the
-**design apparatus** every commercial suite here is built around. These are the
-features the comparison says MieWorkbench *could* support, each with a 2-axis rating,
-the exact code seam, and the `features.md` line it closes. (Items already in the
+The `features.md` refresh (now vs Zemax, CODE V, OSLO, QUADOA, 3DOptix) tells a two-part
+story: MieWorkbench closed the *analysis-product* gap (PSF/MTF/EE/spot/fans/Zernike/Strehl,
+photometry, ghost analysis) in earlier rounds, and the 2026-07-13 design-apparatus round
+then landed a **v1 of the design apparatus itself** (optimizer, tolerancer, dn/dT, exit-pupil
+Strehl, image-sim, console — see the banner above). What the table below now tracks is
+therefore **(a) the DELIVERED design-apparatus rows** (marked DONE, kept for traceability)
+and **(b) the still-open items** — both the *v1-maturation* follow-ons (glass substitution,
+multi-config, compensator chains, fast-differential, directed synthesis, operand library —
+ranked in the priority list up top) and the *categorical* gaps (GRIN, Q-type/freeform, CAD
+import, POP/BSP, ray-aiming, measured source files, cross-platform packaging). Each carries a
+2-axis rating, the exact code seam, and the `features.md` line it closes. (Items already in the
 Backlog above are cross-referenced, not repeated.)
 
 | Feature | Closes | Effort | Impact | Seam / path |
 |--|--|:--:|:--:|--|
-|**Headless optimization loop** (merit function + local/global)|I1–I5|L / XL(global)|**High**|`scripts/optimize.py` wrapping `permute_model.py`/`--var`; scipy/nevergrad/CMA over shipped spot-RMS/EE metrics; geometric-fast inner loop. Backlog (d) `auto_designed_lens`|
-|**Directed global synthesis** (many distinct minima, CODE V-style)|I6|XL|Med|stretch goal on the optimizer; surfaces multiple design forms per run|
-|**Sensitivity + Monte-Carlo tolerancing**|J1–J4|L|**High**|`scripts/tolerance.py` over `--seeds`+`permute_model.py`; sensitivity ranking + yield histogram. Backlog (d) `tolerance_yield`|
-|**Fast differential wavefront tolerancing** (CODE V Wavefront-Differential)|J5|L|Med|finite-difference perturbation of the Zernike vector, cheap enough for in-loop desensitization; depends on the exit-pupil stage|
-|**True exit-pupil / chief-ray search**|B6/B7 upgrade, B8, F10|L|**High**|`raytracer/analysis.py` reference-sphere stage; unlocks PSF-peak Strehl, partial coherence, image-sim. Backlog (a)|
-|**dn/dT + expanded glass/dispersion catalogs**|G1–G3, K1|S-M / M|**High**|Sellmeier already supported; add dn/dT column + T param in `materials.py`; import more AGF catalogs. Backlog (a)|
-|**GRIN media**|D8|XL|**High**|Runge–Kutta eikonal curved-ray integration in `tracer.py`. Backlog (b)|
-|**In-app Python console** bound to `Project`|P3|M|**High**|expose `core/project.py` in a console pane — app is already Python; also answers the "no scripting API" gap Zemax/OSLO/QUADOA win|
+|**Headless optimization loop** (merit function + local/global)|I1🟡/I2🟡/I3✅|**DONE v1**|—|**DELIVERED** `scripts/optimize.py` (Nelder-Mead + CMA-ES) on `fast_eval.py`; maturation (I1 operands / I4 glass-sub / I5 multi-config) = priority list #1–3|
+|**Directed global synthesis** (many distinct minima, CODE V-style)|I6|XL|Med|OPEN — stretch goal on the shipped optimizer; surfaces multiple design forms per run (priority #10)|
+|**Sensitivity + Monte-Carlo tolerancing**|J1✅/J2✅/J4✅|**DONE v1**|—|**DELIVERED** `scripts/tolerance.py`; sensitivity ranking + MC yield + focus compensator (J3🟡). Chains/J5 = priority #5/#9|
+|**Fast differential wavefront tolerancing** (CODE V Wavefront-Differential)|J5|L|Med|OPEN — finite-difference perturbation of the (now-shipped) exit-pupil Zernike vector, for in-loop desensitization (priority #9)|
+|**True exit-pupil / chief-ray search**|B6🟡/B7✅, B8🟡, F10🟡|**DONE v1**|—|**DELIVERED** `analysis_imaging.py` (`--wavefront-pupil exit_pupil`) + PSF-peak Strehl + partial image-sim. Annular-Zernike/field-varying depth = priority #6/#12|
+|**dn/dT + expanded glass/dispersion catalogs**|G1🟡/G3✅, K1🟡|**DONE**|—|**DELIVERED** Schott TIE-19 `n(λ,T)` + `--temperature` + 847-glass AGF import (`materials.py`, `import_agf.py`). More catalog breadth = `features.md` §7.6|
+|**GRIN media**|D8|XL|**High**|OPEN — Runge–Kutta eikonal curved-ray integration in `tracer.py`. Backlog (b) (priority #13)|
+|**In-app Python console** bound to `Project`|P3🟡|**DONE**|—|**DELIVERED** `mieworkbench/panes/py_console.py` — real interactive scripting bound to the live Project (not a 4-mode SDK)|
 |**CAD (STEP/IGES) import as traceable element**|D9/D10|M / L(analytic)|Med|FreeCAD imports natively; expose via fc_server `import_bodies`, fall back to mesh-BVH. Backlog (d)|
 |**Analytic Q-type (Forbes) / XY-Zernike freeform** with coherent phase|D3/D4|M-L|Med|extend `surfaces.py` asphere machinery (Newton-intersect + `<1µm` verify) to Qbfs/Qcon + freeform sag|
 |**Ray-aiming to a real pupil**|E6|M|Med|iterate emission direction to hit a named aperture body in `sources.py`|
 |**Measured source-file import** (IES/TM-25/rayfile)|E7|M|Low|weighted-ray-set importer; 3DOptix/Zemax win this|
 |**Config-table multi-configuration editor**|M1–M3|M|Med|named-config table wrapping the `--var` sweep, overlay via `compare_runs.py`|
 |**Gridded POP / beamlet propagator** (Zemax POP / CODE V BSP class)|B3/B10|L-XL|Low|propagate a gridded field surface-to-surface on top of the existing gather kernel; the coherent gather already covers most cases|
-|**Partial-coherence imaging + image simulation**|B8/F10|L|Low|rides on the exit-pupil field pipeline; OSLO/CODE V/Zemax win it|
+|**Partial-coherence imaging + image simulation**|B8🟡/F10🟡|**DONE v1**|—|**DELIVERED** `analysis_field.image_*` — coherent/incoherent/partial image-sim (space-invariant PSF convolution). Field-varying + VCZ projector depth = priority #12|
 |**Multi-GPU gather**|Q3|L|Med|merge detector cubes/ledgers (linear accumulators); after `--workers`|
 |**Nestable assemblies / grouping**|O7|M|Low|first-class assembly object over `miewb_group`; QUADOA-style|
 |**Cross-platform (Windows/Mac) packaging**|N7/R3|L|Med|PySide6+VTK are portable; blocker is the FreeCAD/optics-env/ParaView stack — bundle as installer/container|

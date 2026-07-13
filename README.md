@@ -34,8 +34,10 @@ MieWorkbench wraps that pipeline with:
   editing tagged scenes visually — a 3D optical-train view with face
   picking, a library of parametric elements, a properties/tagging editor,
   a transform panel, a run-configuration dialog auto-generated from the
-  real CLI, and a results viewer with ParaView handoff and live monitor
-  mode.
+  real CLI, an **Optimize pane** and a **Tolerance pane** for driving the
+  merit-function optimizer/tolerancer without touching the CLI, an
+  in-app **Python console**, and a results viewer with ParaView handoff
+  and live monitor mode.
 - **Two new archive formats**, `.MieWB` (a portable, editable "workbench":
   scene + project property library + run configuration) and `.MieSim` (a
   self-contained, re-runnable result: the exact workbench used + its
@@ -47,6 +49,20 @@ MieWorkbench wraps that pipeline with:
   by `scripts/primitivelib.py`) that the GUI's "Library" pane and "Add
   element" wizards use to drop pre-tagged lenses, mirrors, gratings,
   sources, etc. into a scene without hand-authoring FreeCAD geometry.
+- **A merit-function optimizer and tolerancer** (`scripts/optimize.py`,
+  `scripts/tolerance.py`, on the shared `scripts/fast_eval.py` evaluator)
+  that drive spreadsheet design variables through local (scipy
+  Nelder-Mead) or global (nevergrad CMA-ES) search, or through
+  sensitivity + Monte-Carlo yield analysis with an optional nested focus
+  compensator — see §5.14/§5.15 below.
+- **Thermo-optic dn/dT and an 847-glass catalog** (`opticalproperties/materials.miemat`,
+  imported from Zemax/OpticStudio AGF files via `scripts/tools/import_agf.py`),
+  plus a `--temperature` run option and a per-body `temperature` tag for
+  modeling a bench at other than room temperature.
+- **Partial-coherence image simulation and exit-pupil Strehl** (`--image-sim`
+  and friends, `--wavefront-pupil exit_pupil`) for convolving an input image
+  through the modeled system's PSF and reporting a PSF-peak-ratio Strehl
+  at the exit pupil instead of just the source-referenced one.
 
 Everything the engine does — the physics, the tagging contract, the
 optical-property registries — is unchanged; MieWorkbench only adds a UI
@@ -72,16 +88,18 @@ bin/mieworkbench
 env/bin/python -m mieworkbench example.FCStd
 bin/mieworkbench example.FCStd
 
-# or start from the demo gallery (ten classic systems, see demos/README.md):
+# or start from the demo gallery (see demos/README.md):
 env/bin/python -m mieworkbench demos/newtonian.MieWB
 python3 scripts/miewb_tool.py run demos/fiber_coupler.MieWB -o /tmp/out.MieSim
 ```
 
-The **`demos/`** folder ships ten ready-to-run classic optical systems —
-beam expander, Newtonian/Dobsonian/Schmidt-Cassegrain telescopes, Cooke
+The **`demos/`** folder ships 34 ready-to-run `.MieWB` scenes (`ls
+demos/*.MieWB | wc -l`) spanning the classic optical systems — beam
+expander, Newtonian/Dobsonian/Schmidt-Cassegrain telescopes, Cooke
 triplet camera, Lister microscope objective, Michelson interferometer,
-Czerny-Turner and prism spectrometers, and a ball-lens fiber coupler with
-75 mm of TIR-guided step-index fiber. Each is a self-contained `.MieWB`
+Czerny-Turner and prism spectrometers, a ball-lens fiber coupler with
+75 mm of TIR-guided step-index fiber — plus a pulsed-optics/time-domain
+bench group. Each is a self-contained `.MieWB`
 that completes on the quick preset; `demos/README.md` documents the
 prescriptions (with citations) and `scripts/make_demos.py` rebuilds them
 all through the GUI's own op path. Also in `demos/library_tests/`: nine
@@ -95,7 +113,7 @@ From the GUI: **File → Open…** and pick `example.FCStd` (a
 divergent+collimated two-laser bench with a BK7 lens, a glass sphere, and
 three detector screens — see docs/RAYTRACER.md §1). Then either:
 
-- **Simulation → Run Pipeline…** to open the configuration matrix (§3.9
+- **Simulation → Run Pipeline…** to open the configuration matrix (§3.10
   below), pick the `quick` preset, and press **Run**; or
 - **Simulation → Dry Run** for a fast estimate-only pass; or, from the
   command line, the same thing the GUI ultimately launches:
@@ -115,10 +133,13 @@ exact output tree.
 
 ## 3. The UI tour
 
-`mieworkbench/mainwindow.py`'s `MainWindow` is a Zemax-inspired, multi-dock
-shell: a central 3D optical-train view surrounded by dockable panes, a
-menu/toolbar for file, simulation and view actions, and three file kinds
-it can open — a bare `.FCStd` model (live FreeCAD session, edited in
+`mieworkbench/mainwindow.py`'s `MainWindow` is a Zemax-inspired shell:
+a bottom-tabbed central `QTabWidget` (`central_tabs`) carrying the 3D
+optical-train view plus the three big analysis surfaces — **3D View ·
+Optimize · Tolerance · Results** — surrounded by dockable panes for
+everything else (outliner, inspector, properties, transform, library,
+console, problems), a menu/toolbar for file, simulation and view
+actions, and three file kinds it can open — a bare `.FCStd` model (live FreeCAD session, edited in
 place), a `.MieWB` workbench (exploded into a scratch workspace under
 `var/work/`; **Save** re-packs the archive), or a `.MieSim` result (viewed
 read-only, or opened via its embedded workbench for editing/rerun — a
@@ -149,8 +170,10 @@ workspace directory.
 
 ### 3.1 Central 3D optical-train viewport (`panes/scene3d.py`)
 
-The `QMainWindow`'s central widget. Shows every body in the scene in one
-shared 3D view. Toolbar: **Fit** (reframe the whole scene), four
+The **"3D View"** tab — the first tab of the central `QTabWidget`
+(`central_tabs`, §3 above), and still the tab that opens by default.
+Shows every body in the scene in one shared 3D view. Toolbar: **Fit**
+(reframe the whole scene), four
 axis-view buttons (**+X/−X/+Y/+Z**), and a **Rays** menu (show/hide the loaded ray
 overlay, reload, or launch **Live ray preview…**). This view selects **whole
 elements only**: clicking any face of a body highlights every face of
@@ -286,8 +309,9 @@ sections:
   plus **Add property…**. The full contract property set is `material`,
   `power`, `lambdac`, `lambdamin`, `lambdamax`, `coherent`, `polarization`,
   `coating`, `roughness`, `filter`, `polarizer`, `polarizer_axis`,
-  `crystal_axis`, `grating`, `surface_override`, `mirror`, `absorbance` —
-  see §5 below and docs/RAYTRACER.md §5.1 for full semantics of each.
+  `crystal_axis`, `grating`, `surface_override`, `mirror`, `absorbance`,
+  `temperature` — see §5 below and docs/RAYTRACER.md §5.1 for full
+  semantics of each.
   New properties default to sensible values (never empty: e.g., `power`
   defaults to 5.0 mW, `lambdac` to 633 nm, registry properties to a
   well-known library entry) and show inline unit labels (e.g.,
@@ -659,11 +683,53 @@ Tab completion over the live namespace; statements run synchronously on the
 GUI thread (a long statement briefly blocks the UI — there is no separate
 kernel process).
 
+### 3.7b Optimize (`panes/optimize_pane.py`)
+
+The **"Optimize"** central tab (also reachable via **Simulation →
+Optimize…**, which switches to it) — full GUI parity with
+`scripts/optimize.py` (§5.14): a **variable table** (name/start/lo/hi),
+where the name cell is an editable dropdown populated from the scene's
+`miewb_vars` (picking one auto-fills start/bounds; typing an arbitrary
+dim-sheet alias still works); a **merit-operand table**
+(operand/detector/target/weight, operand cell a dropdown over
+`cli_specs.OPTIMIZE_OPERANDS` — `spot_rms`/`focus`, `encircled_energy`,
+`mtf50`, `detected_power` — or any raw flattened `report.json` key);
+an **algorithm** combo (`local` = scipy Nelder-Mead, `global` =
+nevergrad CMA-ES) with budget/tolerance/optimizer-seed fields; and
+**preset**/**rays**/**backend** combos (`backend` = `scripts/optimize.py`'s
+`--eval-backend`, `worker` = persistent-FreeCAD fast path or `full` =
+fresh-launch reference path — §5.14). **Run Optimization**/**Stop**
+launch/kill `scripts/optimize.py` through `core/optimize_controller.py`
+(no QProcess in the pane itself); a **live convergence plot** (per-eval
+merit points + a best-so-far line, QtCharts when available else a
+dependency-free QPainter fallback) updates from the same `@MIEWB`
+progress events driving a best-so-far readout, with penalized
+(failed/incomplete) evaluations excluded from axis scaling.
+
+### 3.7c Tolerance (`panes/tolerance_pane.py`)
+
+The **"Tolerance"** central tab (also reachable via **Simulation →
+Tolerance…**) — GUI parity with `scripts/tolerance.py` (§5.15): a
+**tolerance table** (name/nominal/distribution/band, the name cell a
+`miewb_vars`-fed dropdown like the Optimize pane's variable table), the
+same **merit-operand table** as Optimize, **draws**/**merit-threshold**/
+**compensator**/**comp-budget**/**sens-delta**/**skip-sensitivity**/
+**hist-bins** fields, and the shared preset/rays/backend fidelity combos.
+**Run**/**Stop** drive `scripts/tolerance.py` through
+`core/tolerance_controller.py`. Two live result views: a **sensitivity
+bar chart** (ranked by impact, fed by the run's `phase="sensitivity_done"`
+progress event) and a **yield histogram** of the Monte-Carlo merit
+distribution (fed incrementally per draw) — both QtCharts-backed with the
+same QPainter fallback as the Optimize pane's convergence plot.
+
 ### 3.8 Results (`panes/results.py`)
 
-Dock **"Results"** — browse a completed (or in-progress) case: `report.json`
+The **"Results"** central tab (`central_tabs`, §3 above — this used to be
+a dock; it is now one of the four central tabs alongside 3D View/Optimize/
+Tolerance) — browse a completed (or in-progress) case: `report.json`
 headline numbers, the energy-closure audit ("OK ✓" / "FAILED ✗" / "n/a"),
-and thumbnail galleries for `images/`, `spectra/`, `plots/`, `viz/`. Tabs:
+and thumbnail galleries for `images/`, `spectra/`, `plots/`, `viz/`,
+`imaging/`. Tabs:
 
 - **Summary** — per-detector power, peak irradiance, pixel size, fringe visibility.
 - **Power** — per-element energy accounting table (Power In / Out / Absorbed /
@@ -679,6 +745,11 @@ and thumbnail galleries for `images/`, `spectra/`, `plots/`, `viz/`. Tabs:
 - **Sources** — per-(source, detector) detected power (coherent + incoherent watts,
   sample counts), from the same `case.json`/`report.json` data the CLI's
   `data/source_detector.csv` exports.
+- **Time** — the pulsed-optics/time-domain gallery: per-detector pulse/
+  spectrogram/streak/cube products from `--time-products` (docs/RAYTRACER.md
+  time-domain section).
+- **Imaging** — thumbnail gallery of `results/<case>/imaging/image_sim_*.png`,
+  the `--image-sim` partial-coherence image-simulation output (§3.10, §5.1).
 
 Every image thumbnail and results table supports **right-click → Save image as…** /
 **Export CSV…** (paired through the same `data/index.csv` convention the CLI's
@@ -731,6 +802,14 @@ the model has unsaved changes (the run always operates on the last saved
 file, never silently auto-saving): a confirmation dialog offers to save
 and proceed, or cancel — replacing an earlier silent preflight save.
 
+Because the form is generated from the live parser, newer flags need no
+GUI code to appear: `--temperature` (a plain float field, °C) and the
+three `--image-sim*` options (§5.1) show up automatically alongside
+everything else — `--image-sim` takes a path and requires `--save-fields`
+to also be checked (the coherent field map is the PSF source; the pair is
+validated both here and by `run_pipeline.py` itself), and its output
+feeds the Results pane's Imaging tab (§3.8).
+
 ### 3.11 Estimate Runtime
 
 Available from the Simulation menu, the toolbar, and the configuration
@@ -775,7 +854,8 @@ An ordinary FreeCAD document. The tagging contract every model must
 follow (body/face `App::Property*` custom properties: `material`,
 `power`/`lambdac`, `coating`, `roughness`, `filter`, `polarizer` +
 `polarizer_axis`, `crystal_axis`, `grating`, `surface_override`, `mirror`,
-`absorbance`, plus the `dim`-labeled parameter spreadsheet and the
+`absorbance`, `temperature` (°C; per-body dn/dT override for the
+`--temperature` run option), plus the `dim`-labeled parameter spreadsheet and the
 GUI-internal `miewb_primitive`/`miewb_group` tags) is fully specified in
 **docs/RAYTRACER.md §5**. A quick-reference summary is in
 [CUSTOMIZE.md](CUSTOMIZE.md).
@@ -855,9 +935,17 @@ library keeps working, with a one-line `NOTE:` to stderr). Every registry
 row requires a non-empty `reference` (citation) column — loaders hard-fail
 on a missing one.
 
+`materials.miemat` ships **847 glasses** (a 168-row curated core plus a
+Schott/Ohara catalog imported from Zemax AGF files via
+`scripts/tools/import_agf.py`); rows may carry TIE-19 thermo-optic dn/dT
+columns (`thermo_d0`/`d1`/`d2`/`e0`/`e1`/`lambda_tk`/`t_ref_c`, consumed
+by the `--temperature` run option) and a `model=schott` power-series
+dispersion alongside the original `sellmeier`/`cauchy`/`constant`/`tabulated`
+models.
+
 | File | Category | Required columns |
 |---|---|---|
-| `materials.miemat` | bulk n(λ)/k(λ) database | `name,class,model,p1..p6,nk_file,density_kg_m3,transmission_um_min,transmission_um_max,notes,reference` |
+| `materials.miemat` | bulk n(λ)/k(λ) database | `name,class,model,p1..p6,nk_file,density_kg_m3,transmission_um_min,transmission_um_max,notes,reference` (+ optional `thermo_*` TIE-19 columns) |
 | `nk/*.mienk` | tabulated n,k spectra (metals, water, TiO2, …) | `wavelength_nm,n,k` |
 | `coating/coatings.miecoat` (+ `coating/tables/*.mietab`) | TMM stacks **or** measured Rs/Rp/Ts/Tp tables | registry: `name,layers,table,aoi_deg,reference`; table: `wavelength_nm,Rs,Rp,Ts,Tp` |
 | `polarizer/polarizers.miepol` (+ `polarizer/tables/*.mietab`) | linear/circular diattenuators | registry: `name,type,table_csv,retardance_waves,reference`; table: `wavelength_nm,T_parallel,T_perpendicular` |
@@ -904,9 +992,12 @@ prints the composed commands without running anything. Presets fill in rays/reso
 `quick` = 1e5/512/5/16, `normal` = 1e6/2048/9/16, `detailed` =
 1e7/4096/17/32 (`common.PRESETS`). Analysis/export flags
 (`--emit-csv`, `--export-rays[-max]`, `--ghost-analysis`,
-`--wavefront-point`), `--save-fields-detectors` (subset of `--save-fields`,
-§5.2), `--viz-generations` (post stage), `--views`/`--smoke` (viz stage),
-and `--workers N` (parallel trace sharding) are also accepted and
+`--wavefront-point`, `--wavefront-pupil {source,exit_pupil}`,
+`--image-sim PATH`/`--image-sim-coherence`/`--image-sim-sigma` —
+`--image-sim` requires `--save-fields`, validated up front), `--temperature
+DEG_C` (thermo-optic dn/dT, §4.4), `--save-fields-detectors` (subset of
+`--save-fields`, §5.2), `--viz-generations` (post stage), `--views`/`--smoke`
+(viz stage), and `--workers N` (parallel trace sharding) are also accepted and
 forwarded to the appropriate stage — see docs/RAYTRACER.md
 §8.1/§6.9/§6.10 for the full contract (some `make_viz.py` options —
 `--resolution`/`--out`/`--skip-vtkexport` — stay reachable only by
@@ -1120,10 +1211,12 @@ the geometry-helper functions (`lens_meridian`, `revolve_body`,
 
 `scripts/cli_specs.py` is the single source of truth for the `pipeline`
 (`run_pipeline.py`), `trace` (`run_trace.py`), `post` (`post_process.py`),
-and `viz` (`make_viz.py`) argument parsers (`build_parser(stage)`); every
-stage script and the GUI's configuration matrix (§3.9) build their parser
-from here, so they can never drift apart. Self-check: `python3
-scripts/cli_specs.py`.
+`viz` (`make_viz.py`), `optimize` (`scripts/optimize.py`, §5.14), and
+`tolerance` (`scripts/tolerance.py`, §5.15) argument parsers
+(`build_parser(stage)`); every stage script and the GUI's configuration
+matrix (§3.10) — plus the Optimize/Tolerance panes (§3.7b/§3.7c) for
+their two stages — build their parser from here, so they can never drift
+apart. Self-check: `python3 scripts/cli_specs.py`.
 
 `scripts/common.py` is the stdlib-only hub every interpreter stack
 imports: pinned tool paths (env-overridable, see below), fidelity
@@ -1153,6 +1246,115 @@ them onto every pipeline subprocess it launches):
 | `MIEWB_RESULTS_DIR` | `results/` output root | `<repo>/results` |
 | `MIEWB_OPTPROPS_DIR` | `opticalproperties/` library root | `<repo>/opticalproperties` |
 | `MIEWB_PROGRESS` | when `1`, stages also print `@MIEWB {json}` progress lines to stdout | unset (progress.json heartbeat is always written regardless) |
+
+### 5.14 `optimize.py` — merit-function optimizer (optics env python)
+
+```
+optimize.py --model FCSTD --var NAME:START:LO:HI [--var ...] \
+            --operand OPERAND[@DETECTOR]:TARGET:WEIGHT [--operand ...] \
+            [--algorithm {local,global}] [--budget N] [--tol X] \
+            [--optimizer-seed N] [--preset {quick,normal,detailed}] \
+            [--rays R] [--resolution N] [--nlambda N] [--seeds N] \
+            [--eval-backend {worker,full}] [--out DIR] [--workdir DIR] \
+            [--no-final-coherent] [--config JSON]
+```
+
+Drives one or more spreadsheet cell aliases (`--var`, exactly what
+`permute_model.py --var`/`fast_eval.py` address) through the shared
+`fast_eval.py` evaluator to minimize a weighted scalar merit built from
+`--operand` rows read off `report.json`. Operands (`cli_specs.OPTIMIZE_OPERANDS`):
+`spot_rms`/`focus` (detector spot RMS radius, µm; needs `--export-rays`,
+added automatically), `encircled_energy` (`ee_r80_um`) and `mtf50`
+(`mtf50_tan_cy_mm`), both from the coherent field analysis (needs
+`--save-fields` + a coherent inner-loop pass — slow), `detected_power`
+(`total_power_W`, maximized), or any raw flattened `report.json` merit
+key. `--algorithm local` (default) runs scipy Nelder-Mead within the
+variable bounds; `--algorithm global` runs nevergrad CMA-ES; both work in
+normalized `[0,1]` coordinates. The inner loop runs every source
+incoherent (`--eval-backend worker`, the default, uses the persistent
+FreeCAD worker; `full` re-launches FreeCAD fresh each evaluation as the
+slower reference path) unless an operand needs the coherent field
+analysis; the best design is re-evaluated once with the scene's authored
+coherence for a faithful final number (`--no-final-coherent` skips this).
+A failed/incomplete evaluation is penalized, never fatal. Output:
+`<out>/report.json` with the full per-eval convergence history and the
+final best design; `--config JSON` mirrors the CLI (explicit flags win).
+This is the engine behind the GUI's Optimize pane (§3.7b).
+
+### 5.15 `tolerance.py` — sensitivity + Monte-Carlo tolerancing (optics env python)
+
+```
+tolerance.py --model FCSTD --tolerance NAME:NOMINAL:DIST:BAND [--tolerance ...] \
+             --operand OPERAND[@DETECTOR]:TARGET:WEIGHT [--operand ...] \
+             [--draws N] [--merit-threshold X] [--compensator VAR:LO:HI] \
+             [--comp-budget N] [--sens-delta FRAC] [--skip-sensitivity] \
+             [--hist-bins N] [--mc-seed N] [--preset {quick,normal,detailed}] \
+             [--eval-backend {worker,full}] [--out DIR] [--workdir DIR] \
+             [--config JSON]
+```
+
+Three phases over one shared `fast_eval.Evaluator` session: **nominal**
+(one evaluation at every tolerance's nominal value, the merit baseline),
+**sensitivity** (for each `--tolerance`, a central-difference probe at
+±`--sens-delta`×BAND reports a signed `derivative` and a `impact` ranking
+column — impact is what a design toleranced at its merit minimum, e.g.
+best focus, actually costs), and **monte-carlo** (`--draws` random
+perturbation sets, each tolerance sampled from its `normal`/`uniform`
+distribution; with `--compensator VAR:LO:HI` each draw first runs a
+nested `optimize.py` local engine over `VAR` — `--comp-budget` evals — to
+recover the best merit before it's recorded, mirroring an as-built
+system being refocused before test). `--merit-threshold X` turns the
+Monte-Carlo block into a yield fraction (draws with merit ≤ X, over all
+draws — a failed draw counts against yield). Uses the same operand
+grammar as `optimize.py`. Output: `<out>/report.json` with the ranked
+sensitivity table, per-draw detail, and the aggregated Monte-Carlo
+block (including a `--hist-bins`-bin histogram). This is the engine
+behind the GUI's Tolerance pane (§3.7c).
+
+### 5.16 `fast_eval.py` — the shared fast merit evaluator (optics env python)
+
+The inner-loop evaluator both `optimize.py` and `tolerance.py` share:
+`Evaluator.evaluate(params)` maps a dict of spreadsheet cell values to a
+dict of merit scalars read from a pipeline `report.json`. Two backends —
+`worker` (default; keeps one persistent headless FreeCAD worker,
+`scripts/fcserver/fc_server.py`, open across evaluations and applies only
+the changed parameter cells + a quantized shape-fingerprint face cache
+for speed) and `full` (the reference path: a fresh `permute_model.py` →
+`extract_geometry.py` → `run_trace.py` → `post_process.py` sequence per
+evaluation). Every source is patched `coherent=false` before tracing
+unless `keep_coherent=True` is requested, so the expensive Huygens
+gather only runs when an operand actually needs it. The worker backend
+has crash recovery (a dead/hung worker relaunches and replays the
+cumulative parameter state). Also runnable standalone for diagnostics:
+
+```
+fast_eval.py --model FCSTD --backend {worker,full} \
+             --eval k=v,k=v [--eval ...] [--preset {quick,normal,detailed}] \
+             [--rays R] [--resolution N] [--nlambda N] [--seeds N] \
+             [--keep-coherent] [--workdir DIR]
+```
+
+prints one JSON line per `--eval` set (params, backend used, timing,
+cache hit/miss, flattened merits). Parity between the two backends
+(extracted `model.json` and merits must match up to OCC recompute noise)
+is pinned by `scripts/raytracer/tests/test_fast_eval.py`.
+
+### 5.17 `scripts/tools/import_agf.py` — glass-catalog importer (system `python3`)
+
+Parses Zemax/OpticStudio `.agf` glass-catalog files (Schott, Ohara, Hoya,
+CDGM, …) and converts every glass whose dispersion formula the engine
+supports (AGF formula 1 "Schott" → `materials.miemat model=schott`; AGF
+formula 2 "Sellmeier1" → `model=sellmeier`; any other formula is reported
+and skipped, never approximated) plus density/transmission-range/TIE-19
+thermo-optic columns into `materials.miemat` rows. `--merge-into
+TARGET.miemat` applies the converted rows to a live registry file under a
+hard preservation guardrail — every pre-existing row's original columns
+are byte-preserved, an existing glass is only thermo-backfilled when the
+AGF glass of the same name reproduces its n(587.6 nm) within
+`--match-tol`, and new glasses are appended. This is how the shipped
+847-glass `materials.miemat` (§4.4) was built. stdlib-only, per the
+pinned-interpreter table (a registry-authoring tool, not part of the
+trace pipeline).
 
 ---
 

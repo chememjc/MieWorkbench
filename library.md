@@ -32,7 +32,7 @@ schema needing a loader (flagged [needs engine]).
 
 | File | Columns | Notes |
 |--|--|--|
-|`materials.miemat`|`name,class,model,p1..p6,nk_file,density_kg_m3,transmission_um_min,transmission_um_max,notes,reference`|class∈{gas,glass,liquid,polymer,metal,oxide,film,special}; model∈{sellmeier,cauchy,constant,tabulated}. Sellmeier p1-3=B1-3, p4-6=C1-3 (n²=1+ΣBᵢλ²/(λ²−Cᵢ), λ µm, Cᵢ>0). Cauchy p1-3=A,B,C. Constant p1=n,p2=k.|
+|`materials.miemat`|`name,class,model,p1..p6,nk_file,density_kg_m3,transmission_um_min,transmission_um_max,notes,reference,thermo_d0,thermo_d1,thermo_d2,thermo_e0,thermo_e1,thermo_lambda_tk,thermo_t_ref_c`|class∈{gas,glass,liquid,polymer,metal,oxide,film,special}; model∈{sellmeier,cauchy,constant,tabulated,schott}. Sellmeier p1-3=B1-3, p4-6=C1-3 (n²=1+ΣBᵢλ²/(λ²−Cᵢ), λ µm, Cᵢ finite (negative/zero permitted; a genuine catalog fit may carry one)). Cauchy p1-3=A,B,C. Constant p1=n,p2=k. Schott power-series (legacy Zemax formula 1): n²=a0+a1λ²+a2λ⁻²+a3λ⁻⁴+a4λ⁻⁶+a5λ⁻⁸ (p1..p6=a0..a5). The 7 `thermo_*` columns hold Schott TIE-19 dn/dT coefficients (D0,D1,D2,E0,E1,λ_TK,T_ref °C); optional, consumed by `materials.py::_dn_thermal` via scene `--temperature` / per-body `temperature`.|
 |`nk/*.mienk`|`wavelength_nm,n,k`|≥2 strictly-increasing rows|
 |`coating/coatings.miecoat`|`name,layers,table,aoi_deg,reference`|one of `layers` (`mat:nm`/`mat:qw@λ0`, `;`-sep) or `table`→`tables/<name>.mietab` (`wavelength_nm,Rs,Rp,Ts,Tp`)|
 |`polarizer/polarizers.miepol`|`name,type,table_csv,retardance_waves,reference`|type∈{linear,circular_left,circular_right}; table `wavelength_nm,T_parallel,T_perpendicular`|
@@ -46,8 +46,12 @@ schema needing a loader (flagged [needs engine]).
 
 ## Current inventory recap (what already exists — do not duplicate)
 
-From the live library (exact counts): **168 materials** (41 optical glasses, 17 metals/semiconductors/IR,
-35 polymers/liquids/gases, 5 film materials, 46 crystal-axis rows) · **18 n/k tables** · **38 coatings**
+From the live library (exact counts): **847 materials** — by class: 728 glass, 56 oxide, 20 liquid,
+15 polymer, 9 metal, 7 gas, 6 special, 6 film; by model: 646 sellmeier, 128 schott, 38 constant,
+18 tabulated, 17 cauchy. **679 Schott+Ohara glasses were bulk-imported from Zemax AGF**
+(`scripts/tools/import_agf.py`, raw catalogs `library_data/agf/{schott,ohara}.agf`, 366+417 records;
+byte-preservation guardrail `scripts/tools/verify_miemat_preserved.py`); 758 rows carry TIE-19 dn/dT
+in the `thermo_*` columns · **18 n/k tables** · **38 coatings**
 (TMM stacks: AR at 550/633/1064nm, V-coats, W-coats, HR dielectric; measured tables: protected mirrors,
 dichroic/laser elements, standard 45°-AOI) · **17 polarizers** (Glan variants, Polaroid sheets, wire-grids,
 circular types) · **56 filters** (Schott colored-glass series, interference bandpass) · **8 gratings**
@@ -76,18 +80,24 @@ hand-transcription where possible.
 
 # 1. Materials
 
-The current library ships **25 materials**. Below are **144 new cited, drop-in rows** across five
-groups. All are **[data-only]** (work with the current engine) except where noted. Full rows in
+The current library ships **847 materials** (the original 144-row hand-curated expansion below, plus
+679 Schott+Ohara glasses bulk-imported from Zemax AGF — see the new subsection at the end of this
+section). Below are the **144 new cited, drop-in rows** across five groups that landed first. All are
+**[data-only]** (work with the current engine) except where noted. Full rows in
 `library_data/materials_*.miemat` + `library_data/nk/*.mienk`. **Sellmeier order is block
 (p1-3=B, p4-6=C)** — verified against `materials.py:393`.
 
-**1.1 Optical glasses — 41 [data-only]** (`materials_glasses.miemat`). Schott crowns/flints
+**1.1 Optical glasses — 41 hand-curated [data-only]** (`materials_glasses.miemat`), now a subset
+alongside hundreds more AGF-imported glasses (see the AGF subsection below). Schott crowns/flints
 (N-SF11/6/10/2/57, N-BK10, N-K5, N-KF9, N-BAK1/4, N-SK16/4, N-SSK8, N-BAF10/52, N-LAK22/9,
 N-LAF21, N-LASF9, N-FK51A/58, N-PK52A, F2/5, K7, LLF1, classic leaded SF1/2/6/10/11/57), Ohara
 equivalents (S-BSL7, S-TIM5/25/35, S-NBM51, S-LAH64/66), N-BK7HT. Every Sellmeier set reproduces
-catalog nd to **<3e-6**. Source: SCHOTT/OHARA Zemax catalogs via refractiveindex.info. dn/dT
-captured in notes (**[needs engine: thermo-optic]**). *Caveats:* `S-BSL7` has a genuine negative
-C2 (may trip the `Cᵢ>0` check); `BAK4`≈`N-BAK4` (leaded variant unsourceable).
+catalog nd to **<3e-6**. Source: SCHOTT/OHARA Zemax catalogs via refractiveindex.info. dn/dT is
+**IMPLEMENTED**: it lives in the 7 `thermo_*` columns (Schott TIE-19 form), not notes, and is
+applied by `materials.py::_dn_thermal` via scene `--temperature` / per-body `temperature`.
+*Caveats:* `S-BSL7` has a genuine negative C2 — the Sellmeier-C validator was relaxed to accept any
+finite C (negative/zero permitted), so this no longer trips a check; `BAK4`≈`N-BAK4` (leaded
+variant unsourceable).
 
 **1.2 Metals, semiconductors, IR windows — 17** (`materials_metals_semiconductors_ir.miemat` +
 `nk/`). Metals (Cu, Cr, Ni, Pt, Ti, W — tabulated n/k, Johnson&Christy/Rakić); semiconductors
@@ -117,6 +127,20 @@ borax — still **INCOMPLETE/UNVERIFIED** handbook constants, no `biaxial.mibiax
 13 HIGH; LiTaO3 MED; α-BBO LOW. *Absorbing-crystal caveat:* rutile below 0.43 µm and α-sulfur in
 blue need Im(n) **[needs engine: absorbing-crystal k]**. Nonlinear crystals carry linear index
 only **[needs engine: χ²]**. Birefringence registry entries in §3.
+
+**1.6 Zemax AGF bulk import — 679 glasses, `schott` model, thermo-optic dn/dT [data-only].**
+`scripts/tools/import_agf.py` parses raw Zemax AGF catalogs (`library_data/agf/schott.agf`,
+366 records; `library_data/agf/ohara.agf`, 417 records) and writes rows directly into
+`opticalproperties/materials.miemat`. Only AGF dispersion formula codes **1** (legacy Schott
+power-series, n²=a0+a1λ²+a2λ⁻²+a3λ⁻⁴+a4λ⁻⁶+a5λ⁻⁸ — mapped to the new `model=schott`, 128 rows) and
+**2** (standard Sellmeier) are imported; other AGF formula codes are skipped. Each AGF record's
+`TD` (thermal data) line, where present, populates the 7 new `thermo_*` columns (Schott TIE-19
+dn/dT: D0,D1,D2,E0,E1,λ_TK,T_ref °C) — 758 of the 847 material rows now carry dn/dT.
+`materials.py::_dn_thermal` applies it at trace time via scene-level `--temperature` (°C) or a
+per-body `temperature` override. `scripts/tools/verify_miemat_preserved.py` is the byte-
+preservation guardrail: it diffs the post-import `materials.miemat` against a pre-import snapshot
+to confirm every pre-existing row (including the 144 hand-curated rows from §1.1-1.5) is preserved
+verbatim and the import is purely additive.
 
 # 2. Coatings
 
@@ -275,7 +299,10 @@ Sellmeier order; the S-BSL7 negative-C2 and lbo_ny negative-B1 valid-but-check c
 **Totals landed:** 144 materials (41 glass · 17 metal/semiconductor/IR · 35 polymer/liquid/gas/bio
 · 5 film · 46 crystal-axis rows) · 13 n/k tables · 10 uniaxial birefringence · 15 coatings
 · 40 filters · 12 polarizers · 5 gratings (incl. first `lamellar` registry entry) · 8 LED presets
-· QE detector data (1 curve + coverage metrics + `report.json` keys).
+· QE detector data (1 curve + coverage metrics + `report.json` keys). **Superseded by the AGF
+import round** (see the new materials subsection above): +679 Schott/Ohara glasses, the new
+`schott` dispersion model (128 rows), and 7 `thermo_*` dn/dT columns (758 rows populated) —
+materials now total **847**.
 
 **Update (2026-07-10, `lowhanging-improvements` round):** 4 of the 9 staged biaxial crystals are
 now **promoted and live** (ktp, kta, lbo, bibo — §3.2) alongside the biaxial solver; a new
@@ -287,7 +314,8 @@ on curved detectors (the incoherent path landed, §5 item 7).
 promoted), emission sources (blackbody/solar/LED spectral forms, needs spectral-source engine),
 coherent gather on curved detectors (incoherent path DONE, §5 item 7).
 
-**Net library growth (landed):** materials 25→168, coatings 23→38, filters 16→56, polarizers 5→17,
+**Net library growth (landed):** materials 25→847 (168 after the first library-expansion round,
+then +679 AGF-imported Schott/Ohara glasses — see the AGF subsection in §1), coatings 23→38, filters 16→56, polarizers 5→17,
 gratings 3→8 (first `lamellar` entry), uniaxial crystals 3→13, n/k tables 5→18, detector QE curves
 (1 entry + infrastructure), LED presets (8), photometric lux mapping, spectrometer λ-profiles,
 biaxial crystals 0→4 (`birefringence/biaxial.mibiax`, new registry), scatter surfaces 0→3

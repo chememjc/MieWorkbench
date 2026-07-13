@@ -1776,7 +1776,8 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--spectral-bins N] [--max-reflections N]
     [--viz-rays N] [--viz-density F] [--backend {auto,torch,numpy}]
     [--rough-fresnel {micro,macro}] [--ray-differentials] [--gather-occlusion]
-    [--no-pol-scatter] [--mesh-flat-normals] [--save-fields]
+    [--no-pol-scatter] [--mesh-flat-normals] [--temperature DEG_C]
+    [--save-fields]
     [--save-fields-detectors LABEL[,LABEL...]] [--strict-analytic]
     [--optical-properties PATH]
     [--source-face SPEC]... [--detector-face SPEC]...
@@ -1788,7 +1789,10 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--gdd-budget]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--emit-csv] [--export-rays] [--export-rays-max N] [--ghost-analysis]
-    [--wavefront-point X,Y] [--viz-generations N] [--views v1,v2,...] [--smoke]
+    [--wavefront-point X,Y]
+    [--image-sim PATH] [--image-sim-coherence {incoherent,coherent,partial}]
+    [--image-sim-sigma F]
+    [--viz-generations N] [--views v1,v2,...] [--smoke]
     [--keep-going] [--print-only] [--workers N]
 ```
 
@@ -1834,7 +1838,14 @@ behavior and its own `--export-rays-max` forwarding) additionally tracks
 each ray's face-id reflection history so **post** can rank multi-bounce
 stray-light ("ghost") paths by detected power (§8.2/§8.3). `--wavefront-
 point X_MM,Y_MM` (forwarded to **post**) overrides the wavefront fit's
-default power-weighted-centroid image point. `--save-fields-detectors
+default power-weighted-centroid image point. `--image-sim PATH`
+(forwarded to **post**; §5.2's imaging-analysis round) convolves an input
+greyscale image with the amplitude PSF taken from the dominant coherent
+gather key's saved detector field — REQUIRES `--save-fields` and a
+coherent source; `--image-sim-coherence {incoherent,coherent,partial}`
+picks the illumination model (default `incoherent`, intensities convolve
+with `|h|^2`) and `--image-sim-sigma F` sets the partial-coherence
+source-radius factor (default 0.5). `--save-fields-detectors
 LABEL[,LABEL...]` (forwarded to **trace**; no effect without
 `--save-fields`) restricts the Ex/Ey field-map writes to those detector
 labels instead of every detector — an unknown label is a hard error
@@ -1868,6 +1879,7 @@ trace can already saturate every core/GPU). Logs: `results/log.extract`
     [--workers N=auto]
     [--viz-rays N] [--viz-density F=1.0] [--viz-rays-max N=20000]
     [--ray-differentials] [--no-pol-scatter] [--rough-fresnel {micro,macro}=micro]
+    [--temperature DEG_C]
     [--source-face SPEC]... [--detector-face SPEC]...
     [--grating SPEC]... [--rough SPEC]...
     [--particles SPEC] [--particle-threshold F=2e5]
@@ -1893,7 +1905,11 @@ is unaffected) capped at `--viz-rays-max` (default 20000) per source.
 `--ray-differentials`, `--no-pol-scatter`, `--rough-fresnel`,
 `--save-fields`, `--gather-occlusion`, `--strict-analytic`,
 `--mesh-flat-normals` are documented in §6/§5; all default off (or
-`micro` for `--rough-fresnel`) except where noted. `--save-fields-
+`micro` for `--rough-fresnel`) except where noted. `--temperature
+DEG_C` shifts glasses carrying a thermo-optic model via Schott TIE-19
+dn/dT (§5.1, §7.1); default is each material's reference temperature
+(no shift), and a per-body `temperature` property overrides the scene-
+global value. It forces the Python engine. `--save-fields-
 detectors LABEL[,LABEL...]` restricts `--save-fields`' complex Ex/Ey
 field-map writes (`detectors/<label>.h5`'s `fields/` groups) to the named
 detector labels (comma-separated face ids, e.g. `Body001.Pad.Face3`,
@@ -1944,6 +1960,8 @@ without reconstructing the scene. Both flags are **seed 0 only**, like
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--photometric] [--spectrometer]
     [--emit-csv] [--wavefront-point X_MM,Y_MM]
+    [--image-sim PATH] [--image-sim-coherence {incoherent,coherent,partial}]
+    [--image-sim-sigma F]
 ```
 Requires `case.json["status"] == "completed"`; fully rerunnable without
 re-tracing (reads only `case.json`/`audit.json`/`rays.npy`/
@@ -2115,6 +2133,63 @@ the literal `all` (builds every scene, §10); it does **not** accept a
 comma-separated list. An unrecognized name is an error naming every known
 scene.
 
+### 8.6 `optimize.py` / `tolerance.py` (optics env python — design tools)
+
+Both tools drive spreadsheet cell aliases (the same addressing
+`permute_model.py --var`/`fast_eval.py` use: bare `alias` on the default
+`dim` sheet, or `sheetlabel.alias`) through `fast_eval.py`, the shared
+merit evaluator: it maps a dict of design parameters to a dict of merit
+scalars pulled from `report.json`, backed by either a fresh
+extract→trace→post per evaluation (`--eval-backend full`, the reference)
+or a persistent headless FreeCAD worker that applies only the changed
+cells and re-extracts in place (`--eval-backend worker`, the default,
+much faster; parity pinned by `test_fast_eval.py`). `cli_specs.STAGES`
+now lists six parsers (`pipeline, trace, post, viz, optimize, tolerance`,
+up from the original four pipeline stages in §1).
+
+```
+/home3/optics/env/bin/python scripts/optimize.py --model FCSTD \
+    --var NAME:START:LO:HI [--var ...]... \
+    --operand OPERAND[@DETECTOR]:TARGET:WEIGHT [--operand ...]... \
+    [--algorithm {local,global}] [--budget N] [--tol F] \
+    [--preset {quick,normal,detailed}] [--eval-backend {worker,full}] \
+    [--no-final-coherent] [--config JSON] [--out DIR]
+```
+Merit-function optimizer: `--algorithm local` (default) is scipy
+Nelder-Mead within bounds; `global` is nevergrad CMA-ES (needs the
+`nevergrad`/`cma` packages, §3.2 of INSTALL.md). Operands: `spot_rms`/
+`focus` (detector spot RMS radius, needs `--export-rays`, added
+automatically), `encircled_energy`/`mtf50` (coherent field analysis,
+needs `--save-fields`, slow), `detected_power`, or any raw flattened
+`report.json` merit key. Runs the inner loop incoherently for speed, then
+re-evaluates the best design once with coherence as authored (skip with
+`--no-final-coherent`). The `auto_designed_lens` scene
+(`scripts/make_test_scenes.py`, §10; not part of the `demos/` gallery)
+is its validation fixture.
+
+```
+/home3/optics/env/bin/python scripts/tolerance.py --model FCSTD \
+    --tolerance NAME:NOMINAL:DIST:BAND [--tolerance ...]... \
+    --operand OPERAND[@DETECTOR]:TARGET:WEIGHT [--operand ...]... \
+    [--draws N] [--merit-threshold X] [--compensator VAR:LO:HI] \
+    [--skip-sensitivity] [--preset {quick,normal,detailed}] \
+    [--eval-backend {worker,full}] [--config JSON] [--out DIR]
+```
+Sensitivity analysis (per-tolerance finite-difference merit impact,
+ranked table; skip with `--skip-sensitivity`) plus Monte-Carlo yield
+tolerancing: `--draws` random perturbation sets (`normal`/`uniform`
+distributions) report the merit distribution and, with
+`--merit-threshold`, the pass/fail yield fraction; `--compensator`
+nests a focus-recovery `optimize.py` local-engine call per draw. The
+`tolerance_lens` scene (`scripts/make_test_scenes.py`, §10; not part of
+the `demos/` gallery) is its validation fixture, built on `camera_triplet`-
+style radius/thickness/decenter perturbations.
+
+Both share `--preset`/`--rays`/`--resolution`/`--nlambda`/`--seeds`/
+`--seed0` (fed to the fast_eval evaluator the same way `run_pipeline.py`
+fills them from `common.PRESETS`) and `--config JSON` (keys mirror the
+CLI dests; explicit flags win over the file).
+
 ---
 
 ## 9. Particle clouds
@@ -2243,7 +2318,9 @@ physics modules against a real extracted FreeCAD geometry.
 
 ## 11. Validation
 
-`scripts/raytracer/tests/` (173 tests total; run with
+`scripts/raytracer/tests/` (906 tests total — see the actual count with
+`--collect-only -q`; the table below covers the physics-pinning core, not
+every file; run with
 `/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -v`;
 `test_gather.py` and `test_doubleslit_e2e.py` take minutes):
 

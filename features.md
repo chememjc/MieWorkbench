@@ -25,13 +25,17 @@ so several claims are search-indexed excerpts) — both flag dated/secondary cla
 > licensing, roadmap). *(Ownership dates: primary PRs; treat as of July 2026.)*
 
 > **Honesty note.** MieWorkbench is a physically-based **coherent Monte-Carlo,
-> fully-vectorial non-sequential ray tracer**. It is a *simulation engine*, not a
-> lens-*design* suite. Four of the six packages here (Zemax, CODE V, OSLO, QUADOA) are
-> design/analysis products with optimization, tolerancing, and a named imaging-analysis
-> suite; the two new entrants (CODE V, OSLO) are *pure sequential-design* tools — the
-> opposite pole from MieWorkbench. This document is deliberately unflattering about
-> MieWorkbench's design/optimization gaps so the roadmap that follows is grounded in reality
-> rather than advocacy — while also crediting the physics line-items MieWorkbench genuinely
+> fully-vectorial non-sequential ray tracer** — first and foremost a *physics simulation
+> engine*. As of the 2026-07-13 design-apparatus round it has *also* grown a **v1
+> lens-design apparatus** (a weighted-merit optimizer with a global CMA-ES stage, sensitivity
+> + Monte-Carlo tolerancing, dn/dT thermal index, exit-pupil/PSF-peak Strehl, image
+> simulation, an in-app Python console) — real, tested, and demo-backed, but **nascent**: a
+> single local + single global algorithm, focus-only compensation, no glass substitution,
+> multi-config, compensator chains, or operand library. It is **not yet competitive with the
+> mature design suites** (Zemax, CODE V, OSLO, QUADOA), and it remains a *simulation engine*
+> that can now do first-cut design, not a design suite. This document credits the newly-landed
+> design line-items honestly — neither dismissing them (they exist and work) nor overselling
+> them (they are not Zemax-class) — alongside the physics line-items MieWorkbench genuinely
 > wins.
 
 ---
@@ -86,8 +90,10 @@ data locality, Linux-native, headless-CLI, text-based (ZIP-container) formats.**
   and polarization are real but shallow and tier-gated.
 - **MieWorkbench** — a free, Linux-native, GPU-accelerated **coherent non-sequential physics
   engine** with best-in-class energy bookkeeping, Mie scattering, polarization/birefringence
-  physics, and a unique ultrafast/nonlinear layer — but no optimization/tolerancing/design
-  apparatus and a steep authoring workflow.
+  physics, and a unique ultrafast/nonlinear layer, which has **now added a v1 design apparatus**
+  (optimizer + tolerancer + dn/dT thermal + image-sim + in-app scripting console) — real and
+  working but nascent, not yet competitive with the mature suites' depth — atop a still-steep
+  authoring workflow.
 
 **Head-to-head verdicts (detail in §6):**
 - **Zemax vs MieWorkbench → Zemax** (breadth is overwhelming; MieWorkbench wins ~a dozen physics/
@@ -99,7 +105,23 @@ data locality, Linux-native, headless-CLI, text-based (ZIP-container) formats.**
   non-sequential/volume-scatter/coherent-default/time-domain line and cost/GPU.
 - **QUADOA vs MieWorkbench → QUADOA overall**, complementary as above.
 - **3DOptix vs MieWorkbench → depends on the user.** 3DOptix wins usability/catalog/accessibility
-  decisively; MieWorkbench wins physics-depth decisively.
+  decisively; MieWorkbench wins physics-depth decisively (and now also holds the optimizer/
+  tolerancer/thermal lines 3DOptix lacks).
+
+**What changed with the design-apparatus round (2026-07-13).** MieWorkbench used to lose the
+optimization (I) and tolerancing (J) blocks to all four design suites as a clean ❌-sweep. That
+sweep is now broken: it holds a **global optimizer** (nevergrad CMA-ES), a **weighted-merit local
+optimizer** (scipy Nelder-Mead), **sensitivity + Monte-Carlo yield tolerancing** with a focus
+compensator, **dn/dT thermal index** (Schott TIE-19, 847 glasses), **true exit-pupil / PSF-peak
+Strehl** with partial-coherence **image simulation**, and an **in-app Python console** bound to the
+live session — each tested, demo-backed, and physics-oracle-gated. This is a genuine, functioning
+**v1 design apparatus**, and it moves MieWorkbench from ❌ to 🟡/✅ across a dozen formerly-empty
+cells. It is emphatically **not** yet Zemax/CODE V-class: one local + one global algorithm, a
+handful of hard-coded merit operands (no ~300-operand library), focus-only compensation, and **no
+glass substitution, multi-config optimization, compensator chains, or fast-differential
+tolerancing**. The overall verdict below is **unchanged** — Zemax remains the broadest single
+product, CODE V the design/optimization/tolerancing champion — but MieWorkbench's *standing within*
+the design blocks has risen from "absent" to "nascent participant."
 
 ---
 
@@ -114,12 +136,18 @@ table); Beckmann roughness + ground-glass diffusers + measured ABg BSDF (BRDF-si
 particle clouds** (validated vs Wiscombe MIEV0); and a **pulsed/ultrafast/nonlinear layer** (fs/SC
 sources, time-domain spectrogram/streak/cube, SHG/Pockels/Kerr/TPA/saturable, GDD budget).
 Detectors are planar (curved incoherent), producing irradiance cubes, spectra, Stokes/DOP maps,
-per-element power tables, a **9-bucket energy-audit ledger** (closure gated at `1e-3`), and — since
-the lowhanging round — **named analysis products** (PSF, FFT-MTF, encircled/ensquared energy, spot
-diagrams, ray/OPD fans, source-referenced Zernike + Maréchal Strehl, ghost/stray-light path
-ranking, photometric lux/lm/cd, spectrometer λ-vs-x). GPU-accelerated coherent gather (CUDA/torch)
-plus a compiled OpenMP+CUDA **C engine** (~8.3× wall-clock geomean). **No optimization, no
-tolerancing, no sequential design.** Free, Linux, self-hosted; portable `.MieWB`/`.MieSim` ZIP
+per-element power tables, a **9-bucket energy-audit ledger** (closure gated at `1e-3`), and **named
+analysis products** (PSF, FFT-MTF, encircled/ensquared energy, spot diagrams, ray/OPD fans,
+exit-pupil Zernike + PSF-peak-ratio Strehl, partial-coherence image simulation, ghost/stray-light
+path ranking, photometric lux/lm/cd, spectrometer λ-vs-x). GPU-accelerated coherent gather (CUDA/torch)
+plus a compiled OpenMP+CUDA **C engine** (~8.3× wall-clock geomean). Since the design-apparatus
+round it also carries a **v1 design apparatus** — a weighted-merit optimizer (scipy Nelder-Mead
+local + nevergrad CMA-ES global) driven by a persistent-worker fast evaluator, sensitivity +
+Monte-Carlo yield tolerancing with a focus compensator, dn/dT thermal index (Schott TIE-19, 847
+glasses), true exit-pupil/PSF-peak Strehl + partial-coherence image simulation, and an in-app Python
+console bound to the live session — all nascent but working and tested. **No sequential-design mode;
+no glass substitution, multi-config optimization, compensator chains, or fast-differential
+tolerancing.** Free, Linux, self-hosted; portable `.MieWB`/`.MieSim` ZIP
 formats + a headless CLI. Design philosophy: *trace what a ray actually hits, get the physics
 right, with an auditable energy balance.* Target user: a physics-literate optical engineer/
 researcher who needs interference, polarization, scattering, ultrafast, and stray-power fidelity —
@@ -224,10 +252,12 @@ Organised by the shared taxonomy (A–S). Line-item ratings are consolidated in 
   for canonical surfaces. No sequential mode.
 - **B Physical optics:** the differentiator — a full coherent Huygens/Rayleigh–Sommerfeld gather
   with obliquity factor is the *default* engine; real interference + diffraction on every coherent
-  run (double-slit pitch/visibility validated end-to-end). **PSF, FFT-MTF (+ MTF50), and
-  encircled/ensquared energy now ship as named products** (from `analysis_field.py`, `--save-fields`,
-  seed-0/collimated-bench fidelity). **No gridded/ABCD POP or beamlet (BSP) propagator; no partial
-  coherence; no measured-interferogram surface.**
+  run (double-slit pitch/visibility validated end-to-end). **PSF, FFT-MTF (+ MTF50),
+  encircled/ensquared energy, a true exit-pupil Zernike fit, a PSF-peak-ratio Strehl, and
+  partial-coherence image simulation now ship as named products** (from `analysis_field.py`/
+  `analysis_imaging.py`, `--save-fields`). **No gridded/ABCD POP or beamlet (BSP) propagator; the
+  image-sim is single space-invariant PSF convolution (not field-varying); no VCZ partial-coherence
+  projector; no measured-interferogram surface.**
 - **C Polarization:** full Jones tracing; Stokes + degree-of-polarization maps; **validated
   uniaxial birefringence with walk-off** (calcite 6.23°@45°/590 nm) **and a validated biaxial
   two-sheet solver** (KTP/KTA/LBO/BiBO, `<1e-9`) — the only biaxial in this field; TMM coatings;
@@ -243,17 +273,23 @@ Organised by the shared taxonomy (A–S). Line-item ratings are consolidated in 
 - **F Detectors/analysis:** planar irradiance cube, spectra, Stokes/DOP, per-element power table,
   the **9-bucket energy-audit ledger with `<1e-3` closure** (strongest in the field), plus spot
   diagrams, ray/OPD fans, encircled energy, **ghost/stray-light path ranking**, photometric lux
-  maps, spectrometer profiles. Curved detectors are incoherent-only. No image-simulation product.
-- **G Materials:** **168 materials** (41 Schott/Ohara Sellmeier glasses + metals/polymers/crystals),
-  38 TMM coatings, 56 filters, 8 gratings, **17 birefringent crystals (13 uniaxial + 4 biaxial)**;
-  every row requires a cited reference. **Smaller than commercial catalogs; no dn/dT engine hook
-  (data staged), no vendor-component catalog.**
+  maps, spectrometer profiles, and a **space-invariant image-simulation** product. Curved detectors
+  are incoherent-only; the image-sim is not yet field-varying.
+- **G Materials:** **847 materials** (Schott/Ohara AGF import — Sellmeier glasses + metals/polymers/
+  crystals), 38 TMM coatings, 56 filters, 8 gratings, **17 birefringent crystals (13 uniaxial +
+  4 biaxial)**; every row requires a cited reference. **dn/dT thermo-optic index now engine-hooked
+  (Schott TIE-19, `--temperature`).** Still below the vendor thousands and no vendor-component
+  catalog.
 - **H Scattering:** Beckmann roughness + diffusers + measured **ABg BSDF (BRDF-side, v1)** +
   scatter-to-target importance aim + **exact Mie particle clouds** (explicit spheres to ~200k, then
   a continuum medium). **No BTDF, no dedicated Path-Analysis stray-light tool.**
-- **I/J/K/L/M Optimization / Tolerancing / Thermal / Photometry / Multi-config:** optimization &
-  tolerancing = **none** (CLI `--var` sweeps + `--seeds` speckle averaging only); **photometric
-  units now shipped (L1)**; multi-config is CLI-sweep/Variables-dock only.
+- **I/J/K/L/M Optimization / Tolerancing / Thermal / Photometry / Multi-config:** a **v1 design
+  apparatus** now ships — a weighted-merit **optimizer** (`optimize.py`: scipy Nelder-Mead local +
+  nevergrad CMA-ES global over spot-RMS/EE/MTF50/power, on a persistent-worker fast evaluator),
+  **sensitivity + Monte-Carlo yield tolerancing** with a focus compensator (`tolerance.py`), and
+  **bulk-T dn/dT thermal** index (`--temperature`). **No glass substitution, multi-config
+  optimization, compensator chains, fast-differential tolerancing, or operand library.**
+  **Photometric units shipped (L1)**; multi-config is still CLI-sweep/Variables-dock only.
 - **N GUI/UX:** VTK 3D view, ~54-element parametric primitive library, ~20-level undo + macros,
   wizards (thick-lens + waveplate solvers), 1 s-debounced live ray preview, **tracer-bead
   animation** (photons at c/n), results galleries, validation/problems pane. Linux desktop, steep
@@ -263,7 +299,9 @@ Organised by the shared taxonomy (A–S). Line-item ratings are consolidated in 
   **an optical-train chain model (anchored/chained, ports) and a 1-click fold operator** (insert
   fold mirror + rigidly fold/unfold the downstream train). No sequential surface table.
 - **P Data:** `.MieWB`/`.MieSim`/`.FCStd` ZIP formats, headless CLI (`miewb_tool`), case locking;
-  text-based inner members. Scripting = external Python CLI only (**no in-app API/macro**).
+  text-based inner members. Scripting = external Python CLI **plus an in-app Python console bound to
+  the live `Project` session** (`panes/py_console.py`) — real interactive scripting, though not a
+  4-mode SDK like ZOS-API. No macro *language* (redundant given the console).
 - **Q Performance:** vectorized numpy trace + **CUDA/torch coherent gather** + a compiled
   **OpenMP+CUDA C engine** (~8.3× wall-clock geomean) + **multi-process `--workers` sharding**. No
   multi-node/cloud.
@@ -374,9 +412,9 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 |B3|POP / beam propagation (gridded/ABCD/BSP)|⚠️|✅|✅BSP|🟡ABCD|✅add-on|🟡|**Zemax/CODE V** — full gridded POP / Beam Synthesis Propagation|
 |B4|PSF (named product)|✅seed0|✅FFT+Huy|✅|✅|✅3 eng|🟡geo|**Zemax/QUADOA** — FFT+Huygens+geometric; CODE V/OSLO/MWB full|
 |B5|MTF / OTF|✅FFT|✅|✅|✅|✅|🟡|**Zemax/CODE V/OSLO/QUADOA** — full diffraction MTF; MWB FFT-MTF now ships|
-|B6|Wavefront maps / Zernike|🟡src-pupil|✅3 bases|✅|✅|✅|❌|**Zemax** — Standard/Fringe/Annular; CODE V/OSLO/QUADOA full; MWB source-referenced pupil|
-|B7|Strehl ratio|🟡Maréchal|✅|✅|✅|✅|❌|**Zemax/CODE V/OSLO/QUADOA**; MWB Maréchal-only (no PSF-peak)|
-|B8|Partial coherence modeling|❌|🟡Γ-model|✅IMS|✅projector|🟡binary|❌|**OSLO/CODE V** — Van Cittert–Zernike projector / Image-Sim partial coherence|
+|B6|Wavefront maps / Zernike|🟡exit-pupil|✅3 bases|✅|✅|✅|❌|**Zemax** — Standard/Fringe/Annular; CODE V/OSLO/QUADOA full; MWB 🟡 true exit-pupil reference now, but a single Noll basis (no annular)|
+|B7|Strehl ratio|✅|✅|✅|✅|✅|❌|**Zemax/CODE V/OSLO/QUADOA/MWB** — MWB now PSF-peak-ratio Strehl (was Maréchal-only)|
+|B8|Partial coherence modeling|🟡image-sim|🟡Γ-model|✅IMS|✅projector|🟡binary|❌|**OSLO/CODE V** — Van Cittert–Zernike projector / Image-Sim partial coherence; MWB 🟡 coherent/incoherent/partial image-sim (no full VCZ projector)|
 |B9|Gaussian-beam (ABCD) analysis|❌|✅|✅|✅cavity|✅|🟡noM²|**OSLO** — best-in-class cavity/astig/fiber; Zemax/CODE V/QUADOA full|
 |B10|Beam-synthesis / beamlet physical optics|❌|🟡POP|✅BSP|🟡|🟡add-on|❌|**CODE V** — BSP beamlet engine (GRIN/birefringent/segmented apertures)|
 |B11|Interferogram / measured-wavefront import|❌|✅|🟡|🟡|🟡|❌|**Zemax** — measured-data/interferogram surface; CODE V/OSLO/QUADOA partial|
@@ -432,14 +470,14 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 |F7|Polarization / Stokes detector map|✅|🟡|🟡pol-wt|🟡x/y|✅|🟡xyz|**QUADOA/MWB** — first-class Stokes maps|
 |F8|Energy-audit ledger + closure|✅`<1e-3`|🟡distrib|❌|❌|🟡scattered|⚠️manual|**MWB** — unique closed `<1e-3` audit|
 |F9|Ghost / stray-light analysis|✅rank|✅Path|🟡GhoView|🟡Narcissus|✅ghost|🟡manual|**Zemax** — Path Analysis + Critical Ray Tracer; MWB now ranks ghost paths; CODE V/OSLO specular-only (full→LightTools/TracePro)|
-|F10|Image simulation (extended scene)|❌|✅|✅IMS|🟡|🟡|❌|**Zemax/CODE V** — convolve a scene through the modeled system|
+|F10|Image simulation (extended scene)|🟡scene|✅|✅IMS|🟡|🟡|❌|**Zemax/CODE V** — full field-varying IMS; MWB 🟡 single space-invariant PSF convolution (`analysis_field.image_*`), not field-varying|
 
 ### G. Materials & coatings
 | # | Feature | MWB | Zemax | CODE V | OSLO | QUADOA | 3DOptix | Best · why |
 |--|--|:--:|:--:|:--:|:--:|:--:|:--:|--|
-|G1|Glass-catalog breadth|🟡168|✅1000s|✅catalogs|✅3000+|✅1000s|✅catalog|**Zemax/OSLO** — most catalogs; MWB 168 cited rows (small but growing)|
-|G2|Dispersion-model breadth|🟡4|✅13|🟡~4|✅|✅4|🟡6|**Zemax** — 13 formulas|
-|G3|dn/dT thermal index data|❌|✅|✅|✅|✅|❌|**Zemax/CODE V/OSLO/QUADOA** — MWB data staged, no engine hook|
+|G1|Glass-catalog breadth|🟡847|✅1000s|✅catalogs|✅3000+|✅1000s|✅catalog|**Zemax/OSLO** — most catalogs; MWB 847 cited rows (Schott/Ohara AGF import — still below the vendor thousands)|
+|G2|Dispersion-model breadth|🟡5|✅13|🟡~4|✅|✅4|🟡6|**Zemax** — 13 formulas; MWB now 5 (added Schott)|
+|G3|dn/dT thermal index data|✅TIE-19|✅|✅|✅|✅|❌|**Zemax/CODE V/OSLO/QUADOA/MWB** — MWB Schott TIE-19 dn/dT now engine-hooked (`--temperature`)|
 |G4|Coating model (TMM stack)|✅|✅|✅|✅31|✅|⚠️presets|**Zemax** — largest; MWB/CODE V/OSLO/QUADOA full TMM (OSLO 31-layer)|
 |G5|Coating synthesis (needle)|❌|❌|⚠️import|🟡opt|🟡opt|❌|**OSLO/QUADOA** — layer-thickness opt (no true needle anywhere)|
 |G6|Filters / transmission|✅|✅|🟡|✅|⚠️|✅catalog|**Zemax/MWB/OSLO** — internal-transmittance + interference filters|
@@ -459,9 +497,9 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 ### I. Optimization
 | # | Feature | MWB | Zemax | CODE V | OSLO | QUADOA | 3DOptix | Best · why |
 |--|--|:--:|:--:|:--:|:--:|:--:|:--:|--|
-|I1|Merit function / operands|❌|✅300+|✅60+|✅auto-EF|✅named|⚠️scipy|**Zemax** — 300+ operands + wizard; CODE V/OSLO full|
-|I2|Local optimizer (DLS)|❌|✅|✅|✅DLS|✅|⚠️|**Zemax/CODE V/OSLO/QUADOA**|
-|I3|Global optimizer|❌|✅Hammer|✅GS|✅ASA|🟡restart|❌|**Zemax/CODE V** — Global Search+Hammer / Global Synthesis; OSLO ASA|
+|I1|Merit function / operands|🟡weighted|✅300+|✅60+|✅auto-EF|✅named|⚠️scipy|**Zemax** — 300+ operands + wizard; CODE V/OSLO full; MWB 🟡 weighted spot-RMS/EE/MTF50/power merit (no ~300-operand library), driven by the persistent-worker fast evaluator (`fast_eval.py`, ~10× geometry speedup)|
+|I2|Local optimizer (DLS)|🟡NM|✅|✅|✅DLS|✅|⚠️|**Zemax/CODE V/OSLO/QUADOA** — true DLS/Levenberg; MWB 🟡 scipy Nelder-Mead local (derivative-free, not DLS) on the fast evaluator|
+|I3|Global optimizer|✅CMA|✅Hammer|✅GS|✅ASA|🟡restart|❌|**Zemax/CODE V/MWB** — Global Search+Hammer / Global Synthesis / MWB nevergrad CMA-ES; OSLO ASA (all global-capable; MWB via `optimize.py`)|
 |I4|Glass substitution|❌|✅|✅Expert|🟡|✅|❌|**Zemax/CODE V/QUADOA** — CODE V Glass Expert|
 |I5|Multi-config optimization|❌|✅|✅|✅|✅|❌|**Zemax/CODE V/OSLO/QUADOA**|
 |I6|Directed global synthesis (many minima)|❌|🟡Hammer|✅GS|🟡ASA|❌|❌|**CODE V** — Global Synthesis surfaces many distinct design forms in one run|
@@ -469,16 +507,16 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 ### J. Tolerancing
 | # | Feature | MWB | Zemax | CODE V | OSLO | QUADOA | 3DOptix | Best · why |
 |--|--|:--:|:--:|:--:|:--:|:--:|:--:|--|
-|J1|Sensitivity analysis|❌|✅|✅|✅ISO|✅|❌|**Zemax/CODE V/OSLO/QUADOA**|
-|J2|Monte-Carlo tolerancing|❌|✅|✅|✅stats|✅9-dist|❌|**QUADOA/OSLO** — 9 dist / full skew-kurtosis stats; Zemax/CODE V full|
-|J3|Compensators|❌|✅|✅|✅|✅chain|❌|**all four design suites**|
-|J4|Yield analysis|❌|✅|✅|✅|🟡|❌|**Zemax/CODE V/OSLO**|
+|J1|Sensitivity analysis|✅|✅|✅|✅ISO|✅|❌|**Zemax/CODE V/OSLO/QUADOA/MWB** — MWB perturbation sensitivity ranking (`tolerance.py`)|
+|J2|Monte-Carlo tolerancing|✅|✅|✅|✅stats|✅9-dist|❌|**QUADOA/OSLO** — 9 dist / full skew-kurtosis stats; Zemax/CODE V full; MWB full MC yield now (no distribution library)|
+|J3|Compensators|🟡focus|✅|✅|✅|✅chain|❌|**all four design suites** — chainable; MWB 🟡 focus compensator only (single, via a nested optimize call)|
+|J4|Yield analysis|✅|✅|✅|✅|🟡|❌|**Zemax/CODE V/OSLO/MWB** — MWB yield histogram from the MC run|
 |J5|Fast differential wavefront tolerancing|❌|🟡|✅|🟡analytic|❌|❌|**CODE V** — Wavefront Differential, far faster than MC (*unverified* multiplier), in-loop desensitization|
 
 ### K. Thermal / STOP
 | # | Feature | MWB | Zemax | CODE V | OSLO | QUADOA | 3DOptix | Best · why |
 |--|--|:--:|:--:|:--:|:--:|:--:|:--:|--|
-|K1|Thermal (bulk T, dn/dT, CTE)|❌|✅|✅MECo|✅athermal|✅|❌|**Zemax/CODE V/OSLO/QUADOA**|
+|K1|Thermal (bulk T, dn/dT, CTE)|🟡dn/dT|✅|✅MECo|✅athermal|✅|❌|**Zemax/CODE V/OSLO/QUADOA** — full CTE/athermalization; MWB 🟡 bulk-T index via `--temperature`+dn/dT only (no CTE/athermalization)|
 |K2|STOP / FEA import|❌|❌*Ent*|🟡SigFit|❌|⚠️GRIN-import|❌|**CODE V** — SigFit bridge (Zemax STAR is Enterprise-only, not Premium)|
 
 ### L. Illumination / photometry
@@ -526,7 +564,7 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 |--|--|:--:|:--:|:--:|:--:|:--:|:--:|--|
 |P1|Native project / archive format|✅ZIP|✅ZAR|🟡loose|🟡.len|✅optx|✅cloud|**Zemax/MWB/QUADOA** — bundle archives; CODE V/OSLO loose files|
 |P2|CAD import/export interop|🟡FC|✅|🟡STEP|🟡export|✅|🟡STEP|**Zemax** — round-trip STEP/IGES/SAT + CSG|
-|P3|In-app scripting API|❌|✅ZOS-API|🟡Macro+COM|✅CCL+DDE|✅SDK|🟡beta|**Zemax** — 4-mode C#/Py/MATLAB; OSLO CCL+DDE, QUADOA SDK; CODE V Macro-PLUS + COM automation (no first-class Python SDK)|
+|P3|In-app scripting API|🟡console|✅ZOS-API|🟡Macro+COM|✅CCL+DDE|✅SDK|🟡beta|**Zemax** — 4-mode C#/Py/MATLAB; OSLO CCL+DDE, QUADOA SDK; CODE V Macro-PLUS + COM automation; MWB 🟡 in-app Python console bound to the live Project (real interactive scripting, not a 4-mode SDK)|
 |P4|Macro language|❌|✅ZPL|✅Macro+|✅CCL|🟡math|❌|**OSLO/CODE V/Zemax** — CCL / Macro-PLUS / ZPL|
 |P5|Headless / CLI batch|✅|✅API|✅IN|🟡DDE|❌|🟡SDK|**MWB/Zemax/CODE V** — MWB CLI-first, CODE V `IN` batch, Zemax via API|
 |P6|Version-control-friendly formats|✅|✅ZMX|✅.seq|✅.len|❌binary|❌cloud|**MWB/Zemax/CODE V/OSLO** — ASCII sources; MWB text members in ZIP|
@@ -568,26 +606,26 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 | Axis | Winner | Runner-up | MWB standing |
 |--|--|--|--|
 |A Ray-tracing core|Zemax|MWB / 3DOptix|Strong (wins coherent-absolute A4)|
-|B Physical optics|Zemax / CODE V|OSLO / QUADOA|Weak on POP/beamlet + partial-coherence; unique on coherent-default|
+|B Physical optics|Zemax / CODE V|OSLO / QUADOA|Improved — now full Strehl (B7), true exit-pupil Zernike (B6🟡), partial image-sim (B8🟡); unique on coherent-default; still no POP/beamlet|
 |C Polarization|**MWB**|Zemax / QUADOA|Leader — sole biaxial (C5) + Stokes maps (C2) + grating efficiency (C9)|
 |D Surfaces & geometry|Zemax|CODE V|Mid (no GRIN/Q-type/CAD-optical/freeform-analytic)|
 |E Sources|Zemax|OSLO|Improved (now Gaussian/apodization); weak on ray-aim/measured files|
 |F Detectors & analysis|Zemax|CODE V / QUADOA|Wins energy-ledger F8 + Stokes F7; now full on PSF/MTF/EE/spot/fan|
-|G Materials & coatings|Zemax|OSLO|Weak on breadth; strong on TMM/birefringence (17 crystals)|
+|G Materials & coatings|Zemax|OSLO|Improved — 847 glasses + dn/dT (G3✅) now; still below vendor thousands; strong on TMM/birefringence (17 crystals)|
 |H Scattering & stray light|**Split: Zemax (tools) / MWB (physics)**|—|Wins Mie H5 + volume H4|
-|I Optimization|CODE V / Zemax|OSLO / QUADOA|None|
-|J Tolerancing|CODE V|Zemax / OSLO / QUADOA|None|
-|K Thermal / STOP|CODE V|Zemax / OSLO|None|
+|I Optimization|CODE V / Zemax|OSLO / QUADOA|Now a participant — global I3✅ (CMA-ES), merit + local I1/I2🟡; no glass-sub (I4)/multi-config (I5)/operand-library|
+|J Tolerancing|CODE V|Zemax / OSLO / QUADOA|Now a full participant — sensitivity/MC/yield ✅ (J1/J2/J4), focus compensator 🟡 (J3); no fast-differential (J5) or compensator chains|
+|K Thermal / STOP|CODE V|Zemax / OSLO|Now 🟡 — bulk-T dn/dT index (K1); no CTE/athermalization/STOP|
 |L Illumination / photometry|Zemax|—|Wins photometric L1 (tie w/ Zemax); no illumination design|
 |M Multi-config / zoom|QUADOA / Zemax|CODE V / OSLO|None (CLI sweep only)|
 |N GUI/UX|3DOptix|QUADOA|Wins undo N3 + animation N8|
 |O Coordinate system|QUADOA|Zemax / MWB|Wins snap-to-axis O8 + fold O9|
-|P Data management|Zemax|MWB|Wins VC-friendliness P6 + CLI P5|
+|P Data management|Zemax|MWB|Wins VC-friendliness P6 + CLI P5; now an in-app Python console (P3🟡)|
 |Q Performance|3DOptix|MWB|Co-leader on GPU (Q2)|
 |R Commercial|MWB|3DOptix / OSLO|Wins cost R1 + locality R2/R7|
 |S Ultrafast / time-domain / nonlinear|**MWB**|—|Sole implementer — a whole axis no competitor here touches|
 
-**Verdict.** Across the 19 axes: **Zemax leads or co-leads ~10** (A, B, D, E, F, G, H-tools, L, M, P), **CODE V ~3–4** (I, J, K, co-B), **QUADOA ~2** (M, O), **3DOptix ~3** (N, Q, catalog G8), **OSLO 0 sole leads** (co-leads B/E/G/I/J), and **MieWorkbench ~4** (C, R, S, H-physics; co-leads F/N/O/Q). **The overall winner of the general single-product feature set is Ansys Zemax OpticStudio (Premium), now narrowly over Keysight CODE V** — Zemax is the only package excellent across *both* sequential design *and* non-sequential/illumination in one product, whereas CODE V (which matches or beats Zemax on pure optimization/tolerancing) offloads non-sequential, illumination, and scatter to the *separate* LightTools product. **CODE V + LightTools together would rival or exceed Zemax's breadth; as single products, Zemax wins.**
+**Verdict.** Across the 19 axes: **Zemax leads or co-leads ~10** (A, B, D, E, F, G, H-tools, L, M, P), **CODE V ~3–4** (I, J, K, co-B), **QUADOA ~2** (M, O), **3DOptix ~3** (N, Q, catalog G8), **OSLO 0 sole leads** (co-leads B/E/G/I/J), and **MieWorkbench ~4** (C, R, S, H-physics; co-leads F/N/O/Q). The axis *leaders* are unchanged by MieWorkbench's new design apparatus — CODE V/Zemax still lead I/J/K on depth — but MieWorkbench is **no longer shut out of the I/J/K and thermal-G blocks it formerly swept as ❌**: it now holds a global optimizer (I3✅), full sensitivity/MC/yield tolerancing (J1/J2/J4✅), dn/dT thermal index (G3✅/K1🟡), a true exit-pupil and PSF-peak Strehl (B6🟡/B7✅), image-sim (B8🟡/F10🟡), and an in-app scripting console (P3🟡) — a v1 apparatus, not yet the mature suites' depth (no glass substitution, multi-config, compensator chains, fast-differential tolerancing, or operand library). **The overall winner of the general single-product feature set is Ansys Zemax OpticStudio (Premium), now narrowly over Keysight CODE V** — Zemax is the only package excellent across *both* sequential design *and* non-sequential/illumination in one product, whereas CODE V (which matches or beats Zemax on pure optimization/tolerancing) offloads non-sequential, illumination, and scatter to the *separate* LightTools product. **CODE V + LightTools together would rival or exceed Zemax's breadth; as single products, Zemax wins.**
 
 **The honest nuance the tally hides:** MieWorkbench is a *specialist engine*, not a suite. On the specific axes it targets — **coherent non-sequential field fidelity, exact Mie/volume scattering, closed energy accounting, polarization/biaxial physics, ultrafast/time-domain/nonlinear modeling, GPU throughput, and cost/locality — it wins or ties the entire field, market leaders included.** It "loses overall" the way a precision interferometry-and-ultrafast bench "loses" to a full machine shop: fewer tools, but the ones it has are best-in-class, and several (the closed ledger, first-class Mie, biaxial, the whole time-domain axis) exist nowhere else here.
 
@@ -607,7 +645,9 @@ block goes one way. Reflects the refreshed MWB column (post lowhanging/pulsed ro
 |A4 Coherent absolute-power field|**MWB**|Zemax NSC coherent is a geometric ray-sum; MWB does a true RS gather inline|
 |A5–A7 Splitting/BVH/CAD|Zemax|richer budgets + CAD solids (A6 tie: both accelerated)|
 |B1 Interference|tie|MWB inline-default vs Zemax POP|
-|B2–B11 POP/beamlet/PSF/MTF/Zernike/Strehl/partial-coh/Gaussian/interferogram|Zemax|full named suite + gridded POP; MWB now full on PSF/MTF/EE but source-referenced Zernike/Strehl, no POP/partial-coherence|
+|B2,B3,B9,B10,B11 POP/beamlet/Gaussian/interferogram|Zemax|gridded POP + BSP-class beam propagation + Gaussian/ABCD; MWB has none of these|
+|B4–B7 PSF/MTF/Zernike/Strehl|Zemax|full 3-basis Zernike; MWB now full PSF/MTF/EE + PSF-peak Strehl (B7 tie) + true exit-pupil Zernike (B6🟡, single Noll basis)|
+|B8 Partial coherence|Zemax|Γ-model; MWB 🟡 partial image-sim only (no VCZ projector)|
 |C1 Jones|tie|
 |C2 Stokes/DOP|**MWB**|Zemax ensemble-derived|
 |C3 Mueller|Zemax|(workaround) vs MWB none|
@@ -624,14 +664,17 @@ block goes one way. Reflects the refreshed MWB column (post lowhanging/pulsed ro
 |F2,F3,F9,F10 Color/curved/stray-light/image-sim|Zemax|
 |F7 Stokes map|**MWB**|
 |F8 Energy ledger|**MWB**|closed `<1e-3` audit|
-|G1–G6 Materials/coatings|Zemax|breadth + dn/dT|
+|G1,G2,G4,G5,G6 Materials/coatings|Zemax|breadth (thousands vs MWB 847)|
+|G3 dn/dT|tie|both TIE-19 thermo-optic dn/dT now|
 |G7 Birefringent lib|**MWB**|17 crystals incl. biaxial|
 |H1–H3,H6 Scatter tools/BSDF/stray-light|Zemax|
 |H4 Volume scatter|**MWB**|
 |H5 Rigorous Mie|**MWB**|Wiscombe-validated; Zemax MSP-DLL only|
-|I1–I5 Optimization|Zemax|MWB none|
-|J1–J5 Tolerancing|Zemax|MWB none|
-|K1 Thermal|Zemax|
+|I1,I2,I4,I5,I6 Optimization|Zemax|300+ operands + glass-sub + multi-config; MWB 🟡 weighted merit + Nelder-Mead local, no glass-sub/multi-config/operand-library|
+|I3 Global optimizer|tie|Zemax Global Search+Hammer / MWB nevergrad CMA-ES|
+|J1,J2,J4 Sensitivity/MC/yield|tie|both full sensitivity/Monte-Carlo/yield|
+|J3,J5 Compensators/differential|Zemax|MWB 🟡 focus compensator only, no fast-differential|
+|K1 Thermal|Zemax|full CTE/athermalization; MWB 🟡 bulk-T dn/dT only|
 |K2 STOP/FEA|tie|Zemax STAR is Enterprise, not Premium → both none at this tier|
 |L1 Photometry|tie|both lux/lm/cd|
 |L2–L3 Illumination/IES|Zemax|
@@ -642,7 +685,8 @@ block goes one way. Reflects the refreshed MWB column (post lowhanging/pulsed ro
 |O2,O3,O6,O7 Seq/ref/pickup/assembly|Zemax|
 |O8 Snap-to-axis · O9 Fold|**MWB**|shipped auto-align + 1-click fold|
 |O1,O4,O5|tie|
-|P2–P4 CAD/API/macro|Zemax|
+|P2,P4 CAD/macro|Zemax|
+|P3 Scripting API|Zemax|ZOS-API 4-mode deeper; MWB now has an in-app Python console bound to Project|
 |P1,P5,P6|tie|MWB VC-friendly + CLI|
 |Q1 CPU|tie|MWB C-OpenMP + workers|
 |Q2 GPU|tie|MWB gather on CUDA; Zemax GPU-accelerates Huygens PSF/MTF only|
@@ -654,8 +698,12 @@ block goes one way. Reflects the refreshed MWB column (post lowhanging/pulsed ro
 **Zemax vs MieWorkbench overall winner: Zemax OpticStudio Premium.** MieWorkbench wins ~15 line
 items — coherent-absolute field, Stokes maps, biaxial, the energy ledger, volume + first-class Mie,
 birefringent library, granular undo, ray animation, snap-to-axis, the fold operator, cost, and the
-entire four-line time-domain axis — a meaningful physics/ultrafast/cost cluster. But Zemax wins the
-large majority on breadth (design, optimization, tolerancing, illumination, materials, interop).
+entire four-line time-domain axis — a meaningful physics/ultrafast/cost cluster. It now *also ties*
+Zemax on the global optimizer (I3), sensitivity/MC/yield tolerancing (J1/J2/J4), dn/dT thermal index
+(G3), and PSF-peak Strehl (B7) — a nascent design apparatus that no longer cedes those blocks
+wholesale. But Zemax still wins the large majority on breadth and on the *depth* of every one of
+those blocks (300+ operands, glass substitution, multi-config, compensator chains, CTE
+athermalization, gridded POP, illumination, materials breadth, interop).
 
 ### 6.2 CODE V (Keysight) vs MieWorkbench
 | Line | Winner | Note |
@@ -671,8 +719,9 @@ large majority on breadth (design, optimization, tolerancing, illumination, mate
 |B2 Free-space diffraction|tie|BSP vs RS gather|
 |B3,B10 POP / BSP beamlet|CODE V|Beam Synthesis Propagation is best-in-class|
 |B4,B5 PSF/MTF|tie|both full|
-|B6,B7 Zernike/Strehl|CODE V|true exit-pupil vs MWB source-referenced|
-|B8 Partial coherence|CODE V|IMS partial coherence; MWB none|
+|B6 Zernike|CODE V|full multi-basis vs MWB single-basis (Noll) exit-pupil 🟡|
+|B7 Strehl|tie|both PSF-peak-ratio Strehl now|
+|B8 Partial coherence|CODE V|IMS partial coherence deeper; MWB 🟡 partial image-sim now|
 |B9 Gaussian analysis|CODE V|ABCD; MWB has source but no ABCD analysis|
 |B11 Interferogram import|CODE V|measured-wavefront surface|
 |C1 Jones|tie|
@@ -702,16 +751,19 @@ large majority on breadth (design, optimization, tolerancing, illumination, mate
 |F7 Stokes map|**MWB**|CODE V pol-weighted only|
 |F8 Energy ledger|**MWB**|CODE V per-surface T only|
 |F9 Ghost|tie|CODE V GhoView vs MWB path ranking|
-|F10 Image simulation|CODE V|IMS; MWB none|
-|G1,G2,G3 Materials/dispersion/thermal|CODE V|catalogs + dn/dT|
+|F10 Image simulation|CODE V|full field-varying IMS; MWB 🟡 space-invariant PSF convolution|
+|G1,G2 Materials/dispersion|CODE V|catalogs (thousands vs MWB 847)|
+|G3 dn/dT|tie|both dn/dT thermo-optic now|
 |G4 TMM coatings|tie|
 |G7 Birefringent lib|**MWB**|17 crystals incl biaxial vs CODE V unspecified|
 |H1–H3,H6 Scatter/BSDF/stray-light|CODE V(→LightTools)|neither native-strong; CODE V has the LightTools path|
 |H4 Volume scatter|**MWB**|CODE V none native|
 |H5 Rigorous Mie|**MWB**|CODE V none native (→LightTools)|
-|I1–I6 Optimization|CODE V|Global Synthesis + Glass Expert; MWB none|
-|J1–J5 Tolerancing|CODE V|Wavefront Differential; MWB none|
-|K1 Thermal|CODE V|MECo|
+|I1,I2,I4,I5,I6 Optimization|CODE V|Global Synthesis + Glass Expert; MWB 🟡 weighted merit + Nelder-Mead local, no glass-sub/multi-config|
+|I3 Global optimizer|tie|CODE V GS / MWB nevergrad CMA-ES (CODE V's directed I6 still unique)|
+|J1,J2,J4 Sensitivity/MC/yield|tie|both full sensitivity/Monte-Carlo/yield|
+|J3,J5 Compensators/differential|CODE V|Wavefront Differential + compensator chains; MWB 🟡 focus compensator only|
+|K1 Thermal|CODE V|MECo athermalization; MWB 🟡 bulk-T dn/dT only|
 |K2 STOP/FEA|CODE V|SigFit bridge|
 |L1 Photometry|**MWB**|MWB native lux/lm/cd; CODE V→LightTools|
 |L2,L3 Illumination/IES|CODE V(→LightTools)|
@@ -727,7 +779,7 @@ large majority on breadth (design, optimization, tolerancing, illumination, mate
 |O8 Snap-to-axis|**MWB**|
 |O9 Fold|tie|MWB explicit operator vs CODE V D&B|
 |P1 Format|**MWB**|MWB ZIP bundle vs CODE V loose files|
-|P3 Scripting API|CODE V|Macro-PLUS + COM automation vs MWB CLI-only — CODE V by breadth|
+|P3 Scripting API|tie|MWB in-app Python console bound to Project vs CODE V Macro-PLUS + COM automation|
 |P4 Macro|CODE V|Macro-PLUS|
 |P5 Headless CLI|tie|both batchable|
 |P6 VC-friendly|tie|both ASCII sources|
@@ -741,7 +793,11 @@ large majority on breadth (design, optimization, tolerancing, illumination, mate
 
 **CODE V vs MieWorkbench overall winner: CODE V** — it wins the design/optimization/tolerancing/
 thermal/analysis bulk decisively (and its Global Synthesis + Wavefront Differential are genuinely
-best-in-class). **But the split is clean and complementary:** MieWorkbench wins *every*
+best-in-class). MieWorkbench has *narrowed* the design gap — it now ties CODE V's basic global
+optimizer, sensitivity/MC/yield tolerancing, dn/dT, and PSF-peak Strehl — but CODE V's directed
+Global Synthesis, Wavefront-Differential tolerancing, Glass Expert substitution, and compensator
+chains remain a class apart. **And on the other axis the split is clean and complementary:**
+MieWorkbench wins *every*
 non-sequential/physical-transport line — non-sequential, MC transport, coherent-absolute, volume +
 rigorous Mie scatter, grating efficiency, energy ledger, Stokes maps, biaxial, GPU, Linux/cost, and
 the entire time-domain/nonlinear axis. These are precisely CODE V's non-goals (it defers them to
@@ -761,8 +817,9 @@ LightTools). The two are almost non-overlapping.
 |B2 Diffraction|tie|
 |B3 POP/ABCD|OSLO|deep ABCD; MWB none|
 |B4,B5 PSF/MTF|tie|both full|
-|B6,B7 Zernike/Strehl|OSLO|true pupil vs MWB source-referenced|
-|B8 Partial coherence|OSLO|projector module is a genuine strength; MWB none|
+|B6 Zernike|OSLO|full vs MWB single-basis (Noll) exit-pupil 🟡|
+|B7 Strehl|tie|both PSF-peak-ratio Strehl now|
+|B8 Partial coherence|OSLO|VCZ projector module is a genuine strength; MWB 🟡 partial image-sim now|
 |B9 Gaussian analysis|OSLO|best-in-class cavity/fiber; MWB source only|
 |C1 Jones|tie|
 |C2 Stokes/DOP|**MWB**|OSLO per-ray only, no map|
@@ -794,14 +851,17 @@ LightTools). The two are almost non-overlapping.
 |F7 Stokes map|**MWB**|OSLO x/y components only|
 |F8 Energy ledger|**MWB**|OSLO none|
 |F9 Ghost|tie|OSLO Narcissus/ghost cited|
-|F10 Image sim|OSLO|(partial) vs MWB none|
-|G1,G2,G3 Materials/dispersion/thermal|OSLO|3000+ Rx + dn/dT|
+|F10 Image sim|tie|both 🟡 partial image simulation|
+|G1,G2 Materials/dispersion|OSLO|3000+ Rx (vs MWB 847)|
+|G3 dn/dT|tie|both dn/dT thermo-optic now|
 |G4 TMM|tie|OSLO 31-layer|
 |G7 Birefringent lib|**MWB**|17 crystals vs OSLO 5|
 |H1–H6 Scatter/stray-light|OSLO/MWB split|OSLO delegates to TracePro (⚠️/❌); MWB wins volume H4 + Mie H5 outright|
-|I1–I5 Optimization|OSLO|DLS + ASA global; MWB none|
-|J1–J4 Tolerancing|OSLO|ISO-10110 + full MC; MWB none|
-|K1 Thermal|OSLO|athermalization|
+|I1,I2,I4,I5 Optimization|OSLO|DLS + glass-sub; MWB 🟡 weighted merit + Nelder-Mead local|
+|I3 Global optimizer|tie|OSLO ASA / MWB nevergrad CMA-ES|
+|J1,J2,J4 Sensitivity/MC/yield|tie|both full ISO-style sensitivity/MC/yield|
+|J3 Compensators|OSLO|full vs MWB 🟡 focus compensator only|
+|K1 Thermal|OSLO|athermalization; MWB 🟡 bulk-T dn/dT only|
 |K2 STOP|tie|both none|
 |L1 Photometry|**MWB**|MWB native lux/lm/cd; OSLO radiometric-only (photometry→TracePro)|
 |L2,L3 Illumination/IES|tie/OSLO|both weak (→TracePro)|
@@ -817,7 +877,7 @@ LightTools). The two are almost non-overlapping.
 |O8 Snap-to-axis|**MWB**|OSLO none|
 |O9 Fold|**MWB**|MWB operator vs OSLO `bend`|
 |P1 Format|**MWB**|MWB ZIP bundle vs OSLO flat .len|
-|P3 Scripting API|OSLO|CCL+SCP+DDE vs MWB CLI-only|
+|P3 Scripting API|OSLO|CCL+SCP+DDE deeper; MWB now an in-app Python console bound to Project|
 |P4 Macro|OSLO|CCL/SCP|
 |P5 Headless CLI|**MWB**|OSLO DDE only, no batch CLI|
 |P6 VC-friendly|tie|both ASCII|
@@ -831,6 +891,9 @@ LightTools). The two are almost non-overlapping.
 
 **OSLO vs MieWorkbench overall winner: OSLO Premium** on classical design breadth (optimization,
 tolerancing, GRIN, Gaussian-beam/ABCD, partial coherence, the analysis suite, 3000+ prescriptions).
+MieWorkbench now ties OSLO's *basic* global optimizer, sensitivity/MC/yield tolerancing, dn/dT,
+PSF-peak Strehl, and partial image-sim — a v1 design apparatus — though OSLO's DLS + ASA, deep
+classical-aberration theory, Gaussian-beam/ABCD, and VCZ projector stay deeper.
 **MieWorkbench wins every non-sequential/volume-scatter/coherent-default/Stokes/biaxial line, the
 energy ledger, GPU/multithread, Linux/cost, and the whole time-domain axis** — again OSLO's
 non-goals (it hands non-sequential and scatter to TracePro). Note the near-tie on cost (both have a
@@ -842,7 +905,10 @@ free tier, but OSLO's EDU is 10-surface-capped while MieWorkbench is fully free 
 |A1 Non-sequential · A3 MC · A4 Coherent · A5 Splitting · A6 BVH|**MWB**|QUADOA has none of these (no NSC engine)|
 |A2 Sequential · A7 Analytic/CAD|QUADOA|broader analytic + CAD import|
 |B1,B2 Interference/diffraction|tie|
-|B3–B11 POP/PSF/MTF/Zernike/Strehl/Gaussian|QUADOA|named suite (MWB source-referenced Zernike/Strehl, no POP/partial-coherence)|
+|B3,B9,B10 POP/Gaussian/beamlet|QUADOA|gridded POP + Gaussian analysis; MWB none|
+|B6 Zernike|QUADOA|full vs MWB single-basis (Noll) exit-pupil 🟡|
+|B7 Strehl|tie|both PSF-peak-ratio Strehl now|
+|B8 Partial coherence|QUADOA|binary partial-coh; MWB 🟡 partial image-sim now|
 |B4,B5,F4,F5,F6 PSF/MTF/spot/fan/EE|tie|MWB now ships these|
 |C2 Stokes/DOP|tie|both first-class (QUADOA adds Poincaré)|
 |C3 Mueller|QUADOA|(claim)|
@@ -855,21 +921,32 @@ free tier, but OSLO's EDU is 10-surface-capped while MieWorkbench is fully free 
 |F2 Spectral detector|**MWB**|QUADOA has none|
 |F7 Stokes map|tie|F8 Energy ledger **MWB**|
 |F9 Ghost|tie|both ghost-capable|
-|G1,G2,G3 Materials/dispersion/thermal|QUADOA|G7 Birefringent lib **MWB**|
+|G1,G2 Materials/dispersion|QUADOA|catalogs (thousands vs MWB 847)|
+|G3 dn/dT|tie|both dn/dT thermo-optic now|G7 Birefringent lib **MWB**|
 |H4 Volume · H5 Mie|**MWB**|QUADOA none|
-|I1–I5 Optimization · J1–J5 Tolerancing · K Thermal · M Multi-config|QUADOA|MWB none|
+|I1,I2,I4,I5 Optimization|QUADOA|named merit + glass-sub + multi-config; MWB 🟡 weighted merit + Nelder-Mead local|
+|I3 Global optimizer|**MWB**|MWB nevergrad CMA-ES vs QUADOA multi-start restart only|
+|J1 Sensitivity|tie|both full|
+|J2 Monte-Carlo|QUADOA|9-distribution MC vs MWB single-distribution|
+|J3 Compensators|QUADOA|chainable vs MWB 🟡 focus only|
+|J4 Yield|**MWB**|MWB full yield vs QUADOA 🟡|
+|K1 Thermal · M1–M3 Multi-config|QUADOA|full thermal + config editor; MWB 🟡 dn/dT, CLI-only configs|
 |L1 Photometry|**MWB**|MWB now lux/lm/cd; QUADOA none|
 |N3 Undo|tie|both full (MWB more granular)|N8 Animation **MWB**|
 |N7 Cross-platform|QUADOA|Win+Linux vs Linux-only|
 |O2,O3,O4,O6,O7 Seq/ref/order/pickup/assembly|QUADOA|superset positioning|
 |O8 Snap · O9 Fold|**MWB**|
-|P2,P3,P4 CAD/API/macro|QUADOA|SDK|P5 Headless **MWB**|P6 VC-friendly **MWB**|
+|P2,P4 CAD/macro|QUADOA|SDK|P3 Scripting API|QUADOA|full SDK deeper; MWB now in-app Python console|P5 Headless **MWB**|P6 VC-friendly **MWB**|
 |Q2 GPU|**MWB**|QUADOA CPU-only|
 |R1 Cost|**MWB**|R3 Platform QUADOA|
 |S1–S4 Time-domain/nonlinear|**MWB**|QUADOA none|
 
 **QUADOA vs MieWorkbench overall winner: QUADOA** — it wins the design/optimization/tolerancing/
-analysis/surfaces/interop bulk. **But the split is unusually clean and complementary:**
+analysis/surfaces/interop bulk (named-operand merit, glass substitution, multi-config, 9-distribution
+MC, config editor). Notably, though, MieWorkbench now *takes* the global-optimizer line (CMA-ES vs
+QUADOA's restart-only) and the yield line, and ties sensitivity/dn/dT/PSF-peak-Strehl — QUADOA's
+design lead has narrowed to depth, not a clean sweep. **And on the physics axis the split is still
+unusually clean and complementary:**
 MieWorkbench wins every non-sequential/physical-transport line, volume + rigorous Mie, grating
 efficiency, energy ledger, birefringence + biaxial, GPU, cost, and the time-domain axis — precisely
 QUADOA's stated non-goals. The two would be excellent *together*.
@@ -899,12 +976,12 @@ QUADOA's stated non-goals. The two would be excellent *together*.
 |G1,G8 Catalog/vendor parts|3DOptix|~50k parts decisive|
 |G4 Coating TMM · G7 Birefringent|**MWB**|3DOptix presets/none|
 |H4 Volume · H5 Mie|**MWB**|H1 tie|H6 3DOptix|
-|I,J,K optimization/tol/thermal|tie|both none (3DOptix SciPy-only)|
+|I,J,K optimization/tol/thermal|**MWB**|MWB now has an optimizer (CMA-ES), MC tolerancing, and dn/dT; 3DOptix has none|
 |L1 Photometry|**MWB**|MWB now lux/lm/cd; 3DOptix radiometric-only|
 |N2,N6,N7,N9 Shaded/ease/platform/collab|3DOptix|browser + catalog + cloud|
 |N3 Undo · N5 Live · N8 Animation|**MWB**|
 |O3,O7 Reference/assemblies|3DOptix|LCS + cage hardware|O8 Snap · O9 Fold **MWB**|
-|P2,P3 CAD/API|3DOptix|(beta, paywalled)|P5 Headless · P6 VC **MWB**|
+|P2 CAD|3DOptix|STEP import|P3 Scripting API|tie|MWB in-app Python console vs 3DOptix beta/paywalled SDK|P5 Headless · P6 VC **MWB**|
 |Q2,Q3,Q4,Q5 GPU/cloud/scale|3DOptix|elastic cloud|
 |R1 Cost|**MWB**|full-feature free vs 3DOptix crippled free tier|
 |R2,R7 Locality/ITAR|**MWB**|offline vs cloud-only|R3,R4,R5 3DOptix|
@@ -915,7 +992,8 @@ By raw line-item count 3DOptix edges ahead (catalog, accessibility, CAD import, 
 stray-light UI, collaboration). **MieWorkbench wins the entire physics-depth cluster** (real wave
 optics by default, full Jones/Stokes/biaxial polarization, TMM coatings, birefringence, grating
 efficiency, rigorous Mie + volume scattering, the energy ledger, the time-domain axis) plus
-locality/cost/privacy/VC/animation/undo/snap. For a **physics-first optical engineer** MieWorkbench
+locality/cost/privacy/VC/animation/undo/snap — and now a **v1 design apparatus (optimizer +
+tolerancer + dn/dT)** that 3DOptix lacks entirely. For a **physics-first optical engineer** MieWorkbench
 is the more capable *engine*; for a **lab engineer laying out catalog benchtop systems** 3DOptix is
 the better *product*.
 
@@ -927,8 +1005,11 @@ on the most line items and is itself the general-feature-set winner, with **CODE
 second** on the design axes. MieWorkbench's consistent, *non-overlapping* wins across all five
 pairings — coherent-absolute non-sequential field, rigorous Mie + volume scattering, the closed
 energy ledger, Stokes/biaxial polarization, the whole ultrafast/time-domain axis, GPU throughput,
-and cost/locality/privacy — define exactly the moat to defend and the (design-shaped) gaps to weigh
-in §7.
+and cost/locality/privacy — define exactly the moat to defend. A now-landed **v1 design apparatus**
+(optimizer, tolerancer, dn/dT thermal, exit-pupil/PSF-peak Strehl, image-sim, in-app console) has
+*narrowed but not closed* the design gap — MieWorkbench no longer forfeits the I/J/K blocks
+wholesale — leaving the remaining design-*depth* gaps (glass substitution, multi-config, compensator
+chains, fast-differential tolerancing, operand library, gridded POP) to weigh in §7.
 
 ---
 
@@ -939,17 +1020,31 @@ architecture (FreeCAD worker + numpy/torch MC engine + C engine + PySide GUI), c
 `future.md` seams and named modules. Effort tiers: **S** ≤1 wk · **M** ~1 mo · **L** ~1 quarter ·
 **XL** multi-quarter/research.
 
-> **Already delivered since the 2026-07-09 draft (no longer gaps — moved out of this section):**
-> named analysis products **PSF, FFT-MTF, encircled/ensquared energy, spot diagrams, ray/OPD fans,
-> source-referenced Zernike + Maréchal Strehl** (lowhanging round); **ghost/stray-light path
-> ranking**; **photometric lux/lm/cd** and the **spectrometer** mode; **Gaussian-beam (M²) sources +
-> apodization**; **glass-catalog import (168 materials, 41 Schott/Ohara)**; **biaxial crystals**;
-> **measured ABg BSDF (BRDF-side)**; **multi-process `--workers` sharding**; the **fold operator +
-> relative optical-train chaining**; **curved detectors (incoherent)**; and the compiled **C
-> engine**. See `future.md` "Delivered" for flags/modules. The list below is what genuinely remains.
+> **Already delivered (no longer gaps — moved out of this section):**
+> named analysis products **PSF, FFT-MTF, encircled/ensquared energy, spot diagrams, ray/OPD fans**
+> (lowhanging round); **ghost/stray-light path ranking**; **photometric lux/lm/cd** and the
+> **spectrometer** mode; **Gaussian-beam (M²) sources + apodization**; **glass-catalog import**;
+> **biaxial crystals**; **measured ABg BSDF (BRDF-side)**; **multi-process `--workers` sharding**;
+> the **fold operator + relative optical-train chaining**; **curved detectors (incoherent)**; and the
+> compiled **C engine**.
+> **Then the design-apparatus round (2026-07-13) landed a v1 of most of §7.1/§7.2/§7.3/§7.6/§7.11:**
+> a **weighted-merit optimizer** (scipy Nelder-Mead local + nevergrad CMA-ES global, `optimize.py`),
+> **sensitivity + Monte-Carlo yield tolerancing** with a focus compensator (`tolerance.py`), **dn/dT
+> thermal + 847 glasses**, a **true exit-pupil / PSF-peak Strehl** + **partial-coherence image
+> simulation** (`analysis_imaging.py`/`analysis_field.image_*`), and an **in-app Python console**
+> (`panes/py_console.py`). The §7 subsections below are therefore **reframed to the v1-maturation
+> gaps that remain** (operand library, glass substitution, multi-config, compensator chains,
+> fast-differential tolerancing, VCZ partial coherence, field-varying image-sim) — not the from-zero
+> gaps they described in the 2026-07-09 draft. See `future.md` for the single impact×leverage-ranked
+> priority list.
 
-### 7.1 Optimization (I1–I6) — *the biggest categorical gap*
-Now the single largest gap vs Zemax, CODE V, OSLO, and QUADOA (all four win the whole I block).
+### 7.1 Optimization (I1–I6) — *v1 landed; remaining depth gaps*
+A **v1 optimizer landed** (`optimize.py`: weighted spot-RMS/EE/MTF50/power merit, scipy Nelder-Mead
+local + nevergrad CMA-ES global, on the persistent-worker fast evaluator `fast_eval.py`) — so
+MieWorkbench now holds I3 (✅ global) and I1/I2 (🟡 merit/local). **What remains** to match the four
+design suites: a **named-operand library** (I1 depth), a **true DLS/Levenberg** local mode (I2), and
+above all **glass substitution (I4)**, **multi-config optimization (I5)**, and **directed global
+synthesis (I6, CODE V Global-Synthesis-style, many distinct minima)** — all still ❌.
 - **① Ideal:** merit-function editor with named operands (EFL, RMS spot/wavefront, MTF@freq,
   boundary/edge constraints), local (DLS/derivative-free) + global optimizers, glass substitution,
   multi-config awareness — with a **CODE V-style directed global synthesis** (I6) surfacing many
@@ -963,7 +1058,12 @@ Now the single largest gap vs Zemax, CODE V, OSLO, and QUADOA (all four win the 
   loop** (`coherent=false`, direct deposit), refining coherently at the end. Acceptance target: the
   `auto_designed_lens` demo (`future.md` §d). **Effort: headless optimizer L; GUI M; global XL.**
 
-### 7.2 Tolerancing (J1–J5)
+### 7.2 Tolerancing (J1–J5) — *v1 landed; remaining depth gaps*
+A **v1 tolerancer landed** (`tolerance.py`: sensitivity ranking J1✅, Monte-Carlo yield J2/J4✅, a
+single focus compensator J3🟡 via a nested optimize call). **What remains:** a **distribution
+library** (J2 depth vs QUADOA's 9), **chainable multi-parameter compensators** (J3 full), and the
+**CODE V-style fast differential wavefront tolerancing** (J5, still ❌) cheap enough to run inside the
+optimizer.
 - **① Ideal:** sensitivity + inverse-sensitivity, Monte-Carlo with multiple perturbation
   distributions, chainable compensators, yield reporting — and, as the stretch goal, a **CODE
   V-style fast differential wavefront tolerancing** (J5) cheap enough to run inside the optimizer.
@@ -975,16 +1075,13 @@ Now the single largest gap vs Zemax, CODE V, OSLO, and QUADOA (all four win the 
   approximates J5. Acceptance target: `tolerance_yield` demo. **Effort: sensitivity M; MC
   tolerancing L; compensators L; differential J5 L.**
 
-### 7.3 True exit-pupil imaging analysis (B6/B7 upgrade, B8, F10)
-The Zernike/Strehl products shipped with a **source-referenced pupil** (exact for the collimated/
-laser benches this tracer models) — not a true exit pupil for finite-conjugate, field-point imaging.
-- **① Ideal:** an exit-pupil / chief-ray search (reference sphere on a field point's image), which
-  also unlocks a **PSF-peak-ratio Strehl**, **partial-coherence imaging** (B8), and **image
-  simulation** (F10, convolve a scene through the system).
-- **② Pragmatic:** add a chief-ray / reference-sphere stage (`raytracer/analysis.py`) cross-checking
-  `--save-fields` vs `--export-rays`; partial coherence and image-sim then ride on the field
-  products. Flagged in `future.md` (a). **Effort: exit-pupil/PSF-peak Strehl L; partial coherence L;
-  image-sim M once the field pipeline exists.**
+### 7.3 Exit-pupil imaging analysis (B6/B7/B8/F10) — *v1 landed; remaining depth gaps*
+The **exit-pupil / chief-ray stage landed** (`analysis_imaging.py`, `--wavefront-pupil exit_pupil`),
+upgrading Zernike (B6🟡, now a true exit-pupil reference) and **Strehl (B7✅, PSF-peak-ratio)**, plus
+a greenfield **partial-coherence + image-simulation** pass (`analysis_field.image_*`, B8🟡/F10🟡).
+**What remains:** a **multi-basis / annular Zernike** set (B6 depth), a **full Van Cittert–Zernike
+partial-coherence projector** (B8, vs the current image-sim), and **field-varying image simulation**
+(F10, vs the current single space-invariant PSF convolution).
 
 ### 7.4 Surfaces & geometry (D3, D4, D8, D9, D10)
 - **① Ideal:** analytic Q-type (Forbes) + XY/Zernike/Chebyshev freeform *with coherent phase*; GRIN;
@@ -1008,16 +1105,16 @@ laser benches this tracer models) — not a true exit pupil for finite-conjugate
   direction to hit a named aperture body (M), (b) an **IES/TM-25/rayfile importer** producing
   weighted ray sets (M), (c) more emitter geometries (S–M). **Effort: ray-aiming M; source files M.**
 
-### 7.6 Materials & coatings (G1–G3, G5, G8)
-- **① Ideal:** thousands of catalog glasses, 13 dispersion formulas, dn/dT, coating synthesis, a real
-  vendor-component catalog.
-- **② Pragmatic:** the loader (`optprops.py`) already supports Sellmeier/Cauchy/constant/tabulated
-  with mandatory citations. (a) **Import more public Schott/Ohara/CDGM AGF catalogs** into `.miemat`
-  rows (mostly a data script) — closes most of G1/G2 (**S–M**). (b) **Add dn/dT** columns + a
-  temperature parameter in `materials.py` (data already compiled in `library.md`) — also unlocks
-  thermal K1 (**M**). (c) Coating *synthesis* (needle) is niche — defer. (d) A **vendor-component
-  catalog** subset (curated Thorlabs/Edmund parametric primitives with real prescriptions) is a
-  large, ongoing data effort (**L+**). **Effort: catalog import S–M; dn/dT M; vendor catalog L+.**
+### 7.6 Materials & coatings (G1, G5, G8) — *dn/dT + 847 glasses landed*
+The **AGF import (847 Schott/Ohara glasses) and dn/dT thermo-optic hook (Schott TIE-19,
+`--temperature`) both landed**, closing G3 and pushing G1 to 🟡847. **What remains:**
+- **① Ideal:** the vendor thousands (G1 depth), 13 dispersion formulas (G2), coating synthesis (G5),
+  a real vendor-component catalog (G8).
+- **② Pragmatic:** (a) **import still more public Schott/Ohara/CDGM AGF catalogs** to reach the
+  vendor thousands (**S–M**). (b) Coating *synthesis* (needle) is niche — defer. (c) A
+  **vendor-component catalog** subset (curated Thorlabs/Edmund parametric primitives with real
+  prescriptions) is a large, ongoing data effort (**L+**). **Effort: more catalog import S–M; vendor
+  catalog L+.**
 
 ### 7.7 Physical-optics beamlet / POP (B3, B10) & partial coherence (B8)
 - **① Ideal:** a gridded complex-field / beamlet propagator (Zemax POP / CODE V BSP class) for
@@ -1028,11 +1125,15 @@ laser benches this tracer models) — not a true exit pupil for finite-conjugate
   gather kernel. **Effort: gridded POP L–XL; beamlet BSP XL.** Lower priority — the coherent gather
   covers most MieWorkbench use cases.
 
-### 7.8 Thermal / STOP (K1, K2)
-- **① Ideal:** dn/dT + CTE thermal model; FEA deformation import (CODE V does this via SigFit).
-- **② Pragmatic:** dn/dT is shared with §7.6. Full STOP is XL; a pragmatic first step is **importing a
-  deformed surface as a Grid-Sag/mesh** (reuses the mesh path) and a **SigFit-style Zernike/grid
-  deformation reader**. **Effort: dn/dT M (via §7.6); deformation import L; coupled STOP XL.**
+### 7.8 Thermal / STOP (K1, K2) — *bulk-T dn/dT landed*
+Bulk-T index via **dn/dT (`--temperature`) landed** (K1🟡). **What remains:** **CTE / athermalization**
+(K1 depth) and full STOP.
+- **① Ideal:** dn/dT + CTE thermal model with athermalization; FEA deformation import (CODE V does
+  this via SigFit).
+- **② Pragmatic:** add a **CTE / athermalization** pass on top of the shipped dn/dT hook (**M**). Full
+  STOP is XL; a pragmatic first step is **importing a deformed surface as a Grid-Sag/mesh** (reuses
+  the mesh path) and a **SigFit-style Zernike/grid deformation reader**. **Effort: CTE/athermal M;
+  deformation import L; coupled STOP XL.**
 
 ### 7.9 Scattering & stray light (H2, H3, H6)
 - **① Ideal:** measured BSDF/ABg import (both BRDF and BTDF), importance sampling, a dedicated
@@ -1048,12 +1149,12 @@ laser benches this tracer models) — not a true exit pupil for finite-conjugate
   **named-configuration table** in the GUI and let the run loop iterate configs, overlaying via
   `compare_runs.py`. **Effort: config-table GUI M; zoom/scan as config sequences M.**
 
-### 7.11 Scripting API, CAD interop (P2–P4)
-- **② Pragmatic:** (a) STEP/IGES import via §7.4; **export** of the FreeCAD model + traced rays to
-  STEP/IGES is a fc_server op (**M**). (b) An **in-app Python console** bound to the `Project` session
-  object — MieWorkbench is already Python; expose `core/project.py` in a console pane (**M**), which
-  also answers the "no scripting API" gap that Zemax/OSLO/QUADOA win. A macro *language* is
-  unnecessary given a Python console. **Effort: CAD export M; Python console M.**
+### 7.11 Scripting API, CAD interop (P2–P4) — *in-app console landed*
+The **in-app Python console** bound to the live `Project` session **landed** (`panes/py_console.py`,
+P3🟡) — answering the "no scripting API" gap; a macro *language* stays unnecessary given it. **What
+remains:** CAD interop.
+- **② Pragmatic:** STEP/IGES import via §7.4; **export** of the FreeCAD model + traced rays to
+  STEP/IGES is a fc_server op (**M**). **Effort: CAD export M.**
 
 ### 7.12 Compute & scale (Q3–Q5)
 - **② Pragmatic:** `--workers` multi-process sharding already landed; extend to **multi-GPU** (merge
@@ -1167,16 +1268,32 @@ Have" analysis-product item is now **done**, and optimization/tolerancing rise t
 
 ## 9. Bottom line
 
-MieWorkbench cannot and should not try to out-*breadth* Zemax OpticStudio or out-*design* CODE V.
-Its defensible, already-winning moat is **physical-optics fidelity in a non-sequential engine, plus
-an ultrafast/time-domain axis nobody else here has**: coherent-by-default field propagation with
+MieWorkbench remains, first and foremost, a **specialist physical-optics engine**, and it cannot and
+should not try to out-*breadth* Zemax OpticStudio or out-*design* CODE V. Its defensible,
+already-winning moat is **physical-optics fidelity in a non-sequential engine, plus an
+ultrafast/time-domain axis nobody else here has**: coherent-by-default field propagation with
 absolute power, rigorous Mie + volume scattering, full Jones/Stokes polarization with validated
 uniaxial *and biaxial* birefringence, a closed and auditable energy ledger, pulsed/spectrogram/
-SHG/Kerr/GDD modeling, GPU + C-engine throughput, and zero-cost full-locality operation. The
-lowhanging and pulsed rounds already *landed* the previously-conspicuous analysis-product gap
-(PSF/MTF/EE/spot/fans/Zernike/Strehl, photometry, glass catalogs, ghost analysis, Gaussian sources,
-the fold operator) — so the remaining **Must-Have** work is now squarely the *design* apparatus:
-**optimization and tolerancing** (the one categorical gap all four design suites win), plus dn/dT,
-a true exit pupil, and an in-app scripting console. Landing those would, for the first time, let
-MieWorkbench credibly stand next to CODE V, Zemax, OSLO, and QUADOA as a *design* tool and not only
-a best-in-class *physics-and-ultrafast simulation* engine.
+SHG/Kerr/GDD modeling, GPU + C-engine throughput, and zero-cost full-locality operation. That is
+still the story.
+
+**What changed:** the 2026-07-13 design-apparatus round *landed* the work the previous draft of this
+document called the remaining Must-Have gap. MieWorkbench now carries a **v1 design apparatus** — a
+weighted-merit optimizer (Nelder-Mead local + CMA-ES global), sensitivity + Monte-Carlo yield
+tolerancing with a focus compensator, dn/dT thermal index (Schott TIE-19, 847 glasses), a true
+exit-pupil + PSF-peak Strehl with partial-coherence image simulation, and an in-app Python console —
+each tested, demo-backed, and physics-oracle-gated. This **broke the former ❌-sweep in optimization
+and tolerancing**: MieWorkbench is no longer *absent* from the I/J/K blocks, and across a dozen
+formerly-empty §4 cells it now reads 🟡 or ✅.
+
+**But the honest framing is "real but nascent, not yet competitive."** The apparatus is a *single*
+local + *single* global algorithm, a handful of hard-coded merit operands (no ~300-operand library),
+focus-only compensation, and **no glass substitution, no multi-config optimization, no compensator
+chains, no fast-differential tolerancing, no true annular/multi-basis Zernike, and only a
+space-invariant image-sim**. It is emphatically *not* Zemax/CODE V-class; the overall verdict is
+unchanged (Zemax broadest, CODE V the design/optimization/tolerancing champion, both far deeper in
+every design block MieWorkbench now merely *participates* in). What has genuinely changed is the
+standing: MieWorkbench has moved from a best-in-class *physics-and-ultrafast simulation engine that
+cannot design* to one that **can now do first-cut design too** — a v1 apparatus worth maturing
+(more operands, glass substitution, multi-config, compensator chains, fast-differential tolerancing;
+`future.md` ranks the path), not yet a rival to the mature suites.
