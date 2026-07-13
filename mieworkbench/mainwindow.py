@@ -45,6 +45,7 @@ from .core import paraview_launcher
 from .core.beadanim import (AnimationController, format_sim_time,
                             precompute_segments)
 from .core.librarymgr import LibraryManager
+from .core.optimize_controller import OptimizeController
 from .core.previewscheduler import PreviewScheduler
 from .core.project import Project, ProjectError
 from .core.raypreview import RayPreviewController
@@ -59,6 +60,7 @@ from .panes.console import ConsolePane
 from .panes.element_editor import ElementEditorPane
 from .panes.inspector3d import InspectorPane
 from .panes.library import LibraryPane
+from .panes.optimize_pane import OptimizePane
 from .panes.outliner import OutlinerPane
 from .panes.problems import ProblemsPane
 from .panes.prop_editor import PropEditorPane
@@ -83,7 +85,7 @@ import train_solver  # noqa: E402  (stdlib-only; shared chain math)
 
 TrainError = train_solver.TrainError
 
-STAGE_ORDER = ["extract", "trace", "post", "viz"]
+STAGE_ORDER = ["extract", "trace", "post", "viz", "optimize"]
 
 _CHIP_COLORS = {
     "running": "#3b82f6",
@@ -127,6 +129,7 @@ class MainWindow(QMainWindow):
         self._preview_target = "scene"   # or "inspector"
         self.preview_scheduler = PreviewScheduler(parent=self)
         self.runner = RunController(self.settings, self)
+        self.optimizer_ctl = OptimizeController(self.settings, self)
         self.config_matrix = ConfigMatrix()
         self.config_matrix.estimateRequested.connect(self._show_estimate)
         self.library_manager = LibraryManager(
@@ -214,9 +217,16 @@ class MainWindow(QMainWindow):
             "Problems", "problems_dock", self.problems,
             Qt.DockWidgetArea.BottomDockWidgetArea)
 
+        self.optimize_pane = OptimizePane()
+        self.optimize_pane.setObjectName("optimize_host")
+        self.optimize_dock = self._add_dock(
+            "Optimize", "optimize_dock", self.optimize_pane,
+            Qt.DockWidgetArea.BottomDockWidgetArea)
+
         self.tabifyDockWidget(self.console_dock, self.py_console_dock)
         self.tabifyDockWidget(self.console_dock, self.results_dock)
         self.tabifyDockWidget(self.console_dock, self.problems_dock)
+        self.tabifyDockWidget(self.console_dock, self.optimize_dock)
         self.console_dock.raise_()
         self.resizeDocks([self.console_dock], [230],
                          Qt.Orientation.Vertical)
@@ -441,6 +451,13 @@ class MainWindow(QMainWindow):
             "Check the scene for missing information and likely errors")
         self.validate_action.triggered.connect(self._on_validate)
 
+        self.optimize_action = sim_menu.addAction("&Optimize…")
+        self.optimize_action.setToolTip(
+            "Open the merit-function optimizer (drive design variables "
+            "to minimize spot RMS / maximize detected power, with a live "
+            "convergence plot)")
+        self.optimize_action.triggered.connect(self._on_show_optimize)
+
         self.stop_action = sim_menu.addAction("&Stop")
         self.stop_action.setToolTip("Stop the running pipeline")
         self.stop_action.triggered.connect(self.runner.stop)
@@ -485,7 +502,8 @@ class MainWindow(QMainWindow):
                         self.transform_dock, self.library_dock,
                         self.console_dock, self.py_console_dock,
                         self.results_dock,
-                        self.problems_dock, self.compare_dock]
+                        self.problems_dock, self.compare_dock,
+                        self.optimize_dock]
         if self.variables_dock is not None:
             dock_toggles.insert(6, self.variables_dock)
         for dock in dock_toggles:
@@ -1807,6 +1825,71 @@ class MainWindow(QMainWindow):
         self.runner.started.connect(self._on_started)
         self.runner.finished.connect(self._on_finished)
         self.runner.error.connect(self._on_error)
+        self._wire_optimizer()
+
+    def _wire_optimizer(self):
+        """Optimizer controller <-> pane: progress feeds BOTH the pane's
+        convergence plot and the shared stage-chip/status handler (the
+        'optimize' chip is in STAGE_ORDER)."""
+        self.optimizer_ctl.line.connect(self.console.append_line)
+        self.optimizer_ctl.progress.connect(self.optimize_pane.on_progress)
+        self.optimizer_ctl.progress.connect(self._on_progress)
+        self.optimizer_ctl.started.connect(self.optimize_pane.on_started)
+        self.optimizer_ctl.finished.connect(self._on_optimize_finished)
+        self.optimizer_ctl.error.connect(self._on_error)
+        self.optimize_pane.runRequested.connect(self._on_run_optimize)
+        self.optimize_pane.stopRequested.connect(self.optimizer_ctl.stop)
+
+    def _on_show_optimize(self):
+        self.optimize_dock.show()
+        self.optimize_dock.raise_()
+
+    def _on_run_optimize(self):
+        """Optimize pane Run button: launch scripts/optimize.py on the
+        open model under the optics-env python. Dialog-free (offscreen-
+        test discipline): problems land in the status bar."""
+        if not self.model_path:
+            self.statusBar().showMessage(
+                "Open a model before optimizing", 8000)
+            return False
+        if self.optimizer_ctl.is_running():
+            self.statusBar().showMessage(
+                "An optimization is already running", 8000)
+            return False
+        try:
+            config = self.optimize_pane.config()
+        except ValueError as exc:
+            self.statusBar().showMessage("Optimize: %s" % exc, 8000)
+            return False
+        if not config["var"]:
+            self.statusBar().showMessage(
+                "Optimize: add at least one variable row", 8000)
+            return False
+        if not config["operand"]:
+            self.statusBar().showMessage(
+                "Optimize: add at least one operand row", 8000)
+            return False
+        args = OptimizeController.build_args(config)
+        if not self.optimizer_ctl.start(self.model_path, args,
+                                        extra_env=self._run_env()):
+            self.statusBar().showMessage(
+                "Could not start the optimizer", 8000)
+            return False
+        self.stage_chips["optimize"].setStyleSheet(
+            self._chip_style(_CHIP_COLORS["running"]))
+        self.statusBar().showMessage("Optimization started")
+        return True
+
+    def _on_optimize_finished(self, exit_code):
+        self.optimize_pane.on_finished(exit_code)
+        if exit_code == 0:
+            self.statusBar().showMessage("Optimization finished", 5000)
+        else:
+            self.statusBar().showMessage(
+                "Optimization exited with code %d (see console)"
+                % exit_code, 8000)
+            self.stage_chips["optimize"].setStyleSheet(
+                self._chip_style(_CHIP_COLORS["failed"]))
 
     def _reset_run_indicators(self):
         for chip in self.stage_chips.values():
@@ -1917,6 +2000,8 @@ class MainWindow(QMainWindow):
             self.raypreview.cancel()
         if self.runner.is_running():
             self.runner.stop()
+        if self.optimizer_ctl.is_running():
+            self.optimizer_ctl.stop()
         self.preview_scheduler.reset()
         self.scene3d.clear_rays()
         self.scene3d.set_rays_stale(False)
@@ -2634,6 +2719,11 @@ class MainWindow(QMainWindow):
         try:
             if self.raypreview.is_running():
                 self.raypreview.cancel()
+        except Exception:
+            pass
+        try:
+            if self.optimizer_ctl.is_running():
+                self.optimizer_ctl.stop()
         except Exception:
             pass
         try:

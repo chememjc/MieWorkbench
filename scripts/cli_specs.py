@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402  (stdlib-only shared contract hub)
 
-STAGES = ("pipeline", "trace", "post", "viz")
+STAGES = ("pipeline", "trace", "post", "viz", "optimize")
 
 
 def _workers_arg(s):
@@ -785,11 +785,159 @@ def _build_viz_parser():
     return p
 
 
+# ---------------------------------------------------------------------------
+# optimize  (scripts/optimize.py — merit-function optimizer over fast_eval)
+# ---------------------------------------------------------------------------
+# Named merit operands scripts/optimize.py understands (single source of
+# truth: the GUI's OptimizePane populates its operand combo from this and
+# optimize.py builds its registry over it). Any other operand string
+# containing a '.' is treated as a raw flattened report.json merit key
+# (fast_eval.flatten_merits naming), minimized toward its target.
+OPTIMIZE_OPERANDS = ("spot_rms", "encircled_energy", "detected_power",
+                     "mtf50", "focus")
+
+
+def parse_var_spec(s):
+    """'NAME:START:LO:HI' -> {"name","start","lo","hi"} with LO<=START<=HI.
+    argparse type= for --var (optimize stage). NAME is a spreadsheet cell
+    alias (bare 'alias' on the default dim sheet, or 'sheetlabel.alias' —
+    exactly what permute_model --var / fast_eval address)."""
+    parts = s.split(":")
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError(
+            "invalid --var %r (expected NAME:START:LO:HI)" % s)
+    name = parts[0].strip()
+    if not name:
+        raise argparse.ArgumentTypeError("--var %r: empty NAME" % s)
+    try:
+        start, lo, hi = (float(parts[1]), float(parts[2]), float(parts[3]))
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "invalid --var %r (START/LO/HI must be numbers)" % s)
+    if not lo < hi:
+        raise argparse.ArgumentTypeError(
+            "--var %r: LO must be < HI (got %g >= %g)" % (s, lo, hi))
+    if not lo <= start <= hi:
+        raise argparse.ArgumentTypeError(
+            "--var %r: START %g outside [LO, HI] = [%g, %g]"
+            % (s, start, lo, hi))
+    return {"name": name, "start": start, "lo": lo, "hi": hi}
+
+
+def parse_operand_spec(s):
+    """'OPERAND[@DETECTOR]:TARGET:WEIGHT' -> {"operand","detector",
+    "target","weight"}. argparse type= for --operand (optimize stage).
+    OPERAND is one of OPTIMIZE_OPERANDS or a raw flattened merit key
+    (contains a '.'). DETECTOR (optional) restricts the operand to one
+    detector label; default: every detector in the report (summed for
+    detected_power, averaged otherwise)."""
+    parts = s.rsplit(":", 2)
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError(
+            "invalid --operand %r (expected OPERAND[@DETECTOR]:TARGET:"
+            "WEIGHT)" % s)
+    head = parts[0].strip()
+    if "@" in head:
+        operand, detector = head.split("@", 1)
+        operand, detector = operand.strip(), detector.strip()
+    else:
+        operand, detector = head, None
+    if not operand:
+        raise argparse.ArgumentTypeError("--operand %r: empty OPERAND" % s)
+    if operand not in OPTIMIZE_OPERANDS and "." not in operand:
+        raise argparse.ArgumentTypeError(
+            "unknown operand %r (know: %s, or a raw flattened merit key "
+            "containing a '.')" % (operand, ", ".join(OPTIMIZE_OPERANDS)))
+    try:
+        target, weight = float(parts[1]), float(parts[2])
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "invalid --operand %r (TARGET/WEIGHT must be numbers)" % s)
+    return {"operand": operand, "detector": detector,
+            "target": target, "weight": weight}
+
+
+def _build_optimize_parser():
+    p = argparse.ArgumentParser(
+        prog="optimize.py",
+        description="Merit-function optimizer: drives design variables "
+                    "(spreadsheet cell aliases) through the fast_eval "
+                    "incoherent evaluator to minimize a weighted operand "
+                    "merit, then re-evaluates the best design once with "
+                    "coherence as authored.")
+    p.add_argument("--model", required=True, metavar="FCSTD",
+                   help="the base .FCStd (bare names resolve against the "
+                        "project root, then basemodels/)")
+    p.add_argument("--config", default=None, metavar="JSON",
+                   help="JSON file whose keys mirror these options "
+                        "(argparse dests); explicit CLI flags win over "
+                        "config-file values")
+    p.add_argument("--var", action="append", default=[],
+                   type=parse_var_spec, metavar="NAME:START:LO:HI",
+                   help="optimization variable (repeatable, >=1 required): "
+                        "spreadsheet cell alias, start value and bounds "
+                        "in the sheet's units (mm)")
+    p.add_argument("--operand", action="append", default=[],
+                   type=parse_operand_spec,
+                   metavar="OPERAND[@DETECTOR]:TARGET:WEIGHT",
+                   help="merit operand (repeatable, >=1 required). "
+                        "Operands: %s (spot_rms/focus = detector spot RMS "
+                        "radius um, needs --export-rays [added "
+                        "automatically]; encircled_energy = ee_r80_um and "
+                        "mtf50 = mtf50_tan_cy_mm, both from the coherent "
+                        "field analysis [--save-fields + coherent inner "
+                        "loop, slow]; detected_power = total_power_W, "
+                        "maximized), or a raw flattened merit key. "
+                        "Minimize operands contribute weight*(v-target)^2; "
+                        "maximize operands contribute -weight*v (or "
+                        "weight*(v-target)^2 when TARGET is nonzero)"
+                        % ", ".join(OPTIMIZE_OPERANDS))
+    p.add_argument("--algorithm", default="local",
+                   choices=["local", "global"],
+                   help="'local' = scipy Nelder-Mead within the bounds "
+                        "(default); 'global' = nevergrad CMA-ES")
+    p.add_argument("--budget", type=int, default=40, metavar="N",
+                   help="maximum merit evaluations (default 40)")
+    p.add_argument("--tol", type=float, default=1e-3,
+                   help="local-algorithm merit convergence tolerance "
+                        "(scipy fatol; default 1e-3)")
+    p.add_argument("--optimizer-seed", type=int, default=42,
+                   help="RNG seed for the global (CMA-ES) algorithm")
+    p.add_argument("--preset", default="quick",
+                   choices=sorted(common.PRESETS),
+                   help="fast_eval fidelity preset for rays/resolution/"
+                        "nlambda not given explicitly (default: quick)")
+    p.add_argument("--rays", type=float, default=None,
+                   help="primary rays per source per evaluation "
+                        "(default: from --preset)")
+    p.add_argument("--resolution", type=int, default=None)
+    p.add_argument("--nlambda", type=int, default=None)
+    p.add_argument("--seeds", type=int, default=1)
+    p.add_argument("--seed0", type=int, default=42)
+    p.add_argument("--eval-backend", default="worker",
+                   choices=["worker", "full"],
+                   help="fast_eval backend for the inner loop (default: "
+                        "worker = persistent FreeCAD, fast)")
+    p.add_argument("--out", default=None, metavar="DIR",
+                   help="optimizer case dir for report.json/progress.json "
+                        "(default: var/optimize/<model-stem>)")
+    p.add_argument("--workdir", default=None, metavar="DIR",
+                   help="fast_eval evaluation workspace (default: "
+                        "var/fasteval/<stem>-<backend>)")
+    p.add_argument("--no-final-coherent", action="store_true",
+                   help="skip the final keep_coherent=True re-evaluation "
+                        "of the best design (the inner loop always runs "
+                        "incoherent unless an operand needs the coherent "
+                        "field analysis)")
+    return p
+
+
 _BUILDERS = {
     "pipeline": _build_pipeline_parser,
     "trace": _build_trace_parser,
     "post": _build_post_parser,
     "viz": _build_viz_parser,
+    "optimize": _build_optimize_parser,
 }
 
 

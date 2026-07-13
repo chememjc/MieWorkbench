@@ -16,6 +16,7 @@ and each stage script's print() calls):
     [trace]                  -> "trace"   (run_trace.py)
     [post]                   -> "post"    (post_process.py)
     [prep] [setup] [render] [done] -> "viz"  (make_viz.py)
+    [optimize]               -> "optimize" (optimize.py)
     anything else            -> "extract" (extract_geometry.py's plain
                                  prints/WARNING/ERROR carry no bracket tag,
                                  and so does run_pipeline.py's own batch-
@@ -40,7 +41,7 @@ from PySide6.QtWidgets import (
 PROGRESS_PREFIX = "@MIEWB "
 MAX_LINES = 20000
 
-STAGE_CHOICES = ["All", "extract", "trace", "post", "viz"]
+STAGE_CHOICES = ["All", "extract", "trace", "post", "viz", "optimize"]
 
 _VIZ_PREFIXES = ("[prep]", "[setup]", "[render]", "[done]")
 
@@ -48,6 +49,7 @@ _COLOR_DEFAULT = "#d4d4d4"
 _COLOR_TRACE = "#22d3ee"     # cyan
 _COLOR_POST = "#e879f9"      # magenta
 _COLOR_VIZ = "#eab308"       # yellow
+_COLOR_OPTIMIZE = "#34d399"  # green
 _COLOR_ERROR = "#f87171"     # red
 _COLOR_NOTICE = "#fb923c"    # orange
 
@@ -59,6 +61,8 @@ def classify_stage(text):
         return "post"
     if text.startswith(_VIZ_PREFIXES):
         return "viz"
+    if text.startswith("[optimize]"):
+        return "optimize"
     return "extract"
 
 
@@ -71,6 +75,8 @@ def classify_color(text):
         return _COLOR_POST
     if text.startswith(_VIZ_PREFIXES):
         return _COLOR_VIZ
+    if text.startswith("[optimize]"):
+        return _COLOR_OPTIMIZE
     if "NOTICE" in text:
         return _COLOR_NOTICE
     return _COLOR_DEFAULT

@@ -1602,13 +1602,26 @@ def _spot_stats(u, v, power):
     """Centroid + RMS + geometric (100%) radius of landing points (u, v)
     [m] in the detector grid frame. RMS is power-weighted-agnostic (a plain
     geometric spot metric); centroid is the plain mean so a symmetric spot
-    reports its geometric center."""
+    reports its geometric center. ALSO returns the power-weighted RMS
+    about the power-weighted centroid (rms_pw): low-power stray/ghost
+    records count equally in the plain RMS, so a focused spot plus a few
+    multi-bounce ghosts reads mm-scale there — rms_pw is the energy
+    metric the optimizer (scripts/optimize.py spot_rms operand) uses."""
     uc = float(np.mean(u))
     vc = float(np.mean(v))
     dr = np.hypot(u - uc, v - vc)
     rms = float(np.sqrt(np.mean(dr ** 2)))
     geo = float(np.max(dr)) if len(dr) else 0.0
-    return uc, vc, rms, geo
+    wsum = float(np.sum(power))
+    if wsum > 0:
+        w = power / wsum
+        uw = float(np.sum(w * u))
+        vw = float(np.sum(w * v))
+        rms_pw = float(np.sqrt(np.sum(
+            w * (np.hypot(u - uw, v - vw) ** 2))))
+    else:
+        rms_pw = rms
+    return uc, vc, rms, geo, rms_pw
 
 
 def render_spot_diagram(safe, dm, cols, adir, report, csv_emitter=None):
@@ -1640,7 +1653,7 @@ def render_spot_diagram(safe, dm, cols, adir, report, csv_emitter=None):
         m = (sid == s) & (lst == l)
         uk, vk = u[m], v[m]
         lam_nm = float(np.mean(lam[m])) * 1e9
-        uc, vc, rms, geo = _spot_stats(uk, vk, power[m])
+        uc, vc, rms, geo, rms_pw = _spot_stats(uk, vk, power[m])
         ax = axes.ravel()[i]
         ax.axis("on")
         rgb = np.clip(wavelength_rgb(lam_nm).ravel(), 0, 1)
@@ -1653,11 +1666,13 @@ def render_spot_diagram(safe, dm, cols, adir, report, csv_emitter=None):
         ax.set_ylabel("y − centroid [µm]", fontsize=7)
         ax.tick_params(labelsize=6)
         rows.append({"source_id": int(s), "lam_stratum": int(l),
-                     "rms_radius_um": rms * 1e6, "geo_radius_um": geo * 1e6,
+                     "rms_radius_um": rms * 1e6,
+                     "rms_pw_radius_um": rms_pw * 1e6,
+                     "geo_radius_um": geo * 1e6,
                      "centroid_x_um": uc * 1e6, "centroid_y_um": vc * 1e6,
                      "n_rays": int(m.sum())})
-        csv_rows.append((int(s), int(l), rms * 1e6, geo * 1e6,
-                         uc * 1e6, vc * 1e6, int(m.sum())))
+        csv_rows.append((int(s), int(l), rms * 1e6, rms_pw * 1e6,
+                         geo * 1e6, uc * 1e6, vc * 1e6, int(m.sum())))
     fig.suptitle("Spot diagram — %s" % label, fontsize=10)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     png = adir / ("spot_%s.png" % safe)
@@ -1668,7 +1683,8 @@ def render_spot_diagram(safe, dm, cols, adir, report, csv_emitter=None):
     if csv_emitter is not None:
         csv_emitter.emit(
             "spot_%s.csv" % safe,
-            ["source_id", "lam_stratum", "rms_radius_um", "geo_radius_um",
+            ["source_id", "lam_stratum", "rms_radius_um",
+             "rms_pw_radius_um", "geo_radius_um",
              "centroid_x_um", "centroid_y_um", "n_rays"], csv_rows,
             entity=label, chart="spot_diagram", units="um",
             provenance="rays_full.npz",
