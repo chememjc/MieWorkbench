@@ -38,6 +38,8 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from .optimize_pane import variable_bounds
+
 try:
     from PySide6.QtCharts import (QBarCategoryAxis, QBarSeries, QBarSet,
                                   QChart, QChartView, QValueAxis)
@@ -247,6 +249,7 @@ class TolerancePane(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._varrows = {}     # {name: core.variables.VarRow} from the scene
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
@@ -470,6 +473,75 @@ class TolerancePane(QWidget):
         row.addWidget(self.status_label, 1)
         return row
 
+    # -- scene variables (miewb_vars dropdown + auto-fill) ------------------------
+    def set_variables(self, varrows):
+        """Publish the scene's miewb_vars variables ({name: VarRow} from
+        core.variables.parse_sheet) into every row's name dropdown. The
+        combos stay editable so aliases outside miewb_vars (dim-sheet
+        cells like 'dim.ct') can still be typed — an empty dict simply
+        leaves a plain editable combo."""
+        self._varrows = dict(varrows or {})
+        for row in range(self.tol_table.rowCount()):
+            combo = self.tol_table.cellWidget(row, 0)
+            if combo is not None:
+                self._repopulate_name_combo(combo)
+
+    def _repopulate_name_combo(self, combo):
+        """Swap the combo's item list for the current variable names,
+        preserving whatever name the row already shows (signals blocked:
+        repopulation must never trigger an auto-fill)."""
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(list(self._varrows))
+        combo.setCurrentText(current)
+        combo.blockSignals(False)
+
+    def _make_name_combo(self, name):
+        combo = QComboBox()
+        combo.setEditable(True)      # names outside miewb_vars are typed
+        combo.addItems(list(self._varrows))
+        combo.setToolTip(
+            "Pick a miewb_vars variable (auto-fills nominal/band from "
+            "the sheet), or type any spreadsheet cell alias")
+        if name:      # blank keeps Qt's default: the first scene variable
+            combo.setCurrentText(name)
+        return combo
+
+    def _combo_row(self, table, combo):
+        for row in range(table.rowCount()):
+            if table.cellWidget(row, 0) is combo:
+                return row
+        return None
+
+    def _nominal_band(self, varrow):
+        """(nominal, band) auto-fill: nominal = the sheet's current
+        value; band = half the __min/__max span when real, else 10 % of
+        |value| (0.1 for a zero value) — variable_bounds' fallback."""
+        value, lo, hi = variable_bounds(varrow)
+        return value, (hi - lo) / 2.0
+
+    def _on_name_chosen(self, combo, text):
+        """A row's name-combo changed: when the name is a known
+        miewb_vars variable, auto-fill that row's nominal and band."""
+        varrow = self._varrows.get(text)
+        if varrow is None:
+            return
+        row = self._combo_row(self.tol_table, combo)
+        if row is None:
+            return
+        nominal, band = self._nominal_band(varrow)
+        for col, val in ((1, nominal), (3, band)):
+            self.tol_table.setItem(row, col, QTableWidgetItem("%g" % val))
+
+    @staticmethod
+    def _row_name(table, row):
+        combo = table.cellWidget(row, 0)
+        if combo is not None:
+            return combo.currentText().strip()
+        item = table.item(row, 0)
+        return (item.text() if item is not None else "").strip()
+
     # -- table helpers -------------------------------------------------------------
     @staticmethod
     def _remove_current(table):
@@ -477,12 +549,24 @@ class TolerancePane(QWidget):
         if row >= 0:
             table.removeRow(row)
 
-    def add_tolerance(self, name="", nominal=0.0, dist="normal",
-                      band=0.1):
+    def add_tolerance(self, name="", nominal=None, dist="normal",
+                      band=None):
+        """Insert a tolerance row. Explicit nominal/band are honored;
+        any left as None auto-fill from the (known) named miewb_vars
+        variable, else fall back to 0 / 0.1. A blank name adopts the
+        combo's default choice (the first scene variable)."""
         table = self.tol_table
         row = table.rowCount()
         table.insertRow(row)
-        table.setItem(row, 0, QTableWidgetItem(name))
+        name_combo = self._make_name_combo(name)
+        table.setCellWidget(row, 0, name_combo)
+        if not name:
+            name = name_combo.currentText()   # first scene variable
+        fill = (0.0, 0.1)
+        if name in self._varrows:
+            fill = self._nominal_band(self._varrows[name])
+        nominal = fill[0] if nominal is None else nominal
+        band = fill[1] if band is None else band
         table.setItem(row, 1, QTableWidgetItem("%g" % nominal))
         combo = QComboBox()
         combo.addItems(list(cli_specs.TOLERANCE_DISTS))
@@ -491,6 +575,9 @@ class TolerancePane(QWidget):
                          "uniform(nominal +/- band)")
         table.setCellWidget(row, 2, combo)
         table.setItem(row, 3, QTableWidgetItem("%g" % band))
+        # connect AFTER seeding the cells so explicit values always win
+        name_combo.currentTextChanged.connect(
+            lambda text, c=name_combo: self._on_name_chosen(c, text))
         return row
 
     def add_operand(self, operand="spot_rms", detector="", target=0.0,
@@ -521,7 +608,7 @@ class TolerancePane(QWidget):
         with the row named)."""
         out = []
         for row in range(self.tol_table.rowCount()):
-            name = self._cell_text(self.tol_table, row, 0)
+            name = self._row_name(self.tol_table, row)
             if not name:
                 continue
             nums = []

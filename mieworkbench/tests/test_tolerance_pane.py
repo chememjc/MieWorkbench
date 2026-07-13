@@ -18,8 +18,24 @@ import cli_specs  # noqa: E402  (stdlib-only)
 
 from mieworkbench.core.tolerance_controller import (  # noqa: E402
     ToleranceController)
+from mieworkbench.core.variables import VarRow  # noqa: E402
 from mieworkbench.panes.tolerance_pane import (  # noqa: E402
     PENALTY_FLOOR, TolerancePane)
+
+
+def _varrows():
+    """A synthetic parse_sheet() result: one variable with real sweep
+    bounds, one whose sheet has no __min/__max meta (parse_sheet echoes
+    vmin == vmax == value), and one zero-valued unbounded variable."""
+    return {
+        "lenspos": VarRow(name="lenspos", value_raw="-6", value=-6.0,
+                          vmin=-8.0, vmax=8.0, nstep=5, enabled=True,
+                          row=1),
+        "gap": VarRow(name="gap", value_raw="5", value=5.0,
+                      vmin=5.0, vmax=5.0, nstep=0, enabled=True, row=2),
+        "tiltz": VarRow(name="tiltz", value_raw="0", value=0.0,
+                        vmin=0.0, vmax=0.0, nstep=0, enabled=True, row=3),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +116,55 @@ def test_pane_config_skips_blank_rows_and_defaults(qtbot):
                  "--compensator", "--comp-budget", "--rays",
                  "--skip-sensitivity"):
         assert flag not in args, args
+
+
+# ---------------------------------------------------------------------------
+# pane: miewb_vars name dropdowns + auto-fill
+# ---------------------------------------------------------------------------
+def test_set_variables_populates_name_combos(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.add_tolerance("custom", 1.0, "uniform", 0.25)
+    pane.set_variables(_varrows())
+    combo = pane.tol_table.cellWidget(0, 0)
+    assert [combo.itemText(i) for i in range(combo.count())] \
+        == ["lenspos", "gap", "tiltz"]
+    # the existing row's typed name and explicit values survive
+    assert combo.currentText() == "custom"
+    assert pane.tol_table.item(0, 1).text() == "1"
+    # back to no scene: combo empties but stays editable free-text
+    pane.set_variables({})
+    assert combo.count() == 0
+    assert combo.isEditable()
+    assert pane.tolerances() == ["custom:1:uniform:0.25"]
+
+
+def test_pick_variable_autofills_nominal_and_band(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.set_variables(_varrows())
+    row = pane.add_tolerance()         # blank -> adopts the first variable
+    combo = pane.tol_table.cellWidget(row, 0)
+    assert combo.currentText() == "lenspos"
+    # nominal = value; band = (vmax - vmin) / 2 when bounds are real
+    assert pane.tol_table.item(row, 1).text() == "-6"
+    assert pane.tol_table.item(row, 3).text() == "8"
+
+    combo.setCurrentText("gap")        # no bounds meta -> 10 % of |value|
+    assert pane.tol_table.item(row, 1).text() == "5"
+    assert pane.tol_table.item(row, 3).text() == "0.5"
+
+    combo.setCurrentText("tiltz")      # zero value -> 0.1
+    assert pane.tol_table.item(row, 1).text() == "0"
+    assert pane.tol_table.item(row, 3).text() == "0.1"
+
+    # the assembled spec strings read the combo, not a table item
+    assert pane.tolerances() == ["tiltz:0:normal:0.1"]
+
+    # typing a non-variable name leaves the cells alone
+    combo.setCurrentText("dim.lensdy")
+    assert pane.tol_table.item(row, 3).text() == "0.1"
+    assert pane.tolerances() == ["dim.lensdy:0:normal:0.1"]
 
 
 def test_pane_bad_cells_raise_with_row_named(qtbot):

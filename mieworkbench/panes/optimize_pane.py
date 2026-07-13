@@ -48,6 +48,29 @@ except ImportError:            # pragma: no cover - GUI venv ships QtCharts
 PENALTY_FLOOR = 1e8
 
 
+def variable_bounds(varrow):
+    """(value, lo, hi) auto-fill numbers for one miewb_vars variable
+    (a core.variables.VarRow).
+
+    Uses the sheet's __min/__max sweep bounds when they are real
+    (vmin < vmax). parse_sheet writes vmin == vmax == value when the
+    sheet carries no __min/__max meta, so a degenerate band means
+    "unspecified": fall back to value ± 10 % (± 0.1 when the value is 0,
+    so a zero-valued variable still gets a usable band)."""
+    try:
+        value = float(varrow.value)
+    except (TypeError, ValueError):
+        value = 0.0
+    try:
+        lo, hi = float(varrow.vmin), float(varrow.vmax)
+    except (TypeError, ValueError):
+        lo = hi = value
+    if not lo < hi:
+        delta = abs(value) * 0.1 or 0.1
+        lo, hi = value - delta, value + delta
+    return value, lo, hi
+
+
 # =============================================================================
 # Convergence plot (QtCharts when available, QPainter fallback)
 # =============================================================================
@@ -199,6 +222,7 @@ class OptimizePane(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._varrows = {}     # {name: core.variables.VarRow} from the scene
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
@@ -348,6 +372,70 @@ class OptimizePane(QWidget):
         row.addWidget(self.best_label, 1)
         return row
 
+    # -- scene variables (miewb_vars dropdown + auto-fill) ------------------------
+    def set_variables(self, varrows):
+        """Publish the scene's miewb_vars variables ({name: VarRow} from
+        core.variables.parse_sheet) into every row's name dropdown. The
+        combos stay editable so aliases outside miewb_vars (dim-sheet
+        cells like 'dim.ct') can still be typed — an empty dict simply
+        leaves a plain editable combo."""
+        self._varrows = dict(varrows or {})
+        for row in range(self.var_table.rowCount()):
+            combo = self.var_table.cellWidget(row, 0)
+            if combo is not None:
+                self._repopulate_name_combo(combo)
+
+    def _repopulate_name_combo(self, combo):
+        """Swap the combo's item list for the current variable names,
+        preserving whatever name the row already shows (signals blocked:
+        repopulation must never trigger an auto-fill)."""
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(list(self._varrows))
+        combo.setCurrentText(current)
+        combo.blockSignals(False)
+
+    def _make_name_combo(self, name):
+        combo = QComboBox()
+        combo.setEditable(True)      # names outside miewb_vars are typed
+        combo.addItems(list(self._varrows))
+        combo.setToolTip(
+            "Pick a miewb_vars variable (auto-fills start/bounds from "
+            "the sheet), or type any spreadsheet cell alias")
+        if name:      # blank keeps Qt's default: the first scene variable
+            combo.setCurrentText(name)
+        return combo
+
+    def _combo_row(self, table, combo):
+        for row in range(table.rowCount()):
+            if table.cellWidget(row, 0) is combo:
+                return row
+        return None
+
+    def _on_name_chosen(self, combo, text):
+        """A row's name-combo changed: when the name is a known
+        miewb_vars variable, auto-fill that row's start/lo/hi (start =
+        the sheet's current value; bounds = __min/__max when real, else
+        value ± 10 %)."""
+        varrow = self._varrows.get(text)
+        if varrow is None:
+            return
+        row = self._combo_row(self.var_table, combo)
+        if row is None:
+            return
+        start, lo, hi = variable_bounds(varrow)
+        for col, val in ((1, start), (2, lo), (3, hi)):
+            self.var_table.setItem(row, col, QTableWidgetItem("%g" % val))
+
+    @staticmethod
+    def _row_name(table, row):
+        combo = table.cellWidget(row, 0)
+        if combo is not None:
+            return combo.currentText().strip()
+        item = table.item(row, 0)
+        return (item.text() if item is not None else "").strip()
+
     # -- table helpers -------------------------------------------------------------
     @staticmethod
     def _remove_current(table):
@@ -355,13 +443,28 @@ class OptimizePane(QWidget):
         if row >= 0:
             table.removeRow(row)
 
-    def add_variable(self, name="", start=0.0, lo=-1.0, hi=1.0):
+    def add_variable(self, name="", start=None, lo=None, hi=None):
+        """Insert a variable row. Explicit start/lo/hi are honored; any
+        left as None auto-fill from the (known) named miewb_vars variable
+        via variable_bounds, else fall back to 0 / -1 / 1. A blank name
+        adopts the combo's default choice (the first scene variable)."""
         table = self.var_table
         row = table.rowCount()
         table.insertRow(row)
-        for col, text in enumerate([name, "%g" % start, "%g" % lo,
-                                    "%g" % hi]):
-            table.setItem(row, col, QTableWidgetItem(text))
+        combo = self._make_name_combo(name)
+        table.setCellWidget(row, 0, combo)
+        if not name:
+            name = combo.currentText()   # first scene variable, if any
+        fill = (0.0, -1.0, 1.0)
+        if name in self._varrows:
+            fill = variable_bounds(self._varrows[name])
+        for col, (explicit, auto) in enumerate(zip((start, lo, hi), fill),
+                                               start=1):
+            val = auto if explicit is None else explicit
+            table.setItem(row, col, QTableWidgetItem("%g" % val))
+        # connect AFTER seeding the cells so explicit values always win
+        combo.currentTextChanged.connect(
+            lambda text, c=combo: self._on_name_chosen(c, text))
         return row
 
     def add_operand(self, operand="spot_rms", detector="", target=0.0,
@@ -392,7 +495,7 @@ class OptimizePane(QWidget):
         the row named)."""
         out = []
         for row in range(self.var_table.rowCount()):
-            name = self._cell_text(self.var_table, row, 0)
+            name = self._row_name(self.var_table, row)
             if not name:
                 continue
             nums = []

@@ -18,8 +18,24 @@ import cli_specs  # noqa: E402  (stdlib-only)
 
 from mieworkbench.core.optimize_controller import (  # noqa: E402
     OptimizeController)
+from mieworkbench.core.variables import VarRow  # noqa: E402
 from mieworkbench.panes.optimize_pane import (  # noqa: E402
-    OptimizePane, PENALTY_FLOOR)
+    OptimizePane, PENALTY_FLOOR, variable_bounds)
+
+
+def _varrows():
+    """A synthetic parse_sheet() result: one variable with real sweep
+    bounds, one whose sheet has no __min/__max meta (parse_sheet echoes
+    vmin == vmax == value), and one zero-valued unbounded variable."""
+    return {
+        "lenspos": VarRow(name="lenspos", value_raw="-6", value=-6.0,
+                          vmin=-8.0, vmax=8.0, nstep=5, enabled=True,
+                          row=1),
+        "gap": VarRow(name="gap", value_raw="5", value=5.0,
+                      vmin=5.0, vmax=5.0, nstep=0, enabled=True, row=2),
+        "tiltz": VarRow(name="tiltz", value_raw="0", value=0.0,
+                        vmin=0.0, vmax=0.0, nstep=0, enabled=True, row=3),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +97,68 @@ def test_pane_config_skips_blank_rows_and_defaults(qtbot):
     for flag in ("--algorithm", "--budget", "--tol", "--preset",
                  "--eval-backend", "--no-final-coherent", "--rays"):
         assert flag not in args, args
+
+
+# ---------------------------------------------------------------------------
+# pane: miewb_vars name dropdowns + auto-fill
+# ---------------------------------------------------------------------------
+def test_variable_bounds_fallbacks():
+    rows = _varrows()
+    assert variable_bounds(rows["lenspos"]) == (-6.0, -8.0, 8.0)
+    # unspecified bounds (vmin == vmax == value) -> value ± 10 %
+    assert variable_bounds(rows["gap"]) == (5.0, 4.5, 5.5)
+    # zero value -> ± 0.1
+    assert variable_bounds(rows["tiltz"]) == (0.0, -0.1, 0.1)
+
+
+def test_set_variables_populates_name_combos(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.add_variable("custom", 1.0, 0.0, 2.0)   # typed before any scene
+    pane.set_variables(_varrows())
+    combo = pane.var_table.cellWidget(0, 0)
+    assert [combo.itemText(i) for i in range(combo.count())] \
+        == ["lenspos", "gap", "tiltz"]
+    # the existing row's typed name and explicit values survive
+    assert combo.currentText() == "custom"
+    assert pane.var_table.item(0, 1).text() == "1"
+    # back to no scene: combo empties but stays editable free-text
+    pane.set_variables({})
+    assert combo.count() == 0
+    assert combo.isEditable()
+    assert combo.currentText() == "custom"
+    assert pane.variables() == ["custom:1:0:2"]
+
+
+def test_pick_variable_autofills_start_and_bounds(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.set_variables(_varrows())
+    row = pane.add_variable()          # blank -> adopts the first variable
+    combo = pane.var_table.cellWidget(row, 0)
+    assert combo.currentText() == "lenspos"
+    # sheet has real __min/__max: start = value, bounds = vmin/vmax
+    assert pane.var_table.item(row, 1).text() == "-6"
+    assert pane.var_table.item(row, 2).text() == "-8"
+    assert pane.var_table.item(row, 3).text() == "8"
+
+    combo.setCurrentText("gap")        # no bounds meta -> value ± 10 %
+    assert pane.var_table.item(row, 1).text() == "5"
+    assert pane.var_table.item(row, 2).text() == "4.5"
+    assert pane.var_table.item(row, 3).text() == "5.5"
+
+    combo.setCurrentText("tiltz")      # zero value -> ± 0.1
+    assert pane.var_table.item(row, 1).text() == "0"
+    assert pane.var_table.item(row, 2).text() == "-0.1"
+    assert pane.var_table.item(row, 3).text() == "0.1"
+
+    # the assembled spec strings read the combo, not a table item
+    assert pane.variables() == ["tiltz:0:-0.1:0.1"]
+
+    # typing a non-variable name leaves the cells alone
+    combo.setCurrentText("dim.ct")
+    assert pane.var_table.item(row, 1).text() == "0"
+    assert pane.variables() == ["dim.ct:0:-0.1:0.1"]
 
 
 def test_pane_bad_number_raises_with_row_named(qtbot):
