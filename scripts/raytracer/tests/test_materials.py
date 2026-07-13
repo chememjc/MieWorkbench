@@ -149,12 +149,28 @@ def test_malformed_csv_bad_model(tmp_path):
         MaterialDB.load(csv_path=bad_csv, nk_dir=DEFAULT_NK_DIR)
 
 
-def test_sellmeier_nonpositive_c_rejected(tmp_path):
+def test_sellmeier_negative_c_now_accepted(tmp_path):
+    # A negative Sellmeier C is mathematically well-behaved (no real pole), so
+    # the loader now accepts it (relaxed from the old C>0 hard-reject to allow
+    # genuine catalog fits). It must still load and evaluate to a finite index.
+    ok_csv = tmp_path / "materials_negc.csv"
+    ok_csv.write_text(
+        "name,class,model,p1,p2,p3,p4,p5,p6,nk_file,density_kg_m3,"
+        "transmission_um_min,transmission_um_max,notes,reference\n"
+        "negc,glass,sellmeier,1.0,0.2,0.9,0.006,-0.01,103.5,,2500,,,,\"some ref\"\n"
+    )
+    db = MaterialDB.load(csv_path=ok_csv, nk_dir=DEFAULT_NK_DIR)
+    assert np.isfinite(db.get("negc").n_complex(550e-9).real)
+
+
+def test_sellmeier_nonfinite_c_rejected(tmp_path):
+    # ... but a non-finite (blank/NaN) required Sellmeier parameter is still an
+    # error (a required parameter, not a relaxed constraint).
     bad_csv = tmp_path / "materials_bad3.csv"
     bad_csv.write_text(
         "name,class,model,p1,p2,p3,p4,p5,p6,nk_file,density_kg_m3,"
         "transmission_um_min,transmission_um_max,notes,reference\n"
-        "badsell,glass,sellmeier,1.0,0.0,0.0,-0.006,0.02,103.5,,2500,,,,\"some ref\"\n"
+        "badsell,glass,sellmeier,1.0,0.0,0.0,0.006,,103.5,,2500,,,,\"some ref\"\n"
     )
     with pytest.raises(ValueError):
         MaterialDB.load(csv_path=bad_csv, nk_dir=DEFAULT_NK_DIR)
