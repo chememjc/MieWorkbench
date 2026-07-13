@@ -30,6 +30,7 @@ PROPERTY_UNITS = {
     "surface_override": None,     # per-face analytic-surface spec
     "mirror": "0–1",         # reflected fraction
     "absorbance": "0–1",     # absorbed fraction
+    "temperature": "°C",     # per-body operating temperature (thermo-optic)
     "qe_curve": None,             # detector QE-curve registry name
     "beam_waist": "mm",           # Gaussian beam waist w0 (source-only)
     "m2": None,                    # beam quality factor M^2 (unitless, >=1)
