@@ -225,3 +225,34 @@ def test_pulse_summary_hidden_for_cw_case(qtbot, tmp_path):
     pane.load_case(str(case))
     assert pane.pulse_summary.isHidden()
     assert pane.galleries["time"]._paths == []
+
+
+def test_imaging_tab_globs_image_sim_pngs(qtbot, tmp_path):
+    """Imaging-analysis round: --image-sim writes <case>/imaging/*.png;
+    the Results pane's Imaging gallery tab picks them up through the
+    same refresh() auto-glob as every other gallery, and clear_case
+    empties it."""
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    case = make_fake_case(tmp_path)
+    idir = case / "imaging"
+    idir.mkdir(parents=True)
+    (idir / "image_sim_incoherent.png").write_bytes(_PNG)
+    (idir / "image_sim_input.png").write_bytes(_PNG)
+    pane.load_case(str(case))
+
+    assert sorted(pane.galleries["imaging"]._paths) == [
+        str(idir / "image_sim_incoherent.png"),
+        str(idir / "image_sim_input.png")]
+    labels = [pane.tabs.tabText(i) for i in range(pane.tabs.count())]
+    assert "Imaging" in labels
+
+    pane.clear_case()
+    assert pane.galleries["imaging"]._paths == []
+
+
+def test_imaging_tab_empty_without_imaging_dir(qtbot, tmp_path):
+    pane = ResultsPane()
+    qtbot.addWidget(pane)
+    pane.load_case(str(make_fake_case(tmp_path)))
+    assert pane.galleries["imaging"]._paths == []

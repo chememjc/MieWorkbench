@@ -312,6 +312,12 @@ def post_cmd(stem, case_dir, args):
         cmd += ["--wavefront-pupil", args.wavefront_pupil]
     if args.imaging_products:
         cmd += ["--imaging-products", ",".join(args.imaging_products)]
+    if args.image_sim:
+        cmd += ["--image-sim", args.image_sim]
+        if args.image_sim_coherence != "incoherent":
+            cmd += ["--image-sim-coherence", args.image_sim_coherence]
+        if args.image_sim_sigma != 0.5:
+            cmd += ["--image-sim-sigma", repr(float(args.image_sim_sigma))]
     if args.viz_generations is not None:
         cmd += ["--viz-generations", str(int(args.viz_generations))]
     return cmd
@@ -509,6 +515,14 @@ def main():
             "run_pipeline.py: --imaging-products requires --export-rays "
             "(the distortion/vignetting/field-curves/telecentricity "
             "products are computed from rays_full.npz)")
+    if args.image_sim and not args.save_fields:
+        # same up-front gate style: the image simulation's amplitude PSF
+        # is read from a detector's saved coherent field map, which only
+        # --save-fields makes the trace write.
+        raise SystemExit(
+            "run_pipeline.py: --image-sim requires --save-fields (the "
+            "system's amplitude PSF is read from the dominant coherent "
+            "gather key's saved detector field map)")
     case = common.case_name(args.preset, args.tag)
 
     if args.print_only:

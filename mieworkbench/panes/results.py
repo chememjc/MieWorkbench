@@ -2,8 +2,9 @@
 
 Works on a case directory (results/<model>/<case>/ inside a workspace or
 repo tree). Shows report.json headline numbers, the audit outcome, and
-thumbnail galleries of images/, spectra/, plots/, viz/; "Open in
-ParaView" hands the .vtp data to interactive ParaView.
+thumbnail galleries of images/, spectra/, plots/, viz/, imaging/ (the
+--image-sim products) plus the Time partition; "Open in ParaView" hands
+the .vtp data to interactive ParaView.
 
 MONITOR MODE (read-only view of a RUNNING case): when the case is locked
 by a live process, a QTimer polls progress.json + the images as they
@@ -490,6 +491,14 @@ class ResultsPane(QWidget):
         time_gallery.set_status_callback(self.statusChanged.emit)
         self.galleries["time"] = time_gallery
         self.tabs.addTab(time_gallery, "Time")
+        # image-simulation products (imaging-analysis round): --image-sim
+        # writes <case>/imaging/image_sim_*.png; refresh()'s auto-glob
+        # loop picks the directory up by gallery name, so this tab is
+        # empty (and harmless) on every case run without the flag.
+        imaging_gallery = _Gallery()
+        imaging_gallery.set_status_callback(self.statusChanged.emit)
+        self.galleries["imaging"] = imaging_gallery
+        self.tabs.addTab(imaging_gallery, "Imaging")
         lay.addWidget(self.tabs)
         self.audit = QLabel("")
         lay.addWidget(self.audit)

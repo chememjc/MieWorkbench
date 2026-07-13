@@ -225,3 +225,168 @@ def ee_radius(radii, ee, frac):
     radii = np.asarray(radii, dtype=np.float64)
     ee = np.asarray(ee, dtype=np.float64)
     return float(np.interp(frac, ee, radii))
+
+
+# =============================================================================
+# Image simulation (imaging-analysis round): coherent / incoherent /
+# partially-coherent imaging of a REAL intensity object through the
+# system's coherent AMPLITUDE PSF h (complex, (H,W), CENTERED: kernel
+# origin at index (H//2, W//2), i.e. where np.fft.fftshift puts DC --
+# np.fft.ifftshift moves that pixel back to [0,0] for both parities of
+# H/W). In the pipeline h comes from a coherent point/collimated run's
+# saved detector field (post_process.render_image_sim); everything here
+# is pure array-in/array-out Fourier optics on a shared grid:
+#
+#   coherent:   U = obj_amp (circ-conv) h,  I = |U|^2      (obj_amp = sqrt
+#               of the intensity object -- amplitudes convolve, Goodman
+#               ch. 6: a coherent system is linear in FIELD)
+#   incoherent: I = obj (circ-conv) |h|^2 / sum(|h|^2)     (intensities
+#               convolve; equivalently IFT(FT(obj) . OTF) with OTF the
+#               autocorrelation of the pupil -- hence the classic factor
+#               of 2: incoherent cutoff = 2x the coherent ATF cutoff)
+#   partial:    Abbe source integration -- each illumination source point
+#               s (a tilted plane wave) yields the coherent sub-image
+#               |IFT(FT(obj_amp) . P(f + s))|^2 (the object spectrum
+#               G(f - s) shifted into the pupil P equals, by the shift
+#               theorem + the modulus, shifting P by +s); the observed
+#               image is the s-integral over the effective source, here a
+#               uniform disc of radius sigma * (pupil support radius) in
+#               pupil-frequency pixels -- sigma is the standard partial-
+#               coherence factor NA_cond/NA_obj. sigma=0 -> exactly the
+#               coherent image; sigma >~ 2 -> effectively incoherent.
+#
+# All convolutions are CIRCULAR (plain FFT products, no zero padding) --
+# correct for the periodic detector grid these fields live on and exactly
+# what the oracle tests pin; callers with bright content at the frame
+# edge should pad first. Grids must match: obj.shape == amp_psf.shape.
+# =============================================================================
+def coherent_transfer(amp_psf):
+    """(H,W) complex CENTERED amplitude PSF h -> the centered coherent
+    amplitude transfer function (the system pupil, up to scaling):
+    P = fftshift(FFT2(ifftshift(h))). ifftshift moves the kernel origin
+    (H//2, W//2) to [0,0] so P carries no origin-offset phase ramp, and
+    the final fftshift centers DC at (H//2, W//2) again. Inverse of
+    h = fftshift(IFFT2(ifftshift(P))) to machine precision."""
+    h = np.asarray(amp_psf, dtype=np.complex128)
+    return np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(h)))
+
+
+def pupil_radius_px(P, threshold=0.05):
+    """(H,W) CENTERED pupil/ATF -> its support radius in frequency pixels
+    from the DC pixel (H//2, W//2): the largest pixel radius where
+    |P| > threshold * max|P| (default 5% of peak -- exact for a hard-edged
+    pupil, a sane support definition for an apodized/aberrated one).
+    Returns 0.0 for an all-zero P."""
+    P = np.asarray(P)
+    mag = np.abs(P)
+    peak = float(mag.max()) if mag.size else 0.0
+    if peak <= 0:
+        return 0.0
+    H, W = mag.shape
+    ys, xs = np.indices((H, W))
+    r = np.hypot(ys - H // 2, xs - W // 2)
+    return float(r[mag > threshold * peak].max())
+
+
+def _convolve_centered(arr, kernel_centered):
+    """(H,W) arr circularly convolved with a CENTERED (origin at
+    (H//2, W//2)) kernel via plain FFT products; ifftshift moves the
+    kernel origin to [0,0] so the output is not translated. Complex out."""
+    A = np.fft.fft2(arr)
+    K = np.fft.fft2(np.fft.ifftshift(np.asarray(kernel_centered)))
+    return np.fft.ifft2(A * K)
+
+
+def _check_image_shapes(obj, kern, what):
+    if obj.shape != kern.shape:
+        raise ValueError(
+            "object %s and %s %s must share one grid (resample the "
+            "object first)" % (obj.shape, what, kern.shape))
+
+
+def image_coherent(obj, amp_psf):
+    """Coherent image of a REAL intensity object through the centered
+    complex amplitude PSF `amp_psf`: object amplitude = sqrt(clip(obj,0))
+    (an intensity pattern's field is its square root, taken real/in-phase
+    -- a self-luminous phase structure is not modeled), circularly
+    convolved IN AMPLITUDE with h, returned as intensity |U|^2 (real,
+    >= 0). No normalization is applied beyond h's own scale: a unit
+    delta object returns exactly |h|^2."""
+    obj = np.asarray(obj, dtype=np.float64)
+    h = np.asarray(amp_psf, dtype=np.complex128)
+    _check_image_shapes(obj, h, "amplitude PSF")
+    obj_amp = np.sqrt(np.clip(obj, 0.0, None))
+    U = _convolve_centered(obj_amp, h)
+    return (np.abs(U) ** 2).astype(np.float64)
+
+
+def image_incoherent(obj, psf):
+    """Incoherent image of a REAL intensity object through the centered
+    REAL intensity PSF `psf` (= |h|^2): intensities convolve. The PSF is
+    normalized to unit sum first (a unit-power kernel: the image of a
+    uniform object is that same uniform level, and a binary object can
+    never overshoot 1 -- the physical contrast with image_coherent's
+    edge ringing). Returns real, clipped >= 0 (FFT roundoff can leave
+    ~1e-16-level negatives)."""
+    obj = np.asarray(obj, dtype=np.float64)
+    psf = np.asarray(psf, dtype=np.float64)
+    _check_image_shapes(obj, psf, "PSF")
+    total = float(psf.sum())
+    if total <= 0:
+        raise ValueError("intensity PSF sums to %g (need > 0)" % total)
+    img = np.real(_convolve_centered(obj, psf / total))
+    return np.clip(img, 0.0, None)
+
+
+def image_partial(obj, amp_psf, sigma, n_src=150):
+    """Partially-coherent image of a REAL intensity object via the Abbe
+    source-integration method (see the block comment above): coherent
+    sub-images |IFT(FT(obj_amp) . roll(P, s))|^2 are averaged (uniform
+    weights) over illumination source points s on a filled disc of
+    radius sigma * pupil_radius_px(P) in pupil-frequency PIXELS.
+
+    Source sampling: every integer frequency-pixel offset inside the
+    disc, thinned to a regular sublattice (smallest integer stride,
+    always keeping the on-axis point s=0 and the lattice's symmetry)
+    when the disc holds more than `n_src` points -- so the count is
+    <= n_src (default 150) and grows to at most that as sigma grows.
+    sigma=0 (or a disc smaller than one frequency pixel) returns
+    image_coherent(obj, amp_psf) EXACTLY; large sigma approaches
+    image_incoherent(obj, |amp_psf|^2). Pupil shifts use np.roll, so
+    keep (1 + sigma) * pupil radius < min(H,W)/2 or the shifted pupil
+    wraps around the frequency window (documented aliasing limit)."""
+    obj = np.asarray(obj, dtype=np.float64)
+    h = np.asarray(amp_psf, dtype=np.complex128)
+    _check_image_shapes(obj, h, "amplitude PSF")
+    if sigma < 0:
+        raise ValueError("sigma must be >= 0 (got %g)" % sigma)
+    if n_src < 1:
+        raise ValueError("n_src must be >= 1 (got %d)" % n_src)
+    P = coherent_transfer(h)
+    r_src = float(sigma) * pupil_radius_px(P)
+    if r_src < 0.5:
+        # the source disc holds only the on-axis point: exactly coherent
+        return image_coherent(obj, amp_psf)
+
+    # integer source-point lattice inside the disc; thin by the smallest
+    # stride whose sublattice count fits n_src (stride multiples keep the
+    # on-axis point and the +/- symmetry)
+    stride = 1
+    while True:
+        kmax = int(r_src // stride)
+        ks = np.arange(-kmax, kmax + 1) * stride
+        KY, KX = np.meshgrid(ks, ks, indexing="ij")
+        keep = (KY ** 2 + KX ** 2) <= r_src ** 2 + 1e-9
+        if int(keep.sum()) <= n_src:
+            break
+        stride += 1
+    offsets = np.stack([KY[keep], KX[keep]], axis=1)
+
+    obj_amp = np.sqrt(np.clip(obj, 0.0, None))
+    G = np.fft.fft2(obj_amp)
+    out = np.zeros(obj.shape, dtype=np.float64)
+    for dy, dx in offsets:
+        Ps = np.roll(P, (int(dy), int(dx)), axis=(0, 1))
+        U = np.fft.ifft2(G * np.fft.ifftshift(Ps))
+        out += np.abs(U) ** 2
+    return out / len(offsets)

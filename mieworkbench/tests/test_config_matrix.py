@@ -227,3 +227,44 @@ def test_product_flags_render_as_checkbox_rows(qtbot):
     assert not tp.checks["pulse"].isEnabled()
     tp.none_check.setChecked(False)
     assert tp.checks["pulse"].isEnabled()
+
+
+def test_image_sim_flags_auto_surface(qtbot):
+    """Imaging-analysis round: the three --image-sim flags added to
+    cli_specs' pipeline parser auto-surface in the config matrix with
+    the right widget kinds, and to_args() round-trips through the real
+    pipeline parser."""
+    from PySide6.QtWidgets import QLineEdit
+    matrix = ConfigMatrix()
+    qtbot.addWidget(matrix)
+
+    path_w = matrix.widgets["image_sim"]
+    assert isinstance(path_w, QLineEdit)          # bare path field is fine
+    coh_w = matrix.widgets["image_sim_coherence"]
+    assert isinstance(coh_w, QComboBox)
+    items = {coh_w.itemText(i) for i in range(coh_w.count())}
+    assert {"incoherent", "coherent", "partial"} <= items
+    assert coh_w.currentText() == "incoherent"    # the parser default
+    sigma_w = matrix.widgets["image_sim_sigma"]
+    assert isinstance(sigma_w, QLineEdit)         # float -> validated edit
+
+    # defaults contribute nothing
+    assert matrix.values() == {}
+
+    path_w.setText("/tmp/target.png")
+    coh_w.setCurrentText("partial")
+    sigma_w.setText("0.7")
+    args = matrix.to_args()
+    assert args[args.index("--image-sim") + 1] == "/tmp/target.png"
+    assert args[args.index("--image-sim-coherence") + 1] == "partial"
+    assert float(args[args.index("--image-sim-sigma") + 1]) == 0.7
+
+    # the real pipeline parser reproduces exactly what was set
+    ns = cli_specs.build_parser("pipeline").parse_args(
+        ["--models", "x.FCStd", "--save-fields"] + args)
+    assert ns.image_sim == "/tmp/target.png"
+    assert ns.image_sim_coherence == "partial"
+    assert ns.image_sim_sigma == 0.7
+
+    matrix.reset_to_defaults()
+    assert matrix.values() == {}

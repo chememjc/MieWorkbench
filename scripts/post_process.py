@@ -45,7 +45,8 @@ from raytracer.audit import BUCKETS                      # noqa: E402
 from raytracer.analysis_field import (psf_from_fields,   # noqa: E402
                                       normalize_psf, radial_profile,
                                       mtf2d, mtf50, encircled_energy,
-                                      ee_radius)
+                                      ee_radius, image_coherent,
+                                      image_incoherent, image_partial)
 from raytracer.analysis import (fit_zernike, opd_from_rays,  # noqa: E402
                                 strehl_marechal, noll_name,
                                 fringe_index, noll_to_nm, zernike_basis)
@@ -2150,6 +2151,171 @@ def render_field_analysis(h5path, adir, report, csv_emitter=None):
 
 
 # =============================================================================
+# --image-sim follow-on (imaging-analysis round): partial-coherence image
+# simulation -- convolve an input scene image through the modeled system.
+# The system's coherent AMPLITUDE PSF is the dominant coherent gather
+# key's saved detector field (--save-fields; the same fields/<key>/{Ex,Ey}
+# layout render_field_analysis reads), re-centered on its intensity peak
+# so the simulated image is not translated by the spot's landing offset.
+# The object image (greyscale PNG/JPG/TIFF via Pillow, or a 2-D .npy) is
+# treated as sampled at the DETECTOR's pixel pitch (one object pixel per
+# PSF-map pixel) and bilinearly resampled onto the field grid; the
+# coherent/incoherent/partial math lives in analysis_field.py (Abbe
+# source integration for 'partial'). Outputs: imaging/image_sim_<mode>.png
+# + imaging/image_sim_input.png + a report.json top-level 'image_sim'
+# block. Unlike the other follow-ons this is NOT a silent no-op when its
+# input is missing: --image-sim without a saved coherent field is a hard
+# SystemExit naming --save-fields (matching --imaging-products' hard
+# --export-rays gate).
+# =============================================================================
+def _load_object_image(path):
+    """--image-sim PATH -> (H,W) float64 intensity object, clipped >= 0
+    and scaled to peak 1. '.npy' loads directly (a 2-D array, or (H,W,3+)
+    averaged to greyscale); anything else goes through Pillow's greyscale
+    conversion (SystemExit with a clear message if Pillow is missing)."""
+    p = Path(path)
+    if not p.exists():
+        raise SystemExit("--image-sim: input image %s does not exist" % p)
+    if p.suffix.lower() == ".npy":
+        arr = np.load(p)
+    else:
+        try:
+            from PIL import Image
+        except ImportError:
+            raise SystemExit(
+                "--image-sim: reading %s needs Pillow (not installed in "
+                "this python); supply a 2-D .npy array instead" % p)
+        arr = np.asarray(Image.open(p).convert("L"))
+    arr = np.asarray(arr, dtype=np.float64)
+    if arr.ndim == 3:
+        arr = arr.mean(axis=2)
+    if arr.ndim != 2 or arr.size == 0:
+        raise SystemExit("--image-sim: %s is not a 2-D image (shape %s)"
+                         % (p, arr.shape))
+    arr = np.clip(arr, 0.0, None)
+    peak = arr.max()
+    if peak > 0:
+        arr = arr / peak
+    return arr
+
+
+def _resample_bilinear(img, H, W):
+    """(h0,w0) img -> (H,W) via separable bilinear interpolation (numpy
+    only; endpoints map to endpoints). Identity when shapes match."""
+    h0, w0 = img.shape
+    if (h0, w0) == (H, W):
+        return img
+    ys = np.linspace(0.0, h0 - 1.0, H)
+    xs = np.linspace(0.0, w0 - 1.0, W)
+    y0 = np.floor(ys).astype(int)
+    x0 = np.floor(xs).astype(int)
+    y1 = np.minimum(y0 + 1, h0 - 1)
+    x1 = np.minimum(x0 + 1, w0 - 1)
+    fy = (ys - y0)[:, np.newaxis]
+    fx = (xs - x0)[np.newaxis, :]
+    top = img[y0][:, x0] * (1 - fx) + img[y0][:, x1] * fx
+    bot = img[y1][:, x0] * (1 - fx) + img[y1][:, x1] * fx
+    return top * (1 - fy) + bot * fy
+
+
+def _dominant_amp_psf(h5paths):
+    """Scan every detector .h5 for coherent field maps and return
+    (label, key, amp_psf, amp_source, pixel_m) for the gather key with
+    the highest intensity-PSF peak across ALL detectors. The amplitude
+    comes from the key's dominant polarization component (a single
+    coherent gather key is fully polarized, so one Jones component
+    carries the complete phase structure; summing |Ex|,|Ey| would lose
+    the relative phase) -- 'amp_source' records which ('Ex'/'Ey'), with
+    sqrt(|Ex|^2+|Ey|^2) as a real-amplitude last resort ('sqrt_psf').
+    SystemExit naming --save-fields when no field map exists at all."""
+    best = None
+    for h5path in h5paths:
+        with h5py.File(h5path) as h:
+            for key, grp in _iter_field_keys(h):
+                Ex = grp["Ex"][...]
+                Ey = grp["Ey"][...]
+                peak = float(psf_from_fields(Ex, Ey).max())
+                if best is None or peak > best[0]:
+                    best = (peak, str(h.attrs["label"]), key, Ex, Ey,
+                            float(h.attrs["pixel_m"]))
+    if best is None or best[0] <= 0.0:
+        raise SystemExit(
+            "--image-sim requires a saved coherent field map for the "
+            "system's amplitude PSF, but no detectors/*.h5 carries a "
+            "populated fields/ group — rerun the trace with "
+            "--save-fields (and a coherent source)")
+    _, label, key, Ex, Ey, pixel_m = best
+    ex_energy = float(np.sum(np.abs(Ex) ** 2))
+    ey_energy = float(np.sum(np.abs(Ey) ** 2))
+    if max(ex_energy, ey_energy) > 0:
+        amp_source = "Ex" if ex_energy >= ey_energy else "Ey"
+        amp = Ex if amp_source == "Ex" else Ey
+    else:   # pragma: no cover -- peak > 0 makes this unreachable
+        amp_source = "sqrt_psf"
+        amp = np.sqrt(psf_from_fields(Ex, Ey)).astype(np.complex128)
+    return label, key, np.asarray(amp, dtype=np.complex128), \
+        amp_source, pixel_m
+
+
+def render_image_sim(case_dir, h5paths, report, image_sim,
+                     coherence="incoherent", sigma=0.5):
+    """--image-sim renderer (see the block comment above). No-op when
+    `image_sim` is None (the flag was not given); hard SystemExit when it
+    was but no coherent field / input image exists. Writes
+    imaging/image_sim_<coherence>.png + imaging/image_sim_input.png and
+    a top-level report['image_sim'] scalar block."""
+    if image_sim is None:
+        return
+    case_dir = Path(case_dir)
+    obj_raw = _load_object_image(image_sim)
+    label, key, amp, amp_source, pixel_m = _dominant_amp_psf(h5paths)
+    H, W = amp.shape
+
+    # re-center the amplitude PSF: roll its intensity peak onto the
+    # (H//2, W//2) kernel-origin pixel analysis_field's convolutions
+    # expect (a kernel shift only translates the image; the spot's
+    # landing position on the detector is not part of the PSF)
+    intens = np.abs(amp) ** 2
+    py, px = np.unravel_index(int(np.argmax(intens)), intens.shape)
+    amp = np.roll(amp, (H // 2 - py, W // 2 - px), axis=(0, 1))
+
+    obj = _resample_bilinear(obj_raw, H, W)
+    if coherence == "coherent":
+        img = image_coherent(obj, amp)
+    elif coherence == "partial":
+        img = image_partial(obj, amp, sigma)
+    else:
+        img = image_incoherent(obj, np.abs(amp) ** 2)
+
+    idir = case_dir / "imaging"
+    idir.mkdir(parents=True, exist_ok=True)
+    outname = "image_sim_%s.png" % coherence
+    plt.imsave(idir / "image_sim_input.png", obj, cmap="gray")
+    plt.imsave(idir / outname, img, cmap="gray")
+
+    mean = float(img.mean())
+    block = {
+        "mode": coherence,
+        "input": str(image_sim),
+        "detector": label,
+        "key": key,
+        "amp_source": amp_source,
+        "pixel_um": pixel_m * 1e6,
+        "shape": [int(H), int(W)],
+        "image_max": float(img.max()),
+        "rms_contrast": float(img.std() / mean) if mean > 0 else 0.0,
+        "output": "imaging/%s" % outname,
+    }
+    if coherence == "partial":
+        block["sigma"] = float(sigma)
+    report["image_sim"] = block
+    print("[post] image sim (%s%s): %s through %s/%s -> imaging/%s"
+          % (coherence,
+             ", sigma=%g" % sigma if coherence == "partial" else "",
+             image_sim, label, key, outname), flush=True)
+
+
+# =============================================================================
 # --export-rays follow-on: per-coherent-key wavefront (Zernike/Strehl)
 # analysis from rays_full.npz's birth_pos/opl records -- the source-
 # referenced pupil model documented in analysis.py's module docstring
@@ -2848,6 +3014,14 @@ def main(argv=None):
     adir = case_dir / "analysis"
     for h5path in h5paths:
         render_field_analysis(h5path, adir, report, csv_emitter)
+
+    # --image-sim follow-on: partial-coherence image simulation through
+    # the dominant coherent key's amplitude PSF. No-op when the flag is
+    # absent; HARD-requires a saved coherent field (--save-fields) when
+    # it is given (SystemExit with the fix named).
+    render_image_sim(case_dir, h5paths, report, args.image_sim,
+                     coherence=args.image_sim_coherence,
+                     sigma=args.image_sim_sigma)
 
     # --export-rays follow-on: per-coherent-key wavefront/Zernike/Strehl
     # analysis (no-op unless rays_full.npz exists AND some key clears
