@@ -26,6 +26,8 @@ import shutil
 import sys
 import tempfile
 
+import numpy as np
+
 sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "scripts")))
 import common  # noqa: E402  (stdlib-only shared contract hub)
@@ -60,6 +62,7 @@ from .panes.library import LibraryPane
 from .panes.outliner import OutlinerPane
 from .panes.problems import ProblemsPane
 from .panes.prop_editor import PropEditorPane
+from .panes.py_console import PyConsolePane
 from .panes.results import ResultsPane
 from .panes.scene3d import Scene3DPane
 from .panes.train_editor import TrainEditorPane
@@ -192,6 +195,13 @@ class MainWindow(QMainWindow):
             "Console", "console_dock", self._build_bottom_widget(),
             Qt.DockWidgetArea.BottomDockWidgetArea)
 
+        self.py_console = PyConsolePane()
+        self.py_console.set_context(project=self.project, window=self,
+                                    runner=self.runner, np=np)
+        self.py_console_dock = self._add_dock(
+            "Python", "py_console_dock", self.py_console,
+            Qt.DockWidgetArea.BottomDockWidgetArea)
+
         self.results = ResultsPane(self.settings)
         self.results.setObjectName("results_host")
         self.results_dock = self._add_dock(
@@ -204,6 +214,7 @@ class MainWindow(QMainWindow):
             "Problems", "problems_dock", self.problems,
             Qt.DockWidgetArea.BottomDockWidgetArea)
 
+        self.tabifyDockWidget(self.console_dock, self.py_console_dock)
         self.tabifyDockWidget(self.console_dock, self.results_dock)
         self.tabifyDockWidget(self.console_dock, self.problems_dock)
         self.console_dock.raise_()
@@ -472,7 +483,8 @@ class MainWindow(QMainWindow):
         dock_toggles = [self.outliner_dock, self.train_editor_dock,
                         self.inspector_dock, self.element_editor_dock,
                         self.transform_dock, self.library_dock,
-                        self.console_dock, self.results_dock,
+                        self.console_dock, self.py_console_dock,
+                        self.results_dock,
                         self.problems_dock, self.compare_dock]
         if self.variables_dock is not None:
             dock_toggles.insert(6, self.variables_dock)

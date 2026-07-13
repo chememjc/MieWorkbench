@@ -646,6 +646,19 @@ running pipeline); lines are colorized by stage and severity (errors red,
 notices orange). Internal `@MIEWB {json}` progress lines are consumed to
 drive the chips/progress bar rather than being printed raw.
 
+### 3.7a Python console (bottom dock, `panes/py_console.py`)
+
+Dock **"Python"** (tabbed with the Console at the bottom) — an in-app REPL
+bound to the live session: `project` (the `core.project.Project` object),
+`window`, `runner`, and `np` are in scope, so you can query and script the
+scene programmatically (`project.body_names()`, `project.set_property(...)`,
+`project.undo()`, …). Every `project` mutation flows through the same
+undoable Command path as the GUI, so console edits get undo/redo for free.
+Stdlib-only (`code.InteractiveConsole`), with Up/Down command history and
+Tab completion over the live namespace; statements run synchronously on the
+GUI thread (a long statement briefly blocks the UI — there is no separate
+kernel process).
+
 ### 3.8 Results (`panes/results.py`)
 
 Dock **"Results"** — browse a completed (or in-progress) case: `report.json`
