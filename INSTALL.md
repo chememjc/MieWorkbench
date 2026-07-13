@@ -23,7 +23,7 @@ three are external tools you point the workbench at.
 |---|---|---|---|
 | 1 | System `python3` (3.10+) | `run_pipeline.py`, `sweep_variants.py`, `miewb_tool.py`, `common.py`, `cli_specs.py` | whatever `python3` resolves to |
 | 2 | FreeCAD 1.1+ AppImage | `extract_geometry.py`, `permute_model.py`, `make_test_scenes.py`, `make_primitives.py` | `/home3/freecad/FreeCAD.AppImage` (FreeCAD 1.1.1) |
-| 3 | "The optics environment" — a Python env with numpy/scipy/torch(-CUDA)/h5py/miepython/matplotlib | `run_trace.py`, `post_process.py`, `compare_runs.py`, the engine's own pytest suite | `/home3/optics/env/bin/python` |
+| 3 | "The optics environment" — a Python env with numpy/scipy/torch(-CUDA)/h5py/miepython/matplotlib | `run_trace.py`, `post_process.py`, `compare_runs.py`, `optimize.py`, `tolerance.py`, `fast_eval.py`, the engine's own pytest suite | `/home3/optics/env/bin/python` |
 | 4 | ParaView 5.13+/6.x with `pvpython` | `make_viz.py` | `/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython` (ParaView 6.1.1) |
 | 5 | GUI venv (PySide6 + VTK + …) | `mieworkbench`, GUI pytest | `env/` inside this repo |
 
@@ -233,7 +233,7 @@ given. See README.md §4 and §5.9 for the full format/CLI reference.
 ## 7. Verification
 
 ```bash
-# engine suite (~235 tests currently; grows over time — see the actual
+# engine suite (~906 tests currently; grows over time — see the actual
 # count with --collect-only -q)
 /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q
 

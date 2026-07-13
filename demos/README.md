@@ -293,7 +293,9 @@ document, 2026-07-11). ✅ = exercised by a runnable demo/scene today;
 | Tabulated emission spectra (white LED) | **multiled_photometry** (CIE LED-B1) |
 | Curved (Petzval) detector | curved_focal (cylinder), **curved_focal_surface** (sphere) |
 | Stress / photoelastic birefringence | ⏳ `future.md` backlog (a): stress birefringence + the photoelastic_stress demo spec |
-| Optimization / tolerancing / CAD import / illumination design | 🔶 `future.md` backlog (d) acceptance-target demos |
+| Merit-function optimization | ✅ `scripts/optimize.py` (scipy + nevergrad/CMA); validation scene `auto_designed_lens` lives in `scripts/make_test_scenes.py`, not the demos/ gallery |
+| Monte-Carlo tolerancing + sensitivity/compensators | ✅ `scripts/tolerance.py`; validation scene `tolerance_lens` lives in `scripts/make_test_scenes.py`, not the demos/ gallery |
+| CAD import / illumination design | 🔶 `future.md` backlog (d) acceptance-target demos |
 
 ## The train workflow, in one demo
 
