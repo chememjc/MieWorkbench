@@ -200,3 +200,48 @@ def test_detector_face_help_prefers_body_property():
         assert "detector_face" in helptext
         assert "BODY property" in helptext or "body property" in helptext
         assert "C-engine" in helptext or "C engine" in helptext
+
+
+# ---------------------------------------------------------------------------
+# --image-sim / --image-sim-coherence / --image-sim-sigma (post stage,
+# imaging-analysis round)
+# ---------------------------------------------------------------------------
+def test_post_cmd_forwards_image_sim_flags():
+    args = _parse(["--save-fields", "--image-sim", "/tmp/target.png",
+                   "--image-sim-coherence", "partial",
+                   "--image-sim-sigma", "0.8"])
+    cmd = run_pipeline.post_cmd("x", CASE_DIR, args)
+    i = cmd.index("--image-sim")
+    assert cmd[i + 1] == "/tmp/target.png"
+    i = cmd.index("--image-sim-coherence")
+    assert cmd[i + 1] == "partial"
+    i = cmd.index("--image-sim-sigma")
+    assert float(cmd[i + 1]) == 0.8
+
+
+def test_post_cmd_image_sim_defaults_stay_compact():
+    # default coherence/sigma are not forwarded (post_process's own
+    # parser defaults cover them), and nothing appears without the flag
+    args = _parse(["--save-fields", "--image-sim", "obj.npy"])
+    cmd = run_pipeline.post_cmd("x", CASE_DIR, args)
+    assert cmd[cmd.index("--image-sim") + 1] == "obj.npy"
+    assert "--image-sim-coherence" not in cmd
+    assert "--image-sim-sigma" not in cmd
+
+    args = _parse([])
+    cmd = run_pipeline.post_cmd("x", CASE_DIR, args)
+    assert "--image-sim" not in cmd
+
+
+def test_image_sim_requires_save_fields(monkeypatch):
+    # run_pipeline.main validates the pair up front with a clear error
+    monkeypatch.setattr(sys, "argv", [
+        "run_pipeline.py", "--models", "x.FCStd",
+        "--image-sim", "obj.png", "--print-only"])
+    with pytest.raises(SystemExit, match="--save-fields"):
+        run_pipeline.main()
+
+
+def test_image_sim_rejects_unknown_coherence():
+    with pytest.raises(SystemExit):
+        _parse(["--image-sim", "obj.png", "--image-sim-coherence", "bogus"])

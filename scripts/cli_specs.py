@@ -88,6 +88,44 @@ def parse_imaging_products(s):
     return tuple(n for n in IMAGING_PRODUCTS if n in names)
 
 
+IMAGE_SIM_COHERENCE = ("incoherent", "coherent", "partial")
+
+
+def _add_image_sim_args(g):
+    """The three --image-sim flags (imaging-analysis round), shared
+    verbatim by the pipeline and post parsers (post_process consumes
+    them; run_pipeline forwards them). --image-sim REQUIRES --save-fields
+    (run_pipeline.main validates the pair up front; post_process hard-
+    errors if no saved coherent field exists)."""
+    g.add_argument("--image-sim", default=None, metavar="PATH",
+                   help="simulate imaging an input scene image through "
+                        "the modeled system: PATH is a greyscale image "
+                        "(PNG/JPG/TIFF via Pillow, or a 2-D .npy array) "
+                        "convolved with the amplitude PSF taken from the "
+                        "dominant coherent gather key's saved detector "
+                        "field. REQUIRES --save-fields (the coherent "
+                        "field map is the PSF source) and a coherent "
+                        "point/collimated source. Outputs: imaging/"
+                        "image_sim_<mode>.png + image_sim_input.png + a "
+                        "report.json 'image_sim' block. post stage only")
+    g.add_argument("--image-sim-coherence", default="incoherent",
+                   choices=list(IMAGE_SIM_COHERENCE),
+                   help="--image-sim illumination model: 'incoherent' "
+                        "(default; intensities convolve with |h|^2 — the "
+                        "classic MTF-limited image), 'coherent' "
+                        "(amplitudes convolve with h — sharp edges with "
+                        "ringing), or 'partial' (Abbe source-integration "
+                        "over a disc source of normalized radius "
+                        "--image-sim-sigma)")
+    g.add_argument("--image-sim-sigma", type=float, default=0.5,
+                   help="partial-coherence factor sigma for "
+                        "--image-sim-coherence=partial: illumination-"
+                        "source radius over pupil radius in pupil-"
+                        "frequency coordinates (the standard "
+                        "NA_cond/NA_obj). 0 = fully coherent, >~2 = "
+                        "effectively incoherent (default 0.5)")
+
+
 TIME_PRODUCTS = ("pulse", "spectrogram", "streak", "cube")
 
 # Comma-list product flags, dest -> (canonical choices, whether 'none' is
@@ -440,6 +478,7 @@ def _build_pipeline_parser():
                         "PNGs + report.json 'imaging' blocks (+ CSVs "
                         "under --emit-csv). Default: none"
                         % ",".join(IMAGING_PRODUCTS))
+    _add_image_sim_args(g)
 
     g = p.add_argument_group("execution / orchestration")
     g.add_argument("--keep-going", action="store_true",
@@ -685,6 +724,7 @@ def _build_post_parser():
                         "analysis/imaging_*.png + report.json "
                         "detectors.<label>.imaging blocks (+ data/*.csv "
                         "under --emit-csv)" % ",".join(IMAGING_PRODUCTS))
+    _add_image_sim_args(g)
     return p
 
 
