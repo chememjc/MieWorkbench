@@ -919,6 +919,152 @@ def op_list_documents(params):
     return {"documents": [d for d in FreeCAD.listDocuments()]}
 
 
+# ---------------------------------------------------------------------------
+# fast-evaluator ops (scripts/fast_eval.py): apply sweep-style parameter
+# assignments to the open document and extract model.json IN PLACE, so a
+# merit evaluation never pays a FreeCAD relaunch + file round-trip.
+# ---------------------------------------------------------------------------
+def op_apply_params(params):
+    """Apply spreadsheet parameter assignments to an open document exactly
+    like one permute_model.py sweep variant (cells + primitive rebuilds +
+    miewb_vars expansion + optical-train re-solve — the shared
+    permute_model.apply_assignments, so the two paths can never drift).
+
+    params: doc, assignments = [[var, value], ...] (var may be
+            "alias" -> default 'dim' sheet, or "sheetlabel.alias"),
+            unit (default "mm").
+    """
+    doc = _doc(params["doc"])
+    import permute_model  # deferred; import is side-effect-free (main-guarded)
+    assignments = [(str(v), float(x)) for v, x in params["assignments"]]
+    try:
+        n_train = permute_model.apply_assignments(
+            doc, assignments, unit=str(params.get("unit", "mm")))
+    except permute_model.PermuteError as exc:
+        raise OpError("apply_params failed: %s" % exc)
+    invalid = [o.Name for o in doc.Objects
+               if "Invalid" in o.State or "Error" in o.State]
+    return {"applied": len(assignments), "train_solved": n_train,
+            "invalid": invalid}
+
+
+class _ExtractFaceCache:
+    """Per-body face cache for op_extract_model (the fast evaluator's
+    fingerprint geometry cache — the extraction-side sibling of
+    mieworkbench/core/geomcache.py's tessellation cache).
+
+    Keyed on (body name, quantized placement-independent shape fingerprint,
+    placement, surface_override raw value, strict): model.json face dicts
+    are GLOBAL-frame, so a placement move must miss; the quantized shape
+    key deliberately absorbs OCC's recompute ULP noise (same rationale and
+    quantum as _shape_key above). A hit replays the previous extraction's
+    face dicts + warnings verbatim and copies its STL files into the new
+    out_dir, skipping re-classification/re-tessellation entirely.
+
+    Storage is a client-supplied directory: <cache_dir>/<sha1(key)>/
+    {meta.json, *.stl}. The CLIENT owns trust across worker restarts (it
+    passes a fresh cache_dir after a relaunch, invalidating everything).
+    """
+
+    def __init__(self, root, out_dir, strict):
+        self.root = root
+        self.out_dir = out_dir
+        self.strict = bool(strict)
+        self.hits = []
+        self.misses = []
+        os.makedirs(root, exist_ok=True)
+
+    def _entry_dir(self, body, override_raw):
+        import hashlib
+        key = "|".join([
+            body.Name,
+            body.Tip.Name if body.Tip else body.Name,
+            _shape_key(body.Shape, body.Placement),
+            repr(_placement_tuple(body)),
+            "ov=%s" % (override_raw or ""),
+            "strict=%d" % self.strict,
+        ])
+        return os.path.join(self.root,
+                            hashlib.sha1(key.encode("utf-8")).hexdigest())
+
+    def lookup(self, body, tip_name, override_raw):
+        edir = self._entry_dir(body, override_raw)
+        meta_path = os.path.join(edir, "meta.json")
+        try:
+            with open(meta_path) as fh:
+                import json
+                payload = json.load(fh)
+        except (OSError, ValueError):
+            self.misses.append(body.Name)
+            return None
+        # copy every face STL into out_dir; any missing file = miss
+        faces_dir = os.path.join(self.out_dir, "faces")
+        os.makedirs(faces_dir, exist_ok=True)
+        import shutil
+        for face in payload["faces"]:
+            src = os.path.join(edir, os.path.basename(face["mesh_stl"]))
+            if not os.path.isfile(src):
+                self.misses.append(body.Name)
+                return None
+            shutil.copyfile(src, os.path.join(self.out_dir, face["mesh_stl"]))
+        self.hits.append(body.Name)
+        return payload
+
+    def store(self, body, tip_name, override_raw, payload):
+        import json
+        import shutil
+        edir = self._entry_dir(body, override_raw)
+        tmp = edir + ".tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp)
+        for face in payload["faces"]:
+            src = os.path.join(self.out_dir, face["mesh_stl"])
+            shutil.copyfile(src, os.path.join(tmp, os.path.basename(
+                face["mesh_stl"])))
+        with open(os.path.join(tmp, "meta.json"), "w") as fh:
+            json.dump(payload, fh)
+        shutil.rmtree(edir, ignore_errors=True)
+        os.replace(tmp, edir)
+
+
+def op_extract_model(params):
+    """Extract geometry/model.json from an OPEN document, in place — the
+    fast evaluator's core op. Identical output contract to running
+    extract_geometry.py on a saved copy of the document (it IS
+    extract_geometry.extract_document, refactored to be importable).
+
+    params: doc, out_dir, stem (log/warning prefix; default doc.Name),
+            strict (default False), source_fcstd (provenance echo; default
+            the document's FileName), cache_dir (optional; enables the
+            fingerprint face cache above).
+    Returns the model.json path + per-body cache hit/miss lists (the
+    model itself is read from disk by the caller — it is far too big to
+    ship over the protocol for no reason).
+    """
+    from pathlib import Path as _Path
+    doc = _doc(params["doc"])
+    import extract_geometry  # deferred; import is side-effect-free (main-guarded)
+    out_dir = str(params["out_dir"])
+    stem = str(params.get("stem") or doc.Name)
+    strict = bool(params.get("strict", False))
+    source_fcstd = str(params.get("source_fcstd")
+                       or doc.FileName or stem)
+    cache = None
+    if params.get("cache_dir"):
+        cache = _ExtractFaceCache(str(params["cache_dir"]), out_dir, strict)
+    try:
+        model = extract_geometry.extract_document(
+            doc, stem, _Path(out_dir), strict, source_fcstd,
+            face_cache=cache)
+    except extract_geometry.ExtractError as exc:
+        raise OpError("extract failed: %s" % exc)
+    return {"model_json": os.path.join(out_dir, "model.json"),
+            "bodies": len(model["bodies"]),
+            "warnings": len(model["validation"]["warnings"]),
+            "cache_hits": cache.hits if cache else [],
+            "cache_misses": cache.misses if cache else []}
+
+
 OPS = {name[3:]: fn for name, fn in list(globals().items())
        if name.startswith("op_") and callable(fn)}
 
