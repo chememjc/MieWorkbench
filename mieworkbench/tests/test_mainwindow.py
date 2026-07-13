@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from PySide6.QtWidgets import QDockWidget, QWidget  # noqa: E402
+from PySide6.QtWidgets import QDockWidget, QTabWidget, QWidget  # noqa: E402
 
 from mieworkbench.core.settings import Settings  # noqa: E402
 from mieworkbench.mainwindow import MainWindow  # noqa: E402
@@ -28,10 +28,36 @@ def test_docks_and_hosts_exist(qtbot):
         assert window.findChild(QWidget, name) is not None, name
 
     # outliner, inspector, element editor, transform, library, console,
-    # results, problems
+    # problems (+ train editor, variables, compare, python); results/
+    # optimize/tolerance live in the central tab widget, not docks
     docks = window.findChildren(QDockWidget)
-    assert len(docks) == 14   # +6: train editor, variables, compare,
-    #                              python, optimize, tolerance
+    assert len(docks) == 11
+
+
+def test_central_tabs_layout(qtbot):
+    """The central widget is a bottom-tabbed graphics area: 3D View +
+    the three big analysis surfaces; the Simulation-menu actions select
+    the matching central tab."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    tabs = window.central_tabs
+    assert tabs is window.centralWidget()
+    assert isinstance(tabs, QTabWidget)
+    assert tabs.tabPosition() == QTabWidget.TabPosition.South
+    assert tabs.count() >= 4
+    labels = [tabs.tabText(i) for i in range(tabs.count())]
+    assert labels[:4] == ["3D View", "Optimize", "Tolerance", "Results"]
+    assert tabs.widget(0) is window.scene3d
+    assert tabs.widget(1) is window.optimize_pane
+    assert tabs.widget(2) is window.tolerance_pane
+    assert tabs.widget(3) is window.results
+    assert tabs.currentWidget() is window.scene3d
+
+    window._on_show_optimize()
+    assert tabs.currentWidget() is window.optimize_pane
+    window._on_show_tolerance()
+    assert tabs.currentWidget() is window.tolerance_pane
 
 
 def test_menu_actions_exist(qtbot):

@@ -38,10 +38,12 @@ from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
     QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
-    QMessageBox, QProgressBar, QStyle, QToolButton, QVBoxLayout, QWidget,
+    QMessageBox, QProgressBar, QStyle, QTabWidget, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 from .core import paraview_launcher
+from .core import variables
 from .core.beadanim import (AnimationController, format_sim_time,
                             precompute_segments)
 from .core.librarymgr import LibraryManager
@@ -156,9 +158,30 @@ class MainWindow(QMainWindow):
 
     # -- central --------------------------------------------------------------
     def _build_central(self):
+        """The central graphics area is a bottom-tabbed QTabWidget: the
+        VTK 3D view plus the three big analysis surfaces (Optimize,
+        Tolerance, Results) that used to crowd the bottom dock bar."""
         self.scene3d = Scene3DPane()
         self.scene3d.setObjectName("scene3d_host")
-        self.setCentralWidget(self.scene3d)
+
+        self.optimize_pane = OptimizePane()
+        self.optimize_pane.setObjectName("optimize_host")
+
+        self.tolerance_pane = TolerancePane()
+        self.tolerance_pane.setObjectName("tolerance_host")
+
+        self.results = ResultsPane(self.settings)
+        self.results.setObjectName("results_host")
+
+        self.central_tabs = QTabWidget()
+        self.central_tabs.setObjectName("central_tabs")
+        self.central_tabs.setTabPosition(QTabWidget.TabPosition.South)
+        self.central_tabs.setDocumentMode(True)
+        self.central_tabs.addTab(self.scene3d, "3D View")
+        self.central_tabs.addTab(self.optimize_pane, "Optimize")
+        self.central_tabs.addTab(self.tolerance_pane, "Tolerance")
+        self.central_tabs.addTab(self.results, "Results")
+        self.setCentralWidget(self.central_tabs)
 
     # -- docks ------------------------------------------------------------------
     def _build_docks(self):
@@ -209,35 +232,14 @@ class MainWindow(QMainWindow):
             "Python", "py_console_dock", self.py_console,
             Qt.DockWidgetArea.BottomDockWidgetArea)
 
-        self.results = ResultsPane(self.settings)
-        self.results.setObjectName("results_host")
-        self.results_dock = self._add_dock(
-            "Results", "results_dock", self.results,
-            Qt.DockWidgetArea.BottomDockWidgetArea)
-
         self.problems = ProblemsPane()
         self.problems.setObjectName("problems_host")
         self.problems_dock = self._add_dock(
             "Problems", "problems_dock", self.problems,
             Qt.DockWidgetArea.BottomDockWidgetArea)
 
-        self.optimize_pane = OptimizePane()
-        self.optimize_pane.setObjectName("optimize_host")
-        self.optimize_dock = self._add_dock(
-            "Optimize", "optimize_dock", self.optimize_pane,
-            Qt.DockWidgetArea.BottomDockWidgetArea)
-
-        self.tolerance_pane = TolerancePane()
-        self.tolerance_pane.setObjectName("tolerance_host")
-        self.tolerance_dock = self._add_dock(
-            "Tolerance", "tolerance_dock", self.tolerance_pane,
-            Qt.DockWidgetArea.BottomDockWidgetArea)
-
         self.tabifyDockWidget(self.console_dock, self.py_console_dock)
-        self.tabifyDockWidget(self.console_dock, self.results_dock)
         self.tabifyDockWidget(self.console_dock, self.problems_dock)
-        self.tabifyDockWidget(self.console_dock, self.optimize_dock)
-        self.tabifyDockWidget(self.console_dock, self.tolerance_dock)
         self.console_dock.raise_()
         self.resizeDocks([self.console_dock], [230],
                          Qt.Orientation.Vertical)
@@ -519,9 +521,7 @@ class MainWindow(QMainWindow):
                         self.inspector_dock, self.element_editor_dock,
                         self.transform_dock, self.library_dock,
                         self.console_dock, self.py_console_dock,
-                        self.results_dock,
-                        self.problems_dock, self.compare_dock,
-                        self.optimize_dock, self.tolerance_dock]
+                        self.problems_dock, self.compare_dock]
         if self.variables_dock is not None:
             dock_toggles.insert(6, self.variables_dock)
         for dock in dock_toggles:
@@ -1196,6 +1196,12 @@ class MainWindow(QMainWindow):
             self.project.sceneLoaded.connect(
                 lambda: self.variables_pane.refresh())
 
+        # Optimize/Tolerance name dropdowns track the miewb_vars sheet
+        # (same Project signals the Variables dock refreshes on)
+        self.project.sceneLoaded.connect(self._refresh_pane_variables)
+        self.project.propertiesChanged.connect(
+            self._refresh_pane_variables)
+
         # a finished sweep hands its manifest to the Compare pane
         self.runner.finished.connect(self._maybe_run_compare)
 
@@ -1219,6 +1225,19 @@ class MainWindow(QMainWindow):
             lambda _path: self.preview_scheduler.notify_run_finished())
         self.raypreview.failed.connect(
             lambda _msg: self.preview_scheduler.notify_run_failed())
+
+    def _refresh_pane_variables(self, *_args):
+        """Feed the Optimize/Tolerance panes' variable-name dropdowns
+        from the scene's miewb_vars sheet (empty dict when no scene or
+        no sheet — the combos stay editable free-text)."""
+        sheet = (self.project.variables_sheet()
+                 if self.project.is_open() else None)
+        try:
+            varrows = variables.parse_sheet(sheet) if sheet else {}
+        except Exception:
+            varrows = {}
+        self.optimize_pane.set_variables(varrows)
+        self.tolerance_pane.set_variables(varrows)
 
     def _on_scene_loaded(self):
         has_doc = self.project.is_open()
@@ -1874,12 +1893,10 @@ class MainWindow(QMainWindow):
         self.tolerance_pane.stopRequested.connect(self.tolerance_ctl.stop)
 
     def _on_show_optimize(self):
-        self.optimize_dock.show()
-        self.optimize_dock.raise_()
+        self.central_tabs.setCurrentWidget(self.optimize_pane)
 
     def _on_show_tolerance(self):
-        self.tolerance_dock.show()
-        self.tolerance_dock.raise_()
+        self.central_tabs.setCurrentWidget(self.tolerance_pane)
 
     def _on_run_tolerance(self):
         """Tolerance pane Run button: launch scripts/tolerance.py on the
@@ -2010,7 +2027,7 @@ class MainWindow(QMainWindow):
         case_dir = self._current_case_dir()
         if case_dir and os.path.isdir(case_dir):
             self.results.load_case(case_dir)
-            self.results_dock.raise_()
+            self.central_tabs.setCurrentWidget(self.results)
             self._load_case_rays_quiet()
         if self.workspace and self.miewb_path \
                 and common.read_case_status(
@@ -2294,7 +2311,7 @@ class MainWindow(QMainWindow):
         live = (common.lock_info(case_dir) is not None
                 and not common.lock_is_stale(case_dir))
         self.results.load_case(case_dir, monitor=live)
-        self.results_dock.raise_()
+        self.central_tabs.setCurrentWidget(self.results)
         if live:
             self.statusBar().showMessage(
                 "This case is RUNNING — opened read-only in monitor mode")
@@ -2319,7 +2336,7 @@ class MainWindow(QMainWindow):
         live = (common.lock_info(path) is not None
                 and not common.lock_is_stale(path))
         self.results.load_case(path, monitor=live)
-        self.results_dock.raise_()
+        self.central_tabs.setCurrentWidget(self.results)
         if live:
             self.statusBar().showMessage(
                 "Case is RUNNING — monitor mode (read-only)")
