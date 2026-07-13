@@ -146,7 +146,8 @@ class Body:
                  # pulsed-optics Phase P8 (Pockels / saturable / TPA / Kerr):
                  "nonlinear", "pockels_voltage", "pockels_gap_mm",
                  "pockels_mats", "saturable_raw", "saturable_spec",
-                 "tpa_beta", "kerr_n2_raw", "kerr_n2_value", "shg_spec")
+                 "tpa_beta", "kerr_n2_raw", "kerr_n2_value", "shg_spec",
+                 "temperature_c")
 
     def __init__(self, index, rec):
         self.index = index
@@ -192,6 +193,11 @@ class Body:
         self.source = rec.get("source")
         self.detector = rec.get("detector")
         self.closed = bool(rec.get("solid_closed", True))
+        # optional per-body operating-temperature override (deg C); None ->
+        # use the scene-global temperature. Only shifts materials that carry
+        # a thermo-optic model (Material.has_thermo).
+        t = rec.get("temperature")
+        self.temperature_c = float(t) if t is not None and t != "" else None
         self.face_ids = []
 
         # ---- pulsed-optics Phase P8: Pockels / saturable / TPA / Kerr ----
@@ -229,7 +235,7 @@ class Scene:
     def __init__(self, model, matdb, coatings, suppress_bodies=(),
                  extra_detector_faces=(), grating_specs=(), rough_specs=(),
                  optprops=None, geometry_dir=None, strict_analytic=False,
-                 mesh_flat_normals=False):
+                 mesh_flat_normals=False, temperature_c=None):
         """model: validated model.json dict; matdb: MaterialDB;
         coatings: {name: {"kind": "tmm"|"table", ...}} from load_coatings;
         optprops: optional OpticalProperties (polarizer/filter/grating
@@ -240,6 +246,11 @@ class Scene:
         self.matdb = matdb
         self.coatings = coatings
         self.optprops = optprops
+        # scene-global operating temperature (deg C); None -> each material's
+        # own reference temperature (no thermo-optic shift). A per-body
+        # 'temperature' property overrides this for that body.
+        self.temperature_c = (float(temperature_c)
+                              if temperature_c is not None else None)
         polarizers = optprops.polarizers if optprops is not None else {}
         filters = optprops.filters if optprops is not None else {}
         grating_registry = optprops.gratings if optprops is not None else {}
@@ -785,16 +796,23 @@ class Scene:
             # detector solids are ideal thin screens; treat interior as
             # ambient (rays never legitimately travel "inside" them)
             return self.ambient.n_complex(lam)
+        T = self._body_temperature(body)
         if body.birefringent:
-            return self.uniaxial_materials(body)[0].n_complex(lam)
+            return self.uniaxial_materials(body)[0].n_complex(lam, T=T)
         if body.biaxial:
             # scalar bookkeeping index (medium stack / seam accounting):
             # the geometric mean keeps it sheet-neutral
             mx, my, mz = self.matdb.get_biaxial(body.material)
-            return (np.real(mx.n_complex(lam))
-                    * np.real(my.n_complex(lam))
-                    * np.real(mz.n_complex(lam))) ** (1.0 / 3.0)
-        return self.matdb.get(body.material).n_complex(lam)
+            return (np.real(mx.n_complex(lam, T=T))
+                    * np.real(my.n_complex(lam, T=T))
+                    * np.real(mz.n_complex(lam, T=T))) ** (1.0 / 3.0)
+        return self.matdb.get(body.material).n_complex(lam, T=T)
+
+    def _body_temperature(self, body):
+        """Operating temperature (deg C) for a body: its own override if set,
+        else the scene-global temperature (None -> material reference temp)."""
+        return body.temperature_c if body.temperature_c is not None \
+            else self.temperature_c
 
     def medium_group_index(self, body_index, lam):
         """Real GROUP index n_g for rays inside body body_index (-1 =

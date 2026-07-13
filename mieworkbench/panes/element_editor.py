@@ -119,13 +119,14 @@ CONTRACT_PROPERTIES = (
     "roughness", "diffuser", "scatter", "filter", "polarizer",
     "polarizer_axis", "crystal_axis", "crystal_axis2", "grating",
     "surface_override", "mirror", "absorbance", "qe_curve", "detector_face",
+    "temperature",
 )
 REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating",
                        "grating", "diffuser", "scatter", "qe_curve",
                        "spectrum")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
                       "absorbance", "beam_waist", "m2", "pulse_energy",
-                      "pulse_duration", "rep_rate")
+                      "pulse_duration", "rep_rate", "temperature")
 BOOL_PROPERTIES = ("coherent",)
 
 # offered in the Active Properties value dropdowns alongside registry rows
@@ -157,6 +158,7 @@ PROPERTY_DEFAULTS = {
     "pulse_energy": 0.01,      # uJ (10 nJ, a typical fs oscillator)
     "pulse_duration": 0.1,     # ps FWHM (100 fs)
     "rep_rate": 8e7,           # Hz
+    "temperature": 20.0,       # deg C (glass catalog reference temperature)
 }
 # Registry-valued properties default to a well-known entry when the
 # library has it, else the first name alphabetically.
@@ -241,6 +243,9 @@ TOOLTIPS = {
     "detector_face": "Detector-only: pin the sensing face (FaceN), overriding "
                     "the closest-to-origin auto-pick. '(auto)' restores it. "
                     "Keeps the scene C-engine-routable.",
+    "temperature": "Per-body operating temperature in deg C; shifts glasses "
+                   "with a thermo-optic model (Schott TIE-19 dn/dT). Overrides "
+                   "the scene-global --temperature. Routes to the Python engine.",
 }
 
 

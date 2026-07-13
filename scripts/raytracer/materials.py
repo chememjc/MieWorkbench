@@ -81,7 +81,17 @@ def resolve_prop_path(path, alt_ext=".csv"):
 
 VALID_CLASSES = {"gas", "glass", "liquid", "polymer", "metal", "oxide",
                   "film", "special"}
-VALID_MODELS = {"sellmeier", "cauchy", "constant", "tabulated"}
+VALID_MODELS = {"sellmeier", "schott", "cauchy", "constant", "tabulated"}
+
+# Reference temperature (deg C) assumed for a material's dispersion data when
+# the row carries no explicit thermo_t_ref. Optical glass catalogs (Schott,
+# Ohara) tabulate their index at 20 C.
+DEFAULT_T_REF_C = 20.0
+
+# Thermo-optic column names in a .miemat row (all optional; a row is treated
+# as having no dn/dT model unless at least one of D0..E1 is present).
+_THERMO_KEYS = ("thermo_d0", "thermo_d1", "thermo_d2",
+                "thermo_e0", "thermo_e1", "thermo_lambda_tk")
 
 # Materials allowed to have density <= 0 (vacuum / sentinel detector row).
 ZERO_DENSITY_OK = {"vacuum", "detector"}
@@ -104,7 +114,8 @@ class Material:
     """
 
     def __init__(self, name, cls, model, params, density, nk_file=None,
-                 trans_min=None, trans_max=None, notes="", reference=""):
+                 trans_min=None, trans_max=None, notes="", reference="",
+                 thermo=None, t_ref_c=DEFAULT_T_REF_C):
         self.name = name
         self.cls = cls
         self.model = model
@@ -115,10 +126,18 @@ class Material:
         self.trans_max = trans_max           # um or None
         self.notes = notes
         self.reference = reference
+        # thermo-optic (Schott TIE-19 dn_abs/dT model), or None if the row
+        # carried no D0..E1 coefficients. tuple (D0, D1, D2, E0, E1, lam_tk_um).
+        self.thermo = tuple(thermo) if thermo is not None else None
+        self.t_ref_c = float(t_ref_c)        # dispersion-data reference temp
         # tabulated nk data, populated by MaterialDB.load if nk_file is set
         self.nk_lambda_um = None             # ascending float array
         self.nk_n = None
         self.nk_k = None
+
+    @property
+    def has_thermo(self):
+        return self.thermo is not None
 
     def __repr__(self):
         return "Material(%r, class=%r, model=%r)" % (self.name, self.cls,
@@ -132,6 +151,15 @@ class Material:
             n2 = np.ones_like(l2)
             for b, c in ((p[0], p[3]), (p[1], p[4]), (p[2], p[5])):
                 n2 = n2 + b * l2 / (l2 - c)
+            return np.sqrt(n2)
+        if self.model == "schott":
+            # Legacy Schott power-series: n^2 = a0 + a1*l^2 + a2*l^-2
+            #                                  + a3*l^-4 + a4*l^-6 + a5*l^-8
+            # (params p1..p6 = a0..a5; lam in um). Used by many older glass
+            # catalog rows before the Sellmeier-1 form.
+            l2 = lam_um ** 2
+            n2 = (p[0] + p[1] * l2 + p[2] / l2
+                  + p[3] / l2 ** 2 + p[4] / l2 ** 3 + p[5] / l2 ** 4)
             return np.sqrt(n2)
         if self.model == "cauchy":
             a, b, c = p[0], p[1], p[2]
@@ -186,8 +214,25 @@ class Material:
                    self.reference),
                 stacklevel=3)
 
-    def n_complex(self, lam_m):
+    def _dn_thermal(self, lam_um, n_ref, T_c):
+        """Schott TIE-19 absolute-index change dn_abs(lambda, T) relative to
+        the dispersion-data reference temperature. lam_um in um, n_ref the
+        index at t_ref_c, T_c the target temperature in deg C. Returns the
+        (signed) index increment to add to n_ref. Requires self.thermo."""
+        D0, D1, D2, E0, E1, lam_tk = self.thermo
+        dT = T_c - self.t_ref_c
+        l2 = lam_um ** 2
+        denom = l2 - lam_tk ** 2
+        return ((n_ref ** 2 - 1.0) / (2.0 * n_ref)
+                * (D0 * dT + D1 * dT ** 2 + D2 * dT ** 3
+                   + (E0 * dT + E1 * dT ** 2) / denom))
+
+    def n_complex(self, lam_m, T=None):
         """lam_m: scalar or array-like of wavelengths in metres (SI).
+        T: optional temperature in deg C. When given (and the material carries
+        a thermo-optic model), the real index is shifted by the Schott TIE-19
+        dn_abs(lambda, T) term relative to t_ref_c; k is unaffected. T=None (or
+        a material without thermo data, or T == t_ref_c) leaves n unchanged.
         Returns complex128 (scalar or array, matching input shape) n + i*k.
         Hard-raises MaterialError if a tabulated nk_file's range is
         exceeded (no silent extrapolation). Warns (does not raise) if a
@@ -210,6 +255,9 @@ class Material:
             else:
                 k = np.zeros_like(lam_um)
 
+        if T is not None and self.has_thermo and float(T) != self.t_ref_c:
+            n = n + self._dn_thermal(lam_um, n, float(T))
+
         out = n.astype(np.complex128) + 1j * k.astype(np.complex128)
         return complex(out[0]) if scalar_in else out
 
@@ -227,6 +275,15 @@ class Material:
             for b, c in ((p[0], p[3]), (p[1], p[4]), (p[2], p[5])):
                 acc = acc + (-2.0 * b * c * lam_um) / (l2 - c) ** 2
             return acc / (2.0 * n)
+        if self.model == "schott":
+            # d(n^2)/dlam = 2 a1 lam - 2 a2 lam^-3 - 4 a3 lam^-5
+            #               - 6 a4 lam^-7 - 8 a5 lam^-9 ; dn/dlam = that/(2n)
+            p = self.params
+            n = self._n_from_model(lam_um)
+            dn2 = (2.0 * p[1] * lam_um - 2.0 * p[2] / lam_um ** 3
+                   - 4.0 * p[3] / lam_um ** 5 - 6.0 * p[4] / lam_um ** 7
+                   - 8.0 * p[5] / lam_um ** 9)
+            return dn2 / (2.0 * n)
         if self.model == "cauchy":
             b, c = self.params[1], self.params[2]
             return -2.0 * b / lam_um ** 3 - 4.0 * c / lam_um ** 5
@@ -432,10 +489,13 @@ class MaterialDB:
                 raise MaterialError("%s: reference is required" % ctx)
             notes = (row.get("notes") or "").strip()
 
+            thermo, t_ref_c = _parse_thermo(row, ctx)
+
             mat = Material(name, cls_, model, params, density,
                             nk_file=nk_file or None, trans_min=trans_min,
                             trans_max=trans_max, notes=notes,
-                            reference=reference)
+                            reference=reference, thermo=thermo,
+                            t_ref_c=t_ref_c)
 
             if nk_file:
                 _attach_nk_table(mat, nk_dir, ctx)
@@ -506,11 +566,20 @@ def _parse_params(row, model, ctx):
     if model == "sellmeier":
         for i, key in enumerate(_PARAM_KEYS):
             p[i] = gf(key)
+        # C_i (p4..p6) are squared resonance wavelengths; positive for the
+        # usual Sellmeier-1 fit, but a genuine catalog fit may carry a small
+        # negative or zero C (no real pole -> mathematically well-behaved).
+        # Reject only non-finite values; an in-band positive-C pole is a real
+        # physical resonance handled/warned by the transmission-window check.
         for idx, cname in ((3, "C1"), (4, "C2"), (5, "C3")):
-            if not (p[idx] > 0):
+            if not np.isfinite(p[idx]):
                 raise MaterialError(
-                    "%s: sellmeier %s (p%d) must be > 0 (got %r)"
+                    "%s: sellmeier %s (p%d) must be finite (got %r)"
                     % (ctx, cname, idx + 1, p[idx]))
+    elif model == "schott":
+        # Legacy power-series a0..a5 -> p1..p6; any sign, all required.
+        for i, key in enumerate(_PARAM_KEYS):
+            p[i] = gf(key)
     elif model == "cauchy":
         p[0] = gf("p1")
         p[1] = gf("p2")
@@ -529,6 +598,36 @@ def _parse_params(row, model, ctx):
     elif model == "tabulated":
         pass  # params unused
     return tuple(p)
+
+
+def _parse_thermo(row, ctx):
+    """Parse the optional Schott TIE-19 thermo-optic columns from a .miemat
+    row. Returns (thermo_tuple_or_None, t_ref_c). thermo is
+    (D0, D1, D2, E0, E1, lam_tk_um) if ANY of D0..E1/lam_tk is present (all
+    six then required so a partial model can't silently mis-evaluate); None
+    otherwise. t_ref_c defaults to DEFAULT_T_REF_C (20 C) when absent."""
+    present = {k: (row.get(k) or "").strip() for k in _THERMO_KEYS}
+    if not any(present.values()):
+        # no thermo-optic model on this row; t_ref only meaningful with one
+        return None, DEFAULT_T_REF_C
+    missing = [k for k, v in present.items() if v == ""]
+    if missing:
+        raise MaterialError(
+            "%s: partial thermo-optic model -- missing column(s) %s (all of "
+            "%s are required once any is set)"
+            % (ctx, sorted(missing), list(_THERMO_KEYS)))
+    vals = []
+    for k in _THERMO_KEYS:
+        try:
+            vals.append(float(present[k]))
+        except ValueError:
+            raise MaterialError(
+                "%s: thermo-optic %r=%r is not a number" % (ctx, k, present[k]))
+    t_ref_c = _parse_optional_float(row.get("thermo_t_ref_c"), ctx,
+                                     "thermo_t_ref_c")
+    if t_ref_c is None:
+        t_ref_c = DEFAULT_T_REF_C
+    return tuple(vals), t_ref_c
 
 
 def _attach_nk_table(mat, nk_dir, ctx):

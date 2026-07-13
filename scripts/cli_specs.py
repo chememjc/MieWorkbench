@@ -306,6 +306,12 @@ def _build_pipeline_parser():
     g.add_argument("--no-pol-scatter", action="store_true",
                    help="legacy unpolarized Mie azimuth sampling")
     g.add_argument("--mesh-flat-normals", action="store_true")
+    g.add_argument("--temperature", type=float, default=None, metavar="DEG_C",
+                   help="scene operating temperature in deg C; shifts glasses "
+                        "with a thermo-optic model via Schott TIE-19 dn/dT "
+                        "(default: each material's reference temp, no shift; "
+                        "a per-body 'temperature' property overrides this). "
+                        "Routes the run to the Python engine.")
     g.add_argument("--save-fields", action="store_true",
                    help="save complex Ex/Ey detector field maps "
                         "(enables Stokes polarization maps in post)")
@@ -554,6 +560,12 @@ def _build_trace_parser():
     p.add_argument("--suppress-body", action="append", default=[])
     p.add_argument("--min-eff-samples", type=float, default=1000.0)
     p.add_argument("--no-gather-gate", action="store_true")
+    p.add_argument("--temperature", type=float, default=None, metavar="DEG_C",
+                   help="scene operating temperature in deg C; shifts glasses "
+                        "with a thermo-optic model via Schott TIE-19 dn/dT "
+                        "(default: material reference temp, no shift; a "
+                        "per-body 'temperature' property overrides). Python "
+                        "engine only.")
     p.add_argument("--save-fields", action="store_true",
                    help="save per-(source,lam,pol) complex Ex/Ey field "
                         "maps into detectors/<label>.h5 fields/ groups "

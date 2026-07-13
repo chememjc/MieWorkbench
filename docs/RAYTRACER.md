@@ -270,6 +270,7 @@ fields on each `PartDesign::Body`:
 | `surface_override` | String, optional | per-face `'FaceN=asphere:R=..;k=..;A4=..;...;r_max=..'` (§5.7) |
 | `mirror` | Float, optional, [0,1] | achromatic partial-reflector fraction (§5.3 precedence) |
 | `absorbance` | Float, optional, [0,1] | fraction of the physical (non-mirror) remainder absorbed |
+| `temperature` | Float, optional | per-body operating temperature in °C; shifts glasses carrying a thermo-optic model (§ materials, Schott TIE-19). Overrides the scene-global `--temperature`. Routes the run to the Python engine. |
 | `roughness` | Float or String, optional | whole-body RMS nm, or a per-face map `'Face1=200:lcorr=5;Face2=50'` (§5.4) |
 | `diffuser` | String, optional | ground glass: `'grit:120'` \| `'slope:0.08'` \| `'@dg_600'`, whole-body or per-face map `'Face2=@dg_600'` (§5.4.1) — mutually exclusive with `roughness` on the same face |
 | `grating` | String, optional | a per-face map `'Face2=600:v:orders=-1..1'` or `'Face2=@registryname'` (§5.5) — must name specific faces, not the whole body |
@@ -1554,9 +1555,14 @@ reference`.
 - `class` ∈ `{gas, glass, liquid, polymer, metal, oxide, film, special}`
   (`VALID_CLASSES`) — organizational only, not cross-validated against
   any electrical role (this project has none).
-- `model` ∈ `{sellmeier, cauchy, constant, tabulated}` (`VALID_MODELS`):
+- `model` ∈ `{sellmeier, schott, cauchy, constant, tabulated}` (`VALID_MODELS`):
   - `sellmeier`: `n^2 = 1 + sum_{j=1..3} p_j * lam_um^2 / (lam_um^2 -
-    p_{j+3})`; each `C_j = p_{j+3}` must be `> 0`.
+    p_{j+3})`; each `C_j = p_{j+3}` need only be **finite** (a negative or
+    zero `C` is a well-behaved fit — no real pole; the old `>0` requirement
+    was relaxed so genuine catalog fits load). AGF formula code 2.
+  - `schott`: legacy power series `n^2 = p1 + p2*lam_um^2 + p3*lam_um^-2 +
+    p4*lam_um^-4 + p5*lam_um^-6 + p6*lam_um^-8` (`p1..p6 = a0..a5`), used by
+    many older glass-catalog rows. AGF formula code 1.
   - `cauchy`: `n = p1 + p2/lam_um^2 + p3/lam_um^4`.
   - `constant`: `n = p1` (and `k = p2` if given, else 0 unless a
     tabulated `nk_file` supplies k separately).
@@ -1573,6 +1579,15 @@ reference`.
   way.
 - `reference` is **required** on every row (`MaterialError` if blank) —
   every material must cite where its optical constants came from.
+- **Thermo-optic (optional)**: the columns `thermo_d0,thermo_d1,thermo_d2,
+  thermo_e0,thermo_e1,thermo_lambda_tk` (+ optional `thermo_t_ref_c`,
+  default 20 °C) carry the Schott TIE-19 model. When a run sets a
+  temperature (§ `--temperature`), the real index is shifted by
+  `dn_abs(lam,T) = (n^2-1)/(2n) * (D0*dT + D1*dT^2 + D2*dT^3 +
+  (E0*dT + E1*dT^2)/(lam_um^2 - lambda_tk^2))`, `dT = T - t_ref`. Absent
+  (or `T` unset / `T == t_ref`) → no shift, so the columns are fully
+  backward-compatible. Populated in bulk by `scripts/tools/import_agf.py`
+  from a catalog's AGF `TD` line.
 - `opticalproperties/nk/*.mienk` tables (`wavelength_nm, n, k`, strictly
   increasing wavelength, 18 total) back the `tabulated` model: metals
   (aluminum, chromium, copper, gold, nickel, platinum, silver, titanium,
@@ -1581,18 +1596,25 @@ reference`.
   a body sets `material=calcite` (the crystal name in `uniaxial.miebrf`, §7.6),
   which resolves to the `calcite_o`/`calcite_e` pair internally.
 
-168 materials ship today (expanded from 24): optical glasses (41 Schott/Ohara
-crowns/flints), metals/semiconductors/IR windows (17), polymers/liquids/gases/
-biological (35), coating-film materials (5), crystals with o/e pairs (46 uniaxial
-axis rows), plus foundational `vacuum`, `air`, `bk7`, `fused_silica`, `sapphire_o/e`,
-`water`, `glass`, `polystyrene`, `latex`, `pmma`, `polycarbonate`, `tio2`, `mgf2`,
-`sio2_film`, `detector`, `calcite`, `quartz`, `sf5`, and `fiber_core_na22`. All
-entries are spot-checked against authoritative sources (NIST, peer-reviewed
-publications, manufacturer datasheets) per §7.10 citation policy.
+847 materials ship today: a 168-row hand-curated core (24 originals + a
+`library-expansion` round) plus 679 Schott + Ohara optical glasses imported from
+the vendor Zemax AGF catalogs by `scripts/tools/import_agf.py` (formula code
+1→`schott`, 2→`sellmeier`; unsupported formulas skipped, never approximated),
+carrying Schott TIE-19 dn/dT where the catalog provides it. The curated core:
+optical glasses (41 Schott/Ohara crowns/flints), metals/semiconductors/IR windows
+(17), polymers/liquids/gases/biological (35), coating-film materials (5), crystals
+with o/e pairs (46 uniaxial axis rows), plus foundational `vacuum`, `air`, `bk7`,
+`fused_silica`, `sapphire_o/e`, `water`, `glass`, `polystyrene`, `latex`, `pmma`,
+`polycarbonate`, `tio2`, `mgf2`, `sio2_film`, `detector`, `calcite`, `quartz`,
+`sf5`, and `fiber_core_na22`. Every row carries a required `reference`; the
+imported glasses' provenance is `library_data/agf/` (with a preservation guardrail,
+`scripts/tools/verify_miemat_preserved.py`, proving the import never altered a
+pre-existing row). Curated entries are spot-checked against authoritative sources
+(NIST, peer-reviewed publications, manufacturer datasheets) per §7.10.
 
 **To add a material**: append a row with a unique `name`; pick `class`
 descriptively; pick `model` and supply the required parameters for it
-(Sellmeier's three `C` values must be `>0`; tabulated needs `nk_file`);
+(Sellmeier's three `C` values need only be finite; tabulated needs `nk_file`);
 set `density_kg_m3 > 0`; fill `reference` (required); optionally note a
 **spot-check** in `notes` — the existing rows follow the pattern "verified
 n(lambda)=X vs target Y, matches within Z" (e.g. `calcite_o`'s row:
