@@ -471,6 +471,28 @@ SCENES = {
         "expected_focus_lenspos_mm": 4.0,
         "faces": {"sphere": 1, "plane": 1, "cylinder": 1},
     },
+    "tolerance_lens": {
+        "description": "tolerancing demo: the auto_designed_lens singlet "
+                       "with THREE spreadsheet-driven degrees of freedom "
+                       "— dim.lenspos (lens axial position, "
+                       "Placement.Base.x), dim.lensdy (lens transverse "
+                       "decenter, Placement.Base.y) and dim.detpos "
+                       "(detector axial position, Placement.Base.x). The "
+                       "nominal design is IN FOCUS (detector at the "
+                       "lenspos=0 focal plane), so lenspos errors defocus "
+                       "1:1 (collimated input), lensdy errors mostly "
+                       "TRANSLATE the spot (spot RMS is first-order "
+                       "insensitive to decenter), and detpos is the "
+                       "classic refocus compensator. coherent=False "
+                       "(geometric spot).",
+        "material": "bk7", "lambda_nm": 633.0,
+        "R1_mm": 25.0, "R2_mm": None, "thickness_mm": 5.0,
+        "aperture_mm": 20.0, "beam_dia_mm": 10.0,
+        "n_633": 1.51508, "expected_efl_mm": 48.536,
+        "expected_bfl_mm": 45.236,
+        "focus_x_at_lenspos0_mm": 50.236,
+        "faces": {"sphere": 1, "plane": 1, "cylinder": 1},
+    },
 }
 
 
@@ -781,6 +803,44 @@ def make_auto_designed_lens(outpath):
                    {"power": 5.0, "lambdac": s["lambda_nm"],
                     "coherent": False})
         add_detector(doc, "Screen", s["detector_x_mm"], 15.0)
+        finalize(doc, outpath)
+    finally:
+        App.closeDocument(doc.Name)
+
+
+def make_tolerance_lens(outpath):
+    """The tolerancing round's demo scene (see the SCENES entry): the
+    auto_designed_lens singlet with lens position AND decenter AND
+    detector position spreadsheet-driven (all expression-bound
+    Placement.Base fields on the 'dim' sheet), nominally in focus.
+    scripts/tolerance.py perturbs lenspos/lensdy and refocuses with
+    detpos."""
+    s = SCENES["tolerance_lens"]
+    doc = App.newDocument("tolerance_lens")
+    try:
+        sh = doc.addObject("Spreadsheet::Sheet", "dim")
+        sh.Label = "dim"
+        sh.set("A1", "lens axial offset [mm]")
+        sh.set("B1", "=0 mm")
+        sh.setAlias("B1", "lenspos")
+        sh.set("A2", "lens y decenter [mm]")
+        sh.set("B2", "=0 mm")
+        sh.setAlias("B2", "lensdy")
+        sh.set("A3", "detector x position [mm]")
+        sh.set("B3", "=%g mm" % s["focus_x_at_lenspos0_mm"])
+        sh.setAlias("B3", "detpos")
+        doc.recompute()
+        _build_simple_lens(doc, s)
+        lens = doc.getObject("Lens")
+        lens.setExpression(".Placement.Base.x", "<<dim>>.lenspos")
+        lens.setExpression(".Placement.Base.y", "<<dim>>.lensdy")
+        add_source(doc, "Source", -30.0, s["beam_dia_mm"] / 2.0,
+                   {"power": 5.0, "lambdac": s["lambda_nm"],
+                    "coherent": False})
+        # detector geometry built at x=0; its whole placement rides on
+        # the detpos alias (the focus-compensator variable)
+        det = add_detector(doc, "Screen", 0.0, 15.0)
+        det.setExpression(".Placement.Base.x", "<<dim>>.detpos")
         finalize(doc, outpath)
     finally:
         App.closeDocument(doc.Name)
@@ -1541,6 +1601,7 @@ BUILDERS = {
     "lens_achromat": make_lens_achromat,
     "lens_sphere_control": make_lens_sphere_control,
     "auto_designed_lens": make_auto_designed_lens,
+    "tolerance_lens": make_tolerance_lens,
     "lens_asphere": make_lens_asphere,
     "lens_cyl_pos": lambda p: make_cyl_lens("lens_cyl_pos", p),
     "lens_cyl_neg": lambda p: make_cyl_lens("lens_cyl_neg", p),
