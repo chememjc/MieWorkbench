@@ -115,6 +115,24 @@ def detect_features(args, scene):
             feats.add("tpa")
         if body.kerr_n2_raw:
             feats.add("kerr")
+    # thermo-optic shift: any optic body whose effective operating
+    # temperature differs from its material reference AND carries a
+    # thermo-optic model changes the index -> Python engine only (the C
+    # index path mirrors n(lambda) at reference temperature, no dn/dT term).
+    for body in scene.bodies:
+        if body.role != "optic":
+            continue
+        T_eff = body.temperature_c if body.temperature_c is not None \
+            else scene.temperature_c
+        if T_eff is None:
+            continue
+        try:
+            mat = scene.matdb.get(body.material)
+        except Exception:
+            continue
+        if getattr(mat, "has_thermo", False) and float(T_eff) != mat.t_ref_c:
+            feats.add("temperature")
+            break
     if scene.gratings:
         feats.add("grating")
     if scene.roughness:

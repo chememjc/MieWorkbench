@@ -243,6 +243,8 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--no-pol-scatter"]
     if args.mesh_flat_normals:
         cmd += ["--mesh-flat-normals"]
+    if getattr(args, "temperature", None) is not None:
+        cmd += ["--temperature", repr(float(args.temperature))]
     if args.save_fields:
         cmd += ["--save-fields"]
     if args.save_fields_detectors:

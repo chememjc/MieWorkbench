@@ -853,7 +853,8 @@ def build_scene(args):
                  optprops=props,
                  geometry_dir=Path(args.model_json).parent,
                  strict_analytic=args.strict_analytic,
-                 mesh_flat_normals=args.mesh_flat_normals)
+                 mesh_flat_normals=args.mesh_flat_normals,
+                 temperature_c=getattr(args, "temperature", None))
     # pulsed-optics P6: source-side SPM transform (spm property). Runs
     # HERE, inside the one factored scene builder, so the parent process
     # and every spawned shard install bit-identical spectra/birth-time

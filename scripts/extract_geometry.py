@@ -1098,6 +1098,16 @@ def extract_one(fcstd_path, outdir, strict):
                 body_dict["absorbance"] = capped01(
                     "absorbance", obj.absorbance, obj.Label, warnings)
 
+            # optional per-body operating temperature (deg C); shifts glasses
+            # carrying a thermo-optic model. Blank/none -> scene-global temp.
+            if hasattr(obj, "temperature"):
+                tv = obj.temperature
+                if not (isinstance(tv, str) and tv.strip().lower() in ("", "none")):
+                    try:
+                        body_dict["temperature"] = float(tv)
+                    except (TypeError, ValueError):
+                        die("%s: temperature %r is not a number" % (obj.Label, tv))
+
             # roughness: legacy App::PropertyFloat (whole-body RMS nm) OR
             # (schema v2) App::PropertyString per-face map
             # 'Face1=200:lcorr=5;Face2=80'.
