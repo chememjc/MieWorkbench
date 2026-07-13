@@ -557,6 +557,26 @@ would make it exact.
 |**Gather occlusion** (default off)|No occlusion test between a gather sample and the pixel unless `--gather-occlusion`; then tile-quantized + fully-opaque occluders.|Per-pixel, translucency-aware occlusion.|`gather.py` two-level AABB + tile-shadow (README §6.5)|
 |**Diffuser / ground-glass depolarization** (H1)|Single-scatter Beckmann microfacet — no shadowing/masking, no subsurface transport; real ground glass depolarizes more.|Multiple-scatter + subsurface transport.|`roughness`/diffuser sampler (README §5.4.1)|
 
+## Performance & C-rewrite opportunities
+
+Where wall-clock could improve later, with an emphasis on **moving hot Python paths
+into the C engine** (`cengine/`, `scripts/raytracer/cengine.py` `PORTED` set). The
+Python engine stays the PERMANENT reference — these are *additive* C ports gated by
+`--engine`, never behavioral changes. Ordered roughly by leverage. Effort/impact per
+the legend above.
+
+| Opportunity | Effort | Impact | Where / why |
+|--|:--:|:--:|--|
+|**Optimizer/tolerancer inner-loop evaluator** (design tools)|L|**High**|The dominant new cost is a full FreeCAD rebuild + extract + trace *per evaluation*. First mitigation is the persistent-worker + fingerprint-cache fast evaluator (`scripts/fast_eval.py`, planned); the next step is a **resident C incoherent trace-only evaluator** that skips subprocess spawn + JSON round-trip per eval (compute the merit scalar directly from the in-memory trace result). This is the single biggest win for making optimization/tolerancing interactive.|
+|**C-port the pulsed/time-domain + NLO tokens**|M|Med|`time_products`, `gdd_budget`, `nonlinear`, `saturable`, `tpa`, `kerr` all Python-route today (`cengine.detect_features`; see the Pulsed-optics follow-ups below). The arrival-record buffer + per-segment α hooks are the natural first ports; the SHG child-spawn needs the C children queue to learn stratum extension.|
+|**C-port the remaining unported trace features**|M-L|Med|Per `cengine.py`, these force Python and could each be ported: **biaxial birefringence**, **explicit-realization particle clouds** (numba DDA/uniform-grid traversal removes the 200k cap too — Backlog (c)), **`--ray-differentials`** transport, **curved detectors**, **ABg `g≠2`**, **`rough_fresnel=macro`**, extra CLI detector faces. Each shrinks the "Python-routed" scene set.|
+|**Thermo-optic index term in the C index path**|S-M|Med|The planned dn/dT feature routes any `--temperature≠T0` run to Python (temperature deliberately kept out of `PORTED`). Replicating the `n(λ,T)` thermo-optic term in the C engine's `n_complex`/`medium_index` mirror keeps thermal scenes C-routable.|
+|**FFT-heavy post-process (PSF/MTF/image-sim)**|M|Med|`analysis_field`/`analysis_imaging`/`post_process` PSF/MTF/Zernike + the planned partial-coherence/image-sim convolution are pure numpy; large grids would benefit from FFTW/`cupy`/a C-CUDA FFT pass. Post-process only, engine-agnostic — a self-contained accel target.|
+|**Per-pixel gather occlusion**|M|Low|`--gather-occlusion` is tile-quantized + fully-opaque today (`gather.py`); a per-pixel C/CUDA shadow-ray pass (with a translucency-aware transmission accounting) sharpens shadow edges without the tile tradeoff.|
+|**Incremental FreeCAD extract / tessellation cache**|M|Med|The extract stage (`extract_geometry.py`, FreeCAD-Python) re-tessellates every body per variant. The fast evaluator's persistent worker + shape-fingerprint cache (mirroring `mieworkbench/core/geomcache.py`) skips unchanged bodies — the same cache could back the ordinary sweep/pipeline path, not just the optimizer.|
+|**Torch-gather sunset**|—|—|Already on the cengine roadmap (`cengine/README.md` §Sunset): once the C-CUDA gather is the default and shaken out, retire the torch gather backend + its ~5 GB dependency from the optics env; keep the numpy gather as the slow readable reference.|
+|**Mesh source/detector faces in C**|M|Low|When the mesh-face UV parameterization lands (Backlog (c)), implement it directly in the C mesh path rather than Python-only.|
+
 ## Operational
 
 - Estimator calibration: `results/.calibration.json` self-improves per run;

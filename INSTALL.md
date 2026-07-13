@@ -94,19 +94,28 @@ about them unless you're modifying `scripts/extract_geometry.py` et al.
 
 The engine's trace/post/compare stages and its pytest suite need numpy,
 scipy, a CUDA-capable torch build (optional but recommended), h5py,
-miepython, and matplotlib. This machine's copy lives at
+miepython, and matplotlib. The **optical-design tools** (`optimize.py`,
+`tolerance.py` — merit-function optimization and Monte-Carlo tolerancing)
+additionally need **`nevergrad`** (the CMA-ES / directed global optimizer
+backend) and **`cma`** (the standalone CMA-ES it wraps); both are pure-Python
+wheels with no CUDA dependency. This machine's copy lives at
 `/home3/optics/env/bin/python` (Python 3.11, `torch` built for CUDA 13).
 To build an equivalent environment elsewhere:
 
 ```bash
 python3 -m venv /path/to/optics/env
 /path/to/optics/env/bin/pip install numpy scipy h5py miepython matplotlib
+# optical-design tools (optimization + tolerancing):
+/path/to/optics/env/bin/pip install nevergrad cma
 # CUDA build (pick the index URL matching your driver's CUDA version;
 # see https://pytorch.org/get-started/locally/):
 /path/to/optics/env/bin/pip install torch --index-url https://download.pytorch.org/whl/cu121
 # CPU-only fallback (correct, just slower):
 /path/to/optics/env/bin/pip install torch
 ```
+
+`nevergrad`/`cma` are only needed if you run the optimizer or tolerancer
+(or their GUI docks); the trace/post/viz pipeline works without them.
 
 Point `MIEWB_OPTICS_PYTHON` (or Settings) at `/path/to/optics/env/bin/python`.
 A conda/mamba environment with the same packages works identically —
