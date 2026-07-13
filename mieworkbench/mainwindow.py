@@ -46,6 +46,7 @@ from .core.beadanim import (AnimationController, format_sim_time,
                             precompute_segments)
 from .core.librarymgr import LibraryManager
 from .core.optimize_controller import OptimizeController
+from .core.tolerance_controller import ToleranceController
 from .core.previewscheduler import PreviewScheduler
 from .core.project import Project, ProjectError
 from .core.raypreview import RayPreviewController
@@ -61,6 +62,7 @@ from .panes.element_editor import ElementEditorPane
 from .panes.inspector3d import InspectorPane
 from .panes.library import LibraryPane
 from .panes.optimize_pane import OptimizePane
+from .panes.tolerance_pane import TolerancePane
 from .panes.outliner import OutlinerPane
 from .panes.problems import ProblemsPane
 from .panes.prop_editor import PropEditorPane
@@ -85,7 +87,8 @@ import train_solver  # noqa: E402  (stdlib-only; shared chain math)
 
 TrainError = train_solver.TrainError
 
-STAGE_ORDER = ["extract", "trace", "post", "viz", "optimize"]
+STAGE_ORDER = ["extract", "trace", "post", "viz", "optimize",
+               "tolerance"]
 
 _CHIP_COLORS = {
     "running": "#3b82f6",
@@ -130,6 +133,7 @@ class MainWindow(QMainWindow):
         self.preview_scheduler = PreviewScheduler(parent=self)
         self.runner = RunController(self.settings, self)
         self.optimizer_ctl = OptimizeController(self.settings, self)
+        self.tolerance_ctl = ToleranceController(self.settings, self)
         self.config_matrix = ConfigMatrix()
         self.config_matrix.estimateRequested.connect(self._show_estimate)
         self.library_manager = LibraryManager(
@@ -223,10 +227,17 @@ class MainWindow(QMainWindow):
             "Optimize", "optimize_dock", self.optimize_pane,
             Qt.DockWidgetArea.BottomDockWidgetArea)
 
+        self.tolerance_pane = TolerancePane()
+        self.tolerance_pane.setObjectName("tolerance_host")
+        self.tolerance_dock = self._add_dock(
+            "Tolerance", "tolerance_dock", self.tolerance_pane,
+            Qt.DockWidgetArea.BottomDockWidgetArea)
+
         self.tabifyDockWidget(self.console_dock, self.py_console_dock)
         self.tabifyDockWidget(self.console_dock, self.results_dock)
         self.tabifyDockWidget(self.console_dock, self.problems_dock)
         self.tabifyDockWidget(self.console_dock, self.optimize_dock)
+        self.tabifyDockWidget(self.console_dock, self.tolerance_dock)
         self.console_dock.raise_()
         self.resizeDocks([self.console_dock], [230],
                          Qt.Orientation.Vertical)
@@ -458,6 +469,13 @@ class MainWindow(QMainWindow):
             "convergence plot)")
         self.optimize_action.triggered.connect(self._on_show_optimize)
 
+        self.tolerance_action = sim_menu.addAction("&Tolerance…")
+        self.tolerance_action.setToolTip(
+            "Open the tolerancing study pane (rank which tolerances "
+            "dominate the merit, Monte-Carlo the as-built yield, and "
+            "recover it with a focus compensator)")
+        self.tolerance_action.triggered.connect(self._on_show_tolerance)
+
         self.stop_action = sim_menu.addAction("&Stop")
         self.stop_action.setToolTip("Stop the running pipeline")
         self.stop_action.triggered.connect(self.runner.stop)
@@ -503,7 +521,7 @@ class MainWindow(QMainWindow):
                         self.console_dock, self.py_console_dock,
                         self.results_dock,
                         self.problems_dock, self.compare_dock,
-                        self.optimize_dock]
+                        self.optimize_dock, self.tolerance_dock]
         if self.variables_dock is not None:
             dock_toggles.insert(6, self.variables_dock)
         for dock in dock_toggles:
@@ -1839,10 +1857,76 @@ class MainWindow(QMainWindow):
         self.optimizer_ctl.error.connect(self._on_error)
         self.optimize_pane.runRequested.connect(self._on_run_optimize)
         self.optimize_pane.stopRequested.connect(self.optimizer_ctl.stop)
+        self._wire_tolerance()
+
+    def _wire_tolerance(self):
+        """Tolerance controller <-> pane: progress feeds BOTH the pane's
+        result plots and the shared stage-chip/status handler (the
+        'tolerance' chip is in STAGE_ORDER)."""
+        self.tolerance_ctl.line.connect(self.console.append_line)
+        self.tolerance_ctl.progress.connect(
+            self.tolerance_pane.on_progress)
+        self.tolerance_ctl.progress.connect(self._on_progress)
+        self.tolerance_ctl.started.connect(self.tolerance_pane.on_started)
+        self.tolerance_ctl.finished.connect(self._on_tolerance_finished)
+        self.tolerance_ctl.error.connect(self._on_error)
+        self.tolerance_pane.runRequested.connect(self._on_run_tolerance)
+        self.tolerance_pane.stopRequested.connect(self.tolerance_ctl.stop)
 
     def _on_show_optimize(self):
         self.optimize_dock.show()
         self.optimize_dock.raise_()
+
+    def _on_show_tolerance(self):
+        self.tolerance_dock.show()
+        self.tolerance_dock.raise_()
+
+    def _on_run_tolerance(self):
+        """Tolerance pane Run button: launch scripts/tolerance.py on the
+        open model under the optics-env python. Dialog-free (offscreen-
+        test discipline): problems land in the status bar."""
+        if not self.model_path:
+            self.statusBar().showMessage(
+                "Open a model before tolerancing", 8000)
+            return False
+        if self.tolerance_ctl.is_running():
+            self.statusBar().showMessage(
+                "A tolerance study is already running", 8000)
+            return False
+        try:
+            config = self.tolerance_pane.config()
+        except ValueError as exc:
+            self.statusBar().showMessage("Tolerance: %s" % exc, 8000)
+            return False
+        if not config["tolerance"]:
+            self.statusBar().showMessage(
+                "Tolerance: add at least one tolerance row", 8000)
+            return False
+        if not config["operand"]:
+            self.statusBar().showMessage(
+                "Tolerance: add at least one operand row", 8000)
+            return False
+        args = ToleranceController.build_args(config)
+        if not self.tolerance_ctl.start(self.model_path, args,
+                                        extra_env=self._run_env()):
+            self.statusBar().showMessage(
+                "Could not start the tolerance study", 8000)
+            return False
+        self.stage_chips["tolerance"].setStyleSheet(
+            self._chip_style(_CHIP_COLORS["running"]))
+        self.statusBar().showMessage("Tolerance study started")
+        return True
+
+    def _on_tolerance_finished(self, exit_code):
+        self.tolerance_pane.on_finished(exit_code)
+        if exit_code == 0:
+            self.statusBar().showMessage("Tolerance study finished", 5000)
+        else:
+            self.statusBar().showMessage(
+                "Tolerance study exited with code %d (see console)"
+                % exit_code, 8000)
+            self.stage_chips["tolerance"].setStyleSheet(
+                self._chip_style(_CHIP_COLORS["failed"]))
 
     def _on_run_optimize(self):
         """Optimize pane Run button: launch scripts/optimize.py on the
@@ -2002,6 +2086,8 @@ class MainWindow(QMainWindow):
             self.runner.stop()
         if self.optimizer_ctl.is_running():
             self.optimizer_ctl.stop()
+        if self.tolerance_ctl.is_running():
+            self.tolerance_ctl.stop()
         self.preview_scheduler.reset()
         self.scene3d.clear_rays()
         self.scene3d.set_rays_stale(False)
@@ -2724,6 +2810,11 @@ class MainWindow(QMainWindow):
         try:
             if self.optimizer_ctl.is_running():
                 self.optimizer_ctl.stop()
+        except Exception:
+            pass
+        try:
+            if self.tolerance_ctl.is_running():
+                self.tolerance_ctl.stop()
         except Exception:
             pass
         try:

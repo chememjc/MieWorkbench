@@ -41,7 +41,8 @@ from PySide6.QtWidgets import (
 PROGRESS_PREFIX = "@MIEWB "
 MAX_LINES = 20000
 
-STAGE_CHOICES = ["All", "extract", "trace", "post", "viz", "optimize"]
+STAGE_CHOICES = ["All", "extract", "trace", "post", "viz", "optimize",
+                 "tolerance"]
 
 _VIZ_PREFIXES = ("[prep]", "[setup]", "[render]", "[done]")
 
@@ -49,7 +50,8 @@ _COLOR_DEFAULT = "#d4d4d4"
 _COLOR_TRACE = "#22d3ee"     # cyan
 _COLOR_POST = "#e879f9"      # magenta
 _COLOR_VIZ = "#eab308"       # yellow
-_COLOR_OPTIMIZE = "#34d399"  # green
+_COLOR_OPTIMIZE = "#34d399"   # green
+_COLOR_TOLERANCE = "#a78bfa"  # violet
 _COLOR_ERROR = "#f87171"     # red
 _COLOR_NOTICE = "#fb923c"    # orange
 
@@ -63,6 +65,8 @@ def classify_stage(text):
         return "viz"
     if text.startswith("[optimize]"):
         return "optimize"
+    if text.startswith("[tolerance]"):
+        return "tolerance"
     return "extract"
 
 
@@ -77,6 +81,8 @@ def classify_color(text):
         return _COLOR_VIZ
     if text.startswith("[optimize]"):
         return _COLOR_OPTIMIZE
+    if text.startswith("[tolerance]"):
+        return _COLOR_TOLERANCE
     if "NOTICE" in text:
         return _COLOR_NOTICE
     return _COLOR_DEFAULT

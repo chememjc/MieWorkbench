@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402  (stdlib-only shared contract hub)
 
-STAGES = ("pipeline", "trace", "post", "viz", "optimize")
+STAGES = ("pipeline", "trace", "post", "viz", "optimize", "tolerance")
 
 
 def _workers_arg(s):
@@ -932,12 +932,172 @@ def _build_optimize_parser():
     return p
 
 
+# ---------------------------------------------------------------------------
+# tolerance  (scripts/tolerance.py — sensitivity + Monte-Carlo tolerancing)
+# ---------------------------------------------------------------------------
+# Perturbation distributions scripts/tolerance.py understands (single
+# source of truth: the GUI's TolerancePane populates its distribution
+# combo from this and tolerance.py samples over it).
+TOLERANCE_DISTS = ("normal", "uniform")
+
+
+def parse_tolerance_spec(s):
+    """'NAME:NOMINAL:DIST:BAND' -> {"name","nominal","dist","band"}.
+    argparse type= for --tolerance (tolerance stage). NAME is a
+    spreadsheet cell alias (exactly what permute_model --var / fast_eval
+    address); DIST is one of TOLERANCE_DISTS; BAND > 0 is the 1-sigma
+    width for 'normal' and the half-width for 'uniform', in the sheet's
+    units (mm)."""
+    parts = s.split(":")
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError(
+            "invalid --tolerance %r (expected NAME:NOMINAL:DIST:BAND)" % s)
+    name = parts[0].strip()
+    if not name:
+        raise argparse.ArgumentTypeError("--tolerance %r: empty NAME" % s)
+    dist = parts[2].strip().lower()
+    if dist not in TOLERANCE_DISTS:
+        raise argparse.ArgumentTypeError(
+            "--tolerance %r: unknown distribution %r (know: %s)"
+            % (s, dist, ", ".join(TOLERANCE_DISTS)))
+    try:
+        nominal, band = float(parts[1]), float(parts[3])
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "invalid --tolerance %r (NOMINAL/BAND must be numbers)" % s)
+    if not band > 0.0:
+        raise argparse.ArgumentTypeError(
+            "--tolerance %r: BAND must be > 0 (got %g)" % (s, band))
+    return {"name": name, "nominal": nominal, "dist": dist, "band": band}
+
+
+def parse_compensator_spec(s):
+    """'VAR:LO:HI' (or 'VAR:START:LO:HI') -> {"name","start","lo","hi"}.
+    argparse type= for --compensator (tolerance stage). START defaults to
+    the midpoint of [LO, HI]; the compensator sits at START whenever it is
+    not being optimized (the nominal / sensitivity evaluations)."""
+    parts = s.split(":")
+    if len(parts) not in (3, 4):
+        raise argparse.ArgumentTypeError(
+            "invalid --compensator %r (expected VAR:LO:HI or "
+            "VAR:START:LO:HI)" % s)
+    name = parts[0].strip()
+    if not name:
+        raise argparse.ArgumentTypeError("--compensator %r: empty VAR" % s)
+    try:
+        nums = [float(p) for p in parts[1:]]
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "invalid --compensator %r (bounds must be numbers)" % s)
+    if len(nums) == 2:
+        lo, hi = nums
+        start = 0.5 * (lo + hi)
+    else:
+        start, lo, hi = nums
+    if not lo < hi:
+        raise argparse.ArgumentTypeError(
+            "--compensator %r: LO must be < HI (got %g >= %g)"
+            % (s, lo, hi))
+    if not lo <= start <= hi:
+        raise argparse.ArgumentTypeError(
+            "--compensator %r: START %g outside [LO, HI] = [%g, %g]"
+            % (s, start, lo, hi))
+    return {"name": name, "start": start, "lo": lo, "hi": hi}
+
+
+def _build_tolerance_parser():
+    p = argparse.ArgumentParser(
+        prog="tolerance.py",
+        description="Sensitivity analysis + Monte-Carlo yield tolerancing "
+                    "over the fast_eval evaluator: finite-difference each "
+                    "tolerance's merit impact (ranked table), then draw N "
+                    "random perturbation sets and report the merit "
+                    "distribution / yield fraction, optionally recovering "
+                    "each draw with a nested focus-compensator "
+                    "optimization.")
+    p.add_argument("--model", required=True, metavar="FCSTD",
+                   help="the base .FCStd (bare names resolve against the "
+                        "project root, then basemodels/)")
+    p.add_argument("--config", default=None, metavar="JSON",
+                   help="JSON file whose keys mirror these options "
+                        "(argparse dests); explicit CLI flags win over "
+                        "config-file values")
+    p.add_argument("--tolerance", action="append", default=[],
+                   type=parse_tolerance_spec,
+                   metavar="NAME:NOMINAL:DIST:BAND",
+                   help="tolerance parameter (repeatable, >=1 required): "
+                        "spreadsheet cell alias, nominal value, "
+                        "distribution (%s), and band (1-sigma for normal, "
+                        "half-width for uniform) in the sheet's units (mm)"
+                        % "/".join(TOLERANCE_DISTS))
+    p.add_argument("--operand", action="append", default=[],
+                   type=parse_operand_spec,
+                   metavar="OPERAND[@DETECTOR]:TARGET:WEIGHT",
+                   help="merit operand (repeatable, >=1 required); same "
+                        "grammar and semantics as optimize.py: %s, or a "
+                        "raw flattened report.json merit key"
+                        % ", ".join(OPTIMIZE_OPERANDS))
+    p.add_argument("--draws", type=int, default=50, metavar="N",
+                   help="Monte-Carlo perturbation draws (default 50; "
+                        "0 = sensitivity analysis only)")
+    p.add_argument("--merit-threshold", type=float, default=None,
+                   metavar="X",
+                   help="a draw PASSES when its merit <= X; the yield "
+                        "fraction is passes/draws (omit for distribution "
+                        "stats only)")
+    p.add_argument("--compensator", default=None, type=parse_compensator_spec,
+                   metavar="VAR:LO:HI",
+                   help="focus compensator: before recording each draw's "
+                        "merit, optimize VAR within [LO, HI] (nested "
+                        "optimize.py local engine) to recover the best "
+                        "merit; 'VAR:START:LO:HI' also fixes the "
+                        "uncompensated resting value (default: midpoint)")
+    p.add_argument("--comp-budget", type=int, default=10, metavar="N",
+                   help="merit evaluations per draw for the nested "
+                        "compensator optimization (default 10)")
+    p.add_argument("--sens-delta", type=float, default=1.0, metavar="FRAC",
+                   help="sensitivity finite-difference step as a fraction "
+                        "of each tolerance's band (default 1.0 = probe at "
+                        "the band edges)")
+    p.add_argument("--skip-sensitivity", action="store_true",
+                   help="skip the per-parameter finite-difference "
+                        "sensitivity table (Monte-Carlo only)")
+    p.add_argument("--hist-bins", type=int, default=20, metavar="N",
+                   help="merit-histogram bin count in the report "
+                        "(default 20)")
+    p.add_argument("--mc-seed", type=int, default=42,
+                   help="RNG seed for the Monte-Carlo perturbation draws")
+    p.add_argument("--preset", default="quick",
+                   choices=sorted(common.PRESETS),
+                   help="fast_eval fidelity preset for rays/resolution/"
+                        "nlambda not given explicitly (default: quick)")
+    p.add_argument("--rays", type=float, default=None,
+                   help="primary rays per source per evaluation "
+                        "(default: from --preset)")
+    p.add_argument("--resolution", type=int, default=None)
+    p.add_argument("--nlambda", type=int, default=None)
+    p.add_argument("--seeds", type=int, default=1)
+    p.add_argument("--seed0", type=int, default=42)
+    p.add_argument("--eval-backend", default="worker",
+                   choices=["worker", "full"],
+                   help="fast_eval backend (default: worker = persistent "
+                        "FreeCAD, fast)")
+    p.add_argument("--out", default=None, metavar="DIR",
+                   help="tolerance case dir for report.json/progress.json "
+                        "(default: var/tolerance/<model-stem>)")
+    p.add_argument("--workdir", default=None, metavar="DIR",
+                   help="fast_eval evaluation workspace (default: "
+                        "var/fasteval/<stem>-<backend>)")
+    return p
+
+
 _BUILDERS = {
     "pipeline": _build_pipeline_parser,
     "trace": _build_trace_parser,
     "post": _build_post_parser,
     "viz": _build_viz_parser,
     "optimize": _build_optimize_parser,
+    "tolerance": _build_tolerance_parser,
 }
 
 
