@@ -6,6 +6,22 @@ where the seams are. Nothing here blocks current use. This is now the
 lowest-effort backlog + the named-analysis-products and biaxial/stress
 birefringence design studies) was merged in here on 2026-07-11 and deleted.
 
+## Rating legend (effort × impact)
+
+Every open item below carries a **`[effort · impact]`** tag, unifying the ad-hoc
+effort sizes that used to be scattered through this doc. Same effort tiers as
+`features.md` §7.
+
+- **Effort:** **S** ≤1 wk · **M** ~1 mo · **L** ~1 quarter · **XL** multi-quarter/research.
+- **Impact:** **High** = removes a categorical gap that most/all competitors win
+  (see `features.md` §4) or a broad user-pain point · **Med** = matches some
+  competitors or a solid quality-of-life win · **Low** = niche audience,
+  moat-widening on an already-won axis, or a corner-case fidelity fix.
+
+The consolidated **Roadmap rating index** (after the Backlog, before Operational)
+rates *every* open item in one scannable table; the inline items keep their
+narrative + code seams.
+
 ## Delivered since the last pass (kept here only as a pointer to the flag/module)
 
 - **Ray-differential dA tracking** — shipped behind `--ray-differentials`
@@ -389,6 +405,157 @@ round.
   rides on the §7.2 optimizer above; photometric units (lux/lumen/candela
   via CIE V(λ)) already landed (item #2 above). Effort: L (depends on
   §7.2 landing first).
+
+## Roadmap rating index (every open item, 2-axis)
+
+One row per open item, grouped by the section it lives in. Effort/impact per the
+legend at the top. This is the uniform rating the design comparison asked for; the
+narrative + exact code seam for each stays in its own section above (or in
+`features.md` §7 for the design-apparatus items). Landed items are omitted (see
+"Delivered").
+
+### Backlog (a) — near-term
+| Item | Effort | Impact | Note |
+|--|:--:|:--:|--|
+|Stress/spatially-varying birefringence|L-XL|Med|first cut (constant axis, position-dependent Δn) closer to L; full stress-optic + FEA XL; niche photoelastic|
+|Exit-pupil / chief-ray search stage|L|**High**|unlocks true-pupil Zernike/Strehl, PSF-peak Strehl, partial coherence, image-sim (`features.md` §7.3)|
+|BTDF (transmitted-side) measured scatter|M|Med|completes the ABg scatter model; scattering exit faces|
+|Coherent gather on curved detectors|L|Med|curved-aperture obliquity terms; `curved_focal_surface` demo|
+|Materials dn/dT (thermo-optic) hook|M|**High**|unlocks thermal G3/K1 — all four design suites win it; data already compiled|
+|Line-spectrum + blackbody/lamp sources|M|Med|continuous-tabulated + white LED landed; discrete-line & Planck kinds remain|
+
+### Backlog (a2) — placement/authoring affordances
+| Item | Effort | Impact | Note |
+|--|:--:|:--:|--|
+|Expressions/variables for anchored placements|M|Med|side-scatter detectors, field fans can't sweep today|
+|`--particles` cloud as chain-referenceable anchor|M|Low|nephelometer-ring authoring|
+|Field-angle source-fan wizard|S|Med|removes hand-computed `y=L·tanθ` placement|
+|Co-located transparent detectors|S|Low|"measure a plane two ways" without overlap-fail|
+|Coherent-gather ray-budget preflight|S|Med|estimate the M_eff gate at check time, not after a failed trace|
+|`--particles` target-optical-depth knob|S|Low|solve φ for a requested τ|
+|"Span N Airy zeros" detector-sizing intent|S|Low|diffraction-scale insert-values in the right-click menu|
+
+### Backlog (b) — higher-fidelity physics
+| Item | Effort | Impact | Note |
+|--|:--:|:--:|--|
+|Exact uniaxial Fresnel at a birefringent interface|L|Med|4-wave boundary-match; today's effective-index approx worst near grazing|
+|Optical activity / chiral media|L|Low|**no competitor here has it** (`features.md` C6); research-only|
+|Biaxial conical refraction|M|Low|corner-case of a MieWorkbench-unique win (C5)|
+|Absorbing (dichroic) uniaxial crystals|M|Low|`Im(n_o)/Im(n_e)` currently ignored|
+|Reflection-geometry Kogelnik gratings|M|Low|tanh/sinh reflection VBG solution|
+|RCWA|XL|Low|Zemax-only among the six; closed-form models suffice (`features.md` §7.15)|
+|Ray-differential transport through gratings/scatter/birefringence|L|Low|three transport paths currently NaN the differential|
+|Translucent (non-opaque) gather occlusion|M|Low|per-pixel mode already opt-in; partial occluders need transmission accounting|
+|GRIN (gradient-index) media|XL|**High**|every design suite except 3DOptix has it (`features.md` D8/§7.4); curved-ray eikonal integration|
+|Fluorescence / phosphors|L|Low|new wavelength-shifting emission event|
+|Thermal lensing|L|Low|coupled absorbed-power→ΔT→dn/dT; shares the dn/dT hook|
+
+### Backlog (c) — capability gaps (hard errors today)
+| Item | Effort | Impact | Note |
+|--|:--:|:--:|--|
+|Explicit particle clouds > 200k spheres|L|Low|numba DDA/grid traversal removes the cap|
+|Mesh-type source/detector faces|M|Low|needs a UV parameterization the paths lack|
+|Aspherical particles (T-matrix)|M|Low|`pytmatrix` drop-in behind `MieEvaluator`|
+
+### Backlog (d) — big-roadmap acceptance-target demos
+| Item | Effort | Impact | Note |
+|--|:--:|:--:|--|
+|`auto_designed_lens` (optimizer)|L(headless)/XL(global)|**High**|**the biggest categorical gap** (`features.md` §7.1); all four design suites win the I block|
+|`tolerance_yield` (tolerancing)|L|**High**|MC tolerance + compensators (`features.md` §7.2); CODE V's Wavefront-Differential sets the bar|
+|`cad_import_scene` (CAD import)|M/L|Med|FreeCAD already imports STEP; expose as element (`features.md` §7.4)|
+|`freeform_illuminator` (illumination design)|L|Med|rides on the optimizer; photometric units already landed|
+
+### Pulsed-optics round follow-ups (moat-widening on the S axis MieWorkbench uniquely owns)
+| Item | Effort | Impact | Note |
+|--|:--:|:--:|--|
+|Split-step NLSE propagation|L-XL|Med|real intra-train SPM+GVD/soliton dynamics|
+|Mid-train SPM (body `spm` property)|M|Low|needs stratum re-quantization at the element|
+|Depleted-pump coupled-wave SHG|M|Med|tanh² solution → strong conversion + back-conversion|
+|Harmonic walk-off / exact uniaxial SHG|L|Med|type-I/II e/o geometry; needs exact-uniaxial Fresnel (b)|
+|Cascaded/coherent harmonics|L|Low|THG via cascade, phase-sensitive pump-harmonic interplay|
+|Raman / fluorescence inelastic transfer|M|Low|Stokes-shift bulk event reusing the SHG plumbing|
+|C-engine port of pulsed tokens|M|Med|time_products/gdd_budget/nonlinear currently Python-route|
+|Fringe-resolved timing|L|Low|per-record complex amplitudes at ~100× record cost|
+|Angular-dispersion group-index term|M|Low|e-ray group delay neglects dθ/dλ|
+|Per-source time cubes|S|Low|cube currently bins all sources together|
+|SuperK SPD tail vs material tables|S|Low|clip SPD where materials aren't tabulated|
+|Deferred demos (prism_compressor, wideangle_retrofocus)|S-M|Low|physics validated; only gallery scenes missing|
+|Transmission-grating truncated-order booking|S|Med|closure-gate correctness (reflective branch already books it)|
+|Dominant-cluster auto time window|M|Med|cluster records so fs pulses resolve without a hand-pinned window|
+
+## Additional supportable features (surfaced by the 6-package comparison)
+
+The `features.md` refresh (now vs Zemax, CODE V, OSLO, QUADOA, 3DOptix) exposes one
+coherent theme: MieWorkbench has closed the *analysis-product* gap (PSF/MTF/EE/spot/
+fans/Zernike/Strehl, photometry, ghost analysis all landed) but still lacks the
+**design apparatus** every commercial suite here is built around. These are the
+features the comparison says MieWorkbench *could* support, each with a 2-axis rating,
+the exact code seam, and the `features.md` line it closes. (Items already in the
+Backlog above are cross-referenced, not repeated.)
+
+| Feature | Closes | Effort | Impact | Seam / path |
+|--|--|:--:|:--:|--|
+|**Headless optimization loop** (merit function + local/global)|I1–I5|L / XL(global)|**High**|`scripts/optimize.py` wrapping `permute_model.py`/`--var`; scipy/nevergrad/CMA over shipped spot-RMS/EE metrics; geometric-fast inner loop. Backlog (d) `auto_designed_lens`|
+|**Directed global synthesis** (many distinct minima, CODE V-style)|I6|XL|Med|stretch goal on the optimizer; surfaces multiple design forms per run|
+|**Sensitivity + Monte-Carlo tolerancing**|J1–J4|L|**High**|`scripts/tolerance.py` over `--seeds`+`permute_model.py`; sensitivity ranking + yield histogram. Backlog (d) `tolerance_yield`|
+|**Fast differential wavefront tolerancing** (CODE V Wavefront-Differential)|J5|L|Med|finite-difference perturbation of the Zernike vector, cheap enough for in-loop desensitization; depends on the exit-pupil stage|
+|**True exit-pupil / chief-ray search**|B6/B7 upgrade, B8, F10|L|**High**|`raytracer/analysis.py` reference-sphere stage; unlocks PSF-peak Strehl, partial coherence, image-sim. Backlog (a)|
+|**dn/dT + expanded glass/dispersion catalogs**|G1–G3, K1|S-M / M|**High**|Sellmeier already supported; add dn/dT column + T param in `materials.py`; import more AGF catalogs. Backlog (a)|
+|**GRIN media**|D8|XL|**High**|Runge–Kutta eikonal curved-ray integration in `tracer.py`. Backlog (b)|
+|**In-app Python console** bound to `Project`|P3|M|**High**|expose `core/project.py` in a console pane — app is already Python; also answers the "no scripting API" gap Zemax/OSLO/QUADOA win|
+|**CAD (STEP/IGES) import as traceable element**|D9/D10|M / L(analytic)|Med|FreeCAD imports natively; expose via fc_server `import_bodies`, fall back to mesh-BVH. Backlog (d)|
+|**Analytic Q-type (Forbes) / XY-Zernike freeform** with coherent phase|D3/D4|M-L|Med|extend `surfaces.py` asphere machinery (Newton-intersect + `<1µm` verify) to Qbfs/Qcon + freeform sag|
+|**Ray-aiming to a real pupil**|E6|M|Med|iterate emission direction to hit a named aperture body in `sources.py`|
+|**Measured source-file import** (IES/TM-25/rayfile)|E7|M|Low|weighted-ray-set importer; 3DOptix/Zemax win this|
+|**Config-table multi-configuration editor**|M1–M3|M|Med|named-config table wrapping the `--var` sweep, overlay via `compare_runs.py`|
+|**Gridded POP / beamlet propagator** (Zemax POP / CODE V BSP class)|B3/B10|L-XL|Low|propagate a gridded field surface-to-surface on top of the existing gather kernel; the coherent gather already covers most cases|
+|**Partial-coherence imaging + image simulation**|B8/F10|L|Low|rides on the exit-pupil field pipeline; OSLO/CODE V/Zemax win it|
+|**Multi-GPU gather**|Q3|L|Med|merge detector cubes/ledgers (linear accumulators); after `--workers`|
+|**Nestable assemblies / grouping**|O7|M|Low|first-class assembly object over `miewb_group`; QUADOA-style|
+|**Cross-platform (Windows/Mac) packaging**|N7/R3|L|Med|PySide6+VTK are portable; blocker is the FreeCAD/optics-env/ParaView stack — bundle as installer/container|
+
+**Deliberate non-goals** (documented, not chased — `features.md` §7.15): RCWA (Zemax-only
+here), Mueller-matrix formalism (only QUADOA claims it), optical activity (nobody here has
+it), coating needle-synthesis (nobody here has it), native cloud compute (conflicts with
+the data-locality/ITAR value proposition), a macro *language* (redundant given a Python
+console).
+
+## Partial features — behavioral differences vs commercial tools
+
+MieWorkbench ships several features at 🟡 (`features.md` §4). This section states, for each,
+**what MieWorkbench actually does**, **how the commercial tools behave differently** (the
+ones that rate it higher), and **what full parity needs**. This is the "if partially
+implemented, explain the behavioral difference" contract — framed against the tools a user
+would compare to.
+
+| Partial feature | What MieWorkbench does | How the commercial tools differ | Path to parity |
+|--|--|--|--|
+|**Zernike / Strehl** (B6/B7 🟡)|Fits Noll+Fringe Zernike (jmax=15) on a **source-referenced** pupil (each ray's normalized birth position); Strehl via the **Maréchal** approximation from residual RMS. Exact for collimated/laser benches.|Zemax/CODE V/OSLO/QUADOA reference a **true exit pupil** at a field point's image and report a **PSF-peak-ratio** Strehl — correct for finite-conjugate, off-axis field imaging.|Exit-pupil/chief-ray search stage (Backlog a / `features.md` §7.3) — **[L·High]**|
+|**Curved detectors** (F3 🟡)|Sphere/cylinder detector grids with a per-pixel metric-area map, **incoherent path only** — a coherent Huygens gather on a curved screen raises `NotImplementedError`.|Zemax curved/annular detector objects accept the full (coherent) field.|Per-pixel normals/obliquity through the gather kernel (Backlog a) — **[L·Med]**|
+|**Measured (tabulated) coatings** (C7)|Rs/Rp/Ts/Tp amplitude from the table, but **no coating phase** — they borrow the bare-interface Fresnel phase (only TMM stacks carry real coherent coating phase).|Zemax/OSLO measured-coating tables can carry phase, and their TMM stacks are the norm; the coating catalogs are also far larger.|Store/interpolate per-order phase in the coating table; keep TMM as the phase-correct path — **[M·Low]**|
+|**Measured BSDF scatter** (H2 🟡)|ABg model, **BRDF (reflected) side only**, single-scatter, isotropic; 3 shipped rows flagged UNVERIFIED.|Zemax imports full BSDF (BRDF+BTDF), anisotropic, with importance sampling; the scatter physics MieWorkbench *does* have (Mie/volume) beats them, but the measured-import tooling is narrower.|BTDF half + anisotropic fit (Backlog a/b) — **[M·Med]**|
+|**Grating efficiency** (C9 🟡 for CODE V/OSLO comparison)|Four closed-form models with real efficiency (Kogelnik VBG, Dammann, measured table); lamellar/Dammann are polarization-blind; **no RCWA**; reflection VBGs not modeled.|Zemax uses rigorous **RCWA** (exact for sub-wavelength/non-sinusoidal grooves). CODE V/OSLO are scalar/efficiency-limited — MieWorkbench actually *leads* those two on closed-form efficiency.|RCWA is a deliberate non-goal (§7.15); reflection-Kogelnik is the pragmatic increment (Backlog b) — **[M·Low]**|
+|**Biaxial birefringence** (C5 🟡)|Validated two-sheet quartic solver (KTP/KTA/LBO/BiBO, `<1e-9`); the **only** biaxial in the field. But **no conical refraction**, internal reflections are **sheet-preserving**, and the interface uses an **effective-index Fresnel** approximation.|No competitor here has biaxial at all, so MieWorkbench is strictly ahead — the "partial" is vs the rigorous ideal, not vs a competitor.|Conical refraction + exact anisotropic Fresnel (Backlog b) — **[M·Low]** / **[L·Med]**|
+|**Curved-vs-flat, multi-config, ghost** (M1 ⚠️, F9 ✅/🟡)|Multi-config is CLI-sweep + Variables dock + Compare pane (no named editor). Ghost is a specular **path ranking** (top multi-bounce paths by detected power).|Zemax/CODE V/OSLO/QUADOA have named multi-config editors (12–unlimited configs) and Zemax's Path Analysis / Critical Ray Tracer is a fuller stray-light workflow than a ranked list.|Config-table GUI (§7.10) — **[M·Med]**; fuller stray-light report on the ghost ranking (§7.9) — **[M·Med]**|
+|**Photocurrent / QE** (F2 partial)|`qe_curve` body property → photocurrent_A + coverage_frac, but only **1** QE curve ships and there's no CLI flag.|Zemax/vendor tools ship large detector-QE libraries.|Add QE-curve library rows + a CLI/GUI surface — **[S·Low]**|
+
+## Partial features — behavioral gaps vs the physical ideal
+
+The same partials, framed the way this doc has always framed them: **honest limits vs the
+rigorous physics**, independent of any competitor. (Kept distinct from the section above so
+the "vs ideal" breadcrumbs stay intact.) Each names its approximation and the seam that
+would make it exact.
+
+| Partial feature | Approximation today | Rigorous ideal | Seam |
+|--|--|--|--|
+|**Uniaxial interface Fresnel** (C4)|Field decomposed into o/e eigenbasis; each channel applies its own **effective-index isotropic** Fresnel coefficients. Energy still closes via the ledger; per-channel phase/amplitude approximate, worst near grazing.|Solve the true 4-wave anisotropic boundary-value problem directly.|`tracer._birefringent_children` (README §5.6)|
+|**SHG / χ² conversion** (S2)|Undepleted Boyd quadratic, η clamped ≤0.5; **no walk-off, no angular detuning, equal s/p harmonic split, no cascaded re-conversion**.|Depleted coupled-wave tanh²; type-I/II e/o geometry with Poynting walk-off; cascade.|bulk SHG event (README §6.12); needs exact-uniaxial Fresnel|
+|**Self-phase modulation** (S4)|**Source-side only**, quasi-classical single-time-per-frequency; exact FFT spectrum installed as an SPD.|Split-step NLSE with real intra-train SPM+GVD interplay.|`sources.py` SPM transform (README §5.2.1); split-step propagator|
+|**GDD budget** (S3)|**Material dispersion only**; geometric GDD (gratings/prisms/angular chirp) shows up in the traced time products instead, not the analytic table.|Unified analytic GD/GDD/TOD incl. angular-dispersion dθ/dλ term.|GDD-budget table (README §6.11)|
+|**Mesh optical faces** (D9)|Traced for geometry/**incoherent power only** — a tessellated sag error ≫ λ makes coherent optical-path phase meaningless.|Analytic or wavelength-accurate faces carry coherent phase.|keep phase-critical surfaces analytic (README §5.8)|
+|**Continuum particle scattering** (H4)|**Incoherent by construction** — contributes power, never fringe structure.|Coherent multiple-scattering transport.|continuum medium path (README §6.2) — deliberate scope choice|
+|**Gather occlusion** (default off)|No occlusion test between a gather sample and the pixel unless `--gather-occlusion`; then tile-quantized + fully-opaque occluders.|Per-pixel, translucency-aware occlusion.|`gather.py` two-level AABB + tile-shadow (README §6.5)|
+|**Diffuser / ground-glass depolarization** (H1)|Single-scatter Beckmann microfacet — no shadowing/masking, no subsurface transport; real ground glass depolarizes more.|Multiple-scatter + subsurface transport.|`roughness`/diffuser sampler (README §5.4.1)|
 
 ## Operational
 
