@@ -150,12 +150,18 @@ def test_schott_model_via_loader(tmp_path):
 
 
 def test_shipped_db_backward_compat():
-    """The shipped 168-material DB still loads and no existing row has a
-    thermo model yet (added later by the AGF importer)."""
+    """The shipped materials DB loads and the original 168 hand-curated
+    rows survived the scripts/tools/import_agf.py Schott+Ohara AGF import
+    (which appended ~679 new glass rows and backfilled thermo-optic data
+    onto rows it could confidently name-match, e.g. bk7 -> N-BK7)."""
     db = MaterialDB.load()
-    assert len(db) == 168
-    assert not db.get("bk7").has_thermo
-    assert db.get("bk7").t_ref_c == DEFAULT_T_REF_C
+    assert len(db) == 847
+    assert db.get("bk7").has_thermo
+    dndt = (db.get("bk7").n_complex(587.6e-9, T=21.0).real
+            - db.get("bk7").n_complex(587.6e-9, T=20.0).real)
+    assert dndt == pytest.approx(1.39e-6, abs=2e-7)
+    assert db.get("fused_silica").t_ref_c == DEFAULT_T_REF_C
+    assert not db.get("fused_silica").has_thermo
 
 
 # ---------------------------------------------------------------------------

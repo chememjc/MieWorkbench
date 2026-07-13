@@ -435,10 +435,12 @@ def test_library_expansion_counts(shipped_props):
     # new gen_registry_rows.py-style generator adds more) -- don't just
     # bump them to make a failure go away, verify the new count is right.
     #
-    # materials is 168, not the library.md plan's 169: the BAK4 glass row
+    # materials was 168, not the library.md plan's 169: the BAK4 glass row
     # was dropped as a duplicate of N-BAK4 (library_data/README.md), which
-    # the plan's total didn't subtract.
-    assert len(shipped_props.matdb) == 168
+    # the plan's total didn't subtract. It grew to 847 when
+    # scripts/tools/import_agf.py appended the Schott+Ohara Zemax AGF glass
+    # catalogs (679 new rows; see library_data/agf/README.md).
+    assert len(shipped_props.matdb) == 847
     assert len(shipped_props.coatings) == 38
     assert len(shipped_props.filters) == 56
     assert len(shipped_props.polarizers) == 17
