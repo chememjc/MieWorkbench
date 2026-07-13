@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))            # scenehelpers
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # scripts/
 
 from scripts.raytracer.materials import (
     Material, MaterialDB, MaterialError, DEFAULT_T_REF_C,
@@ -154,3 +156,77 @@ def test_shipped_db_backward_compat():
     assert len(db) == 168
     assert not db.get("bk7").has_thermo
     assert db.get("bk7").t_ref_c == DEFAULT_T_REF_C
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: temperature threads through the Scene and reaches medium_index,
+# and cengine routes a real thermo-optic shift to the Python engine.
+# ---------------------------------------------------------------------------
+def _thermo_db(tmp_path):
+    p = tmp_path / "materials.miemat"
+    B = NBK7_SELLMEIER
+    T = NBK7_THERMO
+    p.write_text(MAT_HEADER
+                 + "air,gas,constant,1.0,0.0,,,,,,1.2,,,,ref\n"
+                 + ("bk7,glass,sellmeier,%g,%g,%g,%g,%g,%g,,2510,0.35,2.5,,ref,"
+                    "%g,%g,%g,%g,%g,%g,20\n" % (B + T)))
+    return MaterialDB.load(csv_path=p, nk_dir=tmp_path / "nk")
+
+
+def _glass_body_index(scene):
+    for i, b in enumerate(scene.bodies):
+        if b.material == "bk7":
+            return i
+    raise AssertionError("no bk7 body in scene")
+
+
+def test_scene_global_temperature_shifts_medium_index(tmp_path):
+    import scenehelpers as sh
+    from raytracer.scene import Scene
+    matdb = _thermo_db(tmp_path)
+    model = sh.make_model([sh.source_body(), sh.slab_body("glass", "bk7", -0.01, 0.01), sh.detector_body()])
+    lam = 587.6e-9
+    cold = Scene(model, matdb, {}, optprops=None)                 # no temp
+    hot = Scene(model, matdb, {}, optprops=None, temperature_c=80.0)
+    gi = _glass_body_index(cold)
+    n_ref = cold.medium_index(gi, lam).real
+    n_hot = hot.medium_index(_glass_body_index(hot), lam).real
+    assert n_hot > n_ref                                          # heated -> up
+    # matches the material's own thermo shift
+    expect = matdb.get("bk7").n_complex(lam, T=80.0).real
+    assert n_hot == pytest.approx(expect, rel=1e-12)
+
+
+def test_per_body_temperature_overrides_scene(tmp_path):
+    import scenehelpers as sh
+    from raytracer.scene import Scene
+    matdb = _thermo_db(tmp_path)
+    # body carries its own 40 C; scene-global is 80 C -> body wins
+    model = sh.make_model([sh.source_body(),
+                           sh.slab_body("glass", "bk7", -0.01, 0.01,
+                                        temperature=40.0),
+                           sh.detector_body()])
+    scene = Scene(model, matdb, {}, optprops=None, temperature_c=80.0)
+    gi = _glass_body_index(scene)
+    got = scene.medium_index(gi, 587.6e-9).real
+    expect = matdb.get("bk7").n_complex(587.6e-9, T=40.0).real
+    assert got == pytest.approx(expect, rel=1e-12)
+
+
+def test_cengine_routes_temperature_to_python(tmp_path):
+    import types
+    import scenehelpers as sh
+    from raytracer.scene import Scene
+    from raytracer import cengine
+    matdb = _thermo_db(tmp_path)
+    model = sh.make_model([sh.source_body(), sh.slab_body("glass", "bk7", -0.01, 0.01), sh.detector_body()])
+    scene = Scene(model, matdb, {}, optprops=None, temperature_c=80.0)
+    import cli_specs
+    tp = cli_specs.build_parser("trace")
+    args = types.SimpleNamespace(**{a.dest: a.default for a in tp._actions})
+    feats = cengine.detect_features(args, scene)
+    assert "temperature" in feats
+    assert "temperature" not in cengine.PORTED
+    # a scene with no temperature set does NOT emit the token
+    plain = Scene(model, matdb, {}, optprops=None)
+    assert "temperature" not in cengine.detect_features(args, plain)
