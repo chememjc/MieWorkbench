@@ -1098,6 +1098,21 @@ catalogs, Gaussian sources, biaxial, ghost analysis, and the fold operator — s
 Have" analysis-product item is now **done**, and optimization/tolerancing rise to the top.
 
 ### 8.1 Must Have (the largest remaining categorical gaps; defines design credibility)
+
+> **✅ ALL FIVE DELIVERED (2026-07-13).** The entire Must-Have list below has landed on `master`:
+> **(1) optimizer** — `scripts/optimize.py` (scipy Nelder-Mead local + nevergrad CMA global) over a
+> weighted spot-RMS/EE/power/MTF50 merit, driving a new persistent-worker **fast evaluator**
+> (`scripts/fast_eval.py`, ~10× geometry-stage speedup, crash-recovery, parity-oracle-verified) with
+> a full Optimize GUI dock + the `auto_designed_lens` demo; **(2) tolerancing** — `scripts/tolerance.py`
+> (sensitivity ranking + Monte-Carlo yield + a focus compensator reusing the optimizer) + a Tolerance
+> GUI dock + the `tolerance_yield` demo; **(3) dn/dT + catalogs** — Schott TIE-19 thermo-optic
+> `n(λ,T)` + `--temperature` + **847 materials** (168→847 via a Schott/Ohara AGF importer); **(4)
+> true exit-pupil / PSF-peak Strehl** — verified already-shipped (`analysis_imaging.py`, `--wavefront-pupil
+> exit_pupil`) **plus** greenfield partial-coherence + image-simulation (`analysis_field.image_*`);
+> **(5) in-app Python console** (`panes/py_console.py`) bound to the live `Project`. Each landed
+> behind an implement → tests + demo + physics-oracle → independent verification → merge gate. The
+> original prose is kept below for the record.
+
 1. **Headless optimization loop** (§7.1) with a geometric-fast inner loop. *Why:* now the single
    biggest gap — all four design suites (Zemax/CODE V/OSLO/QUADOA) win the entire I block; even a
    scipy-based merit-function optimizer transforms MieWorkbench from "simulator" to "design-capable."

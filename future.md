@@ -485,6 +485,18 @@ narrative + exact code seam for each stays in its own section above (or in
 
 ## Additional supportable features (surfaced by the 6-package comparison)
 
+> **✅ DESIGN-APPARATUS ROUND LANDED (2026-07-13).** The core "design apparatus" gap this
+> section named is now closed on `master`: the **headless optimizer** (`scripts/optimize.py`,
+> scipy + nevergrad CMA), **Monte-Carlo tolerancing + sensitivity + compensator**
+> (`scripts/tolerance.py`), the **persistent-worker fast evaluator** (`scripts/fast_eval.py`,
+> the shared inner loop with crash-recovery), **dn/dT + 847 Schott/Ohara glasses**
+> (`scripts/tools/import_agf.py` + Schott TIE-19 in `materials.py`), the **exit-pupil / PSF-peak
+> Strehl** verification + **partial-coherence & image-simulation** (`analysis_field.image_*`), and
+> the **in-app Python console** (`panes/py_console.py`) all shipped with full-parity GUI docks,
+> demos, and physics oracles. The remaining rows below (GRIN, Q-type/freeform, CAD import, POP/BSP,
+> ray-aiming, measured source files, multi-config editor, cross-platform packaging) are the
+> genuinely-still-open items.
+
 The `features.md` refresh (now vs Zemax, CODE V, OSLO, QUADOA, 3DOptix) exposes one
 coherent theme: MieWorkbench has closed the *analysis-product* gap (PSF/MTF/EE/spot/
 fans/Zernike/Strehl, photometry, ghost analysis all landed) but still lacks the
