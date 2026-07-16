@@ -996,9 +996,16 @@ def _build_optimize_parser():
                         "weight*(v-target)^2 when TARGET is nonzero)"
                         % ", ".join(OPTIMIZE_OPERANDS))
     p.add_argument("--algorithm", default="local",
-                   choices=["local", "global"],
-                   help="'local' = scipy Nelder-Mead within the bounds "
-                        "(default); 'global' = nevergrad CMA-ES")
+                   choices=["local", "simplex", "dls", "global"],
+                   help="'local' = the default derivative-free path (scipy "
+                        "Nelder-Mead), PROMOTED to 'dls' when --eval-backend "
+                        "sequential (a deterministic trace makes damped "
+                        "least-squares valid); 'simplex' forces Nelder-Mead "
+                        "even on the sequential backend; 'dls' = damped "
+                        "least-squares (scipy least_squares, the core "
+                        "Optiland's DLS wraps) over the operand residuals "
+                        "-- sequential backend only; 'global' = nevergrad "
+                        "CMA-ES (the noisy MC-path global search)")
     p.add_argument("--budget", type=int, default=40, metavar="N",
                    help="maximum merit evaluations (default 40)")
     p.add_argument("--tol", type=float, default=1e-3,
@@ -1018,9 +1025,12 @@ def _build_optimize_parser():
     p.add_argument("--seeds", type=int, default=1)
     p.add_argument("--seed0", type=int, default=42)
     p.add_argument("--eval-backend", default="worker",
-                   choices=["worker", "full"],
+                   choices=["worker", "full", "sequential"],
                    help="fast_eval backend for the inner loop (default: "
-                        "worker = persistent FreeCAD, fast)")
+                        "worker = persistent FreeCAD + MC trace). "
+                        "'sequential' evaluates operands on the deterministic "
+                        "noise-free Optiland trace (spot_rms/focus/"
+                        "encircled_energy only; MC-only operands error out)")
     p.add_argument("--out", default=None, metavar="DIR",
                    help="optimizer case dir for report.json/progress.json "
                         "(default: var/optimize/<model-stem>)")
@@ -1182,9 +1192,12 @@ def _build_tolerance_parser():
     p.add_argument("--seeds", type=int, default=1)
     p.add_argument("--seed0", type=int, default=42)
     p.add_argument("--eval-backend", default="worker",
-                   choices=["worker", "full"],
+                   choices=["worker", "full", "sequential"],
                    help="fast_eval backend (default: worker = persistent "
-                        "FreeCAD, fast)")
+                        "FreeCAD + MC trace). 'sequential' evaluates operands "
+                        "on the deterministic Optiland trace (spot_rms/focus/"
+                        "encircled_energy; MC-only operands error out) -- "
+                        "sensitivities and MC draws become microseconds-class")
     p.add_argument("--out", default=None, metavar="DIR",
                    help="tolerance case dir for report.json/progress.json "
                         "(default: var/tolerance/<model-stem>)")

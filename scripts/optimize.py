@@ -89,6 +89,35 @@ _NEEDS = {
     "mtf50": ("save_fields",),
 }
 
+# ---------------------------------------------------------------------------
+# Operand -> evaluator-backend routing (engine3.md Sec 8: "sequential operands
+# evaluate on the Optiland trace; MC-only operands stay on fast_eval's path").
+# SINGLE source of truth for which operands the deterministic sequential
+# backend can serve; the GUI and optimize.py both read it.
+#
+#   spot_rms / focus    -> sequential: RMS of Optiland ray landings at the
+#                          detector plane (deterministic, noise-free).
+#   encircled_energy    -> sequential: a GEOMETRIC ray-density encircled radius
+#                          (ee_r80 proxy), NOT the diffraction PSF integral.
+#   mtf50               -> MC only: needs the coherent field analysis.
+#   detected_power      -> MC only: needs full MC energy transport
+#                          (Fresnel/scatter/absorption ledger).
+#   <raw report.json>   -> MC only: an arbitrary MC-produced report field.
+# ---------------------------------------------------------------------------
+_SEQUENTIAL_OK = {"spot_rms", "focus", "encircled_energy"}
+
+
+def operand_backend(operand):
+    """'sequential' if the deterministic Optiland trace can serve this operand,
+    else 'mc' (needs the Monte-Carlo pipeline)."""
+    return "sequential" if operand in _SEQUENTIAL_OK else "mc"
+
+
+def mc_only_operands(operands):
+    """The operand names in the list that ONLY the MC backend can serve."""
+    return [o["operand"] for o in operands
+            if operand_backend(o["operand"]) == "mc"]
+
 
 class OptimizeError(RuntimeError):
     """Configuration/setup error (bad operands, no evaluations ran)."""
@@ -211,6 +240,47 @@ class MeritFunction:
             return PENALTY, rows, missing
         return merit, rows, missing
 
+    def dls_supported(self):
+        """(ok, reason): DLS represents the merit as a sum of squared
+        residuals sqrt(w)*(v-target), so a PURE-maximize operand (in _MAXIMIZE
+        with target 0, whose merit is the non-square -w*v) has no residual
+        form. Everything else is DLS-representable."""
+        for spec in self.operands:
+            if spec["operand"] in _MAXIMIZE and spec["target"] == 0.0:
+                return False, ("operand %r is a pure-maximize (target 0); "
+                               "damped least-squares needs a squared-residual "
+                               "form -- give it a nonzero target, or use "
+                               "--algorithm simplex/global" % spec["operand"])
+        return True, None
+
+    def residuals(self, out):
+        """(resid, rows, missing): the least-squares residual VECTOR aligned to
+        the operands, r_i = sqrt(w_i)*(v_i - target_i), so sum(r_i^2) == score()
+        for the DLS-supported operand set. A missing operand fills a large
+        finite sentinel so the LM step backs off (never NaN/Inf, never fatal)."""
+        resid = []
+        rows = []
+        missing = []
+        for spec in self.operands:
+            v, note = operand_value(out, spec)
+            row = {"operand": spec["operand"],
+                   "detector": spec.get("detector"),
+                   "target": spec["target"], "weight": spec["weight"],
+                   "value": v, "contribution": None}
+            if v is None:
+                missing.append(note)
+                resid.append(None)
+            else:
+                w, t = spec["weight"], spec["target"]
+                r = math.sqrt(max(w, 0.0)) * (v - t)
+                resid.append(r)
+                row["contribution"] = r * r
+            rows.append(row)
+        if missing:
+            big = math.sqrt(PENALTY / max(1, len(self.operands)))
+            resid = [big if r is None else r for r in resid]
+        return resid, rows, missing
+
 
 def operand_needs(operands):
     """Union of the fast_eval extras the operand set requires."""
@@ -265,6 +335,34 @@ class OptimizationEngine:
                 for v in self.variables]
 
     # -- the objective -----------------------------------------------------------
+    def _record(self, params, merit, rows, penalized, note, out):
+        """Append one convergence-history entry, update best-so-far and emit
+        progress. Shared by the scalar (_objective) and residual (_residuals)
+        paths so the two algorithms produce identical bookkeeping."""
+        self.n_evals += 1
+        entry = {"eval": self.n_evals, "params": params, "merit": merit,
+                 "operands": rows, "penalized": penalized, "note": note,
+                 "backend_used": (out or {}).get("backend_used")}
+        if not penalized and (self.best is None
+                              or merit < self.best["merit"]):
+            self.best = entry
+        entry["best_merit"] = self.best["merit"] if self.best else None
+        self.history.append(entry)
+        if self.progress:
+            best = self.best["merit"] if self.best else float("nan")
+            common.progress_emit(
+                "optimize", self.n_evals / self.budget,
+                "eval %d/%d merit=%.6g best=%.6g"
+                % (self.n_evals, self.budget, merit, best),
+                case_dir=self.case_dir,
+                extra={"eval": self.n_evals, "budget": self.budget,
+                       "merit": merit,
+                       "best": self.best["merit"] if self.best else None,
+                       "params": params,
+                       "best_params": (self.best["params"]
+                                       if self.best else None)})
+        return entry
+
     def _objective(self, x):
         params = self._denorm(x)
         key = tuple(round(params[v["name"]], 12) for v in self.variables)
@@ -287,31 +385,36 @@ class OptimizationEngine:
             merit, rows, penalized = PENALTY, [], True
             note = "evaluation failed: %s: %s" % (type(exc).__name__, exc)
 
-        self.n_evals += 1
-        entry = {"eval": self.n_evals, "params": params, "merit": merit,
-                 "operands": rows, "penalized": penalized, "note": note,
-                 "backend_used": (out or {}).get("backend_used")}
-        if not penalized and (self.best is None
-                              or merit < self.best["merit"]):
-            self.best = entry
-        entry["best_merit"] = self.best["merit"] if self.best else None
-        self.history.append(entry)
+        self._record(params, merit, rows, penalized, note, out)
         self._memo[key] = merit
-
-        if self.progress:
-            best = self.best["merit"] if self.best else float("nan")
-            common.progress_emit(
-                "optimize", self.n_evals / self.budget,
-                "eval %d/%d merit=%.6g best=%.6g"
-                % (self.n_evals, self.budget, merit, best),
-                case_dir=self.case_dir,
-                extra={"eval": self.n_evals, "budget": self.budget,
-                       "merit": merit,
-                       "best": self.best["merit"] if self.best else None,
-                       "params": params,
-                       "best_params": (self.best["params"]
-                                       if self.best else None)})
         return merit
+
+    def _residuals(self, x):
+        """Residual VECTOR for scipy least_squares (the DLS driver). Records
+        history exactly like _objective (merit = sum of squared residuals)."""
+        import numpy as np
+        params = self._denorm(x)
+        n_op = len(self.merit.operands)
+        if self.n_evals >= self.budget:
+            big = math.sqrt(PENALTY / max(1, n_op))
+            return np.full(n_op, (self.best and
+                                  math.sqrt(self.best["merit"] / n_op)) or big)
+        note = None
+        out = None
+        try:
+            out = self.evaluate_fn(params)
+            resid, rows, missing = self.merit.residuals(out)
+            penalized = bool(missing)
+            if missing:
+                note = "; ".join(str(m) for m in missing)
+        except Exception as exc:
+            big = math.sqrt(PENALTY / max(1, n_op))
+            resid = [big] * n_op
+            rows, penalized = [], True
+            note = "evaluation failed: %s: %s" % (type(exc).__name__, exc)
+        merit = float(sum(r * r for r in resid))
+        self._record(params, merit, rows, penalized, note, out)
+        return np.asarray(resid, dtype=float)
 
     # -- drivers ------------------------------------------------------------------
     def run(self):
@@ -321,8 +424,10 @@ class OptimizationEngine:
         # both algorithms first evaluate the START design: the convergence
         # history then always begins at the user's baseline
         self._objective(x0)
-        if self.algorithm == "local":
+        if self.algorithm in ("local", "simplex"):
             self._run_local(x0)
+        elif self.algorithm == "dls":
+            self._run_dls(x0)
         elif self.algorithm == "global":
             self._run_global(x0)
         else:
@@ -353,6 +458,27 @@ class OptimizationEngine:
                  options={"maxfev": self.budget, "fatol": self.tol,
                           "xatol": 1e-4, "adaptive": n > 2,
                           "initial_simplex": np.asarray(simplex)})
+
+    def _run_dls(self, x0):
+        """Damped least-squares over the operand residual vector (scipy
+        least_squares 'trf' -- the bounded trust-region Levenberg-Marquardt
+        core Optiland's DLS wraps). Deterministic sequential merits make the
+        finite-difference Jacobian meaningful (MC speckle would make it
+        garbage), which is the whole reason sequential mode unlocks DLS
+        (engine3.md Sec 8). Operates in normalized [0,1] coords."""
+        import numpy as np
+        from scipy.optimize import least_squares
+        ok, reason = self.merit.dls_supported()
+        if not ok:
+            raise OptimizeError("DLS is not applicable: %s" % reason)
+        x0 = np.clip(np.asarray(x0, dtype=float), 0.0, 1.0)
+        # a finite-difference step large enough to see past sequential
+        # round-off yet local; normalized coords, so one step spans the bound
+        # range * diff_step.
+        least_squares(
+            self._residuals, x0, bounds=(0.0, 1.0), method="trf",
+            diff_step=1e-3, xtol=self.tol, ftol=self.tol, gtol=1e-12,
+            max_nfev=self.budget)
 
     def _run_global(self, x0):
         import warnings
@@ -429,25 +555,44 @@ def main(argv=None):
         PROJECT_DIR / "var" / "optimize" / model_stem)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    sequential = args.eval_backend == "sequential"
+    algorithm = args.algorithm
+    if sequential:
+        # the deterministic backend PROMOTES the default derivative-free
+        # 'local' to Optiland-backed DLS; 'simplex' still forces Nelder-Mead.
+        if algorithm == "local":
+            algorithm = "dls"
+        mc_ops = mc_only_operands(args.operand)
+        if mc_ops:
+            parser.error(
+                "operand(s) %s need the Monte-Carlo backend (detected_power / "
+                "mtf50 / raw report keys) and cannot be served by "
+                "--eval-backend sequential; drop them or use --eval-backend "
+                "worker" % ", ".join(sorted(set(mc_ops))))
+
     needs = operand_needs(args.operand)
     trace_args = []
     keep_coherent_inner = False
-    if "export_rays" in needs:
-        trace_args.append("--export-rays")
-    if "save_fields" in needs:
-        # the field-analysis block (ee_r80/mtf50) only exists when the
-        # coherent gather ran and saved field maps
-        trace_args.append("--save-fields")
-        keep_coherent_inner = True
+    if not sequential:
+        # the sequential Optiland backend runs no MC trace, so --export-rays /
+        # --save-fields / coherence do not apply to it.
+        if "export_rays" in needs:
+            trace_args.append("--export-rays")
+        if "save_fields" in needs:
+            # the field-analysis block (ee_r80/mtf50) only exists when the
+            # coherent gather ran and saved field maps
+            trace_args.append("--save-fields")
+            keep_coherent_inner = True
 
     names = [v["name"] for v in args.var]
-    print("[optimize] model=%s vars=%s operands=%s algorithm=%s budget=%d"
+    print("[optimize] model=%s vars=%s operands=%s backend=%s algorithm=%s "
+          "budget=%d"
           % (args.model, names,
-             [o["operand"] for o in args.operand], args.algorithm,
-             args.budget), flush=True)
+             [o["operand"] for o in args.operand], args.eval_backend,
+             algorithm, args.budget), flush=True)
     common.progress_emit("optimize", 0.0,
                          "starting %s optimization (%d-var, budget %d)"
-                         % (args.algorithm, len(names), args.budget),
+                         % (algorithm, len(names), args.budget),
                          case_dir=out_dir)
 
     evaluator = Evaluator(args.model, params=names,
@@ -456,7 +601,7 @@ def main(argv=None):
                           trace_args=trace_args, workdir=args.workdir,
                           **_fidelity_kwargs(args))
     engine = OptimizationEngine(args.var, args.operand, evaluator.evaluate,
-                                algorithm=args.algorithm,
+                                algorithm=algorithm,
                                 budget=args.budget, tol=args.tol,
                                 seed=args.optimizer_seed, case_dir=out_dir)
     t0 = time.monotonic()
@@ -475,8 +620,9 @@ def main(argv=None):
                            wall_s=time.monotonic() - t0)
 
     # faithful final number: re-evaluate the best design with coherence
-    # as authored (the inner loop forced incoherent unless save_fields)
-    if not args.no_final_coherent and not keep_coherent_inner:
+    # as authored (the inner loop forced incoherent unless save_fields). The
+    # sequential backend runs no MC gather, so there is no coherent re-eval.
+    if not args.no_final_coherent and not keep_coherent_inner and not sequential:
         print("[optimize] re-evaluating best design with coherent "
               "sources...", flush=True)
         common.progress_emit("optimize", 1.0,
@@ -531,7 +677,7 @@ def _write_report(out_dir, args, engine, wall_s, status="completed",
                   error=None):
     report = {
         "model": str(args.model),
-        "algorithm": args.algorithm,
+        "algorithm": engine.algorithm,
         "budget": args.budget,
         "tol": args.tol,
         "preset": args.preset,

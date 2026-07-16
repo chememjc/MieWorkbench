@@ -79,6 +79,10 @@ FREECAD_APPIMAGE = os.environ.get(
     "MIEWB_FREECAD", "/home3/freecad/FreeCAD.AppImage")
 OPTICS_PYTHON = os.environ.get(
     "MIEWB_OPTICS_PYTHON", "/home3/optics/env/bin/python")
+# The GUI venv (PySide6 + numpy + Optiland). The P4b sequential merit backend
+# shells out to it for the Optiland bridge, which lives in env/ ONLY.
+GUI_PYTHON = os.environ.get(
+    "MIEWB_GUI_PYTHON", str(PROJECT_DIR / "env" / "bin" / "python"))
 PVPYTHON = os.environ.get(
     "MIEWB_PVPYTHON",
     "/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64"
