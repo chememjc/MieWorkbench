@@ -110,6 +110,35 @@ class RunController(QObject):
             self._proc.kill()
             self._proc.waitForFinished(1000)
 
+    # -- P1 chunked-run contract: resume/extend ----------------------------------
+    def start_resume(self, model_path, case_dir, extra_env=None,
+                     steps="trace,post,viz"):
+        """Resume a DEAD (interrupted mid-trace) case from its
+        cengine/checkpoint.json: reissue the case's own trace options at
+        the checkpoint's exact target_rays plus --resume, skipping extract
+        (the case's geometry/model.json is untouched). Same single-flight
+        refusal as start() -- returns False, no-op, if a run is already in
+        progress. steps defaults to the full downstream refresh (post/viz
+        pick up the merged result); tests override it to "trace" alone to
+        stay fast."""
+        from . import checkpointinfo
+        config = checkpointinfo.build_resume_config(case_dir)
+        args = self.build_args(config)
+        return self.start(model_path, extra_args=args, steps=steps,
+                          extra_env=extra_env)
+
+    def start_extend(self, model_path, case_dir, new_rays, extra_env=None,
+                     steps="trace,post,viz"):
+        """Additively extend a COMPLETED C-engine case to new_rays total
+        primaries (must exceed its current checkpoint target_rays -- see
+        raytracer.cengine.run_c_case). Same single-flight refusal as
+        start(); steps as in start_resume()."""
+        from . import checkpointinfo
+        config = checkpointinfo.build_extend_config(case_dir, new_rays)
+        args = self.build_args(config)
+        return self.start(model_path, extra_args=args, steps=steps,
+                          extra_env=extra_env)
+
     # -- environment ------------------------------------------------------------
     def _build_environment(self):
         env = QProcessEnvironment.systemEnvironment()

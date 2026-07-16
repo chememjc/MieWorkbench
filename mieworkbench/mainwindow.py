@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from .core import checkpointinfo
 from .core import paraview_launcher
 from .core import variables
 from .core.beadanim import (AnimationController, format_sim_time,
@@ -127,6 +128,11 @@ class MainWindow(QMainWindow):
         self._clipboard_element = None  # element label copied for paste
         self._pending_manifest = None   # sweep manifest awaiting a Compare
         self._train_refresh_pending = False   # 0-ms coalescing guard
+        # P1 chunked-run contract: the case_dir a Resume/Extend launch
+        # targets, so _after_successful_run() reloads THAT case even when
+        # it doesn't match the current ConfigMatrix preset/tag (see
+        # _on_resume_run/_on_extend_run).
+        self._resume_extend_case_dir = None
 
         self.settings = Settings()
         # RunDialog "don't ask again this session": stored via the same
@@ -1870,6 +1876,9 @@ class MainWindow(QMainWindow):
         self.runner.started.connect(self._on_started)
         self.runner.finished.connect(self._on_finished)
         self.runner.error.connect(self._on_error)
+        # P1 chunked-run contract affordances (Results pane header buttons)
+        self.results.resumeRequested.connect(self._on_resume_run)
+        self.results.extendRequested.connect(self._on_extend_run)
         self._wire_optimizer()
 
     def _wire_optimizer(self):
@@ -2032,7 +2041,12 @@ class MainWindow(QMainWindow):
                 "the case is locked by a live run)" % exit_code, 8000)
 
     def _after_successful_run(self):
-        case_dir = self._current_case_dir()
+        # a Resume/Extend launch targets an EXISTING case_dir that may not
+        # match the current ConfigMatrix preset/tag (_current_case_dir's
+        # normal derivation) -- prefer it when set (see _on_resume_run/
+        # _on_extend_run), one-shot.
+        case_dir = self._resume_extend_case_dir or self._current_case_dir()
+        self._resume_extend_case_dir = None
         if case_dir and os.path.isdir(case_dir):
             self.results.load_case(case_dir)
             self.central_tabs.setCurrentWidget(self.results)
@@ -2072,6 +2086,117 @@ class MainWindow(QMainWindow):
 
     def _on_error(self, message):
         self.statusBar().showMessage("Pipeline error: %s" % message, 5000)
+
+    # -- P1 chunked-run contract: resume/extend --------------------------------
+    def _already_running_notice(self):
+        """Shared "a pipeline run is already in progress" notice -- a
+        QMessageBox when there's a user to click it, the status bar
+        otherwise (CLAUDE.md: never show an unguarded modal in a pane
+        code path; a hidden window in an offscreen test must never block
+        on .exec())."""
+        if self.isVisible():
+            QMessageBox.warning(
+                self, "Pipeline already running",
+                "A pipeline run is already in progress.")
+        else:
+            self.statusBar().showMessage(
+                "A pipeline run is already in progress.", 8000)
+
+    def _on_resume_run(self, case_dir):
+        """Results pane "Resume run" button: relaunch the pipeline
+        (trace,post,viz -- extract is skipped, the case's geometry is
+        untouched) with --resume against THIS case's own checkpoint. Same
+        dialog-free, status-bar-only error reporting as the rest of the
+        runner wiring (no unguarded modal -- CLAUDE.md)."""
+        if not case_dir:
+            return
+        if self.runner.is_running():
+            self._already_running_notice()
+            return
+        if not self.model_path:
+            self.statusBar().showMessage(
+                "Open the model this case belongs to before resuming",
+                8000)
+            return
+        self._resume_extend_case_dir = str(case_dir)
+        if not self.runner.start_resume(self.model_path, case_dir,
+                                        extra_env=self._run_env()):
+            self._resume_extend_case_dir = None
+            self._already_running_notice()
+            return
+        self.statusBar().showMessage("Resuming interrupted run…")
+
+    def _on_extend_run(self, case_dir):
+        """Results pane "Extend run..." button: build the extend context
+        (current rays/measured spr from checkpointinfo.extend_state) and
+        show RunDialog in extend mode; on accept, launch --extend to the
+        chosen new total. The dialog itself is isVisible-guarded exactly
+        like _confirm_run_dialog -- an "Extend" action needs the user to
+        pick a new ray count, so a hidden window (offscreen tests, no
+        user to ask) just declines rather than exec'ing a modal nobody
+        can close."""
+        if not case_dir:
+            return
+        if self.runner.is_running():
+            self._already_running_notice()
+            return
+        if not self.model_path:
+            self.statusBar().showMessage(
+                "Open the model this case belongs to before extending",
+                8000)
+            return
+        state = checkpointinfo.extend_state(case_dir)
+        if state is None:
+            self.statusBar().showMessage(
+                "This case is not an extendable completed C-engine run",
+                8000)
+            return
+        if not self.isVisible():
+            return
+        case_json = checkpointinfo.read_case(case_dir) or {}
+        opts = case_json.get("options") or {}
+        n_coh = 1 if (case_json.get("gather") or {}) else 0
+        # case_dir is results/<model_stem>/<case>/ -- model_stem is the
+        # PARENT directory name (matches common.estimate()'s model_stem
+        # calibration key, "trace_rps_<eng>:<model_stem>" / "spr:<...>").
+        model_stem = os.path.basename(
+            os.path.dirname(str(case_dir).rstrip("/")))
+        ctx = {
+            "current_rays": state["current_rays"],
+            "spr": state["spr"],
+            "resolution": opts.get("resolution", 512),
+            "nlambda": opts.get("nlambda", 5),
+            "backend": "c",
+            "n_coherent_sources": n_coh,
+            "save_fields": bool(opts.get("save_fields")),
+            "model_stem": model_stem,
+        }
+        run_params = {
+            "resolution": ctx["resolution"],
+            "nlambda": ctx["nlambda"],
+            "backend": "c (chunked)",
+            "model_stem": model_stem,
+        }
+        base_estimate = common.estimate(
+            ctx["current_rays"], ctx["resolution"], ctx["nlambda"],
+            ctx["n_coherent_sources"], "c", save_fields=ctx["save_fields"],
+            model_stem=model_stem)
+        calibrated = common.estimate_is_calibrated(
+            "c", model_stem=model_stem)
+        dialog = RunDialog(run_params, base_estimate, calibrated=calibrated,
+                           extend_ctx=ctx, parent=self)
+        self._last_extend_dialog = dialog     # test hook
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_rays = dialog.extend_target_rays()
+        self._resume_extend_case_dir = str(case_dir)
+        if not self.runner.start_extend(self.model_path, case_dir, new_rays,
+                                        extra_env=self._run_env()):
+            self._resume_extend_case_dir = None
+            self._already_running_notice()
+            return
+        self.statusBar().showMessage(
+            "Extending run to %d rays…" % new_rays)
 
     # -- open flows -----------------------------------------------------------
     def _maybe_save_changes(self, verb="continuing"):

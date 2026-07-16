@@ -9,7 +9,18 @@ the .vtp data to interactive ParaView.
 MONITOR MODE (read-only view of a RUNNING case): when the case is locked
 by a live process, a QTimer polls progress.json + the images as they
 appear; editing/rerun affordances are the main window's job to disable -
-this pane only ever reads."""
+this pane only ever reads.
+
+P1 chunked-run contract affordances (header buttons, next to "Open in
+ParaView"): "Resume run" appears for a DEAD case whose
+cengine/checkpoint.json says status='tracing' (interrupted mid-trace,
+lock free -- core.checkpointinfo.resume_state); "Extend run..." appears
+for a COMPLETED C-engine case with a checkpoint
+(core.checkpointinfo.extend_state). Both just emit a case_dir signal --
+this pane never launches a subprocess itself (that's RunController's job,
+wired up by MainWindow, matching the "this pane only ever reads" rule
+above: it reads checkpoint state, but the actual resume/extend LAUNCH is
+the main window's)."""
 
 import csv
 import json
@@ -31,7 +42,7 @@ if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 import common  # noqa: E402
 
-from ..core import paraview_launcher
+from ..core import checkpointinfo, paraview_launcher
 from ..widgets.table_export import export_table_csv
 
 _THUMB_W = 320
@@ -387,6 +398,8 @@ class _Gallery(QScrollArea):
 
 class ResultsPane(QWidget):
     statusChanged = Signal(str)     # case status string for the title bar
+    resumeRequested = Signal(str)   # case_dir -- "Resume run" clicked
+    extendRequested = Signal(str)   # case_dir -- "Extend run..." clicked
 
     def __init__(self, settings=None, parent=None):
         super().__init__(parent)
@@ -402,6 +415,24 @@ class ResultsPane(QWidget):
         # (clear_case() below resets to exactly this state)
         self.title.setStyleSheet("font-weight: bold;")
         head.addWidget(self.title, 1)
+        self.resume_btn = QPushButton("Resume run")
+        self.resume_btn.setToolTip(
+            "Resume this interrupted C-engine trace from its last "
+            "checkpoint (P1 chunked-run contract)")
+        self.resume_btn.clicked.connect(
+            lambda: self.resumeRequested.emit(self.case_dir))
+        self.resume_btn.setEnabled(False)
+        self.resume_btn.hide()
+        head.addWidget(self.resume_btn)
+        self.extend_btn = QPushButton("Extend run…")
+        self.extend_btn.setToolTip(
+            "Additively raise this completed run's ray count (P1 "
+            "chunked-run contract)")
+        self.extend_btn.clicked.connect(
+            lambda: self.extendRequested.emit(self.case_dir))
+        self.extend_btn.setEnabled(False)
+        self.extend_btn.hide()
+        head.addWidget(self.extend_btn)
         self.pv_btn = QPushButton("Open in ParaView")
         self.pv_btn.setToolTip("Launch interactive ParaView on this "
                                "case's rays/detector .vtp data")
@@ -576,6 +607,10 @@ class ResultsPane(QWidget):
         self.pulse_summary.setText("")
         self.pulse_summary.hide()
         self.pv_btn.setEnabled(False)
+        self.resume_btn.setEnabled(False)
+        self.resume_btn.hide()
+        self.extend_btn.setEnabled(False)
+        self.extend_btn.hide()
         self.statusChanged.emit("")
 
     def refresh(self):
@@ -599,6 +634,23 @@ class ResultsPane(QWidget):
         base = os.path.basename(self.case_dir.rstrip("/"))
         self.title.setText("%s — %s%s" % (base, status, progress))
         self.statusChanged.emit(status)
+
+        resume_state = checkpointinfo.resume_state(self.case_dir)
+        self.resume_btn.setVisible(resume_state is not None)
+        self.resume_btn.setEnabled(resume_state is not None)
+        if resume_state is not None:
+            self.resume_btn.setToolTip(
+                "Resume interrupted trace (%d chunk(s) done toward %d "
+                "rays) from checkpoint"
+                % (resume_state["n_chunks"], resume_state["target_rays"]))
+        extend_state = checkpointinfo.extend_state(self.case_dir)
+        self.extend_btn.setVisible(extend_state is not None)
+        self.extend_btn.setEnabled(extend_state is not None)
+        if extend_state is not None:
+            self.extend_btn.setToolTip(
+                "Additively extend past %d rays (current M_eff proxy "
+                "~%.3g)" % (extend_state["current_rays"],
+                            extend_state["m_eff_proxy"]))
 
         report_path = os.path.join(self.case_dir, "report.json")
         self.summary.setRowCount(0)
