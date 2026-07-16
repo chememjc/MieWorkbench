@@ -1498,6 +1498,16 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
             qe_curve = str_prop_or_none(obj, "qe_curve")
             if qe_curve is not None:
                 det_dict["qe_curve"] = qe_curve
+            # instrument (string): opt this detector body into the virtual
+            # instrument layer (engine3.md P2.5 §9) -- a
+            # opticalproperties/instrument/instruments.mieinst row name,
+            # optionally 'row:mode' with mode in {ideal, full} (default
+            # full, mirrors qe_curve's passthrough -- post_process.py
+            # parses/validates the row and mode, this stage is a pure
+            # string carry).
+            instrument_raw = str_prop_or_none(obj, "instrument")
+            if instrument_raw is not None:
+                det_dict["instrument"] = instrument_raw
             body_dict["detector"] = det_dict
         elif role == "optic":
             body_dict["material"] = str(obj.material)
@@ -1525,6 +1535,12 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
         if role != "detector" and \
                 str_prop_or_none(obj, "detector_face") is not None:
             warn("%s: detector_face property is only meaningful on "
+                 "detector bodies (role=%s); ignoring"
+                 % (obj.Label, role), warnings)
+
+        if role != "detector" and \
+                str_prop_or_none(obj, "instrument") is not None:
+            warn("%s: instrument property is only meaningful on "
                  "detector bodies (role=%s); ignoring"
                  % (obj.Label, role), warnings)
 

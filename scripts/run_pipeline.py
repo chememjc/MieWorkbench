@@ -311,6 +311,8 @@ def post_cmd(stem, case_dir, args):
         cmd += ["--photometric"]
     if args.spectrometer:
         cmd += ["--spectrometer"]
+    if args.instruments is not None:
+        cmd += ["--instruments", args.instruments]
     if args.emit_csv:
         cmd += ["--emit-csv"]
     if args.wavefront_point is not None:

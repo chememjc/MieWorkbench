@@ -808,3 +808,46 @@ def spectral_cube_to_photocurrent(cube, lam_lo, lam_hi, qe_lam_um, qe_vals):
     coverage_frac = float(p_bin[inside].sum() / total_W) if total_W != 0.0 \
         else 0.0
     return photocurrent_A, qe_weighted_power_W, coverage_frac
+
+
+def spectral_cube_to_electrons(cube, lam_lo, lam_hi, qe_lam_um, qe_vals,
+                               t_int_s, pixel_area_ratio=1.0):
+    """(bins, H, W) power cube [W] -> per-pixel signal ELECTRON count image
+    (H, W) (or whatever trailing shape `cube` carries -- same axis-0-only
+    reduction convention as spectral_cube_to_photocurrent).
+
+    This is the virtual-instrument-layer (engine3.md §9) camera RESPONSE
+    primitive: QE-weighted photon-to-electron conversion integrated over
+    an exposure t_int_s, with NO shot/read/dark noise -- 'ideal' mode is
+    exactly this function; 'full' mode (post_process.render_instrument)
+    adds the stochastic terms (Poisson shot, Gaussian read, dark current)
+    on top of this deterministic signal.
+
+    pixel_area_ratio = camera_pixel_area_m2 / ideal_grid_cell_area_m2. The
+    ideal detector plane's (H, W) grid is the SIMULATION's chosen detector
+    resolution, not necessarily the physical camera's own pixel pitch;
+    this function assumes irradiance is uniform within one ideal grid cell
+    (a fair assumption when the camera's real pixel is finer than the
+    simulation grid, the common case) and re-samples that cell's power
+    onto ONE co-located camera pixel of the given area, rather than
+    re-binning to the camera's native pixel count. Documented explicitly
+    because it means the emitted counts IMAGE keeps the simulation's (H,W)
+    resolution, not the camera's native width_px x height_px.
+
+    Per bin-center wavelength lambda_c (identical responsivity math to
+    spectral_cube_to_photocurrent):
+      QE(lambda_c) via np.interp, left=0/right=0 (no extrapolation crash)
+      R(lambda)    = QE * q * lambda / (h*c)              [A/W]
+      photocurrent_image = sum_bins R(lambda_c) * P_bin(pixel)   [A]
+      electrons_image    = photocurrent_image * t_int_s / q * pixel_area_ratio
+    """
+    cube = np.asarray(cube, dtype=np.float64)
+    bins = cube.shape[0]
+    lam_c_m = lam_lo + (np.arange(bins) + 0.5) * (lam_hi - lam_lo) / bins
+    lam_c_um = lam_c_m * 1e6
+    qe_lam_um = np.asarray(qe_lam_um, dtype=np.float64)
+    qe_vals = np.asarray(qe_vals, dtype=np.float64)
+    qe_c = np.interp(lam_c_um, qe_lam_um, qe_vals, left=0.0, right=0.0)
+    resp = qe_c * _Q_E * lam_c_m / (_H_PLANCK * _C_LIGHT)     # [A/W] per bin
+    photocurrent_image = np.tensordot(resp, cube, axes=(0, 0))     # [A]
+    return photocurrent_image * (t_int_s / _Q_E) * pixel_area_ratio

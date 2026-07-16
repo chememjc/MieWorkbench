@@ -530,6 +530,36 @@ class ResultsPane(QWidget):
         imaging_gallery.set_status_callback(self.statusChanged.emit)
         self.galleries["imaging"] = imaging_gallery
         self.tabs.addTab(imaging_gallery, "Imaging")
+
+        # virtual instrument layer (engine3.md P2.5 §9): flattened
+        # report.json detectors.<label>.instrument block (row/class/mode/
+        # seed/saturation/counts/SNR for a camera; power reading for a
+        # power meter; resolution/floor for a spectrometer) above a
+        # thumbnail gallery of <case>/instrument/*.png (camera counts
+        # images -- the spectrometer's own instrument_*.png lands in the
+        # existing Spectra tab, see post_process.render_instrument_
+        # spectrometer, so it is not duplicated here).
+        self.instrument_metrics = QTableWidget(0, 3)
+        self.instrument_metrics.setHorizontalHeaderLabels(
+            ["Detector", "Metric", "Value"])
+        self.instrument_metrics.horizontalHeader().setStretchLastSection(
+            True)
+        self.instrument_metrics.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.instrument_metrics.setMaximumHeight(160)
+        self.instrument_metrics.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.instrument_metrics.customContextMenuRequested.connect(
+            self._on_instrument_context_menu)
+
+        instrument_tab = QWidget()
+        instrument_lay = QVBoxLayout(instrument_tab)
+        instrument_lay.setContentsMargins(0, 0, 0, 0)
+        instrument_lay.addWidget(self.instrument_metrics)
+        instrument_gallery = _Gallery()
+        instrument_gallery.set_status_callback(self.statusChanged.emit)
+        self.galleries["instrument"] = instrument_gallery
+        instrument_lay.addWidget(instrument_gallery, 1)
+        self.tabs.addTab(instrument_tab, "Instrument")
+
         lay.addWidget(self.tabs)
         self.audit = QLabel("")
         lay.addWidget(self.audit)
@@ -577,6 +607,11 @@ class ResultsPane(QWidget):
         menu = self._build_table_export_menu(self.sources, "sources.csv")
         menu.exec(self.sources.viewport().mapToGlobal(pos))
 
+    def _on_instrument_context_menu(self, pos):
+        menu = self._build_table_export_menu(
+            self.instrument_metrics, "instrument_metrics.csv")
+        menu.exec(self.instrument_metrics.viewport().mapToGlobal(pos))
+
     # -- loading -------------------------------------------------------------
     def load_case(self, case_dir, monitor=False):
         self.case_dir = str(case_dir)
@@ -601,6 +636,7 @@ class ResultsPane(QWidget):
         self.power.setRowCount(0)
         self.analysis_metrics.setRowCount(0)
         self.sources.setRowCount(0)
+        self.instrument_metrics.setRowCount(0)
         for gallery in self.galleries.values():
             gallery.clear()
         self.audit.setText("")
@@ -656,6 +692,7 @@ class ResultsPane(QWidget):
         self.summary.setRowCount(0)
         self.analysis_metrics.setRowCount(0)
         self.sources.setRowCount(0)
+        self.instrument_metrics.setRowCount(0)
         if os.path.exists(report_path):
             try:
                 with open(report_path) as fh:
@@ -683,6 +720,7 @@ class ResultsPane(QWidget):
                                  or self._elements_from_audit())
             self._populate_analysis_metrics(dets)
             self._populate_sources(dets)
+            self._populate_instrument(dets)
             self._populate_pulse_summary(report)
 
         from glob import glob
@@ -798,6 +836,31 @@ class ResultsPane(QWidget):
         for row, (det, metric, value) in enumerate(rows):
             for col, val in enumerate((det, metric, value)):
                 self.analysis_metrics.setItem(
+                    row, col, QTableWidgetItem(str(val)))
+
+    def _populate_instrument(self, dets):
+        """Flatten each detector's optional 'instrument' block (engine3.md
+        P2.5 §9: row/class/mode/seed + per-class fields -- saturation_
+        fraction/mean_counts/max_counts/snr_estimate for a camera,
+        power_reported_W/lam_ref_nm for a power meter, peak_power_W/
+        resolution_fwhm_nm for a spectrometer) into (Detector, Metric,
+        Value) rows, same schema-agnostic flattening as
+        _populate_analysis_metrics. A detector with no 'instrument' block
+        (the common case -- nothing assigned, or an old case) contributes
+        zero rows."""
+        rows = []
+        for label, d in sorted((dets or {}).items()):
+            instrument = d.get("instrument")
+            if not isinstance(instrument, dict):
+                continue
+            for metric, value in self._flatten_scalars("", instrument):
+                if isinstance(value, float):
+                    value = "%.4g" % value
+                rows.append((label, metric, value))
+        self.instrument_metrics.setRowCount(len(rows))
+        for row, (det, metric, value) in enumerate(rows):
+            for col, val in enumerate((det, metric, value)):
+                self.instrument_metrics.setItem(
                     row, col, QTableWidgetItem(str(val)))
 
     def _populate_sources(self, dets):

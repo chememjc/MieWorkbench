@@ -435,6 +435,13 @@ def _build_pipeline_parser():
                         "map and a lambda(x) dispersion fit per detector "
                         "(det_<label>_lambda_map.png, "
                         "spectra/lambda_vs_x_<label>.png; post stage only)")
+    g.add_argument("--instruments", choices=["on", "off"], default=None,
+                   help="virtual instrument layer override (engine3.md "
+                        "P2.5 §9): already data-driven by each detector "
+                        "body's 'instrument' property; default (unset) "
+                        "defers to post_process.py's own default 'on'. "
+                        "Pass 'off' to skip it even when assigned (post "
+                        "stage only)")
     g.add_argument("--viz-generations", type=int, default=None,
                    help="post stage: declutter rays_xy.png to "
                         "reconstructed-generation <= N segments only "
@@ -734,6 +741,16 @@ def _build_post_parser():
                    help="also render det_<label>_lambda_map.png (power-"
                         "weighted wavelength centroid) and a lambda(x) "
                         "dispersion fit per detector")
+    p.add_argument("--instruments", choices=["on", "off"], default="on",
+                   help="virtual instrument layer (engine3.md P2.5 §9): "
+                        "already data-driven by each detector body's "
+                        "'instrument' property (row or row:mode) -- "
+                        "'on' (default) renders it whenever assigned, "
+                        "'off' skips it even if assigned (a fast-preview "
+                        "escape hatch). Outputs: <case>/instrument/*.png+"
+                        "*.npy (camera), <case>/spectra/instrument_*.png+"
+                        "csv (spectrometer), report.json "
+                        "detectors.<label>.instrument blocks (all classes)")
 
     g = p.add_argument_group("analysis / export options")
     g.add_argument("--emit-csv", action="store_true",

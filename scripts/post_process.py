@@ -15,6 +15,7 @@
 # audit bars. Everything is regenerable without re-tracing.
 # =============================================================================
 import csv
+import hashlib
 import json
 import math
 import sys
@@ -33,7 +34,8 @@ import common                                            # noqa: E402
 import cli_specs                                          # noqa: E402
 from raytracer.detector import (spectral_cube_to_srgb,   # noqa: E402
                                 cie_xyz_weights, spectral_cube_to_lux,
-                                spectral_cube_to_photocurrent)
+                                spectral_cube_to_photocurrent,
+                                spectral_cube_to_electrons)
 from raytracer.materials import MaterialDB, load_coatings  # noqa: E402
 from raytracer import thinfilm as tf                     # noqa: E402
 from raytracer import fresnel as fr                      # noqa: E402
@@ -188,7 +190,9 @@ def detector_qe_curve_for_label(label, qe_bodies):
 def render_detector(h5path, outdir_img, outdir_spec, report,
                     photometric=False, spectrometer=False,
                     qe_bodies=None, detector_registry=None,
-                    csv_emitter=None):
+                    csv_emitter=None, instrument_bodies=None,
+                    instrument_registry=None, outdir_instr=None,
+                    case_seed=0):
     with h5py.File(h5path) as h:
         cube = h["spectral_cube_mean"][...]
         mask = h["mask"][...]
@@ -358,6 +362,17 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
                 "coverage_frac": float(cov),
             }
 
+    # virtual instrument layer -- data-driven (no CLI flag beyond the
+    # --instruments override): a detector body tagged instrument=<row>
+    # or instrument=<row>:<mode> gets read through the named
+    # opticalproperties/instrument/instruments.mieinst profile (engine3.md
+    # P2.5 §9). Purely a post-process view over the same ideal cube the
+    # rest of this function already rendered.
+    render_instrument(cube, lam_lo, lam_hi, pixel_area, outdir_instr,
+                      outdir_spec, safe, label, report,
+                      instrument_bodies or {}, instrument_registry or {},
+                      case_seed, csv_emitter=csv_emitter)
+
     if csv_emitter is not None:
         # scalar metrics: dump every already-computed number in this
         # detector's report block (total/peak/visibility/photometric/
@@ -497,6 +512,343 @@ def _render_spectrometer(cube, lam_lo, lam_hi, pixel_m, extent_mm,
     plt.close(fig)
 
     report["detectors"][label]["spectrometer"] = spec
+
+
+# =============================================================================
+# Virtual instrument layer (engine3.md P2.5 §9) -- a POST-PROCESS view over
+# the same ideal detector spectral cube every other renderer above reads.
+# Physics products underneath stay untouched; this section only DERIVES an
+# instrument-shaped reading from them.
+#
+# Every instrument has two modes, selected per-body via the 'instrument'
+# body property ('row' or 'row:mode', default mode='full' -- see
+# extract_geometry.py's detector-role block and detector_instrument_for_label
+# below for the ownership/ownership-prefix contract, identical to qe_curve):
+#
+#   'ideal' -- response ONLY: QE/responsivity weighting, integration,
+#              resolution convolution, stray-light floor, full-well
+#              saturation clipping, bit-depth/ADC quantization. Every term
+#              here is DETERMINISTIC given the scene's own cube -- no rng
+#              draw happens in ideal mode, and no seed is recorded.
+#   'full'  -- adds the STOCHASTIC noise chain on top of the exact same
+#              deterministic response: Poisson shot noise, Gaussian read
+#              noise, dark-current shot noise (camera), a Gaussian
+#              NEP*sqrt(bandwidth) term (powermeter), or a Gaussian draw at
+#              the stray-light floor's own amplitude (spectrometer, in the
+#              absence of dedicated dark/read columns in the spectrometer
+#              schema -- documented at render_instrument_spectrometer).
+#
+# Rationale for the ideal/full split (owner-resolved ambiguity: engine3.md
+# §9.2's table lists "full-well + saturation, bit depth/ADC gain" under
+# "full-mode additions", which would leave 'ideal' with no quantization at
+# all -- but P2.5's OWN acceptance gate is "ideal-mode round-trip (counts
+# -> W inverts within quantization)", which only makes sense if 'ideal'
+# already carries quantization. This module resolves the tension the way
+# the gate requires: quantization/saturation are RESPONSE (an instrument
+# always reads out in its own finite-resolution counts, even on a
+# hypothetical noise-free bench), so they stay in BOTH modes; only the
+# STOCHASTIC terms (Poisson/Gaussian draws) are 'full'-only. Camera dark
+# current is treated as a bench-noise concept with no "true value"
+# contribution to the optical signal, so it does not appear at all in
+# 'ideal' mode (neither its mean nor its noise) -- only as a full-mode
+# Poisson-shot contributor alongside the optical signal electrons.
+#
+# Seeding (reproducible, engine3.md §9.1 "seeded by run seed x instrument
+# id"): sha256("<case_seed>|<row_name>|<label>") truncated to a 63-bit int,
+# recorded in report.json's instrument block as 'seed' so a run can be
+# reproduced bit-for-bit from the case.json seed alone. 'ideal' mode draws
+# no rng at all and carries no 'seed' key.
+# =============================================================================
+def detector_instrument_for_label(label, instrument_bodies):
+    """Map a detector h5 label to the raw 'instrument' body property of its
+    owning body -- same longest-prefix ownership rule as
+    detector_qe_curve_for_label (label always begins '<BodyName>.').
+    instrument_bodies is {body_name: raw_spec}. Returns the raw spec string
+    or None."""
+    exact = instrument_bodies.get(label)
+    if exact is not None:
+        return exact
+    best = None
+    for name, spec in instrument_bodies.items():
+        if label == name or label.startswith(name + "."):
+            if best is None or len(name) > len(best[0]):
+                best = (name, spec)
+    return best[1] if best is not None else None
+
+
+def parse_instrument_spec(raw):
+    """'row' or 'row:mode' (mode in {ideal, full}, default 'full') ->
+    (row_name, mode). Raises ValueError naming the problem; callers treat
+    that as a skip-with-NOTE, matching the qe_curve 'unknown curve'
+    posture -- one detector's bad assignment must not abort the run."""
+    raw = (raw or "").strip()
+    if ":" in raw:
+        row, mode = raw.rsplit(":", 1)
+        row, mode = row.strip(), mode.strip().lower()
+    else:
+        row, mode = raw, "full"
+    if not row:
+        raise ValueError("empty instrument row name in %r" % raw)
+    if mode not in ("ideal", "full"):
+        raise ValueError("mode %r must be 'ideal' or 'full'" % mode)
+    return row, mode
+
+
+def _instrument_seed(case_seed, row_name, label):
+    """Deterministic reproducible rng seed from (case seed, instrument
+    registry row, detector label) -- sha256 (stable across processes and
+    platforms, unlike Python's salted str hash) truncated to a friendly
+    63-bit int."""
+    material = "%r|%r|%r" % (case_seed, row_name, label)
+    digest = hashlib.sha256(material.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % (2 ** 63)
+
+
+def _sigfig(value, digits):
+    """value rounded to `digits` significant figures, as a display string
+    (mirrors a bench meter's fixed-digit-count readout)."""
+    digits = max(int(digits), 1)
+    if not math.isfinite(value):
+        return str(value)
+    return "%.*g" % (digits, value)
+
+
+def render_instrument_camera(cube, lam_lo, lam_hi, pixel_area, entry, mode,
+                             seed, outdir_instr, safe, label, report):
+    """Camera class: QE-weighted electron image (detector.
+    spectral_cube_to_electrons is the deterministic response primitive) ->
+    full-well-clipped, bit-depth-quantized counts image. 'full' mode adds
+    Poisson shot noise (signal + dark-current mean) and Gaussian read
+    noise BEFORE the final full-well clip and ADC quantization -- physical
+    order: a real sensor saturates and quantizes AFTER accumulating noisy
+    charge, not before."""
+    t_int = float(entry["integration_time_s_default"])
+    cam_pixel_area_m2 = (entry["pixel_pitch_um"] * 1e-6) ** 2
+    pixel_area_ratio = cam_pixel_area_m2 / pixel_area
+    signal_e = np.maximum(spectral_cube_to_electrons(
+        cube, lam_lo, lam_hi, entry["lam_um"], entry["qe"], t_int,
+        pixel_area_ratio=pixel_area_ratio), 0.0)
+    full_well = float(entry["full_well_e"])
+    sat_fraction = float(np.mean(signal_e >= full_well)) if signal_e.size \
+        else 0.0
+
+    seed_val = None
+    if mode == "full":
+        rng = np.random.default_rng(seed)
+        dark_mean_e = entry["dark_current_e_per_s"] * t_int
+        shot_e = rng.poisson(np.clip(signal_e + dark_mean_e, 0.0, None)
+                             ).astype(np.float64)
+        read_e = rng.normal(0.0, entry["read_noise_e"], size=signal_e.shape)
+        electrons = np.clip(shot_e + read_e, 0.0, full_well)
+        seed_val = int(seed)
+    else:
+        electrons = np.clip(signal_e, 0.0, full_well)
+
+    counts_max = (1 << int(entry["bit_depth"])) - 1
+    counts = np.clip(np.round(electrons / entry["adc_gain_e_per_dn"]),
+                     0, counts_max).astype(np.int64)
+
+    if outdir_instr is not None:
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=max(
+            128, counts.shape[1] // 8 if counts.ndim == 2 else 128))
+        im = ax.imshow(counts, origin="lower", cmap="gray")
+        fig.colorbar(im, ax=ax, fraction=0.046, label="counts [DN]")
+        ax.set_title("%s — camera instrument (%s) counts" % (label, mode))
+        fig.savefig(outdir_instr / ("instr_%s_camera_%s.png" % (safe, mode)),
+                    bbox_inches="tight")
+        plt.close(fig)
+        np.save(outdir_instr / ("instr_%s_camera_%s_counts.npy"
+                                % (safe, mode)), counts)
+
+    snr_estimate = 0.0
+    if signal_e.size and float(signal_e.max()) > 0:
+        iy_ix = np.unravel_index(np.argmax(signal_e), signal_e.shape)
+        peak_signal_e = float(signal_e[iy_ix])
+        dark_mean_e = entry["dark_current_e_per_s"] * t_int
+        noise_var = peak_signal_e + dark_mean_e + entry["read_noise_e"] ** 2
+        snr_estimate = peak_signal_e / math.sqrt(noise_var) \
+            if noise_var > 0 else 0.0
+
+    block = {
+        "integration_time_s": t_int,
+        "saturation_fraction": sat_fraction,
+        "mean_counts": float(counts.mean()) if counts.size else 0.0,
+        "max_counts": float(counts.max()) if counts.size else 0.0,
+        "snr_estimate": snr_estimate,
+    }
+    if seed_val is not None:
+        block["seed"] = seed_val
+    report["detectors"][label]["instrument"].update(block)
+
+
+def render_instrument_powermeter(cube, lam_lo, lam_hi, entry, mode, seed,
+                                 report, label):
+    """Powermeter class: photocurrent = sum_bins R(lambda_c)*P_bin using
+    the FULL responsivity curve (or a flat R if the row has no table), then
+    a single scalar power reading is recovered by dividing that
+    photocurrent by R evaluated at the cube's own power-weighted mean
+    wavelength -- exact for a monochromatic source (the bench-comparison
+    case this instrument targets) and the same convention a real power
+    meter's single-wavelength dial implements for broadband light."""
+    cube = np.maximum(cube, 0.0)
+    bins = cube.shape[0]
+    lam_c_m = lam_lo + (np.arange(bins) + 0.5) * (lam_hi - lam_lo) / bins
+    p_bin = cube.reshape(bins, -1).sum(axis=1)
+    total_W = float(p_bin.sum())
+    lam_ref_m = float(np.dot(lam_c_m, p_bin) / total_W) if total_W > 0 \
+        else float(lam_c_m.mean())
+    lam_ref_um = lam_ref_m * 1e6
+
+    if entry["resp_table"] is not None:
+        R_bin = np.interp(lam_c_m * 1e6, entry["resp_table"]["lam_um"],
+                          entry["resp_table"]["responsivity_a_w"],
+                          left=0.0, right=0.0)
+        R_ref = float(np.interp(lam_ref_um, entry["resp_table"]["lam_um"],
+                                entry["resp_table"]["responsivity_a_w"]))
+    else:
+        R_bin = np.full(bins, entry["flat_responsivity_a_w"])
+        R_ref = float(entry["flat_responsivity_a_w"])
+
+    photocurrent_A = float(np.dot(R_bin, p_bin))
+    seed_val = None
+    if mode == "full":
+        rng = np.random.default_rng(seed)
+        noise_sigma_A = entry["nep_w_per_sqrthz"] \
+            * math.sqrt(entry["bandwidth_hz"]) * R_ref
+        if noise_sigma_A > 0:
+            photocurrent_A += float(rng.normal(0.0, noise_sigma_A))
+        seed_val = int(seed)
+
+    power_reported_W = photocurrent_A / R_ref if R_ref > 0 else 0.0
+    block = {
+        "power_reported_W": power_reported_W,
+        "power_reported_display": _sigfig(power_reported_W,
+                                          entry["display_digits"]),
+        "lam_ref_nm": lam_ref_m * 1e9,
+        "responsivity_a_w_at_ref": R_ref,
+        "aperture_mm": entry["aperture_mm"],
+    }
+    if seed_val is not None:
+        block["seed"] = seed_val
+    report["detectors"][label]["instrument"].update(block)
+
+
+def render_instrument_spectrometer(cube, lam_lo, lam_hi, entry, mode, seed,
+                                   outdir_spec, safe, label, report,
+                                   csv_emitter=None):
+    """Spectrometer class: Gaussian-convolve the ideal per-bin spectrum to
+    the instrument's resolution_fwhm_nm, clip to [lam_lo_nm, lam_hi_nm],
+    apply detector QE, add the stray-light floor (deterministic -- present
+    in BOTH modes, see module docstring). The schema (engine3.md P2.5 task
+    spec) has no dedicated spectrometer dark/read columns, so 'full' mode's
+    noise draw reuses the stray-light floor's own amplitude as a Gaussian
+    sigma (documented simplification, not a separate noise budget)."""
+    cube = np.maximum(cube, 0.0)
+    bins = cube.shape[0]
+    lam_c_nm = (lam_lo + (np.arange(bins) + 0.5)
+               * (lam_hi - lam_lo) / bins) / 1e-9
+    pw_W = cube.reshape(bins, -1).sum(axis=1)
+
+    lam_lo_nm, lam_hi_nm = entry["lam_lo_nm"], entry["lam_hi_nm"]
+    fwhm = float(entry["resolution_fwhm_nm"])
+    step = max(fwhm / 4.0, 0.05)
+    n_out = max(int(round((lam_hi_nm - lam_lo_nm) / step)) + 1, 2)
+    out_lam_nm = np.linspace(lam_lo_nm, lam_hi_nm, n_out)
+
+    sigma = fwhm / 2.3548200450309493      # FWHM -> Gaussian sigma
+    diff = out_lam_nm[:, None] - lam_c_nm[None, :]
+    kernel = np.exp(-0.5 * (diff / sigma) ** 2)
+    ksum = kernel.sum(axis=1, keepdims=True)
+    kernel = np.divide(kernel, ksum, out=np.zeros_like(kernel),
+                       where=(ksum > 0))
+    spectrum_W = kernel @ pw_W
+
+    qe_out = np.interp(out_lam_nm / 1e3, entry["lam_um"], entry["qe"],
+                       left=0.0, right=0.0)
+    spectrum_W = spectrum_W * qe_out
+    peak_W = float(spectrum_W.max()) if spectrum_W.size else 0.0
+    floor_W = entry["stray_light_floor"] * peak_W
+    spectrum_W = spectrum_W + floor_W
+
+    seed_val = None
+    if mode == "full":
+        rng = np.random.default_rng(seed)
+        if floor_W > 0:
+            spectrum_W = spectrum_W + rng.normal(0.0, floor_W,
+                                                  size=spectrum_W.shape)
+            spectrum_W = np.maximum(spectrum_W, 0.0)
+        seed_val = int(seed)
+
+    if outdir_spec is not None:
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        ax.plot(out_lam_nm, spectrum_W * 1e3, lw=0.9)
+        ax.set_xlabel("wavelength [nm]")
+        ax.set_ylabel("power [mW]")
+        ax.set_title("%s — spectrometer instrument (%s)" % (label, mode))
+        fig.savefig(outdir_spec / ("instrument_%s_spectrum_%s.png"
+                                   % (safe, mode)), bbox_inches="tight")
+        plt.close(fig)
+        if csv_emitter is not None:
+            csv_emitter.emit(
+                "instrument_%s_spectrum_%s.csv" % (safe, mode),
+                ["wavelength_nm", "power_W"],
+                zip(out_lam_nm, spectrum_W), entity=label,
+                chart="instrument_spectrum", units="W",
+                image="spectra/instrument_%s_spectrum_%s.png"
+                     % (safe, mode))
+
+    block = {
+        "lam_lo_nm": lam_lo_nm, "lam_hi_nm": lam_hi_nm,
+        "resolution_fwhm_nm": fwhm,
+        "peak_power_W": float(spectrum_W.max()) if spectrum_W.size else 0.0,
+        "stray_light_floor": entry["stray_light_floor"],
+    }
+    if seed_val is not None:
+        block["seed"] = seed_val
+    report["detectors"][label]["instrument"].update(block)
+
+
+def render_instrument(cube, lam_lo, lam_hi, pixel_area, outdir_instr,
+                      outdir_spec, safe, label, report, instrument_bodies,
+                      instrument_registry, case_seed, csv_emitter=None):
+    """Dispatcher: resolve label -> owning body's instrument spec -> registry
+    row -> the per-class renderer. A no-op (no report block at all) when
+    the label's owning body carries no 'instrument' property -- exactly
+    like the qe_curve block, this never runs unless a scene author opted
+    in."""
+    raw = detector_instrument_for_label(label, instrument_bodies)
+    if raw is None:
+        return
+    try:
+        row_name, mode = parse_instrument_spec(raw)
+    except ValueError as exc:
+        print("[post] NOTE: %s: bad instrument spec %r (%s) — skipping"
+              % (label, raw, exc))
+        return
+    entry = (instrument_registry or {}).get(row_name)
+    if entry is None:
+        print("[post] NOTE: unknown instrument row %r — skipping" % row_name)
+        return
+    seed = _instrument_seed(case_seed, row_name, label) \
+        if mode == "full" else None
+    report["detectors"][label]["instrument"] = {
+        "row": row_name, "class": entry["class"], "mode": mode}
+    klass = entry["class"]
+    if klass == "camera":
+        render_instrument_camera(cube, lam_lo, lam_hi, pixel_area, entry,
+                                 mode, seed, outdir_instr, safe, label,
+                                 report)
+    elif klass == "powermeter":
+        render_instrument_powermeter(cube, lam_lo, lam_hi, entry, mode,
+                                     seed, report, label)
+    elif klass == "spectrometer":
+        render_instrument_spectrometer(cube, lam_lo, lam_hi, entry, mode,
+                                       seed, outdir_spec, safe, label,
+                                       report, csv_emitter=csv_emitter)
+    else:
+        print("[post] NOTE: instrument class %r (row %r) has no renderer "
+              "yet (placeholder class) — report carries row/class/mode only"
+              % (klass, row_name))
 
 
 # =============================================================================
@@ -2970,21 +3322,41 @@ def main(argv=None):
         "elements": common.element_power_table(
             audit, {b["name"]: b.get("label", b["name"])
                     for b in model["bodies"]})}
-    # detector bodies tagged qe_curve -> {BodyName: curve_name}; the QE
-    # registry is loaded from the same default opticalproperties/ root
-    # plot_materials uses. Both are optional -- a library without a
-    # detector/ subtree just leaves photocurrent out of the report.
+    # detector bodies tagged qe_curve -> {BodyName: curve_name}; instrument
+    # -> {BodyName: raw_instrument_spec} ('row' or 'row:mode'). Both are
+    # optional -- a library/scene without either just leaves the
+    # corresponding report block out.
     qe_bodies = {b["name"]: b["detector"]["qe_curve"]
                  for b in model["bodies"]
                  if isinstance(b.get("detector"), dict)
                  and b["detector"].get("qe_curve")}
+    instrument_bodies = {b["name"]: b["detector"]["instrument"]
+                         for b in model["bodies"]
+                         if isinstance(b.get("detector"), dict)
+                         and b["detector"].get("instrument")}
+    # --instruments off overrides an assignment (a fast-preview escape
+    # hatch); --instruments on / unset (auto) is a no-op beyond the
+    # data-driven assignment itself -- there is nothing to "turn on"
+    # without a scene author having tagged a detector body.
+    if args.instruments == "off":
+        instrument_bodies = {}
+
     detector_registry = {}
-    if qe_bodies:
+    instrument_registry = {}
+    if qe_bodies or instrument_bodies:
         try:
-            detector_registry = load_optical_properties().detectors
+            props = load_optical_properties()
         except Exception as exc:
-            print("[post] NOTE: could not load detector QE registry (%s) — "
-                  "skipping photocurrent" % exc)
+            print("[post] NOTE: could not load opticalproperties/ registry "
+                  "(%s) — skipping photocurrent/instrument views" % exc)
+        else:
+            detector_registry = props.detectors
+            instrument_registry = props.instruments
+
+    outdir_instr = case_dir / "instrument"
+    if instrument_bodies:
+        outdir_instr.mkdir(exist_ok=True)
+    case_seed = int(case.get("seed", 0))
 
     h5paths = sorted((case_dir / "detectors").glob("*.h5"))
     for i, h5path in enumerate(h5paths):
@@ -2996,7 +3368,11 @@ def main(argv=None):
                         spectrometer=args.spectrometer,
                         qe_bodies=qe_bodies,
                         detector_registry=detector_registry,
-                        csv_emitter=csv_emitter)
+                        csv_emitter=csv_emitter,
+                        instrument_bodies=instrument_bodies,
+                        instrument_registry=instrument_registry,
+                        outdir_instr=outdir_instr,
+                        case_seed=case_seed)
         render_stokes_maps(h5path, img)
         # time products (pulsed-optics P4): no-op unless this .h5 carries
         # time_* datasets (run_trace --time-products / pulsed auto-rule)
