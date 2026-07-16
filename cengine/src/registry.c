@@ -33,17 +33,12 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
     { "surface:torus",    "geometry" },
     { "surface:asphere",  "geometry" },
     { "surface:mesh",     "geometry" },
-    /* still handled INSIDE the terminal optic-default handler; each gets
-     * its own dispatch entry in later core-v3 steps (§3 steps 4-8) */
-    { "coating",       "optic-default" },
-    { "polarizer",     "optic-default" },
-    { "roughness",     "optic-default" },
-    { "scatter",       "optic-default" },
-    { "birefringence", "optic-default" },
-    /* bulk / volume effects the homogeneous propagator carries (filter =
-     * additive bulk alpha; particles = continuum medium interception) */
+    /* coating (step 4) + polarizer (step 5) + roughness/scatter (step 6)
+     * are registered SurfaceEffectDefs; birefringence (step 7) is its own
+     * terminal InteractionDef — none live here any more. */
+    /* filter = additive bulk alpha the homogeneous propagator carries.
+     * (particles is now a registered PropagatorDef — step 8 — not here.) */
     { "filter",    "volume" },
-    { "particles", "volume" },
     /* coherent recombination + glue-level diagnostics — not surface
      * interactions (the gather and the Python-side viz overlay own these) */
     { "coherent",       "gather" },
@@ -65,11 +60,15 @@ int registry_supported_token(const char *token) {
     int ni;
     const InteractionDef *ia = registry_interactions(&ni);
     for (int i = 0; i < ni; i++)
-        if (strcmp(ia[i].token, token) == 0) return 1;
+        if (!ia[i].stub && strcmp(ia[i].token, token) == 0) return 1;
     int np;
     const PropagatorDef *pp = registry_propagators(&np);
     for (int i = 0; i < np; i++)
-        if (strcmp(pp[i].token, token) == 0) return 1;
+        if (!pp[i].stub && strcmp(pp[i].token, token) == 0) return 1;
+    int nse;
+    const SurfaceEffectDef *se = registry_surface_effects(&nse);
+    for (int i = 0; i < nse; i++)
+        if (strcmp(se[i].token, token) == 0) return 1;
     for (int i = 0; i < N_EXTRA; i++)
         if (strcmp(EXTRA_SUPPORTED[i].token, token) == 0) return 1;
     return 0;
@@ -101,6 +100,7 @@ void registry_resolve_faces(SceneC *s) {
         FaceC *f = &s->faces[fid];
         f->n_handlers = 0;
         for (int i = 0; i < ni; i++) {
+            if (ia[i].stub) continue;                 /* seam stub — no physics */
             if (!ia[i].match(s, (int32_t)fid)) continue;
             if (f->n_handlers >= MIEWB_MAX_FACE_HANDLERS)
                 die(EXIT_INPUT,
@@ -131,6 +131,7 @@ void registry_dump_tokens(FILE *out) {
     int ni;
     const InteractionDef *ia = registry_interactions(&ni);
     for (int i = 0; i < ni; i++) {
+        if (ia[i].stub) continue;    /* seam stub — not a supported token */
         if (seen_before(seen, n_seen, ia[i].token)) continue;
         if (n_seen < 256) seen[n_seen++] = ia[i].token;
         fprintf(out, "%s\tinteraction\n", ia[i].token);
@@ -138,9 +139,17 @@ void registry_dump_tokens(FILE *out) {
     int np;
     const PropagatorDef *pp = registry_propagators(&np);
     for (int i = 0; i < np; i++) {
+        if (pp[i].stub) continue;    /* seam stub — not a supported token */
         if (seen_before(seen, n_seen, pp[i].token)) continue;
         if (n_seen < 256) seen[n_seen++] = pp[i].token;
         fprintf(out, "%s\tpropagator\n", pp[i].token);
+    }
+    int nse;
+    const SurfaceEffectDef *se = registry_surface_effects(&nse);
+    for (int i = 0; i < nse; i++) {
+        if (seen_before(seen, n_seen, se[i].token)) continue;
+        if (n_seen < 256) seen[n_seen++] = se[i].token;
+        fprintf(out, "%s\tinteraction\n", se[i].token);
     }
     for (int i = 0; i < N_EXTRA; i++) {
         if (seen_before(seen, n_seen, EXTRA_SUPPORTED[i].token)) continue;

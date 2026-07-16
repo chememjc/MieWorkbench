@@ -91,6 +91,9 @@ typedef struct ThreadCtx {
     ExportVec exports;
     VizVec viz;
     int64_t interactions;
+    int seg_hit;        /* did the current segment end on a face? — the hit
+                         * flag the PropagatorDef.advance signature omits,
+                         * needed by the particles propagator (step 8) */
 } ThreadCtx;
 
 /* Power floor (tracer.py _apply_floors, 1447-1454): children below
@@ -106,7 +109,17 @@ static void push_child(const SceneC *s, ThreadCtx *cx, const Ray *child) {
 }
 
 /* medium stack ops — port of rays.py push_medium/pop_medium including the
- * hard errors (overlapping-solids diagnostics must not be lost in C) */
+ * hard errors (overlapping-solids diagnostics must not be lost in C).
+ *
+ * MEDIUM-STACK DISCIPLINE (REGISTRY.md §3 step 9): the LIFO medium stack is
+ * mutated ONLY by the surface interaction handlers, at the exact refract /
+ * transmit events — optic_children's transmitted child (push on entry / pop
+ * on exit), grating_children's transmitted orders, and biref_children's o/e
+ * transmit + exit. The VOLUME PROPAGATORS (homogeneous, particles) never
+ * push or pop: they only READ the current medium (ray_current_medium) to
+ * pick n / alpha for the segment. This split is deliberate and unchanged by
+ * the registry port — the propagator seam is a pure segment operator over a
+ * medium the surface handlers own. Do not move push/pop into a propagator. */
 static void push_medium(Ray *r, int16_t body_index, const SceneC *s,
                         const char *face_id) {
     if (r->depth >= MEDIUM_STACK_DEPTH)
@@ -274,49 +287,105 @@ static void nan_guard(IfcCoef *c) {
     if (!isfinite(c->Tp) || c->Tp < 0.0) c->Tp = 0.0;
 }
 
+/* ---- coating coefficient providers (REGISTRY.md §3 step 4) ------------
+ * The former three-way coating branch of interface_coeffs, split verbatim
+ * into match-gated providers that COMPOSE with the bare-Fresnel default.
+ * Composition semantics preserved exactly:
+ *   - TMM  : re-evaluates the stack at the LOCAL cos_x every call (ignores
+ *            `macro`; microfacet lobes get their own facet-angle TMM).
+ *   - TABLE: a single-AOI measured table; `macro != NULL` (the roughness
+ *            microfacet loop) REUSES the macro-angle coefficients rather
+ *            than re-reading the table, the borrowed-bare-phase + fold-T-
+ *            into-R-past-TIR behaviour (tracer.py:549-578) living in the
+ *            no-macro path.
+ *   - bare : the DEFAULT terminal coefficient (no coating on the face).
+ * These are trace-local (they fill an IfcCoef, not the InteractionDef
+ * signature); the "coating" token is registered in SURFACE_EFFECTS. */
+static void coat_tmm_fill(const SceneC *s, const FaceC *face, const Ray *r,
+                          double cos_x, kcplx n1, kcplx n2,
+                          const IfcCoef *macro, IfcCoef *c) {
+    (void)macro;
+    const CoatC *co = &s->coatings[face->coating];
+    kcplx layer_n[COAT_MAX_LAYERS];
+    for (int j = 0; j < co->n_layers; j++) {
+        size_t at = (size_t)j * s->n_lams + r->lam_idx;
+        layer_n[j] = kc(co->layer_n_re[at], co->layer_n_im[at]);
+    }
+    TmmC T = tmm_eval(r->lam, cos_x, n1, n2, layer_n, co->layer_d,
+                      co->n_layers);
+    c->rs = T.rs; c->rp = T.rp; c->ts = T.ts; c->tp = T.tp;
+    c->Rs = T.Rs; c->Rp = T.Rp; c->Ts = T.Ts; c->Tp = T.Tp;
+}
+static void coat_table_fill(const SceneC *s, const FaceC *face, const Ray *r,
+                            double cos_x, kcplx n1, kcplx n2,
+                            const IfcCoef *macro, IfcCoef *c) {
+    if (macro) { *c = *macro; return; }  /* single-AOI table keeps its macro */
+    /* macro evaluation of a table coating (tracer.py:549-578) */
+    const CoatC *co = &s->coatings[face->coating];
+    FresnelC F = fresnel_eval(cos_x, n1, n2);
+    c->Rs = co->Rs[r->lam_idx];
+    c->Rp = co->Rp[r->lam_idx];
+    c->Ts = co->Ts[r->lam_idx];
+    c->Tp = co->Tp[r->lam_idx];
+    if (fresnel_is_tir(cos_x, n1, n2)) {
+        c->Rs += c->Ts; if (c->Rs > 1.0) c->Rs = 1.0; if (c->Rs < 0.0) c->Rs = 0.0;
+        c->Rp += c->Tp; if (c->Rp > 1.0) c->Rp = 1.0; if (c->Rp < 0.0) c->Rp = 0.0;
+        c->Ts = 0.0;
+        c->Tp = 0.0;
+    }
+    c->rs = kc_scale(kc_cis(kc_arg(F.rs)), sqrt(c->Rs));
+    c->rp = kc_scale(kc_cis(kc_arg(F.rp)), sqrt(c->Rp));
+    c->ts = kc_scale(kc_cis(kc_arg(F.ts)),
+                     sqrt(c->Ts > 0.0 ? c->Ts : 0.0));
+    c->tp = kc_scale(kc_cis(kc_arg(F.tp)),
+                     sqrt(c->Tp > 0.0 ? c->Tp : 0.0));
+}
+static void coat_bare_fill(const SceneC *s, const FaceC *face, const Ray *r,
+                           double cos_x, kcplx n1, kcplx n2,
+                           const IfcCoef *macro, IfcCoef *c) {
+    (void)s; (void)face; (void)r; (void)macro;
+    FresnelC F = fresnel_eval(cos_x, n1, n2);
+    c->rs = F.rs; c->rp = F.rp; c->ts = F.ts; c->tp = F.tp;
+    c->Rs = F.Rs; c->Rp = F.Rp; c->Ts = F.Ts; c->Tp = F.Tp;
+}
+
+/* coating provider table (trace-local): first matching provider wins; the
+ * bare-Fresnel default fills when none matches (no face coating). Match
+ * predicates are pure scene functions (COAT_TMM vs the measured table). */
+static int m_coat_tmm(const SceneC *s, int32_t fid) {
+    const FaceC *f = &s->faces[fid];
+    return f->coating >= 0 && s->coatings[f->coating].kind == COAT_TMM;
+}
+static int m_coat_table(const SceneC *s, int32_t fid) {
+    const FaceC *f = &s->faces[fid];
+    return f->coating >= 0 && s->coatings[f->coating].kind != COAT_TMM;
+}
+typedef struct CoatingDef {
+    int (*match)(const SceneC *s, int32_t fid);
+    void (*fill)(const SceneC *s, const FaceC *face, const Ray *r,
+                 double cos_x, kcplx n1, kcplx n2, const IfcCoef *macro,
+                 IfcCoef *out);
+} CoatingDef;
+static const CoatingDef COATINGS[] = {
+    { m_coat_tmm,   coat_tmm_fill },
+    { m_coat_table, coat_table_fill },
+};
+#define N_COATINGS ((int)(sizeof COATINGS / sizeof COATINGS[0]))
+
 static IfcCoef interface_coeffs(const SceneC *s, const FaceC *face,
                                 const Ray *r, double cos_x, kcplx n1,
                                 kcplx n2, const IfcCoef *macro) {
     IfcCoef c;
-    if (face->coating >= 0
-            && s->coatings[face->coating].kind == COAT_TMM) {
-        const CoatC *co = &s->coatings[face->coating];
-        kcplx layer_n[COAT_MAX_LAYERS];
-        for (int j = 0; j < co->n_layers; j++) {
-            size_t at = (size_t)j * s->n_lams + r->lam_idx;
-            layer_n[j] = kc(co->layer_n_re[at], co->layer_n_im[at]);
+    int32_t fid = (int32_t)(face - s->faces);
+    int filled = 0;
+    for (int i = 0; i < N_COATINGS; i++)
+        if (COATINGS[i].match(s, fid)) {
+            COATINGS[i].fill(s, face, r, cos_x, n1, n2, macro, &c);
+            filled = 1;
+            break;
         }
-        TmmC T = tmm_eval(r->lam, cos_x, n1, n2, layer_n, co->layer_d,
-                          co->n_layers);
-        c.rs = T.rs; c.rp = T.rp; c.ts = T.ts; c.tp = T.tp;
-        c.Rs = T.Rs; c.Rp = T.Rp; c.Ts = T.Ts; c.Tp = T.Tp;
-    } else if (face->coating >= 0 && macro) {
-        c = *macro;     /* single-AOI table keeps its macro values */
-    } else if (face->coating >= 0) {
-        /* macro evaluation of a table coating (tracer.py:549-578) */
-        const CoatC *co = &s->coatings[face->coating];
-        FresnelC F = fresnel_eval(cos_x, n1, n2);
-        c.Rs = co->Rs[r->lam_idx];
-        c.Rp = co->Rp[r->lam_idx];
-        c.Ts = co->Ts[r->lam_idx];
-        c.Tp = co->Tp[r->lam_idx];
-        if (fresnel_is_tir(cos_x, n1, n2)) {
-            c.Rs += c.Ts; if (c.Rs > 1.0) c.Rs = 1.0; if (c.Rs < 0.0) c.Rs = 0.0;
-            c.Rp += c.Tp; if (c.Rp > 1.0) c.Rp = 1.0; if (c.Rp < 0.0) c.Rp = 0.0;
-            c.Ts = 0.0;
-            c.Tp = 0.0;
-        }
-        c.rs = kc_scale(kc_cis(kc_arg(F.rs)), sqrt(c.Rs));
-        c.rp = kc_scale(kc_cis(kc_arg(F.rp)), sqrt(c.Rp));
-        c.ts = kc_scale(kc_cis(kc_arg(F.ts)),
-                        sqrt(c.Ts > 0.0 ? c.Ts : 0.0));
-        c.tp = kc_scale(kc_cis(kc_arg(F.tp)),
-                        sqrt(c.Tp > 0.0 ? c.Tp : 0.0));
-    } else {
-        FresnelC F = fresnel_eval(cos_x, n1, n2);
-        c.rs = F.rs; c.rp = F.rp; c.ts = F.ts; c.tp = F.tp;
-        c.Rs = F.Rs; c.Rp = F.Rp; c.Ts = F.Ts; c.Tp = F.Tp;
-    }
+    if (!filled)                              /* bare Fresnel = the default */
+        coat_bare_fill(s, face, r, cos_x, n1, n2, macro, &c);
     nan_guard(&c);
     return c;
 }
@@ -558,13 +627,29 @@ static void biref_children(const SceneC *s, const FaceC *face,
     }
 }
 
+/* composed surface-effect match predicates (REGISTRY.md §3 steps 5-6),
+ * registered in SURFACE_EFFECTS below. Pure scene functions of the face;
+ * the optic terminal calls them to GATE each effect's inline physics so
+ * dispatch is data-driven, not a raw struct-field test. */
+static int m_polarizer(const SceneC *s, int32_t fid) {
+    return s->bodies[s->faces[fid].body].has_polarizer;
+}
+static int m_roughness(const SceneC *s, int32_t fid) {
+    return s->faces[fid].rough >= 0;
+}
+static int m_scatter(const SceneC *s, int32_t fid) {
+    return s->faces[fid].scat >= 0;
+}
+
 /* ----------------------------------------------------- optic children */
-/* Port of Tracer._optic_children (tracer.py:457-896), phase-A subset:
- * bare Fresnel + mirror/absorbance + medium stack + seam guard. Coatings/
- * roughness/scatter/polarizer/birefringence arrive in phases B/E/F —
- * feature routing keeps scenes that use them on the Python engine. */
+/* Port of Tracer._optic_children (tracer.py:457-896): bare Fresnel +
+ * mirror/absorbance + medium stack + seam guard, composing the registered
+ * coating providers (interface_coeffs) and the polarizer/roughness/scatter
+ * surface effects (SURFACE_EFFECTS, gated below). Uniaxial birefringence is
+ * its own terminal InteractionDef (biref_children_apply). */
 static void optic_children(const SceneC *s, const FaceC *face,
                            const BodyC *body, const Ray *r, ThreadCtx *cx) {
+    int32_t fid = (int32_t)(face - s->faces);
     kvec3 n_out = v3_scale(face_normal_canonical(face, r->pos),
                            face->outward_sign);
     double cos_with_out = v3_dot(r->dir, n_out);
@@ -589,12 +674,9 @@ static void optic_children(const SceneC *s, const FaceC *face,
     if (entering)
         cx->ledger.flux_in[body->index] += ray_power(r);
 
-    /* ---- uniaxial birefringence: dedicated o/e split path
-     * (tracer.py:491-494; biaxial is Python-routed) ---- */
-    if (body->birefringent) {
-        biref_children(s, face, body, r, entering, n_hat, cos_i, cx);
-        return;
-    }
+    /* uniaxial birefringence (tracer.py:491-494) is now its OWN terminal
+     * InteractionDef (biref_children_apply, m_biref); m_optic_default
+     * excludes birefringent bodies, so this handler never sees one. */
     /* mode-tagged crystal ray at a non-birefringent boundary (nested
      * body inside a crystal): continue as ordinary (tracer.py:498-510) */
     Ray fixed;
@@ -631,16 +713,18 @@ static void optic_children(const SceneC *s, const FaceC *face,
     double Rs = mc.Rs, Rp = mc.Rp, Ts = mc.Ts, Tp = mc.Tp;
     (void)Rs; (void)Rp;
 
-    /* ---- roughness: specular attenuation factor (tracer.py:620-628) */
-    const RoughC *rough = face->rough >= 0 ? &s->roughs[face->rough]
-                                           : NULL;
+    /* ---- roughness: specular attenuation factor (tracer.py:620-628);
+     * gated by the registered SURFACE_EFFECTS "roughness" match (step 6) */
+    const RoughC *rough = m_roughness(s, fid) ? &s->roughs[face->rough]
+                                              : NULL;
     double A_spec = rough
         ? rough_specular_factor(rough->sigma_m, cos_i, r->lam) : 1.0;
     double sqrtA = sqrt(A_spec);
 
     /* ---- ABg scatter: reflected-side specular/scatter split
-     * (tracer.py:630-645) ---- */
-    const ScatC *scat = face->scat >= 0 ? &s->scats[face->scat] : NULL;
+     * (tracer.py:630-645); gated by the registered SURFACE_EFFECTS
+     * "scatter" match (step 6) ---- */
+    const ScatC *scat = m_scatter(s, fid) ? &s->scats[face->scat] : NULL;
     double tis = 0.0;
     if (scat) {
         tis = abg_tis_g2(scat->A, scat->B, cos_i);
@@ -722,8 +806,9 @@ static void optic_children(const SceneC *s, const FaceC *face,
         trans.event_ctr = 0;
         p_trans_pre = ray_power(&trans);
         /* ---- polarizer: dichroic Jones diattenuator on ENTRY
-         * (tracer.py:711-723, _apply_polarizer 899-946) ---- */
-        if (body->has_polarizer && entering) {
+         * (tracer.py:711-723, _apply_polarizer 899-946); gated by the
+         * registered SURFACE_EFFECTS "polarizer" match (step 5) ---- */
+        if (m_polarizer(s, fid) && entering) {
             apply_polarizer(s, body, &trans, r->lam_idx);
             double d_loss = p_trans_pre - ray_power(&trans);
             if (d_loss > 0.0) {
@@ -1188,11 +1273,41 @@ static void grating_children_apply(const SceneC *s, ThreadCtx *cx,
     grating_children(s, h->face, h->body, r, cx);
 }
 /* -- step 3 / terminal DEFAULT: the optic chain (bare Fresnel + mirror +
- * absorber + coating/polarizer/roughness/scatter/birefringence). Stays
- * whole until §3 step 4 splits its reflect/transmit core out. -- */
+ * absorber, composing the coating/polarizer/roughness/scatter effects). -- */
 static void optic_children_apply(const SceneC *s, ThreadCtx *cx,
                                  const Ray *r, const HitInfo *h) {
     optic_children(s, h->face, h->body, r, cx);
+}
+/* -- step 7: uniaxial birefringence — its own terminal interaction. The
+ * entry preamble (canonical normal, entering test, seam-leak guard,
+ * incidence cosine, entry flux tally) is REPRODUCED VERBATIM from
+ * optic_children's head (the historical biref path ran through exactly that
+ * preamble before the `if (body->birefringent)` branch); biref_children is
+ * unchanged. m_biref and m_optic_default partition the optic faces, so the
+ * two terminals are mutually exclusive. -- */
+static void biref_children_apply(const SceneC *s, ThreadCtx *cx,
+                                 const Ray *r, const HitInfo *h) {
+    const FaceC *face = h->face;
+    const BodyC *body = h->body;
+    kvec3 n_out = v3_scale(face_normal_canonical(face, r->pos),
+                           face->outward_sign);
+    double cos_with_out = v3_dot(r->dir, n_out);
+    int entering = cos_with_out < 0.0;
+    int top = ray_current_medium(r);
+    int leak = entering ? (top == body->index) : (top != body->index);
+    if (leak) {
+        double p = ray_power(r);
+        ledger_credit(&cx->ledger, BK_SEAM_LOSS, r->source_id, p);
+        cx->ledger.by_body[body->index + 1] += p;
+        return;
+    }
+    kvec3 n_hat = entering ? n_out : v3_scale(n_out, -1.0);
+    double cos_i = -v3_dot(r->dir, n_hat);
+    if (cos_i < 0.0) cos_i = 0.0;
+    if (cos_i > 1.0) cos_i = 1.0;
+    if (entering)
+        cx->ledger.flux_in[body->index] += ray_power(r);
+    biref_children(s, face, body, r, entering, n_hat, cos_i, cx);
 }
 
 /* match predicates — pure functions of the scene, resolved once at build. */
@@ -1208,19 +1323,71 @@ static int m_grating(const SceneC *s, int32_t fid) {
     return f->detector < 0 && s->bodies[f->body].role != ROLE_DETECTOR
            && f->grating >= 0;
 }
+/* birefringence terminal: an optic face on a uniaxial-crystal body. Shares
+ * the optic exclusions (not a detector/grating) and adds birefringent — so
+ * m_biref and m_optic_default partition the optic faces exactly. */
+static int m_biref(const SceneC *s, int32_t fid) {
+    const FaceC *f = &s->faces[fid];
+    return f->detector < 0 && s->bodies[f->body].role != ROLE_DETECTOR
+           && f->grating < 0 && s->bodies[f->body].birefringent;
+}
 static int m_optic_default(const SceneC *s, int32_t fid) {
     const FaceC *f = &s->faces[fid];
     return f->detector < 0 && s->bodies[f->body].role != ROLE_DETECTOR
-           && f->grating < 0;
+           && f->grating < 0 && !s->bodies[f->body].birefringent;
+}
+
+/* seam-stub predicates/handlers (REGISTRY.md §3 tail): registered so the
+ * seam is named and its validation oracle recorded, but with NO physics —
+ * the match can never fire and the token is flagged `stub` (unavailable in
+ * --tokens / registry_supported_token). A scene demanding one hard-errors at
+ * load and routes to Python. stub_apply/stub_advance are never reached. */
+static int m_never(const SceneC *s, int32_t fid) { (void)s; (void)fid; return 0; }
+static int m_never_med(const SceneC *s, const Ray *r) {
+    (void)s; (void)r; return 0;
+}
+static void stub_apply(const SceneC *s, ThreadCtx *cx, const Ray *r,
+                       const HitInfo *h) {
+    (void)s; (void)cx; (void)r; (void)h;
+    die(EXIT_PHYSICS, "registry: seam-stub interaction handler invoked — its "
+        "match predicate should never fire (no physics implemented)");
+}
+static void stub_advance(const SceneC *s, ThreadCtx *cx, Ray *r, double seg) {
+    (void)s; (void)cx; (void)r; (void)seg;
+    die(EXIT_PHYSICS, "registry: seam-stub propagator invoked — its "
+        "match_medium should never fire (no physics implemented)");
 }
 
 static const InteractionDef INTERACTIONS[] = {
-    { "detector", m_detector_screen, detector_event_apply },
-    { "detector", m_detector_screen, screen_children_apply },
-    { "detector", m_detector_solid,  detector_solid_apply },
-    { "grating",  m_grating,         grating_children_apply },
-    { "optic",    m_optic_default,   optic_children_apply },
+    { "detector",      m_detector_screen, detector_event_apply,  0 },
+    { "detector",      m_detector_screen, screen_children_apply, 0 },
+    { "detector",      m_detector_solid,  detector_solid_apply,  0 },
+    { "grating",       m_grating,         grating_children_apply,0 },
+    { "birefringence", m_biref,           biref_children_apply,  0 },
+    { "optic",         m_optic_default,   optic_children_apply,  0 },
+    /* seam stub — surface (REGISTRY.md §3 tail): full-anisotropy Berreman
+     * 4x4. Oracle: alpha-quartz optical activity 21.77 deg/mm @589.3 nm
+     * (rotatory power) + a Passler-Paarmann absorbing-anisotropic case. */
+    { "berreman",      m_never,           stub_apply,            1 },
 };
+
+/* composed surface-effect matches (REGISTRY.md §3 steps 4-7). Each gates a
+ * feature that composes INSIDE the optic terminal at its exact point; the
+ * physics functions are called there. Registering the token+match here makes
+ * the dispatch data-driven and the token first-class in --tokens. */
+static int m_coating(const SceneC *s, int32_t fid) {
+    return s->faces[fid].coating >= 0;
+}
+static const SurfaceEffectDef SURFACE_EFFECTS[] = {
+    { "coating",   m_coating },    /* step 4: TMM/table coefficient providers */
+    { "polarizer", m_polarizer },  /* step 5: dichroic Jones diattenuator */
+    { "roughness", m_roughness },  /* step 6: Davies specular + Beckmann lobes */
+    { "scatter",   m_scatter },    /* step 6: ABg TIS split + reflected lobes */
+};
+const SurfaceEffectDef *registry_surface_effects(int *n_out) {
+    *n_out = (int)(sizeof SURFACE_EFFECTS / sizeof SURFACE_EFFECTS[0]);
+    return SURFACE_EFFECTS;
+}
 
 /* homogeneous volume propagator — the registered DEFAULT (REGISTRY.md §1.2).
  * Byte-identical to the former inline segment advance: fp64 OPL + bulk
@@ -1254,8 +1421,37 @@ static void homogeneous_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
     r->opl += n_phase * seg;
 }
 
+/* particles continuum — a registered VOLUME propagator (REGISTRY.md §3
+ * step 8). The continuum cloud lives in the segment / between-hits path
+ * (NOT the face dispatch), so it registers as a propagator rather than an
+ * InteractionDef. It LAYERS on the homogeneous advance: the interception
+ * (ballistic Beer-Lambert decay of the parent + one truncated-exponential
+ * scattered child + the particle_absorbed credit) is the pre-advance
+ * segment hook, then the segment OPL + bulk absorption are the homogeneous
+ * advance. Selected in place of homogeneous whenever a cloud is present;
+ * byte-identical to the former explicit process_ray hook. cx->seg_hit
+ * carries the hit flag the advance signature omits; when hit, seg == the
+ * hit distance t (t is unused for escapers, seg_max=1.0 inside). */
+static int m_particles(const SceneC *s, const Ray *r) {
+    (void)r;
+    return s->particles != NULL;
+}
+static void particles_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
+                              double seg) {
+    particle_intercept(s, r, cx->seg_hit, seg, cx);
+    homogeneous_advance(s, cx, r, seg);
+}
+
 static const PropagatorDef PROPAGATORS[] = {
-    { "homogeneous", m_homogeneous, homogeneous_advance },
+    { "homogeneous", m_homogeneous, homogeneous_advance, 0 }, /* always-true default */
+    { "particles",   m_particles,   particles_advance,   0 }, /* volume cloud */
+    /* seam stubs — volume (REGISTRY.md §3 tail); match_medium never fires: */
+    /* fluorescence: lambda-shifting emission medium. Oracle: ledger closure
+     * with lambda-shifted output (absorbed pump == re-emitted Stokes power). */
+    { "fluorescence", m_never_med,  stub_advance,        1 },
+    /* grin: RK4 curved propagation + fp64 OPL. Oracle: Luneburg /
+     * Maxwell-fisheye analytic foci. */
+    { "grin",         m_never_med,  stub_advance,        1 },
 };
 
 const InteractionDef *registry_interactions(int *n_out) {
@@ -1267,12 +1463,15 @@ const PropagatorDef *registry_propagators(int *n_out) {
     return PROPAGATORS;
 }
 
-/* first propagator whose medium matches (homogeneous is the always-true
- * fallback). One cheap pass; no allocation, no virtual dispatch. */
+/* Propagator selection: homogeneous (index 0) is the always-true DEFAULT; a
+ * later entry whose medium matches (the particles cloud; GRIN/fluorescence
+ * once implemented) OVERRIDES it. One cheap pass; no allocation, no virtual
+ * dispatch. */
 static const PropagatorDef *select_propagator(const SceneC *s, const Ray *r) {
     int np = (int)(sizeof PROPAGATORS / sizeof PROPAGATORS[0]);
-    for (int i = 0; i < np; i++)
-        if (PROPAGATORS[i].match_medium(s, r)) return &PROPAGATORS[i];
+    for (int i = 1; i < np; i++)
+        if (!PROPAGATORS[i].stub && PROPAGATORS[i].match_medium(s, r))
+            return &PROPAGATORS[i];
     return &PROPAGATORS[0];
 }
 
@@ -1282,16 +1481,16 @@ static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
     double t = scene_intersect(s, r->pos, r->dir, &fid);
     int hit = fid >= 0;
 
-    /* ---- particle-medium interception (tracer.py:188-198 hook) ---- */
-    if (s->particles)
-        particle_intercept(s, r, hit, t, cx);
-
-    /* ---- volume propagator: bulk absorption + fp64 OPL over the segment
-     * (REGISTRY.md §1.2). start_pos/start_opl are the pre-advance segment
-     * origin the coherent gather samples from (tracer.py:202-240). ---- */
+    /* ---- volume propagator over the segment: bulk absorption + fp64 OPL,
+     * plus the particles-continuum interception when a cloud is present
+     * (both REGISTRY.md §1.2 propagators; particle_intercept is the
+     * particles propagator's pre-advance hook, tracer.py:188-198).
+     * start_pos/start_opl are the pre-advance segment origin the coherent
+     * gather samples from (tracer.py:202-240). ---- */
     double seg = hit ? t : 0.0;    /* escaped rays: no traversal loss */
     kvec3 start_pos = r->pos;
     double start_opl = r->opl;
+    cx->seg_hit = hit;             /* the particles propagator reads this */
     const PropagatorDef *prop = select_propagator(s, r);
     prop->advance(s, cx, r, seg);
 
