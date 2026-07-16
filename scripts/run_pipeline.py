@@ -239,6 +239,8 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--ray-differentials"]
     if args.gather_occlusion:
         cmd += ["--gather-occlusion"]
+    if args.gather_exact:
+        cmd += ["--gather-exact"]
     if args.no_pol_scatter:
         cmd += ["--no-pol-scatter"]
     if args.mesh_flat_normals:

@@ -341,6 +341,10 @@ def _build_pipeline_parser():
                         "gather normalization; costs memory)")
     g.add_argument("--gather-occlusion", action="store_true",
                    help="shadow-test gather samples against scene bodies")
+    g.add_argument("--gather-exact", action="store_true",
+                   help="plain fp64 gather kernel (the bit-exact reference "
+                        "path) instead of the tile-factorized default; "
+                        "C engine only")
     g.add_argument("--no-pol-scatter", action="store_true",
                    help="legacy unpolarized Mie azimuth sampling")
     g.add_argument("--mesh-flat-normals", action="store_true")
@@ -626,6 +630,10 @@ def _build_trace_parser():
                    help="ray-cast each gather sample->detector-tile segment "
                         "against scene bodies and shadow blocked pairs "
                         "(opaque occluders, tile-quantized; see gather.py)")
+    p.add_argument("--gather-exact", action="store_true",
+                   help="plain fp64 gather kernel (bit-exact reference "
+                        "path) instead of the tile-factorized default; "
+                        "C engine only — the Python gather is unaffected")
     p.add_argument("--optical-properties", default=None,
                    help="override the opticalproperties/ library root")
     p.add_argument("--strict-analytic", action="store_true",

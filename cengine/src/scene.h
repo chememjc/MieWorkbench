@@ -265,6 +265,9 @@ typedef struct {
     uint8_t save_fields;
     uint8_t occlusion;          /* --gather-occlusion */
     int occ_tile;               /* shadow tile size (default 16) */
+    uint8_t gather_exact;       /* --gather-exact: plain fp64 kernel (the
+                                 * bit-exact reference path); default is
+                                 * the tile-factorized kernel */
     uint8_t export_rays;        /* --export-rays (this seed) */
     uint8_t track_history;      /* --ghost-analysis (this seed) */
     uint8_t importance_aim;     /* --importance-aim (opt-in) */

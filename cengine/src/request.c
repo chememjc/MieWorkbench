@@ -453,6 +453,7 @@ SceneC *request_load(const char *path) {
         s->save_fields = 0;
         s->occlusion = 0;
         s->occ_tile = 16;
+        s->gather_exact = 0;
         if (g && !yyjson_is_null(g)) {
             char bk[16] = "auto";
             yyjson_val *v = yyjson_obj_get(g, "backend");
@@ -475,6 +476,10 @@ SceneC *request_load(const char *path) {
             v = yyjson_obj_get(g, "occlusion_tile");
             if (v && yyjson_is_int(v))
                 s->occ_tile = (int)yyjson_get_sint(v);
+            v = yyjson_obj_get(g, "mode");
+            if (v && yyjson_is_str(v)
+                    && strcmp(yyjson_get_str(v), "exact") == 0)
+                s->gather_exact = 1;
         }
     }
 
