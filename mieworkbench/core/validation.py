@@ -424,6 +424,58 @@ def check_library_names(v):
     return out
 
 
+@check("coating-phase")
+def check_coating_phase(v):
+    """P2: a table coating (materials.py 'kind'=='table') carries phase
+    only when its csv has all four ars_deg/arp_deg/ats_deg/atp_deg
+    columns (phase_valid=True); without them the tracer borrows the
+    bare-interface Fresnel phase (documented approximation, harmless for
+    an incoherent/power-only scene). On a COHERENT scene that borrowed
+    phase can be badly wrong -- a real coating's retardance is NOT
+    derivable from its Rs/Rp/Ts/Tp alone (Blaschke factors), e.g. a
+    dielectric NPBS at 45 deg carries ~20 deg of retardance a bare
+    table can't express (engine3.md Sec 7.3) -- so this WARNS (never
+    gates the Run button; the run is still physically valid, just less
+    accurate for interference through that coating)."""
+    if v.optprops is None:
+        return []
+    if not any(v.role(b) == "source" and bool(v.prop(b, "coherent"))
+               for b in v.bodies()):
+        return []
+    out = []
+    seen = set()
+    for b in v.bodies():
+        if v.role(b) == "ignored":
+            continue
+        try:
+            values = v.facemap_values(b, "coating")
+        except ValueError:
+            continue    # check_library_names already reports bad specs
+        for face, name in values.items():
+            cname = str(name).strip()
+            if cname.lower() in ("", "none"):
+                continue
+            spec = v.optprops.coatings.get(cname)
+            if spec is None:
+                continue    # check_library_names already reports unknown names
+            key = (b["name"], cname)
+            if spec.get("kind") == "table" and not spec.get("phase_valid") \
+                    and key not in seen:
+                seen.add(key)
+                out.append(Finding(
+                    WARNING,
+                    "%s: coating %r has no phase columns -- interference "
+                    "through this coating uses bare-interface phase — "
+                    "supply Ars/Arp/Ats/Atp columns or a TMM stack for "
+                    "phase-accurate results" % (b["label"], cname),
+                    body=b["name"],
+                    fix_hint="add ars_deg/arp_deg/ats_deg/atp_deg columns "
+                    "to %s's table csv (Zemax TABLE convention) or switch "
+                    "to a TMM layer stack" % cname,
+                    check="coating-phase"))
+    return out
+
+
 @check("nlo-props")
 def check_nlo_props(v):
     """Pulsed-optics Phase P8: Pockels cell / saturable absorber / TPA /

@@ -266,6 +266,35 @@ def test_unknown_coating_and_bad_facemap():
     assert any("bad coating spec" in m for m in errs)
 
 
+def test_coating_phase_warns_for_phase_invalid_table_on_coherent_scene():
+    # good_structure()'s Laser is coherent=True; bs_5050_vis_45 (shipped
+    # library) has no ars/arp/ats/atp_deg columns -> phase_valid=False.
+    s = good_structure()
+    s["bodies"][1]["properties"]["coating"] = {
+        "type": "t", "group": "Base", "value": "bs_5050_vis_45"}
+    warns = messages(run(s), validation.WARNING)
+    assert any("bs_5050_vis_45" in m and "bare-interface phase" in m
+               for m in warns)
+
+
+def test_coating_phase_clean_for_phase_valid_table():
+    # bs_5050_vis_45_ph is the P2 phase-carrying demonstration row.
+    s = good_structure()
+    s["bodies"][1]["properties"]["coating"] = {
+        "type": "t", "group": "Base", "value": "bs_5050_vis_45_ph"}
+    warns = messages(run(s), validation.WARNING)
+    assert not any("bare-interface phase" in m for m in warns)
+
+
+def test_coating_phase_silent_on_incoherent_scene():
+    s = good_structure()
+    s["bodies"][0]["properties"]["coherent"]["value"] = False
+    s["bodies"][1]["properties"]["coating"] = {
+        "type": "t", "group": "Base", "value": "bs_5050_vis_45"}
+    warns = messages(run(s), validation.WARNING)
+    assert not any("bare-interface phase" in m for m in warns)
+
+
 def test_unknown_nonlinear_entry_is_an_error():
     s = good_structure()
     s["bodies"][1] = body("Lens", {"material": "bk7",

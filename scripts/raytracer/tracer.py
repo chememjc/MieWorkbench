@@ -808,10 +808,14 @@ class Tracer:
             Rs, Rp, Ts, Tp = tf.tmm_power(rs, rp, ts, tp, etas)
         elif coat is not None:
             # tabulated coating: measured Rs/Rp/Ts/Tp at the ray wavelength.
-            # Tables carry no phase, so the amplitude coefficients borrow
-            # the BARE-interface Fresnel phase (documented approximation:
-            # use TMM layer stacks when coating phase matters coherently).
-            from .optprops import interp_hard
+            # Phase-valid tables (materials.py: all four ars/arp/ats/
+            # atp_deg columns present) carry their OWN measured/derived
+            # s/p reflection+transmission phase (P2); phase-invalid
+            # tables (no phase columns) borrow the BARE-interface Fresnel
+            # phase, same documented approximation as before (use TMM
+            # layer stacks when coating phase matters coherently and no
+            # phase columns are available).
+            from .optprops import interp_hard, interp_phase_deg
             cspec = scene.coatings[coat]
             rs, rp, ts, tp, ct = fr.fresnel_coeffs(cos_i, n1, n2)
             lam_um = grp.lam * 1e6
@@ -832,10 +836,39 @@ class Tracer:
                 Rp = np.where(tir, np.clip(Rp + Tp, 0.0, 1.0), Rp)
                 Ts = np.where(tir, 0.0, Ts)
                 Tp = np.where(tir, 0.0, Tp)
-            rs = np.sqrt(Rs) * np.exp(1j * np.angle(rs))
-            rp = np.sqrt(Rp) * np.exp(1j * np.angle(rp))
-            ts = np.sqrt(np.maximum(Ts, 0.0)) * np.exp(1j * np.angle(ts))
-            tp = np.sqrt(np.maximum(Tp, 0.0)) * np.exp(1j * np.angle(tp))
+            if cspec.get("phase_valid"):
+                # measured/derived table phase, interpolated as a unit
+                # complex vector to stay branch-cut safe (optprops.
+                # interp_phase_deg). The table has no data past the
+                # critical angle (it was built at a single design AOI in
+                # the sub-critical regime) -- at TIR the fold above
+                # already replaced the table's R/T magnitudes with the
+                # energy-conserving R=R+T, so the phase there ALSO comes
+                # from the bare-interface Fresnel branch (fr.fresnel_
+                # coeffs' analytic continuation past the critical angle
+                # is the exact TIR/Goos-Hanchen phase, physics-invariant
+                # tested elsewhere) instead of the (physically invalid,
+                # sub-critical) table phase.
+                ang_rs = interp_phase_deg(
+                    lam_um, cspec["lam_um"], cspec["ars_deg"], ctx)
+                ang_rp = interp_phase_deg(
+                    lam_um, cspec["lam_um"], cspec["arp_deg"], ctx)
+                ang_ts = interp_phase_deg(
+                    lam_um, cspec["lam_um"], cspec["ats_deg"], ctx)
+                ang_tp = interp_phase_deg(
+                    lam_um, cspec["lam_um"], cspec["atp_deg"], ctx)
+                if np.any(tir):
+                    ang_rs = np.where(tir, np.angle(rs), ang_rs)
+                    ang_rp = np.where(tir, np.angle(rp), ang_rp)
+                    ang_ts = np.where(tir, np.angle(ts), ang_ts)
+                    ang_tp = np.where(tir, np.angle(tp), ang_tp)
+            else:
+                ang_rs, ang_rp = np.angle(rs), np.angle(rp)
+                ang_ts, ang_tp = np.angle(ts), np.angle(tp)
+            rs = np.sqrt(Rs) * np.exp(1j * ang_rs)
+            rp = np.sqrt(Rp) * np.exp(1j * ang_rp)
+            ts = np.sqrt(np.maximum(Ts, 0.0)) * np.exp(1j * ang_ts)
+            tp = np.sqrt(np.maximum(Tp, 0.0)) * np.exp(1j * ang_tp)
         else:
             rs, rp, ts, tp, ct = fr.fresnel_coeffs(cos_i, n1, n2)
             Rs, Rp, Ts, Tp = fr.power_coeffs(rs, rp, ts, tp, cos_i, ct,
