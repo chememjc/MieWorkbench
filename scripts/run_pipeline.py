@@ -222,6 +222,10 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--extend", repr(args.extend)]
     if args.importance_aim:
         cmd += ["--importance-aim"]
+    if getattr(args, "importance_scatter", False):
+        cmd += ["--importance-scatter"]
+    if getattr(args, "importance_limit", 1.0) != 1.0:
+        cmd += ["--importance-limit", repr(float(args.importance_limit))]
     cmd += ["--workers", str(args.workers)]
     for f in args.source_face:
         cmd += ["--source-face", f]

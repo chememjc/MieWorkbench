@@ -128,6 +128,13 @@ def _sample_radius(rng, A, B, g, umax):
     return u
 
 
+def abg_bsdf(A, B, g, u):
+    """BSDF(u) = A/(B + u^g), the ABg lobe value at direction-cosine offset
+    u = |beta - beta0| from specular. Elementwise; used by the importance
+    sampler to average the lobe over a target cone."""
+    return A / (B + np.asarray(u, dtype=np.float64) ** g)
+
+
 def sample_abg(rng, n, A, B, g, d_spec, n_hat):
     """Sample n unit scatter directions from the ABg reflected lobe.
 

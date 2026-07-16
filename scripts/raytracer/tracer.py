@@ -34,6 +34,7 @@ from . import fresnel as fr
 from . import thinfilm as tf
 from . import grating as grating_mod
 from . import roughness as rough_mod
+from . import scatter as scatter_mod
 from . import differentials as diff_mod
 from . import nlo as nlo_mod
 from .rays import RayBatch, AMBIENT, HIST_DEPTH
@@ -54,7 +55,8 @@ class TraceConfig:
     def __init__(self, max_reflections=6, power_floor=1e-4, n_lambda=5,
                  rays=int(1e5), seed=0, viz_rays=500, batch_size=1 << 20,
                  rough_fresnel="micro", export_rays=False,
-                 track_history=False, track_time=False):
+                 track_history=False, track_time=False,
+                 importance_scatter=False, importance_limit=1.0):
         self.max_reflections = max_reflections
         self.power_floor = power_floor
         self.n_lambda = n_lambda
@@ -84,6 +86,15 @@ class TraceConfig:
         # incidence angle, per polarization (physical). 'macro': legacy
         # nominal-angle scalar average (README §6.2 item 2), kept for A/B.
         self.rough_fresnel = rough_fresnel
+        # importance_scatter: aim measured-scatter (ABg) children at the
+        # detectors' solid angles instead of the full BSDF lobe (stray-light
+        # variance reduction, §7.1). importance_limit in (0,1] caps the
+        # scattered-power fraction that may be redirected to target cones per
+        # event (the bias/variance knob); a full-sphere remainder carries the
+        # rest so per-event closure stays exact. Off => today's full-lobe
+        # sampler, bit-for-bit. See Tracer._emit_scatter_side.
+        self.importance_scatter = bool(importance_scatter)
+        self.importance_limit = float(importance_limit)
 
 
 class VizStore:
@@ -170,6 +181,49 @@ class Tracer:
         self.path_tally = {}
         # P7b: per-body SHG transferred power [W] (see TraceResult)
         self.shg_converted = {}
+        # measured-scatter importance targets (§7.1): per-detector aim cones
+        # {label -> (centre_world[3], radius_m)}. Precomputed once from the
+        # detector grids so the scatter kernel can point children at their
+        # solid angles. Empty unless importance sampling is on (zero cost
+        # otherwise). Explicit per-face subsets use scene.scatter_targets.
+        self._scatter_targets = self._build_scatter_targets() \
+            if getattr(config, "importance_scatter", False) else {}
+
+    def _build_scatter_targets(self):
+        """{detector label -> target dict} for importance AREA sampling: for
+        every PLANAR DetectorGrid store the plane frame (origin-normal
+        component + xhat/yhat), the bounding-rectangle extent, face normal,
+        rectangle area, world centre, and a bounding radius. Points sampled
+        uniformly in the rectangle reproduce the grid's own world-point map
+        (detector.py). Non-planar grids (no xhat/normal) are skipped."""
+        out = {}
+        for fid, grid in self.detectors.items():
+            xhat = getattr(grid, "xhat", None)
+            normal = getattr(grid, "normal", None)
+            if xhat is None or normal is None \
+                    or not hasattr(grid, "x_lo"):
+                continue
+            surf = grid.face.surface
+            xhat = np.asarray(xhat, float)
+            yhat = np.asarray(grid.yhat, float)
+            # component of the plane origin normal to the (xhat, yhat) span,
+            # i.e. the fixed offset the grid adds to gx*xhat + gy*yhat
+            n_comp = (surf.origin - (surf.origin @ xhat) * xhat
+                      - (surf.origin @ yhat) * yhat)
+            xc = 0.5 * (grid.x_lo + grid.x_hi)
+            yc = 0.5 * (grid.y_lo + grid.y_hi)
+            centre = xc * xhat + yc * yhat + n_comp
+            area = float((grid.x_hi - grid.x_lo) * (grid.y_hi - grid.y_lo))
+            radius = float(0.5 * np.hypot(grid.x_hi - grid.x_lo,
+                                          grid.y_hi - grid.y_lo))
+            out[getattr(grid, "label", str(fid))] = {
+                "xhat": xhat, "yhat": yhat, "n_comp": n_comp,
+                "x_lo": float(grid.x_lo), "x_hi": float(grid.x_hi),
+                "y_lo": float(grid.y_lo), "y_hi": float(grid.y_hi),
+                "normal": np.asarray(normal, float),
+                "area": max(area, 1e-18), "centre": centre,
+                "radius": max(radius, 1e-9)}
+        return out
 
     # ------------------------------------------------------------------
     def run(self, batches):
@@ -713,6 +767,221 @@ class Tracer:
         return RayBatch.concatenate(out) if out else None
 
     # ------------------------------------------------------------------
+    # measured-scatter (ABg) lobe emission — shared by the reflected BRDF
+    # and the optional transmitted BTDF, with importance sampling (§7.1).
+    #
+    # IMPORTANCE-SAMPLING DERIVATION (unbiased, closure-exact).
+    # The scattered budget on one side is P_scat = P_full * TIS, distributed
+    # over directions by dP = P_full * BSDF(beta) d^2 beta, with
+    # INT_disk BSDF d^2 beta = TIS (projected-solid-angle == beta-area, so
+    # this is a flat area integral). The DEFAULT sampler draws k directions
+    # from p_lobe = BSDF/TIS, each carrying P_scat/k -> unbiased but almost
+    # no rays reach a small far detector (BRO's 46,000-year problem).
+    #
+    # For a target detector subtending a beta-disk cone_c (centre beta_c,
+    # radius rho_c, beta-area A_c = pi*rho_c^2), the TRUE scattered power into
+    # it is P_c = P_full * INT_{cone_c} BSDF d^2 beta ~= P_full * BSDF(beta_c)
+    # * A_c  (cone-averaged BSDF -- Stover/Zemax; exact as rho_c -> 0). Write
+    # I_c = BSDF(beta_c)*A_c (a dimensionless fraction of the side power).
+    #
+    # We deterministically PARTITION P_scat:
+    #   * one AIMED child per cone, sampled UNIFORMLY in cone_c's beta-area,
+    #     carrying exactly P_full*I_c;
+    #   * a REMAINDER population sampled from the full lobe MINUS the cones
+    #     (rejection), carrying P_full*(TIS - sum_c I_c).
+    # Sum == P_full*TIS deterministically, so the tracer's exact
+    # absorbed = p_in - p_accounted difference is UNCHANGED -> closure exact.
+    #
+    # Unbiasedness (power onto detector d, true beta-area A_true <= A_c):
+    #   aimed rays are uniform in beta over A_c, so a fraction A_true/A_c land
+    #   on d, depositing P_full*I_c*(A_true/A_c) = P_full*BSDF(beta_c)*A_true
+    #   = the true scattered power onto d. The remainder excludes the whole
+    #   cone, depositing ~0 on d (no double count). Variance falls because
+    #   EVERY aimed ray reaches d's neighbourhood instead of a fraction
+    #   I_c/TIS of full-lobe rays.
+    #
+    # importance_limit L in (0,1] caps sum_c I_c <= L*TIS per event: it
+    # guarantees a full-sphere remainder (>= (1-L)*TIS) survives so no
+    # direction has zero probability, and it is the bias/variance knob for
+    # the cone-average approximation. L=1 aims maximally; smaller L keeps
+    # more of the population on the exact full lobe. Off (flag not set) =>
+    # today's full-lobe sampler, bit-for-bit (the remainder loop with
+    # rem == TIS and no cones reproduces the historical two-lobe block).
+    def _scatter_target_list(self, fid):
+        """[(centre_world, radius_m)] this scatter face aims at: the explicit
+        scene.scatter_targets subset for the face if any, else every
+        detector."""
+        targ = self._scatter_targets
+        subset = getattr(self.scene, "scatter_targets", None)
+        if subset:
+            labels = subset.get(fid)
+            if labels:
+                return [targ[lbl] for lbl in labels if lbl in targ]
+        return list(targ.values())
+
+    def _reject_into_cones(self, d, d_spec, n_side, A, B, g,
+                           axis_unit, cos_alpha, active_cone, passes=4):
+        """Resample the full-lobe remainder directions that fall inside an
+        active aim cone (so the remainder never double-counts detector-ward
+        power the aimed children already carry). A few bounded passes; any
+        residual overlap is negligible and never breaks closure (child powers
+        are fixed regardless of direction)."""
+        m = d.shape[0]
+        for _ in range(passes):
+            incone = np.zeros(m, dtype=bool)
+            for axu, ca, ac in zip(axis_unit, cos_alpha, active_cone):
+                incone |= ac & (np.sum(d * axu, axis=-1) > ca)
+            if not np.any(incone):
+                break
+            idx = np.where(incone)[0]
+            d[idx] = scatter_mod.sample_abg(
+                self.rng, idx.size, A, B, g, d_spec[idx], n_side[idx])
+        return d
+
+    def _emit_scatter_side(self, template, out, fid, body, m, spec, tis,
+                           tis_ref, d_spec, n_side, amp_full_s, amp_full_p,
+                           Es, Ep, s_new, pos, active, p_accounted):
+        """Emit the scattered-lobe children carrying the per-ray `tis`
+        fraction of this side's power about the specular direction d_spec.
+
+        template : RayBatch to copy for children (grp reflected / trans
+                   transmitted -- inherits medium stack + generation)
+        spec     : ABg dict {A,B,g} for THIS side (reflected row or its btdf)
+        tis      : (m,) per-ray TIS on this side, AFTER the row's tis_cap
+                   (the actual scattered power fraction; 0 where no child)
+        tis_ref  : (m,) the UNCAPPED ABg integral INT BSDF d^2 beta at this
+                   incidence -- the normalization of the raw BSDF lobe. The
+                   physical lobe carries `tis` distributed as BSDF/tis_ref, so
+                   the aimed NEE weight (built from raw BSDF) is rescaled by
+                   tis/tis_ref to honour the cap. Equals `tis` when uncapped.
+        d_spec   : (m,3) specular direction (mirror or refracted)
+        n_side   : (m,3) normal toward THIS side's hemisphere (+n_hat / -n_hat)
+        amp_full_s/p : (m,) FULL (un-split) specular Jones amplitude factors
+        Es,Ep    : (m,) incident Jones amplitudes in the s_new/p basis
+        active   : (m,) rays that have a specular child on this side
+        Returns the updated p_accounted (this side's lobe power folded in)."""
+        A, B, g = spec["A"], spec["B"], spec["g"]
+        k_lobe = 2
+        tis = np.asarray(tis, dtype=np.float64)
+        tis_ref = np.asarray(tis_ref, dtype=np.float64)
+        # BSDF -> physical (capped) lobe rescale: the sampled lobe carries
+        # `tis` total in the shape BSDF/tis_ref, so raw-BSDF NEE weights get
+        # this factor (1.0 wherever the row's tis_cap does not bite).
+        cap_rescale = np.divide(tis, tis_ref,
+                                out=np.zeros_like(tis), where=tis_ref > 0)
+        rem = tis.copy()                  # full-lobe fraction (all of tis...)
+        axis_unit, cos_alpha, active_cone = [], [], []
+
+        if self.cfg.importance_scatter and self._scatter_targets:
+            targets = self._scatter_target_list(fid)
+            beta0v = d_spec - np.sum(d_spec * n_side, axis=-1,
+                                     keepdims=True) * n_side
+            w_list, geom = [], []
+            for tg in targets:
+                # uniform sample point q on the detector's bounding rectangle
+                # (its own world-point map: q = gx*xhat + gy*yhat + n_comp)
+                gx = self.rng.uniform(tg["x_lo"], tg["x_hi"], size=m)
+                gy = self.rng.uniform(tg["y_lo"], tg["y_hi"], size=m)
+                q = (gx[:, None] * tg["xhat"] + gy[:, None] * tg["yhat"]
+                     + tg["n_comp"])
+                rel = q - pos
+                r = np.linalg.norm(rel, axis=-1)
+                good = r > 1e-9
+                d = np.zeros_like(rel)
+                d[good] = rel[good] / r[good, None]
+                cos_ts = np.sum(d * n_side, axis=-1)         # cos(theta_s)
+                cos_psi = np.abs(np.sum(d * tg["normal"], axis=-1))
+                reach = good & active & (cos_ts > 1e-6)
+                beta_q = d - cos_ts[:, None] * n_side
+                u = np.linalg.norm(beta_q - beta0v, axis=-1)  # specular offset
+                # one-sample NEE estimate of the power fraction onto the
+                # detector: BSDF * cos(theta_s) * dOmega, dOmega = A*cospsi/r^2
+                domega = tg["area"] * cos_psi / np.where(good, r * r, 1.0)
+                w = np.where(reach,
+                             scatter_mod.abg_bsdf(A, B, g, u) * cos_ts
+                             * domega * cap_rescale, 0.0)
+                w_list.append(w)
+                # angular half-cone about the detector centre, for the
+                # remainder rejection (so it doesn't double-count the target)
+                axc = tg["centre"][None, :] - pos
+                dc = np.linalg.norm(axc, axis=-1)
+                gc = dc > 1e-9
+                axu = np.zeros_like(axc)
+                axu[gc] = axc[gc] / dc[gc, None]
+                half = np.arctan2(tg["radius"], np.where(gc, dc, 1.0))
+                geom.append((d, axu, half))
+            if w_list:
+                W = np.stack(w_list, axis=1)               # (m, T)
+                S = W.sum(axis=1)
+                # cap the aimed fraction at importance_limit*TIS so a
+                # full-sphere remainder always survives and p_accounted can
+                # never exceed p_in (closure stays exact)
+                cap = self.cfg.importance_limit * tis
+                scale = np.ones_like(S)
+                hot = S > cap
+                scale[hot] = np.where(S[hot] > 0.0, cap[hot] / S[hot], 0.0)
+                W = W * scale[:, None]
+                rem = np.clip(tis - W.sum(axis=1), 0.0, None)
+                for t, (d, axu, half) in enumerate(geom):
+                    w = W[:, t]
+                    amp = np.sqrt(np.clip(w, 0.0, None))
+                    sc = template.select(np.ones(m, dtype=bool))
+                    _kill_differentials(sc)
+                    sc.dir = d
+                    sc.s_hat = s_new
+                    sc.Es = Es * amp_full_s * amp
+                    sc.Ep = Ep * amp_full_p * amp
+                    self._record_reflection(sc, fid)
+                    sc.generation += 1
+                    sc.scattered[:] = True
+                    ok = ((w > 0.0)
+                          & (np.sum(sc.dir * n_side, axis=-1) > 0)
+                          & (sc.generation <= self.cfg.max_reflections)
+                          & (sc.power > 0))
+                    below = ~ok & (sc.power > 0)
+                    if np.any(below):
+                        self.ledger.credit("absorbed_surface",
+                                           sc.source_id[below],
+                                           sc.power[below], where=body.label)
+                    p_accounted = p_accounted + sc.power
+                    if np.any(ok):
+                        out.append(sc.select(ok))
+                    live = w > 0.0
+                    cos_alpha.append(np.where(live, np.cos(half), 2.0))
+                    axis_unit.append(axu)
+                    active_cone.append(live)
+
+        # ---- full-lobe remainder population (unbiased base / whole scatter
+        # when importance is off) ----
+        amp_lobe = np.sqrt(np.clip(rem, 0.0, None) / k_lobe)
+        for _j in range(k_lobe):
+            sc = template.select(np.ones(m, dtype=bool))
+            _kill_differentials(sc)
+            d = scatter_mod.sample_abg(self.rng, m, A, B, g, d_spec, n_side)
+            if active_cone:
+                d = self._reject_into_cones(d, d_spec, n_side, A, B, g,
+                                            axis_unit, cos_alpha, active_cone)
+            sc.dir = d
+            sc.s_hat = s_new
+            sc.Es = Es * amp_full_s * amp_lobe
+            sc.Ep = Ep * amp_full_p * amp_lobe
+            self._record_reflection(sc, fid)
+            sc.generation += 1
+            sc.scattered[:] = True
+            ok = (active
+                  & (np.sum(sc.dir * n_side, axis=-1) > 0)
+                  & (sc.generation <= self.cfg.max_reflections)
+                  & (sc.power > 0))
+            below = ~ok & (sc.power > 0)
+            if np.any(below):
+                self.ledger.credit("absorbed_surface", sc.source_id[below],
+                                   sc.power[below], where=body.label)
+            p_accounted = p_accounted + sc.power
+            if np.any(ok):
+                out.append(sc.select(ok))
+        return p_accounted
+
+    # ------------------------------------------------------------------
     def _optic_children(self, fid, grp):
         scene = self.scene
         face = scene.faces[fid]
@@ -889,17 +1158,22 @@ class Tracer:
 
         # ---- measured scatter (ABg/BSDF): reflected-side specular/scatter
         # split. TIS(cos_i) leaves the specular direction; the specular
-        # reflection keeps sqrt(1-TIS) of its amplitude (REFLECTED side only —
-        # the transmitted child is untouched, v1 BRDF scope), the scattered
-        # remainder is emitted as sampled lobes below. Mutually exclusive
-        # with roughness/diffuser by the scene contract, so sqrtA == 1 here.
+        # reflection keeps sqrt(1-TIS) of its amplitude, the scattered
+        # remainder is emitted as sampled lobes below (_emit_scatter_side).
+        # The optional transmitted BTDF (scat["btdf"]) mirrors this on the
+        # refracted child (below). Mutually exclusive with roughness/diffuser
+        # by the scene contract, so sqrtA == 1 here.
         scat = self.scene.scatter.get(fid)
         if scat is not None:
-            from . import scatter as scatter_mod
-            tis = scatter_mod.abg_tis(scat["A"], scat["B"], scat["g"], cos_i)
+            # tis_ref = uncapped INT BSDF (the raw ABg lobe normalization);
+            # tis = the actual scattered fraction after the row's tis_cap.
+            tis_ref = scatter_mod.abg_tis(scat["A"], scat["B"], scat["g"],
+                                          cos_i)
+            tis = tis_ref
             if scat["tis_cap"] is not None:
                 tis = np.minimum(tis, scat["tis_cap"])
             tis = np.clip(tis, 0.0, 1.0)
+            tis_ref = np.maximum(tis_ref, tis)
             refl_scale = np.sqrt(1.0 - tis)
         else:
             refl_scale = np.ones(m)
@@ -957,9 +1231,33 @@ class Tracer:
                 trans.dPdy, trans.dDdy = diff_mod.refract(
                     diff["dPy"], grp.dDdy, grp.dir, n_hat, diff["S"],
                     eta, trans.dir)
-        # amplitude via power (impedance factor folded in), phase from ts/tp
-        amp_ts = np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts)) * sqrtA
-        amp_tp = np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp)) * sqrtA
+        # amplitude via power (impedance factor folded in), phase from ts/tp.
+        # full_amp_t* is the UNSPLIT transmitted amplitude (reused by the BTDF
+        # lobes); the specular child additionally carries trans_scale =
+        # sqrt(1-TIS_t) when the scatter row declares transmissive scatter.
+        full_amp_ts = np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts)) * sqrtA
+        full_amp_tp = np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp)) * sqrtA
+        # ---- transmitted-side measured scatter (BTDF) split ----
+        # TIS_t is referenced to the REFRACTED direction's incidence cosine
+        # (cos of the refracted angle); zero under TIR (no transmission).
+        btdf = scat["btdf"] if scat is not None else None
+        if btdf is not None:
+            cos_t = np.clip(np.abs(np.sum(trans.dir * n_hat, axis=-1)),
+                            0.0, 1.0)
+            tis_t_ref = scatter_mod.abg_tis(btdf["A"], btdf["B"], btdf["g"],
+                                            cos_t)
+            tis_t = tis_t_ref
+            if btdf["tis_cap"] is not None:
+                tis_t = np.minimum(tis_t, btdf["tis_cap"])
+            tis_t = np.clip(tis_t, 0.0, 1.0) * (~tir)
+            tis_t_ref = np.maximum(tis_t_ref, tis_t)
+            trans_scale = np.sqrt(1.0 - tis_t)
+        else:
+            tis_t = None
+            tis_t_ref = None
+            trans_scale = np.ones(m)
+        amp_ts = full_amp_ts * trans_scale
+        amp_tp = full_amp_tp * trans_scale
         trans.Es = Es * amp_ts
         trans.Ep = Ep * amp_tp
         # medium bookkeeping
@@ -1111,39 +1409,28 @@ class Tracer:
                 if np.any(okt):
                     out.append(st.select(okt))
 
-        # ---- measured scatter (ABg): scattered reflected lobes carry the
-        # TIS share of the reflected power, sampled around the specular
-        # direction (scatter_mod.sample_abg). k_lobe matches the roughness
-        # convention. Each lobe scales the FULL reflected amplitude by
-        # sqrt(TIS/k), so specular (1-TIS) + scattered TIS == full R exactly.
-        # Reflected side only (BRDF); transmission is not scattered in v1.
+        # ---- measured scatter (ABg): scattered lobes carry the TIS share of
+        # the reflected power about the specular direction (and, when the
+        # scatter row declares transmissive scatter, the TIS_t share of the
+        # transmitted power about the refracted direction). Each lobe scales
+        # the FULL side amplitude so specular (1-TIS) + scattered TIS == the
+        # full share exactly (closure preserved). _emit_scatter_side also
+        # implements importance sampling toward the detectors (§7.1).
         if scat is not None and np.any(tis > 0.0):
-            k_lobe = 2
-            d_spec = fr.reflect_dir(grp.dir, n_hat)
-            amp_lobe = np.sqrt(tis / k_lobe)
-            for _j in range(k_lobe):
-                sc = grp.select(np.ones(m, dtype=bool))
-                _kill_differentials(sc)
-                sc.dir = scatter_mod.sample_abg(
-                    self.rng, m, scat["A"], scat["B"], scat["g"],
-                    d_spec, n_hat)
-                sc.s_hat = s_new
-                sc.Es = Es * full_amp_rs * amp_lobe
-                sc.Ep = Ep * full_amp_rp * amp_lobe
-                self._record_reflection(sc, fid)
-                sc.generation += 1
-                sc.scattered[:] = True
-                ok = ((np.sum(sc.dir * n_hat, axis=-1) > 0)
-                      & (sc.generation <= self.cfg.max_reflections)
-                      & (sc.power > 0))
-                below = ~ok & (sc.power > 0)
-                if np.any(below):
-                    self.ledger.credit("absorbed_surface",
-                                       sc.source_id[below],
-                                       sc.power[below], where=body.label)
-                p_accounted += sc.power
-                if np.any(ok):
-                    out.append(sc.select(ok))
+            d_spec_r = fr.reflect_dir(grp.dir, n_hat)
+            p_accounted = self._emit_scatter_side(
+                grp, out, fid, body, m, scat, tis, tis_ref, d_spec_r, n_hat,
+                full_amp_rs, full_amp_rp, Es, Ep, s_new, grp.pos,
+                np.ones(m, dtype=bool), p_accounted)
+        if btdf is not None and np.any(tis_t > 0.0):
+            # refracted specular direction; sanitize TIR rows (no transmitted
+            # child there) so the sampler never sees a non-finite direction
+            n_trans = -n_hat
+            d_spec_t = np.where(tir[:, None], n_trans, trans.dir)
+            p_accounted = self._emit_scatter_side(
+                trans, out, fid, body, m, btdf, tis_t, tis_t_ref, d_spec_t,
+                n_trans, full_amp_ts, full_amp_tp, Es, Ep, s_new, grp.pos,
+                ~tir, p_accounted)
 
         # ---- surface absorption = exact power difference ----
         # (generation-capped reflections were already credited above, so

@@ -475,7 +475,11 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                       seed=worker_index, viz_rays=viz_caps,
                       rough_fresnel=args.rough_fresnel,
                       export_rays=export, track_history=track_history,
-                      track_time=track_time)
+                      track_time=track_time,
+                      importance_scatter=getattr(
+                          args, "importance_scatter", False),
+                      importance_limit=getattr(
+                          args, "importance_limit", 1.0))
     particles = None
     part_diag = None
     if args.particles:
@@ -549,7 +553,11 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
                       seed=seed, viz_rays=viz_caps,
                       rough_fresnel=args.rough_fresnel,
                       export_rays=export, track_history=track_history,
-                      track_time=track_time)
+                      track_time=track_time,
+                      importance_scatter=getattr(
+                          args, "importance_scatter", False),
+                      importance_limit=getattr(
+                          args, "importance_limit", 1.0))
     particles = None
     if args.particles:
         from raytracer.particles import ParticleCloud

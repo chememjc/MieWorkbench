@@ -668,8 +668,7 @@ Eng.* 51, 013402 (2012)):
 'Face2=diamond_turned_aluminum' per-face map
 ```
 
-**Model (v1, REFLECTED side only — BRDF; BTDF/transmitted-side scatter is
-out of scope).** The scattered lobe follows `BSDF(u) = A / (B + u^g)`,
+**Model.** The scattered lobe follows `BSDF(u) = A / (B + u^g)`,
 `u` the direction-cosine offset of a scattered ray from the specular
 direction (`scatter.py` module header derives the closed-form radial
 total-integrated-scatter integral for `g==2`, the case every shipped
@@ -685,15 +684,43 @@ pedestals, §5.4). An optional per-row `tis_cap` ceilings the computed TIS
 grazing incidence) — every registry entry is validated at load time so
 `TIS(normal incidence) <= 1` (energy).
 
-Honest limits: **BRDF only** — the transmitted side is untouched (a
-lens/window with `scatter` on its exit face scatters on reflection but
-transmits its Fresnel/TMM child unmodified); **single scatter** (no
-multiple-bounce lobe transport); the tabulated A/B/g fit is isotropic
-(a real diamond-turned or ground surface can be azimuthally anisotropic —
-out of scope). **Mutually exclusive with `roughness`/`diffuser` on the
-same face** (`Scene.__init__` hard-errors naming the face) — a face is
-either a Beckmann-microfacet roughness/diffuser surface or a measured-ABg
-surface, never both.
+**BTDF (transmitted-side scatter, optional).** A registry row may set a
+`btdf` flag (plus optional `btdf_A`/`btdf_B`/`btdf_g`/`btdf_tis_cap`,
+each defaulting to the reflected value): the **transmitted** child is then
+also split into a specular remainder `sqrt(1 - TIS_t)` and an ABg lobe
+about the **refracted** direction, where `TIS_t = abg_tis` at the
+refracted-angle cosine. Reflected specular + reflected lobes + transmitted
+specular + transmitted lobes + absorbed == the parent power exactly
+(closure gate). Rows without `btdf` behave exactly as before —
+reflected-side only. `lightly_ground_glass_window` demonstrates a
+BRDF+BTDF surface.
+
+**Importance sampling (`--importance-scatter`, off by default).** ABg
+lobes spread over a hemisphere, so a full-lobe sampler almost never lands
+a ray on a small far detector — BRO's "46,000-year" stray-light problem.
+With the flag on, each scatter event ALSO emits a child aimed straight at
+every detector (or the labels in a body's `scatter_targets` property) by
+**importance area sampling**: draw a point `q` uniformly on the detector
+face and weight the child `w = BSDF * cos(theta_s) * dOmega * (TIS/INT
+BSDF)`, `dOmega = A_face*cos(psi)/r^2` — the exact one-sample next-event
+estimator of the power onto that detector (unbiased for any detector
+size/obliquity, no cone approximation), so every aimed ray hits (variance
+drops ~100-1000x). Closure stays **exact**: the full-lobe remainder
+carries the deterministic complement `TIS - sum_c w_c` (aimed rays that
+would double-count are rejection-resampled out of the remainder), and
+`--importance-limit F` (0<F<=1, default 1) caps the aimed fraction at
+`F*TIS` so a full-sphere remainder always survives and `p_accounted`
+never exceeds `p_in`. Both BTDF and importance sampling are
+**Python-engine features** (tokens `scatter_btdf` / `scatter_importance`
+route `--engine auto` to Python).
+
+Honest limits: **single scatter** (no multiple-bounce lobe transport);
+the tabulated A/B/g fit is isotropic (a real diamond-turned or ground
+surface can be azimuthally anisotropic — out of scope). **Mutually
+exclusive with `roughness`/`diffuser` on the same face**
+(`Scene.__init__` hard-errors naming the face) — a face is either a
+Beckmann-microfacet roughness/diffuser surface or a measured-ABg surface,
+never both.
 
 ### 5.5 Gratings
 
