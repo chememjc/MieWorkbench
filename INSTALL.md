@@ -213,6 +213,32 @@ precision (the real-air ambient index n=1.000272, and Optiland's
 reported-image-direction convention) are recorded in that test's module
 docstring.
 
+### 4.3 Optional: the meent RCWA table generator (P6 grating tables only)
+
+`scripts/tools/gen_rcwa_table.py` generates v2 RCWA grating tables (complex
+per-order amplitudes over a `(lambda, theta, phi)` grid; engine3.md §7.5,
+docs/RAYTRACER.md §5.5/§7.5) using [meent](https://github.com/kc-ml2/meent)
+(MIT), a rigorous coupled-wave (RCWA) solver. Like the oracles above it is
+installed into the SAME `env/` GUI venv — never into `/home3/optics/env` —
+and is **never imported by the engine**: the generated `.mietab` is committed
+and the tracer only interpolates it. It is a generation-time (authoring)
+dependency:
+
+```bash
+env/bin/pip install "meent==0.12.0"
+```
+
+**PINNED VERSION: `meent==0.12.0`** — the newest release, compatible with the
+GUI venv's Python 3.10 and numpy 2.x (its only hard deps are `numpy>=1.23.3`
+and `scipy>=1.9.1`; the `jax`/`pytorch` extras are backends we do not
+install — the default numpy backend is used). Its factorization is the Li
+(1996, JOSA A 13:1870) inverse rule (verified from source). The adoption gate
+that qualified meent before any table shipped is
+`scripts/tools/rcwa_adoption_gate.py` (Li-rule convergence, energy
+conservation, reciprocity); the closed-form cross-check against the engine's
+Kogelnik VBG branch is `scripts/tools/rcwa_kogelnik_crosscheck.py`. Skip this
+step entirely unless you are re-generating grating tables.
+
 ---
 
 ## 5. First run
