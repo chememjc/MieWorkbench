@@ -825,13 +825,15 @@ int64_t gather_run(SceneC *s) {
                         key_nufft = 1;
                 }
                 snprintf(nufft_gate, sizeof nufft_gate,
-                    "{\"enabled\": %s, \"chosen\": %s, \"separating\": %s, "
+                    "{\"available\": %s, "
+                    "\"enabled\": %s, \"chosen\": %s, \"separating\": %s, "
                     "\"sep_margin_lambda\": %.6g, \"obliquity_var\": %.6g, "
                     "\"obliquity_tol\": 1e-3, \"k_grid_N\": %lld, "
                     "\"vram_need_MiB\": %.1f, \"vram_free_MiB\": %.1f, "
                     "\"cost_nufft_s\": %.6g, \"cost_tiled_s\": %.6g, "
                     "\"reasons\": {\"want\": %s, \"sep\": %s, \"obliq\": %s, "
                     "\"vram\": %s, \"cost\": %s}}",
+                    nufft_available() ? "true" : "false",
                     want ? "true" : "false", key_nufft ? "true" : "false",
                     np.separating ? "true" : "false", np.sep_margin_lam,
                     np.obliq_var, (long long)np.N,

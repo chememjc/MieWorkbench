@@ -68,9 +68,19 @@ def test_optin_gate_rejects_doubleslit(tmp_path):
     """--gather-nufft on the wide-angle doubleslit: the gate WANTS the route
     but rejects it on obliquity separability (the diffraction NA is intrinsic
     and violates the < 1e-3 fold bound) -> falls back to the tiled kernel,
-    with every sub-decision logged."""
+    with every sub-decision logged.
+
+    cuFINUFFT is an OPTIONAL build dependency: on a stub binary
+    (nufft_gate.available == false) the linked-only assertions are skipped,
+    after pinning the stub contract — the flag must NOT enable the route."""
     keys = _run(DS, tmp_path / "opt", ["--gather-nufft"])
     assert keys
+    if not keys[0]["nufft_gate"].get("available", False):
+        for e in keys:
+            g = e["nufft_gate"]
+            assert g["enabled"] is False and g["chosen"] is False
+            assert e["gather_mode"] == "tiled"
+        pytest.skip("binary built without cuFINUFFT — stub contract pinned")
     for e in keys:
         g = e["nufft_gate"]
         assert g["enabled"] is True          # opted in
@@ -97,6 +107,11 @@ def test_optin_gate_michelson_folded(tmp_path):
     keys = _run(MICH, tmp_path / "mich", ["--gather-nufft"],
                 rays=20000, res=512, nlam=3)
     assert keys
+    if not keys[0]["nufft_gate"].get("available", False):
+        for e in keys:
+            assert e["nufft_gate"]["chosen"] is False
+            assert e["gather_mode"] == "tiled"
+        pytest.skip("binary built without cuFINUFFT — stub contract pinned")
     for e in keys:
         g = e["nufft_gate"]
         assert g["enabled"] is True
