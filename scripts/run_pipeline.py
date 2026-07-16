@@ -216,6 +216,10 @@ def trace_cmd(stem, case_dir, args):
            else common.DEFAULTS["backend"]]
     if args.engine is not None:
         cmd += ["--engine", args.engine]
+    if getattr(args, "resume", False):
+        cmd += ["--resume"]
+    if getattr(args, "extend", None) is not None:
+        cmd += ["--extend", repr(args.extend)]
     if args.importance_aim:
         cmd += ["--importance-aim"]
     cmd += ["--workers", str(args.workers)]
