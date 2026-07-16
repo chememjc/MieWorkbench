@@ -354,6 +354,7 @@ class ConfigMatrix(QWidget):
         preset_vals = common.PRESETS[preset]
         vals = self.values()
         return {
+            "preset": preset,
             "rays": vals.get("rays", preset_vals["rays"]),
             "resolution": vals.get("resolution", preset_vals["resolution"]),
             "nlambda": vals.get("nlambda", preset_vals["nlambda"]),
