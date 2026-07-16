@@ -180,6 +180,99 @@ void det_free_exports(SceneC *s) {
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * pulsed-optics P7 time-product arrival records — same collect/write/free
+ * lifecycle as the --export-rays records above.
+ * ------------------------------------------------------------------------ */
+void timevec_init(TimeVec *t) {
+    t->cap = 1024;
+    t->n = 0;
+    t->v = (TimeRec *)malloc((size_t)t->cap * sizeof(TimeRec));
+    if (!t->v) die(EXIT_PHYSICS, "times: allocation failed");
+}
+
+void timevec_free(TimeVec *t) {
+    free(t->v);
+    memset(t, 0, sizeof *t);
+}
+
+void timevec_push(TimeVec *t, const TimeRec *r) {
+    if (t->n == t->cap) {
+        t->cap *= 2;
+        TimeRec *p = (TimeRec *)realloc(t->v,
+                                        (size_t)t->cap * sizeof(TimeRec));
+        if (!p) die(EXIT_PHYSICS, "times: growth failed");
+        t->v = p;
+    }
+    t->v[t->n++] = *r;
+}
+
+void timevec_clear(TimeVec *t) { t->n = 0; }
+
+void det_collect_times(SceneC *s, const TimeVec *t) {
+    for (int64_t i = 0; i < t->n; i++) {
+        DetC *d = &s->dets[t->v[i].det];
+        if (d->n_times == d->cap_times) {
+            d->cap_times = d->cap_times ? d->cap_times * 2 : 4096;
+            void *p = realloc(d->times,
+                              (size_t)d->cap_times * sizeof(TimeRec));
+            if (!p) die(EXIT_PHYSICS, "times: detector growth failed");
+            d->times = p;
+        }
+        ((TimeRec *)d->times)[d->n_times++] = t->v[i];
+    }
+}
+
+void det_write_times(const SceneC *s) {
+    if (!s->time_products) return;
+    char path[1200];
+    for (int di = 0; di < s->n_dets; di++) {
+        const DetC *d = &s->dets[di];
+        int64_t n = d->n_times;
+        const TimeRec *recs = (const TimeRec *)d->times;
+        double *sc = (double *)malloc((size_t)(n > 0 ? n : 1)
+                                      * sizeof(double));
+        if (!sc) die(EXIT_PHYSICS, "times: staging allocation failed");
+        /* one f64 column per field (fx/fy/lam/gdd are f32 in the record but
+         * dumped as f64 — run_c_case recasts to the Python dtypes, and the
+         * finalize_time math is fp64 anyway). */
+        struct { const char *name; int kind; } fields[] = {
+            {"t", 0}, {"fx", 1}, {"fy", 2}, {"lam", 3}, {"power", 4},
+            {"source_id", 5}, {"lam_stratum", 6}, {"gdd", 7},
+        };
+        for (size_t f = 0; f < sizeof(fields) / sizeof(fields[0]); f++) {
+            int kind = fields[f].kind;
+            for (int64_t i = 0; i < n; i++) {
+                const TimeRec *r = &recs[i];
+                double x = 0.0;
+                switch (kind) {
+                case 0: x = r->t; break;
+                case 1: x = r->fx; break;
+                case 2: x = r->fy; break;
+                case 3: x = r->lam; break;
+                case 4: x = r->power; break;
+                case 5: x = r->source_id; break;
+                case 6: x = r->lam_stratum; break;
+                case 7: x = r->gdd; break;
+                }
+                sc[i] = x;
+            }
+            snprintf(path, sizeof path, "%s/time_%d_%s.npy",
+                     s->out_dir, di, fields[f].name);
+            npy_write_f64_1d(path, sc, (size_t)n);
+        }
+        free(sc);
+    }
+}
+
+void det_free_times(SceneC *s) {
+    for (int i = 0; i < s->n_dets; i++) {
+        free(s->dets[i].times);
+        s->dets[i].times = NULL;
+        s->dets[i].n_times = s->dets[i].cap_times = 0;
+    }
+}
+
 /* find-or-create the GKey sample set for a (source, stratum, pol) triple */
 static GKey *det_gkey(DetC *d, int16_t src, int16_t ls, int16_t ps) {
     for (int32_t i = 0; i < d->n_gkeys; i++) {

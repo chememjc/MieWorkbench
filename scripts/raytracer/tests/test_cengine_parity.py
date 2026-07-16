@@ -543,3 +543,119 @@ def test_gdd_budget_parity(tmp_path):
             rel_close(pr[k], cr[k], 1e-9, "%s %s" % (pr["label"], k))
     for k in ("gd_fs", "gdd_fs2", "tod_fs3"):
         rel_close(pb["total"][k], cb["total"][k], 1e-9, "total %s" % k)
+
+
+def _load_time(case_dir):
+    """(time_attrs dict, time_profile array or None) from the single
+    detector .h5."""
+    import h5py
+    h5s = sorted((case_dir / "detectors").glob("*.h5"))
+    assert len(h5s) == 1
+    with h5py.File(h5s[0], "r") as h:
+        attrs = {k: h.attrs[k] for k in h.attrs}
+        prof = h["time_profile"][...] if "time_profile" in h else None
+    return attrs, prof
+
+
+def _profile_moments(attrs, prof):
+    """(mean_t, rms_width, integral_W) of a time_profile density [W/s]."""
+    t_lo = float(attrs["t_lo_s"])
+    dt = float(attrs["time_dt_s"])
+    tc = t_lo + (np.arange(len(prof)) + 0.5) * dt
+    w = prof.sum()
+    mean = float((tc * prof).sum() / w)
+    rms = float(np.sqrt(((tc - mean) ** 2 * prof).sum() / w))
+    return mean, rms, float(prof.sum() * dt)
+
+
+def test_time_products_cw_parity(tmp_path):
+    """P7 tranche 1 (time_products): a CW glass slab with explicit
+    --time-products. Every ray's group path is identical at collimated normal
+    incidence, so the arrival-time attrs AND the binned profile agree to fp
+    precision between engines (the gopl accumulator is deterministic given
+    the geometric path; the Python finalize_time bins the C records)."""
+    model_json = cengine_scenes.write_scene("c_plate", tmp_path / "geometry")
+    extra = ["--time-products", "pulse,spectrogram", "--time-bins", "128"]
+    py = _run_time(model_json, tmp_path / "case_py", "python", extra)
+    cc = _run_time(model_json, tmp_path / "case_c", "c", extra)
+    assert py["engine"] == "python"
+    assert cc["engine"] == "c", cc.get("engine_reason")
+    pa, pp = _load_time(tmp_path / "case_py")
+    ca, cp = _load_time(tmp_path / "case_c")
+    for k in ("t_p001_s", "t_p999_s", "time_total_W", "time_dt_s",
+              "t_lo_s", "t_hi_s"):
+        rel_close(float(pa[k]), float(ca[k]), 1e-9, "time attr %s" % k)
+    assert int(pa["time_n_records"]) == int(ca["time_n_records"])
+    pm, pw, pi = _profile_moments(pa, pp)
+    cm, cw, ci = _profile_moments(ca, cp)
+    rel_close(pm, cm, 1e-9, "profile mean-t")
+    rel_close(pi, ci, 1e-9, "profile integral")
+
+
+def test_time_products_pulse_gdd_parity(tmp_path):
+    """P7 tranche 1: a broadband VIRTUAL-pulse source (pulse_duration on a
+    power source) auto-enables time products; the analytic-envelope FWHM
+    folds in each stratum's angular bandwidth AND the material GDD the ray
+    accumulated through the slab (gdd_acc). Deterministic collimated scene =>
+    the pulse profile (mean, width, integral) matches to fp precision, and
+    the co-active gdd_budget block agrees too."""
+    from scenehelpers import (source_body, slab_body, detector_body,
+                              make_model)
+    model = make_model([
+        source_body("Src", x=-0.02, half=0.004, power_mW=2.0,
+                    lambdac_nm=800.0, lambdamin_nm=760.0, lambdamax_nm=840.0,
+                    pulse_duration_ps=0.1),
+        slab_body("Plate", "bk7", 0.0, 0.01, half=0.02),
+        detector_body("Det", x=0.03, half=0.025)])
+    geo = tmp_path / "geometry"
+    geo.mkdir(parents=True, exist_ok=True)
+    (geo / "model.json").write_text(json.dumps(model))
+    py = _run_time(geo / "model.json", tmp_path / "case_py", "python",
+                   ["--gdd-budget"])
+    cc = _run_time(geo / "model.json", tmp_path / "case_c", "c",
+                   ["--gdd-budget"])
+    assert cc["engine"] == "c", cc.get("engine_reason")
+    # auto-enable fired (no explicit --time-products flag)
+    assert py["time_products"]["auto_enabled"]
+    pa, pp = _load_time(tmp_path / "case_py")
+    ca, cp = _load_time(tmp_path / "case_c")
+    assert int(pa["time_n_records"]) == int(ca["time_n_records"])
+    pm, pw, pi = _profile_moments(pa, pp)
+    cm, cw, ci = _profile_moments(ca, cp)
+    rel_close(pm, cm, 1e-9, "pulse profile mean-t")
+    rel_close(pw, cw, 1e-9, "pulse profile rms-width")
+    rel_close(pi, ci, 1e-9, "pulse profile integral")
+    # gdd_budget rides along on the same track_time tally
+    rel_close(py["gdd_budget"]["rows"][0]["gdd_fs2"],
+              cc["gdd_budget"]["rows"][0]["gdd_fs2"], 1e-9, "co-active gdd")
+
+
+def test_time_products_spm_chirp_parity(tmp_path):
+    """P7 tranche 1: an SPM source installs an exact-FFT SPD + an S-curve
+    chirp via per-stratum birth-time offsets (sources.install_spm ->
+    _stratum_t0). The C engine births each stratum's gopl at c*t0[stratum]
+    (apply_stratum_t0), spreading the arrival window; the profile matches
+    Python to fp precision."""
+    from scenehelpers import (source_body, slab_body, detector_body,
+                              make_model)
+    sb = source_body("Src", x=-0.02, half=0.004, power_mW=5.0,
+                     lambdac_nm=800.0, pulse_duration_ps=0.05)
+    sb["source"]["spm"] = "phimax:3.0"
+    model = make_model([sb, slab_body("Plate", "bk7", 0.0, 0.005, half=0.02),
+                        detector_body("Det", x=0.03, half=0.025)])
+    geo = tmp_path / "geometry"
+    geo.mkdir(parents=True, exist_ok=True)
+    (geo / "model.json").write_text(json.dumps(model))
+    py = _run_time(geo / "model.json", tmp_path / "case_py", "python", [])
+    cc = _run_time(geo / "model.json", tmp_path / "case_c", "c", [])
+    assert cc["engine"] == "c", cc.get("engine_reason")
+    pa, pp = _load_time(tmp_path / "case_py")
+    ca, cp = _load_time(tmp_path / "case_c")
+    # the chirp actually spread the arrival window (t0 offsets are nonzero)
+    assert float(pa["t_hi_s"]) - float(pa["t_lo_s"]) > float(pa["time_dt_s"])
+    for k in ("t_lo_s", "t_hi_s", "t_p001_s", "t_p999_s"):
+        rel_close(float(pa[k]), float(ca[k]), 1e-9, "spm attr %s" % k)
+    pm, pw, pi = _profile_moments(pa, pp)
+    cm, cw, ci = _profile_moments(ca, cp)
+    rel_close(pm, cm, 1e-9, "spm profile mean-t")
+    rel_close(pw, cw, 1e-9, "spm profile rms-width")

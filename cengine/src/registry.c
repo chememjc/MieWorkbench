@@ -51,6 +51,12 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
      * track_time; ALL dispersion resolution stays Python-side in
      * build_gdd_budget. Diagnostic — no dispatch entry. */
     { "gdd_budget",     "diagnostic" },
+    /* pulsed-optics P7 tranche 1: per-ray gopl/gdd group-delay accumulators
+     * (group index / GDD pre-resolved in the request) + per-detector arrival
+     * records; the Python finalize_time bins them. Diagnostic — no dispatch
+     * entry. (A crystal scene emits the unported time_directional_index token
+     * and routes to Python: n_g_eff is not carried in C.) */
+    { "time_products",  "diagnostic" },
     /* structural body properties folded into the optic-default handler's
      * unified Fresnel/mirror/absorbance core (not emitted as gate tokens by
      * detect_features; listed so --tokens documents that the C engine owns

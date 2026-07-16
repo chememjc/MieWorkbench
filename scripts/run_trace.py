@@ -168,6 +168,25 @@ def build_time_cfg(args, scene, products):
 _FWHM_GAUSS = 4.0 * np.log(2.0)      # tau_out = tau0*sqrt(1+(K*phi2/tau0^2)^2)
 
 
+def set_time_products_case(case, args, time_products):
+    """Write the case.json 'time_products' block (pulsed-optics P4). Shared by
+    the Python path here and cengine.run_c_case so both engines emit the
+    identical block."""
+    case["time_products"] = {
+        "products": list(time_products),
+        "bins": int(args.time_bins),
+        "envelope": args.time_envelope,
+        "cube_res": int(args.time_cube_res),
+        "window_ns": list(args.time_window)
+        if args.time_window is not None else None,
+        "auto_enabled": args.time_products is None,
+    }
+    print("[trace] time products: %s (bins=%d, envelope=%s%s)"
+          % (",".join(time_products), args.time_bins, args.time_envelope,
+             ", auto-enabled by pulsed source"
+             if args.time_products is None else ""), flush=True)
+
+
 def build_gdd_budget(scene, result):
     """The case.json 'gdd_budget' block (pulsed-optics P5): per traversed
     body, the power-weighted mean bulk path L_bar = path_tally / flux_in
@@ -1128,20 +1147,7 @@ def _main_locked(args, case_dir):
     # via the 'gdd_budget' / 'time_products' feature tokens)
     track_time = bool(time_products) or args.gdd_budget
     if time_products:
-        case["time_products"] = {
-            "products": list(time_products),
-            "bins": int(args.time_bins),
-            "envelope": args.time_envelope,
-            "cube_res": int(args.time_cube_res),
-            "window_ns": list(args.time_window)
-            if args.time_window is not None else None,
-            "auto_enabled": args.time_products is None,
-        }
-        print("[trace] time products: %s (bins=%d, envelope=%s%s)"
-              % (",".join(time_products), args.time_bins,
-                 args.time_envelope,
-                 ", auto-enabled by pulsed source"
-                 if args.time_products is None else ""), flush=True)
+        set_time_products_case(case, args, time_products)
 
     case_diag = {}
     grids_list = []

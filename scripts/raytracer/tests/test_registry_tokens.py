@@ -60,7 +60,7 @@ PYTHON_ONLY = frozenset({
     "particles_explicit",               # explicit realization (continuum ported)
     "ray_differentials",
     "pol_transport",                    # P2 parallel-transport Q/J bookkeeping
-    "time_products",                    # P4 time domain (P7 tranche 2)
+    "time_directional_index",           # crystal e-ray n_g_eff (time+crystal)
 })
 
 

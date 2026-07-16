@@ -38,6 +38,10 @@
 #define EV_EMIT_POS   0xF0000000u
 #define EV_EMIT_PHASE 0xF0000001u
 
+/* speed of light [m/s] — the pulsed-optics arrival-time conversion t = gopl/c
+ * (sources.C_LIGHT_MPS / materials.C_LIGHT_M_S) */
+#define MIEWB_C_LIGHT 299792458.0
+
 /* ------------------------------------------------------------------ viz */
 static void vizvec_init(VizVec *v) {
     v->cap = 1024;
@@ -89,6 +93,7 @@ typedef struct ThreadCtx {
     DetHitVec hits;
     GatherHitVec ghits;
     ExportVec exports;
+    TimeVec times;          /* pulsed-optics P7 arrival records (time_products) */
     VizVec viz;
     int64_t interactions;
     int seg_hit;        /* did the current segment end on a face? — the hit
@@ -1077,10 +1082,32 @@ static void grating_children(const SceneC *s, const FaceC *face,
 /* Port of Tracer._detector_event (tracer.py:339-372), incoherent side only
  * (the coherent gather is phase D; request_load rejects coherent sources
  * until then). */
+/* pulsed-optics P7: one time-product arrival record at the GEOMETRIC hit
+ * (detector._record_time_arrivals). Recorded for BOTH detector branches;
+ * columns match the Python DetectorGrid.time_records dict bit-for-bit. */
+static void record_time_arrival(const SceneC *s, ThreadCtx *cx,
+                                const DetC *d, int32_t det, const Ray *r) {
+    double fx, fy;
+    det_to_grid(d, r->pos, &fx, &fy);
+    TimeRec tr;
+    tr.det = det;
+    tr.t = r->gopl / MIEWB_C_LIGHT;
+    tr.fx = (float)fx;
+    tr.fy = (float)fy;
+    tr.lam = (float)r->lam;
+    tr.power = ray_power(r);
+    tr.gdd = (float)r->gdd_acc;
+    tr.source_id = r->source_id;
+    tr.lam_stratum = r->lam_stratum;
+    timevec_push(&cx->times, &tr);
+}
+
 static void detector_event(const SceneC *s, const FaceC *face, const Ray *r,
                            kvec3 start_pos, double start_opl,
                            ThreadCtx *cx) {
     const DetC *d = &s->dets[face->detector];
+    if (s->time_products)
+        record_time_arrival(s, cx, d, face->detector, r);
     if (r->coherent) {
         /* Huygens wavelet sample at the segment START (the kernel adds
          * the final k*n*r leg itself — tracer.py:229-233 double-count
@@ -1420,14 +1447,21 @@ static void homogeneous_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
     double n_phase = (r->n_eff > 0.0) ? r->n_eff : n_med.re;
     r->opl += n_phase * seg;
 
-    /* pulsed-optics P7 time-domain accumulators (track_time only; STRICTLY
-     * additive — no opl/Es/Ep/ledger-bucket/RNG side effects, tracer.py:
-     * 438-471). The per-body power-weighted bulk path uses the SURVIVING
-     * power (ray_power AFTER the bulk-absorption scaling above), so a
-     * transparent-transmitted fraction dying in a metal skin books no
-     * spurious long metal path (tracer.py:456-465). */
+    /* pulsed-optics P7 time-domain accumulators (STRICTLY additive — no
+     * opl/Es/Ep/ledger-bucket/RNG side effects, tracer.py:438-471). The
+     * per-body power-weighted bulk path uses the SURVIVING power (ray_power
+     * AFTER the bulk-absorption scaling above), so a transparent-transmitted
+     * fraction dying in a metal skin books no spurious long metal path
+     * (tracer.py:456-465). */
     if (s->track_time && med >= 0)
         cx->ledger.path_tally[med] += ray_power(r) * seg;
+    /* group optical path Sum(n_g ds) + accumulated GDD Sum((phi2/L) ds), for
+     * the time-product arrival records (isotropic media only — a crystal+time
+     * scene routes to Python; n_g_eff is not carried in C). */
+    if (s->time_products) {
+        r->gopl += scene_medium_group_index(s, med, r->lam_idx) * seg;
+        r->gdd_acc += scene_medium_gdd_per_m(s, med, r->lam_idx) * seg;
+    }
 }
 
 /* particles continuum — a registered VOLUME propagator (REGISTRY.md §3
@@ -1696,6 +1730,13 @@ static void sample_source_c(const SceneC *s, int source_index, RayVec *batch,
         r.lam_stratum = stratum;
         r.lam_idx = (int16_t)(src->lam_offset + stratum);
         r.lam = s->lams_m[r.lam_idx];
+        /* pulsed-optics P7 SPM chirp (sources.apply_stratum_t0): gopl is a
+         * pure Sum(n_g ds) accumulator that is 0 at birth by contract; an
+         * SPM source starts each stratum's group-delay integration from a
+         * per-stratum birth-time offset (gopl += c*t0[stratum]). Zero for a
+         * non-SPM source (memset left gopl/gdd_acc = 0). */
+        if (s->time_products && src->stratum_t0)
+            r.gopl = MIEWB_C_LIGHT * src->stratum_t0[stratum];
         int16_t pol = (int16_t)((i / src->n_strata) % src->n_pol);
         r.pol_stratum = pol;
         r.source_id = (int16_t)source_index;
@@ -1762,6 +1803,7 @@ void trace_run(SceneC *s, TraceResultC *out) {
         dethits_init(&ctxs[i].hits);
         gathhits_init(&ctxs[i].ghits);
         exportvec_init(&ctxs[i].exports);
+        timevec_init(&ctxs[i].times);
         vizvec_init(&ctxs[i].viz);
     }
 
@@ -1857,6 +1899,8 @@ void trace_run(SceneC *s, TraceResultC *out) {
             gathhits_clear(&ctxs[i].ghits);
             det_collect_exports((SceneC *)s, &ctxs[i].exports);
             exportvec_clear(&ctxs[i].exports);
+            det_collect_times((SceneC *)s, &ctxs[i].times);
+            timevec_clear(&ctxs[i].times);
             ledger_merge(&out->ledger, &ctxs[i].ledger);
             /* zero the thread ledger for the next batch */
             ledger_free(&ctxs[i].ledger);
@@ -1924,6 +1968,7 @@ void trace_run(SceneC *s, TraceResultC *out) {
         dethits_free(&ctxs[i].hits);
         gathhits_free(&ctxs[i].ghits);
         exportvec_free(&ctxs[i].exports);
+        timevec_free(&ctxs[i].times);
         free(ctxs[i].viz.v);
     }
     free(ctxs);
