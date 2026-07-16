@@ -15,6 +15,14 @@ static FILE *g_file = NULL;
 static int g_progress = 0;
 static const char *g_argv0 = "miewb-trace";
 
+/* --serve recovery target (log.h). NULL in the one-shot binary. Provided by
+ * libgomp (linked whole-target) — declared here to avoid an omp.h build-flag
+ * dependency in this file. */
+extern int omp_in_parallel(void);
+static jmp_buf *g_die_jmp = NULL;
+
+void log_set_die_recovery(jmp_buf *target) { g_die_jmp = target; }
+
 static const char *LEVEL_NAMES[] = {"DEBUG", "INFO", "WARN", "ERROR"};
 
 void log_set_level(int level) { g_level = level; }
@@ -78,6 +86,17 @@ void die_at(int code, const char *file, int line, const char *fmt, ...) {
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     log_msg(LOG_ERROR, "FATAL (%s:%d): %s", file, line, buf);
+    /* --serve recovery: hand control back to the serve loop with `code`
+     * ONLY when it is safe (see log.h). A die inside an OpenMP parallel
+     * region, or a CUDA fault (context possibly poisoned), is process-fatal
+     * so the client falls back to a fresh one-shot invocation. The per-
+     * request log file is left OPEN here (the serve loop closes it) so the
+     * FATAL line above is captured; g_die_jmp is disarmed by longjmp target
+     * side (log_set_die_recovery(NULL)). */
+    if (g_die_jmp && code != EXIT_CUDA && !omp_in_parallel()) {
+        jmp_buf *target = g_die_jmp;
+        longjmp(*target, code);
+    }
     log_close_file();
     exit(code);
 }

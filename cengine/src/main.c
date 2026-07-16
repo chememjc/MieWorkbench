@@ -16,7 +16,20 @@
  *   detected.json         per-detector per-key tallies
  *   summary.json          timings + counts (consumed for calibration)
  *   cengine.log           full DEBUG-level log
+ *
+ * --serve (P3 persistent worker): instead of one config, read newline-
+ * delimited request-file paths on stdin and process each exactly as the
+ * one-shot path does, hoisting the process (hence the CUDA context + the
+ * reusable device-buffer pool) across requests. Per request a single
+ * protocol line is written to stdout, `@MIEWB-WORKER {"request": "<path>",
+ * "rc": <int>}`, with a LEADING newline (the fcserver discipline: engine
+ * noise that lacks a trailing newline cannot glue onto the protocol line,
+ * and the client scans for the prefix mid-line). A recoverable per-request
+ * die() (scene-load / physics validation, single-threaded, non-CUDA) reports
+ * rc!=0 and the loop continues; a process-fatal signal or a CUDA fault ends
+ * the worker and the client falls back to a one-shot invocation.
  * =========================================================================== */
+#define _GNU_SOURCE
 #include "log.h"
 #include "npyio.h"
 #include "scene.h"
@@ -25,6 +38,7 @@
 #include "gather.h"
 #include "ledger.h"
 
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,51 +46,10 @@
 
 #define MIEWB_CENGINE_VERSION "0.1.0-phaseA"
 
-int main(int argc, char **argv) {
-    const char *config = NULL;
-    int threads_override = -1;
-
-    log_progress_init();
-    log_install_crash_handlers(argv[0]);
-
-    /* env default first so --log-level can override it */
-    const char *env_level = getenv("MIEWB_LOG_LEVEL");
-    if (env_level) {
-        int lv = log_level_from_name(env_level);
-        if (lv >= 0) log_set_level(lv);
-    }
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            config = argv[++i];
-        } else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
-            int lv = log_level_from_name(argv[++i]);
-            if (lv < 0)
-                die(EXIT_INPUT, "unknown --log-level '%s' (debug|info|"
-                    "warn|error)", argv[i]);
-            log_set_level(lv);
-        } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
-            threads_override = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--version") == 0) {
-            printf("miewb-trace %s\n", MIEWB_CENGINE_VERSION);
-            return 0;
-        } else {
-            die(EXIT_INPUT, "unknown argument '%s' (usage: miewb-trace "
-                "--config request.json [--log-level L] [--threads N])",
-                argv[i]);
-        }
-    }
-    if (!config)
-        die(EXIT_INPUT, "missing --config <request.json>");
-
-    /* little-endian assumption of npyio ("<f8") — check once */
-    {
-        const uint16_t probe = 1;
-        if (*(const uint8_t *)&probe != 1)
-            die(EXIT_INPUT, "big-endian host unsupported (npy writer "
-                "emits little-endian)");
-    }
-
+/* Process one loaded request exactly as the one-shot binary always has.
+ * Returns 0 on success; a failure die()s (which in --serve mode longjmps
+ * back to the serve loop, otherwise exit()s — see log.h). */
+static int run_request(const char *config, int threads_override) {
     SceneC *scene = request_load(config);
 
     char path[1200];
@@ -175,4 +148,140 @@ int main(int argc, char **argv) {
     scene_free(scene);
     log_close_file();
     return 0;
+}
+
+/* Minimal JSON string escaping for the request path on the protocol line
+ * (quotes + backslashes only — paths never carry control characters). */
+static void json_escape(const char *in, char *out, size_t cap) {
+    size_t j = 0;
+    for (size_t i = 0; in[i] && j + 2 < cap; i++) {
+        if (in[i] == '"' || in[i] == '\\') out[j++] = '\\';
+        out[j++] = in[i];
+    }
+    out[j] = 0;
+}
+
+/* --serve worker loop. Reads request-file paths (one per line) on stdin;
+ * per request runs run_request() under a die()-recovery target and reports
+ * `@MIEWB-WORKER {"request": ..., "rc": ...}` on stdout. EOF -> exit 0. */
+static int serve_loop(int threads_override) {
+    LOGI("miewb-trace %s: --serve worker ready", MIEWB_CENGINE_VERSION);
+#ifdef MIEWB_HAS_CUDA
+    gather_cuda_worker_init();          /* warm the primary context up front */
+#endif
+    /* test hook: simulate a worker crash BEFORE responding to the Nth
+     * request, so the client's fallback-to-one-shot path is exercised. */
+    const char *die_after_s = getenv("MIEWB_WORKER_DIE_AFTER");
+    long die_after = die_after_s ? atol(die_after_s) : 0;
+    long served = 0;
+
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    while ((len = getline(&line, &cap, stdin)) != -1) {
+        /* trim trailing newline/CR and surrounding whitespace */
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'
+                           || line[len - 1] == ' ' || line[len - 1] == '\t'))
+            line[--len] = 0;
+        char *path = line;
+        while (*path == ' ' || *path == '\t') path++;
+        if (*path == 0) continue;       /* blank line: ignore */
+
+        served++;
+        if (die_after > 0 && served >= die_after) {
+            LOGW("MIEWB_WORKER_DIE_AFTER=%ld reached — simulating worker "
+                 "death before responding", die_after);
+            free(line);
+            _exit(137);                 /* no protocol line: client sees EOF */
+        }
+
+        int rc;
+        jmp_buf recov;
+        int jc = setjmp(recov);
+        if (jc == 0) {
+            log_set_die_recovery(&recov);
+            rc = run_request(path, threads_override);
+        } else {
+            rc = jc;                    /* die() longjmped with its exit code */
+        }
+        log_set_die_recovery(NULL);
+        log_close_file();               /* close a per-request log left open
+                                         * by a recovered die() (no-op if
+                                         * run_request already closed it) */
+
+        char esc[2400];
+        json_escape(path, esc, sizeof esc);
+        /* LEADING newline: guarantees the protocol line starts fresh even
+         * if un-terminated engine noise preceded it on stdout. */
+        printf("\n@MIEWB-WORKER {\"request\": \"%s\", \"rc\": %d}\n", esc, rc);
+        fflush(stdout);
+    }
+    free(line);
+#ifdef MIEWB_HAS_CUDA
+    gather_cuda_pool_free();            /* release the device pool at exit */
+#endif
+    LOGI("miewb-trace: --serve stdin EOF, worker exiting");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    const char *config = NULL;
+    int threads_override = -1;
+    int serve = 0;
+
+    log_progress_init();
+    log_install_crash_handlers(argv[0]);
+
+    /* env default first so --log-level can override it */
+    const char *env_level = getenv("MIEWB_LOG_LEVEL");
+    if (env_level) {
+        int lv = log_level_from_name(env_level);
+        if (lv >= 0) log_set_level(lv);
+    }
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            config = argv[++i];
+        } else if (strcmp(argv[i], "--serve") == 0) {
+            serve = 1;
+        } else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
+            int lv = log_level_from_name(argv[++i]);
+            if (lv < 0)
+                die(EXIT_INPUT, "unknown --log-level '%s' (debug|info|"
+                    "warn|error)", argv[i]);
+            log_set_level(lv);
+        } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            threads_override = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--version") == 0) {
+            printf("miewb-trace %s\n", MIEWB_CENGINE_VERSION);
+            return 0;
+        } else {
+            die(EXIT_INPUT, "unknown argument '%s' (usage: miewb-trace "
+                "--config request.json | --serve [--log-level L] "
+                "[--threads N])", argv[i]);
+        }
+    }
+
+    /* little-endian assumption of npyio ("<f8") — check once */
+    {
+        const uint16_t probe = 1;
+        if (*(const uint8_t *)&probe != 1)
+            die(EXIT_INPUT, "big-endian host unsupported (npy writer "
+                "emits little-endian)");
+    }
+
+    if (serve) {
+        if (config)
+            die(EXIT_INPUT, "--serve and --config are mutually exclusive "
+                "(paths arrive on stdin in serve mode)");
+        return serve_loop(threads_override);
+    }
+
+    if (!config)
+        die(EXIT_INPUT, "missing --config <request.json> (or --serve)");
+    int rc = run_request(config, threads_override);
+#ifdef MIEWB_HAS_CUDA
+    gather_cuda_pool_free();            /* free the pool before context exit */
+#endif
+    return rc;
 }
