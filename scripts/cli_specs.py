@@ -292,6 +292,14 @@ def _build_pipeline_parser():
     g.add_argument("--dry-run", action="store_true",
                    help="trace builds estimates but does not run; post/viz "
                         "are then skipped per model with a NOTICE")
+    g.add_argument("--resume", action="store_true",
+                   help="resume an interrupted C-engine trace from its "
+                        "checkpoint (forwarded to run_trace.py; C engine "
+                        "only)")
+    g.add_argument("--extend", type=float, default=None, metavar="RAYS",
+                   help="raise a COMPLETED C-engine case to RAYS and continue "
+                        "(additive extension; forwarded to run_trace.py; "
+                        "C engine only)")
     g.add_argument("--seeds", type=int, default=None)
     g.add_argument("--rays", type=float, default=None,
                    help="primary rays per source (default: from --preset)")
@@ -643,6 +651,17 @@ def _build_trace_parser():
                    help="flat facet normals on mesh faces (default: "
                         "angle-weighted smoothed vertex normals)")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--resume", action="store_true",
+                   help="resume an interrupted C-engine run from its "
+                        "checkpoint.json (validates the scene hash and takes "
+                        "the free case lock, then continues from the primary "
+                        "cursor). C engine only — the Python engine's numpy "
+                        "RNG is stateful, so resume/extend refuse there.")
+    p.add_argument("--extend", type=float, default=None, metavar="RAYS",
+                   help="raise the target ray count of a COMPLETED C-engine "
+                        "case to RAYS and continue tracing the additional "
+                        "primaries, then re-gather over the merged samples "
+                        "(additive extension). C engine only.")
 
     g = p.add_argument_group("time-domain products (pulsed optics)")
     _add_time_product_args(g, bins_default=TIME_BINS_PRESET["normal"])

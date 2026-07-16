@@ -284,11 +284,16 @@ def compute_viz_caps(scene, args, pattern):
     return viz_caps
 
 
-def compute_sample_area(scene, args):
+def compute_sample_area(scene, args, total_rays=None):
     """Per-(source, lam-stratum, pol-stratum) gather normalization area,
-    derived from the FULL ray count (int(args.rays)) so it is independent of
-    how the trace is sharded across workers."""
-    total = int(args.rays)
+    derived from the emitted ray count so it is independent of how the trace
+    is sharded across workers OR chunked across primary ranges.
+
+    total_rays: the number of primaries actually emitted per source at gather
+    time (the P1 chunked/extend CURSOR). Defaults to int(args.rays) — the
+    single-shot path where cursor == target, unchanged. The C-engine chunked
+    driver passes the cursor so an --extend renormalizes for free."""
+    total = int(args.rays) if total_rays is None else int(total_rays)
     sample_area = {}
     for sid, (bidx, src) in enumerate(scene.sources):
         area = scene.emit_faces[bidx].area_m2 or 1e-6
@@ -841,9 +846,33 @@ def main(argv=None):
     case_dir = Path(args.case_dir)
     case_dir.mkdir(parents=True, exist_ok=True)
 
-    # one writer per case: refuse (exit 4) rather than corrupt a live run
+    # P1 chunked-run contract: --extend RAYS raises the target; downstream
+    # (estimate, chunk driver) reads it as the new args.rays, while args.extend
+    # stays set as the "this is an extension of a completed case" signal.
+    if getattr(args, "extend", None) is not None:
+        args.rays = float(args.extend)
+
+    # one writer per case: refuse (exit 4) rather than corrupt a live run.
+    # P1 --resume/--extend continue an EXISTING case: a lock left by a hard
+    # kill has a recent heartbeat (not yet "stale" by age) but a DEAD pid, so
+    # steal it only when its owner is truly gone on this host.
+    force_lock = False
+    if getattr(args, "resume", False) or getattr(args, "extend", None) \
+            is not None:
+        info = common.lock_info(case_dir)
+        if info is not None:
+            import socket
+            same_host = info.get("host") == socket.gethostname()
+            pid = info.get("pid")
+            dead = False
+            if same_host and pid:
+                try:
+                    os.kill(int(pid), 0)
+                except (OSError, ValueError):
+                    dead = True
+            force_lock = dead or common.lock_is_stale(case_dir, info)
     try:
-        common.acquire_case_lock(case_dir)
+        common.acquire_case_lock(case_dir, force=force_lock)
     except common.CaseLocked as exc:
         print("[trace] REFUSED: %s (rerun when it finishes, or remove "
               "%s if you are sure it is dead)"
@@ -924,6 +953,18 @@ def _main_locked(args, case_dir):
     # gather/trace rates differ from the torch/numpy ones by ~6x/8x) ----
     from raytracer import cengine
     engine, engine_reason = cengine.choose_engine(args, scene)
+    # P1: resume/extend are a C-engine-only contract. The Python engine's
+    # numpy RNG is stateful (each seed's stream is consumed in one pass), so
+    # there is no primary cursor to resume from or extend past — refuse
+    # clearly rather than silently re-running or double-counting.
+    if engine != "c" and (getattr(args, "resume", False)
+                          or getattr(args, "extend", None) is not None):
+        raise SystemExit(
+            "run_trace.py: --resume/--extend require the C engine "
+            "(engine=%s here: %s). The Python engine's numpy RNG is "
+            "stateful — checkpoint/resume/extend is C-engine-only. Re-run "
+            "with --engine c, or run a fresh --rays <N>."
+            % (engine, engine_reason))
     if engine == "c" and args.save_fields and save_fields_labels is not None:
         # the C engine always saves fields for every detector under
         # --save-fields (no per-detector subset plumbed through its
