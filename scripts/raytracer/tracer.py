@@ -37,6 +37,7 @@ from . import roughness as rough_mod
 from . import scatter as scatter_mod
 from . import differentials as diff_mod
 from . import nlo as nlo_mod
+from . import poltransport as pt
 from .rays import RayBatch, AMBIENT, HIST_DEPTH
 from .audit import PowerLedger
 
@@ -56,7 +57,8 @@ class TraceConfig:
                  rays=int(1e5), seed=0, viz_rays=500, batch_size=1 << 20,
                  rough_fresnel="micro", export_rays=False,
                  track_history=False, track_time=False,
-                 importance_scatter=False, importance_limit=1.0):
+                 importance_scatter=False, importance_limit=1.0,
+                 pol_transport=False):
         self.max_reflections = max_reflections
         self.power_floor = power_floor
         self.n_lambda = n_lambda
@@ -78,6 +80,12 @@ class TraceConfig:
         # ledger, detector cubes) is bit-identical. Diagnostic/analysis
         # only — never feeds the splat/gather.
         self.track_time = track_time
+        # pol_transport: allocate RayBatch.Qmat/Jmat on the primaries and
+        # update them at every polarization-affecting interaction (P2;
+        # --pol-transport). Zero overhead when off (both slots stay None
+        # everywhere). Diagnostic/analysis only — never feeds the trace's
+        # own Es/Ep field propagation or the gather.
+        self.pol_transport = pol_transport
         # viz_rays: int cap for every source, or {source_id: cap} computed
         # from --viz-density (rays per mm^2 of emit area) upstream
         self.viz_rays = viz_rays
@@ -247,6 +255,8 @@ class Tracer:
                 b.alloc_history()
             if self.cfg.track_time and b.gopl is None:
                 b.alloc_time()
+            if self.cfg.pol_transport and b.Qmat is None:
+                pt.init_birth(b)
         # a hard iteration cap guards against pathological loops; with the
         # generation cap the loop terminates naturally well before this
         for _ in range(64 * (self.cfg.max_reflections + 2)):
@@ -736,6 +746,15 @@ class Tracer:
             rec["gopl"] = grp.gopl.copy()
         if grp.gdd_acc is not None:
             rec["gdd_acc"] = grp.gdd_acc.copy()
+        # --pol-transport: Qmat/Jmat AT THE HIT (free flight since the last
+        # interaction contributes identity, so no further update is needed
+        # here) plus the ray's own s_hat at arrival — post_process needs it
+        # to form the arrival frame O_out,final = frame(s_hat, dir) that
+        # M = Q^T P is built from.
+        if grp.Qmat is not None:
+            rec["Qmat"] = grp.Qmat.copy()
+            rec["Jmat"] = grp.Jmat.copy()
+            rec["s_hat"] = grp.s_hat.copy()
         det.ray_records.append(rec)
 
     def _flux_out_children(self, body, children):
@@ -768,6 +787,11 @@ class Tracer:
             tr = grp.select(np.ones(len(grp), dtype=bool))
             tr.Es *= np.sqrt(t_frac)
             tr.Ep *= np.sqrt(t_frac)
+            # screen transmission: no basis change, no redirect — a bare
+            # scalar diag(sqrt(t_frac)) with Q=identity
+            pt.update(tr, grp.s_hat, grp.dir, tr.s_hat, tr.dir,
+                     pt.diag2(np.full(len(grp), np.sqrt(t_frac)),
+                              np.full(len(grp), np.sqrt(t_frac))))
             out.append(tr)
         if r_m > 0:
             n_out = face.normal_out_of_solid(grp.pos)
@@ -779,6 +803,13 @@ class Tracer:
             rf.dir = fr.reflect_dir(grp.dir, n_hat)
             rf.Es *= -np.sqrt(r_m)
             rf.Ep *= -np.sqrt(r_m)
+            # screen reflection: s_hat is NOT re-based to the interface
+            # plane (this idealized screen has no s/p distinction — a
+            # single scalar r_m) so J_step has no R(basis) factor either;
+            # Q alone captures the redirect (dir flips, s_hat unchanged).
+            pt.update(rf, grp.s_hat, grp.dir, rf.s_hat, rf.dir,
+                     pt.diag2(np.full(len(grp), -np.sqrt(r_m)),
+                              np.full(len(grp), -np.sqrt(r_m))))
             self._record_reflection(rf, fid)
             rf.generation += 1
             out.append(rf)
@@ -863,7 +894,8 @@ class Tracer:
 
     def _emit_scatter_side(self, template, out, fid, body, m, spec, tis,
                            tis_ref, d_spec, n_side, amp_full_s, amp_full_p,
-                           Es, Ep, s_new, pos, active, p_accounted):
+                           Es, Ep, s_new, pos, active, p_accounted,
+                           pol_base=None):
         """Emit the scattered-lobe children carrying the per-ray `tis`
         fraction of this side's power about the specular direction d_spec.
 
@@ -882,6 +914,18 @@ class Tracer:
         amp_full_s/p : (m,) FULL (un-split) specular Jones amplitude factors
         Es,Ep    : (m,) incident Jones amplitudes in the s_new/p basis
         active   : (m,) rays that have a specular child on this side
+        pol_base : --pol-transport parent baseline, or None when off:
+                   (Q_parent (m,3,3), J_parent_in_interface_basis (m,2,2),
+                   d_parent (m,3)). J is the PARENT's cumulative Jones
+                   already rotated into THIS interface's (s_new, p_new)
+                   basis -- exactly the basis Es/Ep and every child's
+                   s_hat live in, so each child's own J step is the bare
+                   diag(amp_full * amp_child). Children here are built by
+                   template.select() (template may be `trans`, whose Q/J
+                   already carry the SPECULAR-transmit step) but their
+                   fields restart from the incident Es/Ep, so their Q/J
+                   are RESET to this baseline before composing (the same
+                   reasoning as the roughness st-lobe reset above).
         Returns the updated p_accounted (this side's lobe power folded in)."""
         A, B, g = spec["A"], spec["B"], spec["g"]
         k_lobe = 2
@@ -954,6 +998,13 @@ class Tracer:
                     sc.s_hat = s_new
                     sc.Es = Es * amp_full_s * amp
                     sc.Ep = Ep * amp_full_p * amp
+                    if pol_base is not None and sc.Qmat is not None:
+                        Qp, Jp, d_par = pol_base
+                        sc.Qmat = Qp.copy()
+                        sc.Jmat = Jp.copy()
+                        pt.update(sc, s_new, d_par, sc.s_hat, sc.dir,
+                                 pt.diag2(amp_full_s * amp,
+                                          amp_full_p * amp))
                     self._record_reflection(sc, fid)
                     sc.generation += 1
                     sc.scattered[:] = True
@@ -988,6 +1039,13 @@ class Tracer:
             sc.s_hat = s_new
             sc.Es = Es * amp_full_s * amp_lobe
             sc.Ep = Ep * amp_full_p * amp_lobe
+            if pol_base is not None and sc.Qmat is not None:
+                Qp, Jp, d_par = pol_base
+                sc.Qmat = Qp.copy()
+                sc.Jmat = Jp.copy()
+                pt.update(sc, s_new, d_par, sc.s_hat, sc.dir,
+                         pt.diag2(amp_full_s * amp_lobe,
+                                  amp_full_p * amp_lobe))
             self._record_reflection(sc, fid)
             sc.generation += 1
             sc.scattered[:] = True
@@ -1251,6 +1309,9 @@ class Tracer:
         refl.s_hat = s_new
         refl.Es = Es * amp_rs
         refl.Ep = Ep * amp_rp
+        pt.update(refl, grp.s_hat, grp.dir, refl.s_hat, refl.dir,
+                 pt.j_step_diag(amp_rs, amp_rp, grp.s_hat, p_old,
+                                s_new, p_new))
         self._record_reflection(refl, fid)
         refl.generation += 1
         if grp.has_differentials:
@@ -1316,6 +1377,9 @@ class Tracer:
         amp_tp = full_amp_tp * trans_scale
         trans.Es = Es * amp_ts
         trans.Ep = Ep * amp_tp
+        pt.update(trans, grp.s_hat, grp.dir, trans.s_hat, trans.dir,
+                 pt.j_step_diag(amp_ts, amp_tp, grp.s_hat, p_old,
+                                s_new, p_new))
         # medium bookkeeping
         ent = entering & ~tir
         exi = (~entering) & ~tir
@@ -1407,17 +1471,34 @@ class Tracer:
                 sc.dir = fr.reflect_dir(grp.dir, n_j)
                 if micro:
                     sc.s_hat = s_j
-                    sc.Es = Es_j * np.sqrt(
+                    amp_rs_j = np.sqrt(
                         frac * (r_m + phys * np.abs(rs_j) ** 2)) \
                         * np.exp(1j * np.angle(rs_j))
-                    sc.Ep = Ep_j * np.sqrt(
+                    amp_rp_j = np.sqrt(
                         frac * (r_m + phys * np.abs(rp_j) ** 2)) \
                         * np.exp(1j * np.angle(rp_j))
+                    sc.Es = Es_j * amp_rs_j
+                    sc.Ep = Ep_j * amp_rp_j
+                    if sc.Jmat is not None:
+                        R2 = pt.basis_rot2(s_new, p_new, s_j, p_j)
+                        R1 = pt.basis_rot2(grp.s_hat, p_old, s_new, p_new)
+                        j_step = np.einsum(
+                            'nij,njk->nik',
+                            pt.diag2(amp_rs_j, amp_rp_j),
+                            np.einsum('nij,njk->nik', R2, R1))
+                        pt.update(sc, grp.s_hat, grp.dir, sc.s_hat, sc.dir,
+                                 j_step)
                 else:
                     sc.s_hat = s_new
                     amp_j = np.sqrt(loseR / k_lobe)
                     sc.Es = Es * amp_j
                     sc.Ep = Ep * amp_j
+                    if sc.Jmat is not None:
+                        R1 = pt.basis_rot2(grp.s_hat, p_old, s_new, p_new)
+                        j_step = np.einsum('nij,njk->nik',
+                                           pt.diag2(amp_j, amp_j), R1)
+                        pt.update(sc, grp.s_hat, grp.dir, sc.s_hat, sc.dir,
+                                 j_step)
                 self._record_reflection(sc, fid)
                 sc.generation += 1
                 sc.scattered[:] = True
@@ -1435,14 +1516,34 @@ class Tracer:
                 # scattered transmission (skip under TIR)
                 st = trans.select(np.ones(m, dtype=bool))
                 _kill_differentials(st)
+                if st.Qmat is not None:
+                    # st is a fresh channel off the ORIGINAL incident field
+                    # (Es_j/Ep_j below, not trans's already-scaled specular
+                    # amplitude), even though it's built via trans.select()
+                    # for convenience (medium stack, pol_mode, ...) — reset
+                    # the inherited Q/J baseline to grp's (the true parent)
+                    # before composing this lobe's own step.
+                    st.Qmat = grp.Qmat.copy()
+                    st.Jmat = grp.Jmat.copy()
                 st.dir = fr.refract_dir(grp.dir, n_j, cos_j,
                                         np.real(n1), np.real(n2))
                 if micro:
                     st.s_hat = s_j
-                    st.Es = Es_j * np.sqrt(frac * phys * Ts_j) \
+                    amp_ts_j = np.sqrt(frac * phys * Ts_j) \
                         * np.exp(1j * np.angle(ts_j))
-                    st.Ep = Ep_j * np.sqrt(frac * phys * Tp_j) \
+                    amp_tp_j = np.sqrt(frac * phys * Tp_j) \
                         * np.exp(1j * np.angle(tp_j))
+                    st.Es = Es_j * amp_ts_j
+                    st.Ep = Ep_j * amp_tp_j
+                    if st.Jmat is not None:
+                        R2 = pt.basis_rot2(s_new, p_new, s_j, p_j)
+                        R1 = pt.basis_rot2(grp.s_hat, p_old, s_new, p_new)
+                        j_step = np.einsum(
+                            'nij,njk->nik',
+                            pt.diag2(amp_ts_j, amp_tp_j),
+                            np.einsum('nij,njk->nik', R2, R1))
+                        pt.update(st, grp.s_hat, grp.dir, st.s_hat, st.dir,
+                                 j_step)
                     # macro-TIR rows never pushed/popped the medium on
                     # `trans`, so a micro-transmitting lobe there would
                     # carry a wrong stack — suppress (no frustrated-TIR
@@ -1452,6 +1553,12 @@ class Tracer:
                     amp_tj = np.sqrt(loseT / k_lobe)
                     st.Es = Es * amp_tj
                     st.Ep = Ep * amp_tj
+                    if st.Jmat is not None:
+                        R1 = pt.basis_rot2(grp.s_hat, p_old, s_new, p_new)
+                        j_step = np.einsum('nij,njk->nik',
+                                           pt.diag2(amp_tj, amp_tj), R1)
+                        pt.update(st, grp.s_hat, grp.dir, st.s_hat, st.dir,
+                                 j_step)
                     tir_j = tir
                 st.scattered[:] = True
                 okt = (~tir_j & (st.power > 0)
@@ -1472,12 +1579,25 @@ class Tracer:
         # the FULL side amplitude so specular (1-TIS) + scattered TIS == the
         # full share exactly (closure preserved). _emit_scatter_side also
         # implements importance sampling toward the detectors (§7.1).
+        # --pol-transport parent baseline for the scatter-lobe children:
+        # the PARENT's (grp's) Q, and its cumulative J rotated once into
+        # this interface's (s_new, p_new) basis — the basis Es/Ep and every
+        # lobe child's s_hat live in, shared by the reflected AND (BTDF)
+        # transmitted sides (both spawn off the same incident field).
+        pol_base = None
+        if grp.Qmat is not None and (
+                (scat is not None and np.any(tis > 0.0))
+                or (btdf is not None and np.any(tis_t > 0.0))):
+            Rb = pt.basis_rot2(grp.s_hat, p_old, s_new, p_new)
+            pol_base = (grp.Qmat,
+                        np.einsum('nij,njk->nik', Rb, grp.Jmat),
+                        grp.dir)
         if scat is not None and np.any(tis > 0.0):
             d_spec_r = fr.reflect_dir(grp.dir, n_hat)
             p_accounted = self._emit_scatter_side(
                 grp, out, fid, body, m, scat, tis, tis_ref, d_spec_r, n_hat,
                 full_amp_rs, full_amp_rp, Es, Ep, s_new, grp.pos,
-                np.ones(m, dtype=bool), p_accounted)
+                np.ones(m, dtype=bool), p_accounted, pol_base=pol_base)
         if btdf is not None and np.any(tis_t > 0.0):
             # refracted specular direction; sanitize TIR rows (no transmitted
             # child there) so the sampler never sees a non-finite direction
@@ -1486,7 +1606,7 @@ class Tracer:
             p_accounted = self._emit_scatter_side(
                 trans, out, fid, body, m, btdf, tis_t, tis_t_ref, d_spec_t,
                 n_trans, full_amp_ts, full_amp_tp, Es, Ep, s_new, grp.pos,
-                ~tir, p_accounted)
+                ~tir, p_accounted, pol_base=pol_base)
 
         # ---- surface absorption = exact power difference ----
         # (generation-capped reflections were already credited above, so
@@ -1544,6 +1664,18 @@ class Tracer:
             j12 = c * s - e * s * c
             Et, Ep_ = j11 * Et + j12 * Ep_, j12 * Et + (s * s + e * c * c) \
                 * Ep_
+        if trans.Jmat is not None:
+            # polarizer: pure amplitude interaction (dir unchanged) — Q
+            # step is identity; J_step = [circular retarder, if any] @
+            # diag(a_par, a_perp) @ R(basis: old s_hat -> t_hat)
+            j_step = pt.j_step_diag(a_par, a_perp, trans.s_hat[idx], p_old,
+                                    t_hat, p_of_t)
+            if entry["type"] in ("circular_left", "circular_right"):
+                Jcirc = np.array([[j11, j12], [j12, s * s + e * c * c]],
+                                 dtype=np.complex128)
+                j_step = np.einsum('ij,njk->nik', Jcirc, j_step)
+            trans.Jmat[idx] = np.einsum('nij,njk->nik', j_step,
+                                        trans.Jmat[idx])
         trans.Es[idx] = Et
         trans.Ep[idx] = Ep_
         trans.s_hat[idx] = t_hat
@@ -1646,6 +1778,7 @@ class Tracer:
             # reflected child: coherent sum of both channels' reflections
             refl = sub.select(np.ones(len(ent), dtype=bool))
             _kill_differentials(refl)
+            pt.kill(refl)   # o/e (or slow/fast) channel mix: not modeled
             refl.dir = fr.reflect_dir(sub.dir, nh)
             refl.s_hat = s_new
             amp_rs_o = np.sqrt(r_m + phys * np.abs(rs_o) ** 2) \
@@ -1681,6 +1814,7 @@ class Tracer:
                 s_new, np.cross(res["k_o"], s_new), eo_o, ee_o)
             och = sub.select(np.ones(len(ent), dtype=bool))
             _kill_differentials(och)
+            pt.kill(och)   # o/e channel mix: not modeled
             och.dir = res["k_o"]
             och.s_hat = eo_o
             och.Es = Eso                     # o mode: D along e_o_hat only
@@ -1708,6 +1842,7 @@ class Tracer:
                 s_new, np.cross(res["k_e"], s_new), eo_e, ee_e)
             ech = sub.select(np.ones(len(ent), dtype=bool))
             _kill_differentials(ech)
+            pt.kill(ech)   # o/e channel mix: not modeled
             ech.dir = res["s_e"]
             ech.s_hat = eo_e                 # _|_ s_e exactly (in-plane ray)
             ech.Es = np.zeros_like(Ese)
@@ -1778,6 +1913,7 @@ class Tracer:
             # transmitted child: leaves the crystal, mode resets
             tr = sub.select(np.ones(len(exi), dtype=bool))
             _kill_differentials(tr)
+            pt.kill(tr)   # o/e (or slow/fast) channel mix: not modeled
             tr.dir = d_out
             tr.s_hat = s_new
             tr.Es = Es_i * np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts))
@@ -1797,6 +1933,7 @@ class Tracer:
             k_r = fr.reflect_dir(k_int, nh)
             rf = sub.select(np.ones(len(exi), dtype=bool))
             _kill_differentials(rf)
+            pt.kill(rf)   # o/e (or slow/fast) channel mix: not modeled
             rf.dir = k_r
             rf.s_hat = s_new
             rf.Es = Es_i * np.sqrt(r_m + phys * np.abs(rs) ** 2) \
@@ -1935,6 +2072,7 @@ class Tracer:
             rs2, rp2 = coeffs["fast"][0], coeffs["fast"][1]
             refl = sub.select(np.ones(len(ent), dtype=bool))
             _kill_differentials(refl)
+            pt.kill(refl)   # o/e (or slow/fast) channel mix: not modeled
             refl.dir = fr.reflect_dir(sub.dir, nh)
             refl.s_hat = s_new
             amp = {}
@@ -1967,6 +2105,7 @@ class Tracer:
                 amp_tp = np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp))
                 ch = sub.select(np.ones(len(ent), dtype=bool))
                 _kill_differentials(ch)
+                pt.kill(ch)   # slow/fast channel mix: not modeled
                 ch.dir = s_ray
                 # Jones basis: s_hat _|_ (ray, D-ish) so the full field
                 # sits in Ep along the projected D direction — the same
@@ -2048,6 +2187,7 @@ class Tracer:
             # transmitted child: leaves the crystal, mode resets
             tr = sub.select(np.ones(len(exi), dtype=bool))
             _kill_differentials(tr)
+            pt.kill(tr)   # o/e (or slow/fast) channel mix: not modeled
             tr.dir = d_out
             tr.s_hat = s_new
             tr.Es = Es_i * np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts))
@@ -2072,6 +2212,7 @@ class Tracer:
                                                          eps[exi])
                 rf = sub.select(np.ones(len(exi), dtype=bool))
                 _kill_differentials(rf)
+                pt.kill(rf)   # o/e (or slow/fast) channel mix: not modeled
                 rf.dir = s_ray
                 rf.s_hat = s_new
                 rf.Es = Es_i * np.sqrt(r_m + phys * np.abs(rs) ** 2) \

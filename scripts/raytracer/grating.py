@@ -392,6 +392,7 @@ def apply_to_batch(tracer, fid, grp):
     docstrings above."""
     import numpy as np
     from . import fresnel as fr
+    from . import poltransport as pt
     from .rays import RayBatch
 
     scene = tracer.scene
@@ -477,8 +478,22 @@ def apply_to_batch(tracer, fid, grp):
         flip = np.sum(s_child * s_new[prop], axis=-1) < 0.0
         s_child = np.where((ok_frame & flip)[:, None], -s_child, s_child)
         child.s_hat = s_child
-        child.Es = Es[prop] * np.sqrt(eta_s[prop, j])
-        child.Ep = Ep[prop] * np.sqrt(eta_p[prop, j])
+        amp_s_ord = np.sqrt(eta_s[prop, j])
+        amp_p_ord = np.sqrt(eta_p[prop, j])
+        child.Es = Es[prop] * amp_s_ord
+        child.Ep = Ep[prop] * amp_p_ord
+        if child.Jmat is not None:
+            # order efficiencies (eta_s, eta_p) are real (this idealized
+            # model carries no coherent phase between orders), so this
+            # step is a pure diattenuator in the interface (s,p) basis --
+            # any retardance/spin the child later reports is entirely
+            # geometric (Q) plus whatever upstream/downstream optics add.
+            R1 = pt.basis_rot2(grp.s_hat[prop], p_old[prop],
+                               s_new[prop], p_new[prop])
+            j_step = np.einsum('nij,njk->nik',
+                               pt.diag2(amp_s_ord, amp_p_ord), R1)
+            pt.update(child, grp.s_hat[prop], grp.dir[prop],
+                     child.s_hat, child.dir, j_step)
         if reflective:
             child.generation += 1
             gen_ok = child.generation <= tracer.cfg.max_reflections

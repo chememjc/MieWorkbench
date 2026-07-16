@@ -214,6 +214,12 @@ def detect_features(args, scene):
         feats.add("export_rays")
     if args.ghost_analysis:
         feats.add("ghost_analysis")
+    # P2 parallel-transport polarization analysis: RayBatch.Qmat/Jmat
+    # bookkeeping exists in the Python engine only (same silent-skip rule
+    # as every other engine-diagnostic feature above — the token forces
+    # 'auto' off C so --pol-transport is never quietly dropped).
+    if getattr(args, "pol_transport", False):
+        feats.add("pol_transport")
     if args.viz_pattern:
         feats.add("viz_pattern")
     if args.save_fields:

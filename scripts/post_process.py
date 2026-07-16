@@ -1947,6 +1947,134 @@ def render_ghost_analysis(safe, dm, cols, adir, report, face_labels,
             image="analysis/ghost_table_%s.png" % safe)
 
 
+# =============================================================================
+# --pol-transport follow-on (P2): honest per-detector retardance /
+# diattenuation / fast-axis maps, geometric (Pancharatnam / image-rotation)
+# rotation removed via M = Q^T P (raytracer/poltransport.py). Runs only when
+# rays_full.npz carries this detector's seed-0 Qmat/Jmat/s_hat (i.e. the
+# trace ran with --pol-transport). Rays whose transport was not modeled
+# (birefringent/biaxial o/e or slow/fast channel splits — NaN Qmat/Jmat,
+# same slot-lifecycle convention as the differentials) are dropped from the
+# maps; the dropped POWER fraction is reported so a user can tell whether
+# the map is trustworthy for a birefringent-heavy scene.
+# =============================================================================
+def render_pol_transport(safe, dm, cols, adir, report, csv_emitter=None):
+    label = dm["label"]
+    Qmat = cols.get("Qmat")
+    if Qmat is None or len(Qmat) == 0:
+        return
+    from raytracer import poltransport as ptmod
+    Jmat = cols["Jmat"]
+    s_hat = cols["s_hat"]
+    dir_ = cols["dir"]
+    power = cols["power"]
+    pos = cols["pos"]
+    xhat = np.asarray(dm["xhat"])
+    yhat = np.asarray(dm["yhat"])
+
+    valid = (np.all(np.isfinite(Qmat.reshape(len(Qmat), -1)), axis=-1)
+            & np.all(np.isfinite(Jmat.reshape(len(Jmat), -1).real), axis=-1)
+            & np.all(np.isfinite(Jmat.reshape(len(Jmat), -1).imag), axis=-1))
+    total_power = float(np.sum(power))
+    dropped_power = float(np.sum(power[~valid]))
+    dropped_fraction = (dropped_power / total_power
+                        if total_power > 0 else 0.0)
+    report_block = {
+        "n_rays": int(len(Qmat)), "n_valid": int(np.sum(valid)),
+        "dropped_fraction": dropped_fraction,
+    }
+    if not np.any(valid):
+        if label in report["detectors"]:
+            report["detectors"][label]["pol_transport"] = report_block
+        return
+
+    # M = Q^T P, restricted to the transverse (s,p) block (see
+    # poltransport.py's module docstring for the derivation): Delta =
+    # Q^T @ O_arrival is always a pure rotation (both share the ray's own
+    # final k), so it strips exactly the geometric spin baked into Jmat's
+    # basis-re-expression factors.
+    Qv = Qmat[valid]
+    Jv = Jmat[valid]
+    O_final = ptmod.frame(s_hat[valid], dir_[valid])
+    Delta = np.einsum('nji,njk->nik', Qv, O_final)      # Q^T @ O_final
+    M = np.einsum('nij,njk->nik', Delta[:, :2, :2], Jv)
+    gamma, diatten, axis = ptmod.polar_decompose(M)
+
+    u = (pos[valid] @ xhat) * 1e3
+    v = (pos[valid] @ yhat) * 1e3
+    pw = power[valid]
+    power_wsum = float(np.sum(pw))
+    ret_mean = float(np.sum(pw * gamma) / power_wsum) \
+        if power_wsum > 0 else 0.0
+    dia_mean = float(np.sum(pw * diatten) / power_wsum) \
+        if power_wsum > 0 else 0.0
+    # circular mean of the mod-pi fast axis (doubled-angle trick), power-
+    # weighted
+    ax2 = 2.0 * axis
+    axis_mean = 0.5 * float(np.arctan2(np.sum(pw * np.sin(ax2)),
+                                       np.sum(pw * np.cos(ax2)))) \
+        if power_wsum > 0 else 0.0
+    report_block.update({
+        "retardance_rad_mean": ret_mean,
+        "diattenuation_mean": dia_mean,
+        "fast_axis_rad_mean": axis_mean,
+    })
+
+    has_map = len(u) >= 8 and np.ptp(u) > 0 and np.ptp(v) > 0
+    if has_map:
+        nbins = 48
+        edges_u = np.linspace(u.min(), u.max(), nbins + 1)
+        edges_v = np.linspace(v.min(), v.max(), nbins + 1)
+        wsum, _, _ = np.histogram2d(u, v, bins=[edges_u, edges_v],
+                                    weights=pw)
+
+        def _wmean(vals):
+            num, _, _ = np.histogram2d(u, v, bins=[edges_u, edges_v],
+                                       weights=pw * vals)
+            out = np.full_like(num, np.nan)
+            m = wsum > 0
+            out[m] = num[m] / wsum[m]
+            return out
+
+        panels = [("retardance [rad]", _wmean(gamma), "inferno"),
+                 ("diattenuation", _wmean(diatten), "viridis")]
+        fig, axes = plt.subplots(1, len(panels),
+                                 figsize=(4.6 * len(panels), 4.0),
+                                 squeeze=False)
+        extent = [edges_u[0], edges_u[-1], edges_v[0], edges_v[-1]]
+        for i, (title, arr, cmap) in enumerate(panels):
+            axp = axes[0][i]
+            im = axp.imshow(arr.T, origin="lower", extent=extent,
+                            aspect="equal", cmap=cmap)
+            axp.set_xlabel("u [mm]", fontsize=8)
+            axp.set_ylabel("v [mm]", fontsize=8)
+            axp.set_title(title, fontsize=9)
+            fig.colorbar(im, ax=axp, shrink=0.8)
+        fig.suptitle("Pol-transport (Q-corrected) — %s\n"
+                    "retardance %.4g rad, diattenuation %.4g "
+                    "(dropped %.2f%% of power)"
+                    % (label, ret_mean, dia_mean, 100.0 * dropped_fraction),
+                    fontsize=9)
+        fig.tight_layout(rect=(0, 0, 1, 0.93))
+        png = adir / ("pol_transport_%s.png" % safe)
+        fig.savefig(png, bbox_inches="tight")
+        plt.close(fig)
+        report_block["image"] = "analysis/pol_transport_%s.png" % safe
+
+    if label in report["detectors"]:
+        report["detectors"][label]["pol_transport"] = report_block
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "pol_transport_%s.csv" % safe,
+            ["u_mm", "v_mm", "retardance_rad", "diattenuation",
+             "fast_axis_rad", "power_W"],
+            list(zip(u.tolist(), v.tolist(), gamma.tolist(),
+                    diatten.tolist(), axis.tolist(), pw.tolist())),
+            entity=label, chart="pol_transport", units="rad; W",
+            provenance="rays_full.npz",
+            image=report_block.get("image"))
+
+
 def render_ray_analysis(case_dir, report, csv_emitter=None):
     npz_path = case_dir / "rays_full.npz"
     if not npz_path.exists():
@@ -1965,11 +2093,18 @@ def render_ray_analysis(case_dir, report, csv_emitter=None):
         hist_key = "%s/refl_hist" % safe
         if hist_key in z.files:
             cols["refl_hist"] = z[hist_key]
+        qmat_key = "%s/Qmat" % safe
+        if qmat_key in z.files:
+            cols["Qmat"] = z[qmat_key]
+            cols["Jmat"] = z["%s/Jmat" % safe]
+            cols["s_hat"] = z["%s/s_hat" % safe]
         render_spot_diagram(safe, dm, cols, adir, report, csv_emitter)
         render_ray_fans(safe, dm, cols, adir, report, csv_emitter)
         if "refl_hist" in cols:
             render_ghost_analysis(safe, dm, cols, adir, report,
                                   face_labels, csv_emitter)
+        if "Qmat" in cols:
+            render_pol_transport(safe, dm, cols, adir, report, csv_emitter)
 
 
 # =============================================================================
