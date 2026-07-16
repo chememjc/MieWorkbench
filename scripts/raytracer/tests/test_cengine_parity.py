@@ -43,6 +43,15 @@ RESOLUTION = 128
 NLAMBDA = 3
 
 
+def c_chunk_dir(case_dir, seed=42):
+    """First C-engine trace chunk dir (P1 chunked-run layout:
+    cengine/seed<seed>/chunk_<lo>_<hi>/). The direct-binary tests read the
+    request/mask/inc/viz artifacts from here."""
+    chunks = sorted((case_dir / "cengine" / ("seed%d" % seed)).glob(
+        "chunk_*"), key=lambda p: int(p.name.split("_")[1]))
+    return chunks[0]
+
+
 def run_engine(model_json, case_dir, engine):
     import run_trace
     rc = run_trace.main([
@@ -149,8 +158,7 @@ def test_scene_parity(name, tmp_path):
                 name, pcx, pcy, ccx, ccy)
 
     # ---- C engine's own trim mask == Python grid mask (bit-for-bit) ----
-    c_mask_own = np.load(cc["case_dir"] / "cengine" / "seed42"
-                         / "det_0_mask.npy")
+    c_mask_own = np.load(c_chunk_dir(cc["case_dir"]) / "det_0_mask.npy")
     assert np.array_equal(c_mask_own.astype(bool), py_mask.astype(bool)), \
         "%s: C trim mask differs from Python DetectorGrid mask" % name
 
@@ -353,8 +361,12 @@ def test_thread_count_invariance(tmp_path):
     import subprocess
     model_json = cengine_scenes.write_scene("c_plate", tmp_path / "g")
     run_engine(model_json, tmp_path / "case", "c")
-    req_path = tmp_path / "case" / "cengine" / "request_seed42.json"
+    req_path = c_chunk_dir(tmp_path / "case") / "request.json"
     req = json.loads(req_path.read_text())
+    # exercise the C engine's OWN in-binary gather here (the P1 pipeline
+    # routes coherent gather to Python; this direct-binary test still covers
+    # the C gather's thread-invariance by turning gather_skip back off).
+    req["params"]["gather_skip"] = False
     cubes, vizzes, ledgers = [], [], []
     for th in (1, 7, 32):
         od = tmp_path / ("threads%d" % th)
@@ -433,7 +445,7 @@ def test_spectrum_scene_strata_parity(tmp_path):
     ref = wavelength_strata(src, NLAMBDA)
 
     req = json.loads(
-        (tmp_path / "case_c" / "cengine" / "request_seed42.json").read_text())
+        (c_chunk_dir(tmp_path / "case_c") / "request.json").read_text())
     lams_c = np.asarray(req["lams_m"])
     assert lams_c.shape == ref.shape
     assert np.allclose(lams_c, ref, rtol=0, atol=1e-15), (lams_c, ref)
