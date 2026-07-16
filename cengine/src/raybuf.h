@@ -31,7 +31,7 @@
 #define AMBIENT (-1)            /* rays.py:18 */
 #define HIST_DEPTH 8            /* rays.py:22 (ghost refl_hist slots) */
 
-typedef struct {
+typedef struct Ray {
     kvec3 pos, dir, s_hat;
     kcplx Es, Ep;               /* Jones; power = |Es|^2 + |Ep|^2 */
     double lam;                 /* vacuum wavelength [m] */

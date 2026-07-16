@@ -81,7 +81,9 @@ static void viz_add(VizVec *viz, const Ray *r, kvec3 p1, double opl0,
 }
 
 /* --------------------------------------------------------- thread context */
-typedef struct {
+/* Tagged (struct ThreadCtx) so registry.h can forward-declare it for the
+ * InteractionDef.apply signature; it stays trace-local and opaque there. */
+typedef struct ThreadCtx {
     RayVec children;
     LedgerC ledger;
     DetHitVec hits;
@@ -1146,20 +1148,93 @@ static void particle_intercept(const SceneC *s, Ray *r, int hit, double t,
     r->Ep = kc_scale(r->Ep, att);
 }
 
-static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
-    cx->interactions++;
-    int32_t fid;
-    double t = scene_intersect(s, r->pos, r->dir, &fid);
-    int hit = fid >= 0;
+/* ========================= interaction registry =========================
+ * The static tables (REGISTRY.md §1) live here, co-located with the physics
+ * handlers above (which reference the trace-local ThreadCtx + static
+ * helpers). This is a RESTRUCTURE of the former process_ray if-chain, not a
+ * rewrite — the thin adapters bind each handler's historical
+ * (face, body, start_pos, start_opl) arguments to the uniform
+ * InteractionDef.apply signature; the physics is byte-frozen. Table order
+ * encodes the old precedence exactly (detector-screen -> detector-solid ->
+ * grating -> the optic default), and the match() predicates partition every
+ * face into exactly one branch EXCEPT the two detector-screen entries
+ * (detector_event THEN the thin screen), which together reproduce the old
+ * two-call detector branch.
+ * ------------------------------------------------------------------------ */
 
-    /* ---- particle-medium interception (tracer.py:188-198 hook) ---- */
-    if (s->particles)
-        particle_intercept(s, r, hit, t, cx);
+/* -- step 1: detector screens (transparent measurement planes) -- */
+static void detector_event_apply(const SceneC *s, ThreadCtx *cx,
+                                 const Ray *r, const HitInfo *h) {
+    detector_event(s, h->face, r, h->start_pos, h->start_opl, cx);
+}
+static void screen_children_apply(const SceneC *s, ThreadCtx *cx,
+                                  const Ray *r, const HitInfo *h) {
+    screen_children(s, h->face, h->body, r, cx);
+}
+/* non-screen face of a detector solid: strict no-op pass-through — the
+ * continuation is the same ray with a fresh transmit key (was inline). */
+static void detector_solid_apply(const SceneC *s, ThreadCtx *cx,
+                                 const Ray *r, const HitInfo *h) {
+    (void)h;
+    Ray cont = *r;
+    cont.ray_key = rng_child_key(r->ray_key, r->event_ctr,
+                                 CHILD_SLOT_TRANSMIT);
+    cont.event_ctr = 0;
+    push_child(s, cx, &cont);
+}
+/* -- step 2: gratings (all models) -- */
+static void grating_children_apply(const SceneC *s, ThreadCtx *cx,
+                                   const Ray *r, const HitInfo *h) {
+    grating_children(s, h->face, h->body, r, cx);
+}
+/* -- step 3 / terminal DEFAULT: the optic chain (bare Fresnel + mirror +
+ * absorber + coating/polarizer/roughness/scatter/birefringence). Stays
+ * whole until §3 step 4 splits its reflect/transmit core out. -- */
+static void optic_children_apply(const SceneC *s, ThreadCtx *cx,
+                                 const Ray *r, const HitInfo *h) {
+    optic_children(s, h->face, h->body, r, cx);
+}
 
-    /* ---- bulk absorption + phase over the segment (tracer.py:202-240) */
+/* match predicates — pure functions of the scene, resolved once at build. */
+static int m_detector_screen(const SceneC *s, int32_t fid) {
+    return s->faces[fid].detector >= 0;
+}
+static int m_detector_solid(const SceneC *s, int32_t fid) {
+    const FaceC *f = &s->faces[fid];
+    return f->detector < 0 && s->bodies[f->body].role == ROLE_DETECTOR;
+}
+static int m_grating(const SceneC *s, int32_t fid) {
+    const FaceC *f = &s->faces[fid];
+    return f->detector < 0 && s->bodies[f->body].role != ROLE_DETECTOR
+           && f->grating >= 0;
+}
+static int m_optic_default(const SceneC *s, int32_t fid) {
+    const FaceC *f = &s->faces[fid];
+    return f->detector < 0 && s->bodies[f->body].role != ROLE_DETECTOR
+           && f->grating < 0;
+}
+
+static const InteractionDef INTERACTIONS[] = {
+    { "detector", m_detector_screen, detector_event_apply },
+    { "detector", m_detector_screen, screen_children_apply },
+    { "detector", m_detector_solid,  detector_solid_apply },
+    { "grating",  m_grating,         grating_children_apply },
+    { "optic",    m_optic_default,   optic_children_apply },
+};
+
+/* homogeneous volume propagator — the registered DEFAULT (REGISTRY.md §1.2).
+ * Byte-identical to the former inline segment advance: fp64 OPL + bulk
+ * absorption (Im(n) + the filter body's additive alpha), booked to
+ * absorbed_bulk. match_medium always fires (GRIN / fluorescence register
+ * their own later). */
+static int m_homogeneous(const SceneC *s, const Ray *r) {
+    (void)s; (void)r;
+    return 1;
+}
+static void homogeneous_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
+                                double seg) {
     int med = ray_current_medium(r);
     kcplx n_med = scene_medium_n(s, med, r->lam_idx);
-    double seg = hit ? t : 0.0;    /* escaped rays: no traversal loss */
     double alpha = 4.0 * K_PI * n_med.im / r->lam
                    + scene_filter_alpha(s, med, r->lam_idx);
     double x = alpha * seg;
@@ -1175,16 +1250,64 @@ static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
         ledger_credit(&cx->ledger, BK_ABSORBED_BULK, r->source_id, absorbed);
         cx->ledger.by_body[med + 1] += absorbed;   /* slot 0 = ambient */
     }
-    kvec3 start_pos = r->pos;
-    double start_opl = r->opl;
     double n_phase = (r->n_eff > 0.0) ? r->n_eff : n_med.re;
     r->opl += n_phase * seg;
+}
+
+static const PropagatorDef PROPAGATORS[] = {
+    { "homogeneous", m_homogeneous, homogeneous_advance },
+};
+
+const InteractionDef *registry_interactions(int *n_out) {
+    *n_out = (int)(sizeof INTERACTIONS / sizeof INTERACTIONS[0]);
+    return INTERACTIONS;
+}
+const PropagatorDef *registry_propagators(int *n_out) {
+    *n_out = (int)(sizeof PROPAGATORS / sizeof PROPAGATORS[0]);
+    return PROPAGATORS;
+}
+
+/* first propagator whose medium matches (homogeneous is the always-true
+ * fallback). One cheap pass; no allocation, no virtual dispatch. */
+static const PropagatorDef *select_propagator(const SceneC *s, const Ray *r) {
+    int np = (int)(sizeof PROPAGATORS / sizeof PROPAGATORS[0]);
+    for (int i = 0; i < np; i++)
+        if (PROPAGATORS[i].match_medium(s, r)) return &PROPAGATORS[i];
+    return &PROPAGATORS[0];
+}
+
+static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
+    cx->interactions++;
+    int32_t fid;
+    double t = scene_intersect(s, r->pos, r->dir, &fid);
+    int hit = fid >= 0;
+
+    /* ---- particle-medium interception (tracer.py:188-198 hook) ---- */
+    if (s->particles)
+        particle_intercept(s, r, hit, t, cx);
+
+    /* ---- volume propagator: bulk absorption + fp64 OPL over the segment
+     * (REGISTRY.md §1.2). start_pos/start_opl are the pre-advance segment
+     * origin the coherent gather samples from (tracer.py:202-240). ---- */
+    double seg = hit ? t : 0.0;    /* escaped rays: no traversal loss */
+    kvec3 start_pos = r->pos;
+    double start_opl = r->opl;
+    const PropagatorDef *prop = select_propagator(s, r);
+    prop->advance(s, cx, r, seg);
 
     /* ---- viz segment (tracer.py:254-262): escaped rays draw a 0.25 m
      * stub with a synthetic opl1 (the real opl is untouched, seg=0) ---- */
     if (r->viz_flag) {
         kvec3 p1 = v3_fma(r->pos, hit ? t : 0.25, r->dir);
-        double opl1 = hit ? r->opl : start_opl + n_phase * 0.25;
+        double opl1;
+        if (hit) {
+            opl1 = r->opl;
+        } else {
+            int med = ray_current_medium(r);
+            double n_phase = (r->n_eff > 0.0)
+                ? r->n_eff : scene_medium_n(s, med, r->lam_idx).re;
+            opl1 = start_opl + n_phase * 0.25;
+        }
         viz_add(&cx->viz, r, p1, start_opl, opl1);
     }
 
@@ -1194,30 +1317,18 @@ static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
         return;
     }
 
-    /* advance to the surface and dispatch by face role
-     * (tracer.py:282-315) */
+    /* advance to the surface, then dispatch through the face's resolved
+     * ordered handler list (registry_resolve_faces; REGISTRY.md §2.1) —
+     * behaviourally identical to the former detector/grating/optic
+     * if-chain (tracer.py:282-315). */
     r->pos = v3_fma(r->pos, t, r->dir);
     r->last_face = fid;
     r->event_ctr += 1;
     const FaceC *face = &s->faces[fid];
-    const BodyC *body = &s->bodies[face->body];
-
-    if (face->detector >= 0) {
-        detector_event(s, face, r, start_pos, start_opl, cx);
-        screen_children(s, face, body, r, cx);
-    } else if (body->role == ROLE_DETECTOR) {
-        /* non-screen face of a detector solid: strict no-op pass-through
-         * (tracer.py:304-308) — the continuation is the same ray */
-        Ray cont = *r;
-        cont.ray_key = rng_child_key(r->ray_key, r->event_ctr,
-                                     CHILD_SLOT_TRANSMIT);
-        cont.event_ctr = 0;
-        push_child(s, cx, &cont);
-    } else if (face->grating >= 0) {
-        grating_children(s, face, body, r, cx);   /* tracer.py:309-311 */
-    } else {
-        optic_children(s, face, body, r, cx);
-    }
+    HitInfo hinfo = { fid, face, &s->bodies[face->body], t, start_pos,
+                      start_opl };
+    for (int h = 0; h < face->n_handlers; h++)
+        face->handlers[h]->apply(s, cx, r, &hinfo);
 }
 
 /* ---------------------------------------------------------- source sampling */
