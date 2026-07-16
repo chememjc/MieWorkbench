@@ -19,9 +19,9 @@ source-tagging convention, see scripts/extract_geometry.py's header); a
 is an "optic". Sources render red-ish and fully lit (boosted ambient/
 diffuse standing in for "emissive" -- VTK's fixed-function pipeline has no
 true emission term); detectors gray-blue translucent; optics glassy light
-blue translucent. A selected face is highlighted orange with edges shown,
-overriding the body's role color on just that face's actor (one actor per
-face makes this a simple property swap, no shaders needed).
+blue translucent. A selected face is highlighted solid orange, overriding
+the body's role color on just that face's actor (one actor per face makes
+this a simple property swap, no shaders needed).
 
 Offscreen safety: building this widget (actors/mappers/readers/the
 orientation marker) never touches the GPU -- only vtkRenderWindow-level
@@ -45,7 +45,9 @@ vtkmodules.qt.PyQtImpl = "PySide6"
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
-from vtkmodules.vtkFiltersCore import vtkGlyph3D
+from vtkmodules.vtkFiltersCore import (
+    vtkCleanPolyData, vtkGlyph3D, vtkPolyDataNormals,
+)
 from vtkmodules.vtkFiltersSources import vtkSphereSource
 from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from vtkmodules.vtkCommonTransforms import vtkTransform
@@ -76,7 +78,6 @@ _ROLE_STYLE = {
     "optic":    ((0.58, 0.80, 0.96), 0.45),
 }
 _SELECTED_COLOR = (1.00, 0.55, 0.00)
-_SELECTED_EDGE_COLOR = (0.10, 0.10, 0.10)
 
 # -- ghosted (train-excluded) style, see set_excluded_bodies ---------------
 _GHOST_OPACITY = 0.25
@@ -662,8 +663,15 @@ class VtkSceneView(QWidget):
         for f in face_entries:
             reader = vtkSTLReader()
             reader.SetFileName(f["stl"])
+            clean = vtkCleanPolyData()   # STL has unshared vertices; merge points first
+            clean.SetInputConnection(reader.GetOutputPort())
+            normals = vtkPolyDataNormals()
+            normals.SetInputConnection(clean.GetOutputPort())
+            normals.SplittingOff()       # per-face STLs: each actor is one smooth
+                                          # face, no sharp edges within an actor
+            normals.ComputePointNormalsOn()
             mapper = vtkPolyDataMapper()
-            mapper.SetInputConnection(reader.GetOutputPort())
+            mapper.SetInputConnection(normals.GetOutputPort())
 
             actor = vtkActor()
             actor.SetMapper(mapper)
@@ -734,7 +742,7 @@ class VtkSceneView(QWidget):
         """Compose the three independent style layers for one face actor:
         base role color -> ghosted (train-excluded) dim/grey -> selection
         highlight. A ghosted body stays ghosted even when selected (dim +
-        grey), just gains the selection outline, so the two states never
+        grey), just gains the selection color, so the two states never
         fight over which color wins."""
         body_name, _ = self._actor_face_map.get(actor, (None, None))
         ghosted = body_name in self._excluded_bodies
@@ -744,18 +752,10 @@ class VtkSceneView(QWidget):
         if ghosted:
             color, opacity = _ghost_color(color), _GHOST_OPACITY
             prop.SetSpecular(0.0)
-        if selected:
-            if not ghosted:
-                color, opacity = _SELECTED_COLOR, 1.0
-            prop.SetColor(*color)
-            prop.SetOpacity(opacity)
-            prop.EdgeVisibilityOn()
-            prop.SetEdgeColor(*_SELECTED_EDGE_COLOR)
-            prop.SetLineWidth(2.0)
-        else:
-            prop.SetColor(*color)
-            prop.SetOpacity(opacity)
-            prop.EdgeVisibilityOff()
+        if selected and not ghosted:
+            color, opacity = _SELECTED_COLOR, 1.0
+        prop.SetColor(*color)
+        prop.SetOpacity(opacity)
 
     # -- train indicators: ghosted exclusion + chain-link overlay ---------
     def set_excluded_bodies(self, names):

@@ -174,7 +174,10 @@ def test_set_selection_highlights_then_clears(qtbot, tmp_path):
 
     view.set_selection({face_id})
     assert actor.GetProperty().GetColor() == pytest.approx((1.0, 0.55, 0.0))
-    assert actor.GetProperty().GetEdgeVisibility()
+    # Selection is a solid color swap only -- no per-triangle edge overlay
+    # (that used to draw every unshared STL edge as a "spiderweb" over the
+    # selected face).
+    assert not actor.GetProperty().GetEdgeVisibility()
 
     view.clear_highlights()
     assert actor.GetProperty().GetColor() == pytest.approx(base_color)

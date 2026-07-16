@@ -101,7 +101,9 @@ def test_excluded_body_composes_with_selection(qtbot, tmp_path):
     view.set_selection({face_id})
     prop = actor.GetProperty()
     assert prop.GetOpacity() == pytest.approx(_GHOST_OPACITY)  # still ghosted
-    assert prop.GetEdgeVisibility()                             # but outlined
+    # No edge outline (selection is a solid-color swap only); ghosting
+    # wins the color fight per _apply_face_style's contract.
+    assert not prop.GetEdgeVisibility()
 
     view.clear_highlights()
     assert prop.GetOpacity() == pytest.approx(_GHOST_OPACITY)
