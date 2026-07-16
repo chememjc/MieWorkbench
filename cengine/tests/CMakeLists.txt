@@ -17,3 +17,19 @@ target_include_directories(test_rng PRIVATE ../src)
 target_compile_options(test_rng PRIVATE ${MIEWB_C_FLAGS})
 target_link_libraries(test_rng PRIVATE m)
 add_test(NAME rng COMMAND test_rng)
+
+# P1 NUFFT gather route vs the exact per-pair kernel — only when the binary
+# was built with cuFINUFFT (CUFINUFFT_LIB set by the parent CMakeLists).
+if(CUFINUFFT_LIB AND CUFINUFFT_INCLUDE_DIR)
+  add_executable(test_nufft_route test_nufft_route.c ../src/gather_nufft.c
+                 ../src/log.c)
+  target_include_directories(test_nufft_route PRIVATE
+    ../src ../vendor ${CUFINUFFT_INCLUDE_DIR})
+  target_compile_options(test_nufft_route PRIVATE ${MIEWB_C_FLAGS})
+  target_compile_definitions(test_nufft_route PRIVATE MIEWB_HAS_CUFINUFFT)
+  target_link_libraries(test_nufft_route PRIVATE
+    ${CUFINUFFT_LIB} CUDA::cudart CUDA::cufft m)
+  get_filename_component(_cf_dir "${CUFINUFFT_LIB}" DIRECTORY)
+  set_property(TARGET test_nufft_route APPEND PROPERTY BUILD_RPATH "${_cf_dir}")
+  add_test(NAME nufft_route COMMAND test_nufft_route)
+endif()

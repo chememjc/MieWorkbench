@@ -353,6 +353,13 @@ def _build_pipeline_parser():
                    help="plain fp64 gather kernel (the bit-exact reference "
                         "path) instead of the tile-factorized default; "
                         "C engine only")
+    g.add_argument("--gather-nufft", action="store_true",
+                   help="EXPERIMENTAL opt-in: NUFFT angular-spectrum gather "
+                        "fast path (cuFINUFFT). OFF by default — the "
+                        "band-limited route does not reproduce the exact "
+                        "per-pair kernel on Monte-Carlo point samples; the "
+                        "per-key gate rejects wide-angle/near-field keys. "
+                        "C engine only")
     g.add_argument("--no-pol-scatter", action="store_true",
                    help="legacy unpolarized Mie azimuth sampling")
     g.add_argument("--mesh-flat-normals", action="store_true")
@@ -642,6 +649,12 @@ def _build_trace_parser():
                    help="plain fp64 gather kernel (bit-exact reference "
                         "path) instead of the tile-factorized default; "
                         "C engine only — the Python gather is unaffected")
+    p.add_argument("--gather-nufft", action="store_true",
+                   help="EXPERIMENTAL opt-in: NUFFT angular-spectrum gather "
+                        "fast path (cuFINUFFT, C engine only). OFF by "
+                        "default — see run_trace --gather-nufft; the "
+                        "band-limited route does not match the exact per-pair "
+                        "kernel on Monte-Carlo point samples")
     p.add_argument("--optical-properties", default=None,
                    help="override the opticalproperties/ library root")
     p.add_argument("--strict-analytic", action="store_true",

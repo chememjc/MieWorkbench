@@ -60,7 +60,36 @@ typedef struct {
     const int64_t *point_order;         /* Q */
     const float *tile_dpmax;            /* n_ptiles */
     int64_t near_exact_pairs;           /* out */
+    /* ---- P1 NUFFT angular-spectrum route (use_nufft => gather_points_nufft
+     * runs instead of the exact/tiled kernels; auto-gated per key by
+     * gather.c). The gate fills the k-grid + detector-frame parameters;
+     * occlusion keys are never routed here. See gather_nufft.c. */
+    int use_nufft;
+    kvec3 xhat, yhat;                   /* detector in-plane basis */
+    double nufft_tol;                   /* NUFFT eps (default 1e-9) */
 } GatherJob;
+
+/* Gate parameters shared by the runtime gate (gather.c) and the route
+ * (gather_nufft.c) so both agree on the exact k-grid. Computed from the
+ * job's samples + target points; pure geometry, O(M+Q). */
+typedef struct {
+    int ok;                 /* separating plane AND obliquity-separable */
+    int separating;         /* all samples strictly on one side of plane */
+    int64_t N;              /* square k-grid: N x N modes */
+    double dk;              /* physical k-spacing per mode [1/m] */
+    double kprime;          /* k * n_amb */
+    double sin_max;         /* max sin(theta) over samples->corners */
+    double half_extent;     /* padded detector-frame half-extent [m] */
+    double sep_margin_lam;  /* min |sample - plane| distance, in wavelengths */
+    double obliq_var;       /* max variation of cos(theta_prop) across det */
+    double zref, zdet;      /* oriented reference / detector z [m] (az<zdet) */
+    kvec3 nrm_eff;          /* detector normal oriented toward the samples */
+} NufftParams;
+
+/* Compute (and gate) the NUFFT k-grid from a job. lambda = source vacuum
+ * wavelength [m]. Returns via *out; out->ok is the separability+plane gate.
+ * Pure host geometry, no CUDA — safe to call even without cuFINUFFT. */
+int nufft_compute_params(const GatherJob *j, double lambda, NufftParams *out);
 
 #define GATHER_TILE_CAP 128             /* == CUDA block size */
 
@@ -71,5 +100,17 @@ void gather_points_cpu(GatherJob *job);
 int gather_points_cuda(GatherJob *job);
 int gather_cuda_available(void);
 #endif
+
+/* P1 NUFFT angular-spectrum route (gather_nufft.c). Fills job->Ex/Ey
+ * (G*Q*2 interleaved) exactly as gather_points_cpu does, via
+ * type-1 cuFINUFFT -> RS-I propagator on the k-grid -> type-2 cuFINUFFT.
+ * Returns 1 on success, 0 if unavailable (binary built without cuFINUFFT,
+ * or a runtime CUDA/plan failure) so the caller falls back to tiled/exact. */
+int gather_points_nufft(GatherJob *job);
+
+/* 1 if this binary was built with cuFINUFFT (NUFFT route compiled in). */
+int nufft_available(void);
+/* Free device VRAM in bytes (cudaMemGetInfo), or 0 if unavailable. */
+int64_t nufft_free_vram_bytes(void);
 
 #endif /* MIEWB_GATHER_H */

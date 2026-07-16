@@ -502,6 +502,13 @@ static uint8_t *build_occlusion(const SceneC *s, const DetC *d,
 
 /* ------------------------------------------------ kernel dispatch layer */
 static void run_job(GatherJob *j, uint8_t backend) {
+    if (j->use_nufft) {
+        if (gather_points_nufft(j)) return;
+        /* route unavailable or a runtime failure: fall through to the
+         * exact/tiled kernels (physics-identical, just slower) */
+        LOGW("gather: NUFFT route unavailable at runtime — falling back");
+        j->use_nufft = 0;
+    }
 #ifdef MIEWB_HAS_CUDA
     if (backend != 2) {
         if (gather_points_cuda(j) == 0) return;
@@ -751,6 +758,90 @@ int64_t gather_run(SceneC *s) {
                                            &occ_frac);
             }
 
+            /* ---- P1 NUFFT route gate (per key; logged into gather.json) --
+             * (a) separating plane with > 10 lambda margin; (b) obliquity
+             * separability bound < 1e-3; (c) k-grid fits VRAM minus 2 GiB
+             * headroom (cudaMemGetInfo); (d) estimated NUFFT cost < tiled.
+             * --gather-exact and occlusion always veto. */
+            int key_nufft = 0;         /* gate decision */
+            int key_nufft_ran = 0;     /* survived to runtime (no fallback) */
+            char nufft_gate[640] = "";
+            {
+                int want = s->gather_nufft && !s->gather_exact
+                           && !s->occlusion && nufft_available();
+                NufftParams np;
+                memset(&np, 0, sizeof np);
+                int sep_ok = 0, obl_ok = 0, vram_ok = 0, cost_ok = 0;
+                double bytes_need = 0.0, vram_free = 0.0;
+                double cost_nufft = 0.0, cost_tiled = 0.0;
+                if (want) {
+                    GatherJob gate_job;
+                    memset(&gate_job, 0, sizeof gate_job);
+                    gate_job.M = M;
+                    gate_job.Q = Q;
+                    gate_job.pos = g->pos;
+                    gate_job.dir = g->dir;
+                    gate_job.opl = g->opl;
+                    gate_job.points = grid_pts;
+                    gate_job.nrm = d->normal;
+                    gate_job.xhat = d->xhat;
+                    gate_job.yhat = d->yhat;
+                    gate_job.k = K_TWO_PI / g->lam[0];
+                    nufft_compute_params(&gate_job, g->lam[0], &np);
+                    sep_ok = np.separating
+                             && np.sep_margin_lam > 10.0;
+                    obl_ok = np.obliq_var < 1e-3;
+                    int Gest = (M >= 4 * N_CROSS_GROUPS) ? N_CROSS_GROUPS : 1;
+                    double NN = (double)np.N * (double)np.N;
+                    /* our 2 device k-grids (fkA,fkB) are G*N^2 each; cuFINUFFT
+                     * also holds an internally UPSAMPLED (sigma=2 => 4x area)
+                     * fine grid + spread workspace per transform. Budget the
+                     * fine grid (4*NN) per group plus our two grids. */
+                    bytes_need = (double)Gest
+                                 * (2.0 * NN + 4.0 * NN + (double)M
+                                    + (double)Q) * 16.0
+                                 + ((double)M + (double)Q) * 2.0 * 8.0;
+                    vram_free = (double)nufft_free_vram_bytes();
+                    vram_ok = bytes_need
+                              < vram_free - 2048.0 * 1024.0 * 1024.0;
+                    /* cost model (heuristic, co-tenanted GPU => no bench):
+                     * tiled ~ Q*M pairs at the landed 8.2e10 pairs/s; NUFFT
+                     * ~ G*(N^2 log N^2) FFT work + G*(M+Q) spread/interp. */
+                    cost_tiled = (double)Q * (double)M / 8.2e10;
+                    cost_nufft = (double)Gest
+                                 * (NN * (log(NN + 1.0) / log(2.0))) * 2.0e-10
+                                 + (double)Gest * ((double)M + (double)Q)
+                                   * 5.0e-9;
+                    cost_ok = cost_nufft < cost_tiled;
+                    key_nufft = sep_ok && obl_ok && vram_ok && cost_ok
+                                && np.ok;
+                    /* diagnostic: MIEWB_NUFFT_FORCE=1 routes any separating
+                     * key through NUFFT (skips the obliquity/VRAM/cost
+                     * gate) — for measuring the fold error directly. Never
+                     * set in production; the separating-plane requirement
+                     * (needed for correctness) is still enforced. */
+                    if (getenv("MIEWB_NUFFT_FORCE") && np.separating
+                            && vram_ok)
+                        key_nufft = 1;
+                }
+                snprintf(nufft_gate, sizeof nufft_gate,
+                    "{\"enabled\": %s, \"chosen\": %s, \"separating\": %s, "
+                    "\"sep_margin_lambda\": %.6g, \"obliquity_var\": %.6g, "
+                    "\"obliquity_tol\": 1e-3, \"k_grid_N\": %lld, "
+                    "\"vram_need_MiB\": %.1f, \"vram_free_MiB\": %.1f, "
+                    "\"cost_nufft_s\": %.6g, \"cost_tiled_s\": %.6g, "
+                    "\"reasons\": {\"want\": %s, \"sep\": %s, \"obliq\": %s, "
+                    "\"vram\": %s, \"cost\": %s}}",
+                    want ? "true" : "false", key_nufft ? "true" : "false",
+                    np.separating ? "true" : "false", np.sep_margin_lam,
+                    np.obliq_var, (long long)np.N,
+                    bytes_need / (1024.0 * 1024.0),
+                    vram_free / (1024.0 * 1024.0), cost_nufft, cost_tiled,
+                    want ? "true" : "false", sep_ok ? "true" : "false",
+                    obl_ok ? "true" : "false", vram_ok ? "true" : "false",
+                    cost_ok ? "true" : "false");
+            }
+
             /* ---- populations: smooth (unbiased) + speckle ---- */
             double *inten = (double *)calloc((size_t)Q, sizeof(double));
             double *pop_inten = (double *)malloc((size_t)Q
@@ -836,7 +927,14 @@ int64_t gather_run(SceneC *s) {
                 job.points = grid_pts;
                 job.nrm = d->normal;
                 job.k = K_TWO_PI / g->lam[0];
-                if (tiled) {
+                if (key_nufft) {
+                    /* NUFFT route: needs the detector in-plane basis; the
+                     * tiled/exact staging fields stay unset */
+                    job.use_nufft = 1;
+                    job.xhat = d->xhat;
+                    job.yhat = d->yhat;
+                    job.nufft_tol = 1e-9;
+                } else if (tiled) {
                     job.use_tiled = 1;
                     job.n_ptiles = gridtiles.n_ptiles;
                     job.tile_centers = gridtiles.centers;
@@ -855,6 +953,7 @@ int64_t gather_run(SceneC *s) {
                                 field_ex, field_ey);
                 total_pairs += n_sel * Q;
                 near_pairs_key += job.near_exact_pairs;
+                if (job.use_nufft) key_nufft_ran = 1;   /* no runtime fallback */
 
                 /* ---- hot-pixel sub-grid refinement ---- */
                 int32_t hy[HOT_CAP], hx[HOT_CAP];
@@ -1045,6 +1144,8 @@ int64_t gather_run(SceneC *s) {
             double kk = K_TWO_PI / g->lam[0];
             double phase_bound = tiled
                 ? 5e-7 * kk * (double)dpmax_key + 4e-7 : 0.0;
+            const char *mode_str = key_nufft_ran ? "nufft"
+                                   : (tiled ? "tiled" : "exact");
             fprintf(jf,
                     "%s\n    \"%d/%d/%d\": {\"n_samples\": %lld, "
                     "\"effective_samples\": %.17g, \"lambda_nm\": %.17g, "
@@ -1057,13 +1158,14 @@ int64_t gather_run(SceneC *s) {
                     "\"phase_err_bound_rad\": %.6g, "
                     "\"near_exact_pairs\": %lld, "
                     "\"occlusion_frac_blocked\": %.6g, "
+                    "\"nufft_gate\": %s, "
                     "\"populations\": {%s}}",
                     first_key ? "" : ",", g->source_id, g->lam_stratum,
                     g->pol_stratum, (long long)M, m_eff,
                     g->lam[0] / 1e-9, step, d->det_geom_W[key],
                     noise_floor, backend_name,
-                    tiled ? "tiled" : "exact", phase_bound,
-                    (long long)near_pairs_key, occ_frac, popdiag);
+                    mode_str, phase_bound,
+                    (long long)near_pairs_key, occ_frac, nufft_gate, popdiag);
             first_key = 0;
             fflush(jf);     /* per-key flush: partial gather.json stays
                              * readable for progress introspection */
