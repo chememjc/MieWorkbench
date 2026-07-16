@@ -536,6 +536,9 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
         "path_tally": result.path_tally,
         # P7b: per-body SHG transferred power (linear tally, shards add)
         "shg_converted": result.shg_converted,
+        # conical-point guard: per-crystal ray count (linear tally, shards
+        # add; see TraceResult.conical_guard)
+        "conical_guard": result.conical_guard,
     }
 
 
@@ -617,6 +620,7 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
     ledger = PowerLedger(len(scene.sources))
     path_tally = {}
     shg_converted = {}
+    conical_guard = {}
     for pl in payloads:
         ledger.merge(pl["ledger"])
         for fid, dp in pl["detectors"].items():
@@ -625,6 +629,8 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
             path_tally[k] = path_tally.get(k, 0.0) + v
         for k, v in pl.get("shg_converted", {}).items():
             shg_converted[k] = shg_converted.get(k, 0.0) + v
+        for k, v in pl.get("conical_guard", {}).items():
+            conical_guard[k] = conical_guard.get(k, 0) + v
     viz = VizStore()
     v0 = payloads[0]["viz"] if payloads else None
     if v0 is not None and len(v0):
@@ -633,7 +639,8 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
         case_diag.setdefault("particles", payloads[0]["particles"])
     names = [scene.bodies[i].label for i, _ in scene.sources]
     result = TraceResult(grids, ledger, viz, names, path_tally=path_tally,
-                         shg_converted=shg_converted)
+                         shg_converted=shg_converted,
+                         conical_guard=conical_guard)
     return result, trace_s
 
 
@@ -1124,6 +1131,17 @@ def _main_locked(args, case_dir):
             rep["shg_converted_W"] = {
                 k: float(v)
                 for k, v in sorted(result.shg_converted.items())}
+        if result.conical_guard:
+            # conical-point runtime guard (engine3.md Sec 7.2): per-crystal
+            # count of rays whose incident k fell inside the optic-axis
+            # degeneracy cone this seed (basis-arbitrary o/e split; never a
+            # closure bucket). Also rolled into case["diagnostics"]
+            # ("conical_guard") below, summed over every seed.
+            rep["conical_guard_rays"] = {
+                k: int(v) for k, v in sorted(result.conical_guard.items())}
+            guard_diag = case_diag.setdefault("conical_guard", {})
+            for k, v in result.conical_guard.items():
+                guard_diag[k] = guard_diag.get(k, 0) + int(v)
         audits.append(rep)
         gather_diags_all["seed%d" % seed] = gdiags
         detected_all["seed%d" % seed] = build_detected_block(grids, gdiags)

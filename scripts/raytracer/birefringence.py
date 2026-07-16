@@ -124,15 +124,31 @@ def n_e_theta(cos_kc, n_o, n_e):
     return 1.0 / np.sqrt(inv)
 
 
+def degeneracy_mask(k_hat, c_axis):
+    """Boolean (n,) mask: True where k_hat lies inside the conical-point
+    degeneracy cone of the optic axis (|k x c| < _DEGEN, i.e. k_hat ~ ||
+    c_axis). Split out from eigenbasis() so callers (the tracer's
+    conical-point runtime guard, engine3.md Sec 7.2) can count/report
+    degenerate rays without duplicating the threshold test; eigenbasis()
+    itself uses this exact test internally, so the two never disagree."""
+    k = _unit(k_hat)
+    n = k.shape[0]
+    c = _unit(_bcast_vec(c_axis, n))
+    norm = np.linalg.norm(np.cross(k, c), axis=-1)
+    return norm < _DEGEN
+
+
 def eigenbasis(k_hat, c_axis):
     """Orthonormal D-field eigenbasis (e_o_hat, e_e_hat) transverse to k_hat.
 
     e_o_hat ~ k_hat x c_axis  (ordinary D, _|_ the (k,c) plane)
     e_e_hat = k_hat x e_o_hat (extraordinary D, in the (k,c) plane, _|_ k)
 
-    At k_hat || c_axis (|k x c| < 1e-9) the o/e split is degenerate; a
-    deterministic transverse pair is returned (no NaNs), via the global axis
-    most orthogonal to k_hat (same trick as fresnel.pol_basis).
+    At k_hat || c_axis (|k x c| < 1e-9, see degeneracy_mask) the o/e split
+    is degenerate; a deterministic transverse pair is returned (no NaNs),
+    via the global axis most orthogonal to k_hat (same trick as
+    fresnel.pol_basis). No physics change here from the pre-degeneracy_mask
+    version -- same construction, just sharing the threshold test.
     """
     k = _unit(k_hat)
     n = k.shape[0]

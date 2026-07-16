@@ -826,6 +826,15 @@ _SURFACE_REQ = {
     # in SI (m^(1-order)); r_max trims the polynomial's validity disc.
     "asphere":  (("vertex", 3), ("axis", 3), ("R", 0), ("k", 0),
                  ("coeffs", -1), ("r_max", 0)),
+    # qforbes: ISO 10110-12 Forbes Q-type asphere (base conic + an
+    # orthonormal Q-polynomial departure, engine3.md Sec 7.6). R/k/vertex/
+    # axis/r_max mean the same as asphere's; coeffs[n] is the n-th
+    # orthonormal term's amplitude in SI metres (no per-order unit scaling,
+    # unlike asphere's power-series coeffs -- see surfaces.QForbes);
+    # kind selects the basis ('qbfs' orthonormal-in-slope departure from
+    # the base conic, 'qcon' amplitude-orthonormal departure).
+    "qforbes":  (("vertex", 3), ("axis", 3), ("R", 0), ("k", 0),
+                 ("coeffs", -1), ("r_max", 0), ("kind", -2)),
 }
 
 def _check_trim_polylines(face, ctx):
@@ -857,14 +866,20 @@ def _check_surface_params(stype, surf, ctx):
             if key in ("radius", "major_r", "minor_r", "r_max") and v <= 0:
                 raise ContractError("%s: %r must be > 0" % (ctx, key))
             if key == "R" and v == 0:
-                raise ContractError("%s: asphere R must be nonzero (signed)"
-                                    % ctx)
+                raise ContractError("%s: %s R must be nonzero (signed)"
+                                    % (ctx, stype))
         elif dim == -1:
-            # variable-length list of numbers (asphere polynomial coeffs)
+            # variable-length list of numbers (asphere/qforbes coeffs)
             if (not isinstance(v, list)
                     or not all(isinstance(x, (int, float)) for x in v)):
                 raise ContractError("%s: %r must be a list of numbers"
                                     % (ctx, key))
+        elif dim == -2:
+            # enum string (qforbes 'kind')
+            if v not in ("qbfs", "qcon"):
+                raise ContractError(
+                    "%s: %r must be 'qbfs' or 'qcon' (got %r)"
+                    % (ctx, key, v))
         else:
             if (not isinstance(v, list) or len(v) != dim
                     or not all(isinstance(x, (int, float)) for x in v)):

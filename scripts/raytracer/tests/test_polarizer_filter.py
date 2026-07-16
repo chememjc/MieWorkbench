@@ -227,6 +227,48 @@ def test_calcite_polarization_selects_spot(props):
 
 
 # ---------------------------------------------------------------------------
+# conical-point runtime guard (engine3.md Sec 7.2): c-axis along the beam
+# puts every primary ray's incident k exactly in the optic-axis degeneracy
+# cone (a flat unapodized source is collimated -- see scenehelpers' header
+# comment), so this is the cheapest possible trigger. Must NOT perturb the
+# ordinary 45deg-axis calcite walk-off tests above (no physics change, only
+# a counted read of the existing degeneracy test).
+# ---------------------------------------------------------------------------
+def test_conical_point_guard_axis_along_beam(props):
+    n_rays = 2000
+    model = sh.make_model([
+        sh.source_body(power_mW=1.0, coherent=False, half=2e-4,
+                       lambdac_nm=590.0),
+        sh.slab_body("Cal", "calcite", 0.0, CALCITE_T, half=0.01,
+                     crystal_axis=[1.0, 0.0, 0.0]),   # || beam direction
+        sh.detector_body(x=CALCITE_T + 0.001, half=0.01),
+    ])
+    with pytest.warns(UserWarning, match="optic-axis degeneracy of Cal"):
+        result, grids, scene = sh.trace_scene(model, rays=n_rays,
+                                              optprops=props)
+    assert result.conical_guard.get("Cal") == n_rays
+    _closure_ok(result)
+
+
+def test_calcite_walkoff_unaffected_by_guard_instrumentation(props):
+    """The guard is read-only counting; the 45deg-axis walk-off separation
+    (test_calcite_double_spot_separation) must reproduce bit-for-bit and
+    raise NO conical-point warning (|k x c| = sin(45deg), nowhere near the
+    1e-9 degeneracy cone)."""
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        det = _calcite_run(props, None)
+    assert not any("optic-axis degeneracy" in str(w.message) for w in caught), \
+        [str(w.message) for w in caught]
+    spots = _spot_positions(det)
+    assert len(spots) == 2, spots
+    sep = abs(spots[1] - spots[0])
+    expect = CALCITE_T * np.tan(np.deg2rad(6.23))
+    assert sep == pytest.approx(expect, rel=0.02), (sep, expect)
+
+
+# ---------------------------------------------------------------------------
 # circular-polarizer Jones stage (unit level, real _apply_polarizer)
 # ---------------------------------------------------------------------------
 def test_circular_polarizer_output_handedness(props):

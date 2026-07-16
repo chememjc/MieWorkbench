@@ -59,6 +59,15 @@ PORTED = frozenset({
     "ghost_analysis",           # phase H (refl_hist face-id history)
     "viz_pattern",              # phase H (glue-level: Python viz-only
                                 #   pass supplies the overlay rays)
+    # NOTE: "surface:qforbes" (raytracer.surfaces.QForbes, the ISO 10110-12
+    # Forbes Q-type asphere -- engine3.md Sec 7.6) is DELIBERATELY absent.
+    # detect_features()'s per-face loop below emits it automatically
+    # (type(face.surface).__name__.lower(), same generic path every other
+    # "surface:*" token comes from) -- no code change was needed to make
+    # every qforbes scene route Python-only. Do not add it here until the
+    # C engine actually implements the Forbes recurrence (see the P8
+    # incident note ~line 104: a feature silently routing to C without its
+    # physics is the one failure mode this registry exists to prevent).
 })
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
