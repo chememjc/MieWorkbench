@@ -91,6 +91,9 @@ typedef struct ThreadCtx {
     ExportVec exports;
     VizVec viz;
     int64_t interactions;
+    int seg_hit;        /* did the current segment end on a face? — the hit
+                         * flag the PropagatorDef.advance signature omits,
+                         * needed by the particles propagator (step 8) */
 } ThreadCtx;
 
 /* Power floor (tracer.py _apply_floors, 1447-1454): children below
@@ -1383,8 +1386,30 @@ static void homogeneous_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
     r->opl += n_phase * seg;
 }
 
+/* particles continuum — a registered VOLUME propagator (REGISTRY.md §3
+ * step 8). The continuum cloud lives in the segment / between-hits path
+ * (NOT the face dispatch), so it registers as a propagator rather than an
+ * InteractionDef. It LAYERS on the homogeneous advance: the interception
+ * (ballistic Beer-Lambert decay of the parent + one truncated-exponential
+ * scattered child + the particle_absorbed credit) is the pre-advance
+ * segment hook, then the segment OPL + bulk absorption are the homogeneous
+ * advance. Selected in place of homogeneous whenever a cloud is present;
+ * byte-identical to the former explicit process_ray hook. cx->seg_hit
+ * carries the hit flag the advance signature omits; when hit, seg == the
+ * hit distance t (t is unused for escapers, seg_max=1.0 inside). */
+static int m_particles(const SceneC *s, const Ray *r) {
+    (void)r;
+    return s->particles != NULL;
+}
+static void particles_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
+                              double seg) {
+    particle_intercept(s, r, cx->seg_hit, seg, cx);
+    homogeneous_advance(s, cx, r, seg);
+}
+
 static const PropagatorDef PROPAGATORS[] = {
-    { "homogeneous", m_homogeneous, homogeneous_advance },
+    { "homogeneous", m_homogeneous, homogeneous_advance },  /* always-true default */
+    { "particles",   m_particles,   particles_advance },    /* volume cloud */
 };
 
 const InteractionDef *registry_interactions(int *n_out) {
@@ -1396,11 +1421,13 @@ const PropagatorDef *registry_propagators(int *n_out) {
     return PROPAGATORS;
 }
 
-/* first propagator whose medium matches (homogeneous is the always-true
- * fallback). One cheap pass; no allocation, no virtual dispatch. */
+/* Propagator selection: homogeneous (index 0) is the always-true DEFAULT; a
+ * later entry whose medium matches (the particles cloud; GRIN/fluorescence
+ * once implemented) OVERRIDES it. One cheap pass; no allocation, no virtual
+ * dispatch. */
 static const PropagatorDef *select_propagator(const SceneC *s, const Ray *r) {
     int np = (int)(sizeof PROPAGATORS / sizeof PROPAGATORS[0]);
-    for (int i = 0; i < np; i++)
+    for (int i = 1; i < np; i++)
         if (PROPAGATORS[i].match_medium(s, r)) return &PROPAGATORS[i];
     return &PROPAGATORS[0];
 }
@@ -1411,16 +1438,16 @@ static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
     double t = scene_intersect(s, r->pos, r->dir, &fid);
     int hit = fid >= 0;
 
-    /* ---- particle-medium interception (tracer.py:188-198 hook) ---- */
-    if (s->particles)
-        particle_intercept(s, r, hit, t, cx);
-
-    /* ---- volume propagator: bulk absorption + fp64 OPL over the segment
-     * (REGISTRY.md §1.2). start_pos/start_opl are the pre-advance segment
-     * origin the coherent gather samples from (tracer.py:202-240). ---- */
+    /* ---- volume propagator over the segment: bulk absorption + fp64 OPL,
+     * plus the particles-continuum interception when a cloud is present
+     * (both REGISTRY.md §1.2 propagators; particle_intercept is the
+     * particles propagator's pre-advance hook, tracer.py:188-198).
+     * start_pos/start_opl are the pre-advance segment origin the coherent
+     * gather samples from (tracer.py:202-240). ---- */
     double seg = hit ? t : 0.0;    /* escaped rays: no traversal loss */
     kvec3 start_pos = r->pos;
     double start_opl = r->opl;
+    cx->seg_hit = hit;             /* the particles propagator reads this */
     const PropagatorDef *prop = select_propagator(s, r);
     prop->advance(s, cx, r, seg);
 

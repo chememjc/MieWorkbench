@@ -36,10 +36,9 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
     /* coating (step 4) + polarizer (step 5) + roughness/scatter (step 6)
      * are registered SurfaceEffectDefs; birefringence (step 7) is its own
      * terminal InteractionDef — none live here any more. */
-    /* bulk / volume effects the homogeneous propagator carries (filter =
-     * additive bulk alpha; particles = continuum medium interception) */
+    /* filter = additive bulk alpha the homogeneous propagator carries.
+     * (particles is now a registered PropagatorDef — step 8 — not here.) */
     { "filter",    "volume" },
-    { "particles", "volume" },
     /* coherent recombination + glue-level diagnostics — not surface
      * interactions (the gather and the Python-side viz overlay own these) */
     { "coherent",       "gather" },
