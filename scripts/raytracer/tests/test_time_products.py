@@ -312,15 +312,19 @@ def test_pulse_broadening_fused_silica_within_5pct(tmp_path):
 # --------------------------------------------------------------------------- #
 # 7. cengine routing: time products force the Python engine
 # --------------------------------------------------------------------------- #
-def test_time_products_route_python_with_reason(tmp_path):
+def test_time_products_route_c_when_built(tmp_path):
+    # P7 tranche 1: time products are now ported to the C engine — a pulsed
+    # source + detector (auto-enabled products, no other unported feature)
+    # routes to C when the binary is built (Python is the fallback otherwise).
     case = _run(tmp_path, [
         sh.source_body(pulse_duration_ps=1.0),
         sh.detector_body(x=0.03, half=0.02),
     ], [], rays=500, nlambda=1)                     # auto-enabled
     cj = _case_json(case)
-    assert cj["engine"] == "python"
     if cengine.binary_path() is not None:
-        assert "time_products" in cj["engine_reason"]
+        assert cj["engine"] == "c", cj.get("engine_reason")
+    else:
+        assert cj["engine"] == "python"
 
 
 def test_explicit_none_does_not_gate_the_engine(tmp_path):

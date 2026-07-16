@@ -33,8 +33,12 @@ void ledger_init(LedgerC *l, const SceneC *s) {
     l->flux_out = (double *)calloc((size_t)l->n_bodies, sizeof(double));
     l->detected = (double *)calloc((size_t)(l->n_dets ? l->n_dets : 1),
                                    sizeof(double));
+    /* pulsed-optics P7: the bulk-path tally exists only under time tracking */
+    l->path_tally = s->track_time
+        ? (double *)calloc((size_t)l->n_bodies, sizeof(double)) : NULL;
     if (!l->emitted || !l->buckets || !l->surf_by_body || !l->surf_by_det
-            || !l->by_body || !l->flux_in || !l->flux_out || !l->detected)
+            || !l->by_body || !l->flux_in || !l->flux_out || !l->detected
+            || (s->track_time && !l->path_tally))
         die(EXIT_PHYSICS, "ledger: allocation failed");
 }
 
@@ -47,6 +51,7 @@ void ledger_free(LedgerC *l) {
     free(l->flux_in);
     free(l->flux_out);
     free(l->detected);
+    free(l->path_tally);
     memset(l, 0, sizeof *l);
 }
 
@@ -60,6 +65,9 @@ void ledger_merge(LedgerC *into, const LedgerC *from) {
         into->flux_in[i] += from->flux_in[i];
         into->flux_out[i] += from->flux_out[i];
     }
+    if (into->path_tally && from->path_tally)
+        for (int i = 0; i < into->n_bodies; i++)
+            into->path_tally[i] += from->path_tally[i];
     for (int i = 0; i <= into->n_bodies; i++)
         into->by_body[i] += from->by_body[i];
     for (int i = 0; i < into->n_dets; i++) {
@@ -168,6 +176,21 @@ void ledger_write_json(const LedgerC *l, const SceneC *s, const char *path,
         jesc(f, s->dets[i].label);
         fprintf(f, ": %.17g", l->detected[i]);
         first = 0;
+    }
+    /* pulsed-optics P7: per-body power-weighted bulk path [W*m] (present only
+     * under time tracking; the Python audit key is path_tally_Wm). Consumed by
+     * run_c_case -> build_gdd_budget, which does ALL dispersion resolution in
+     * Python (this side is a pure geometric power*length tally). */
+    if (l->path_tally) {
+        fprintf(f, "\n  },\n  \"path_tally_Wm\": {");
+        first = 1;
+        for (int i = 0; i < l->n_bodies; i++) {
+            if (l->path_tally[i] == 0.0) continue;
+            fprintf(f, "%s\n    ", first ? "" : ",");
+            jesc(f, s->bodies[i].label);
+            fprintf(f, ": %.17g", l->path_tally[i]);
+            first = 0;
+        }
     }
     fprintf(f, "\n  },\n  \"closure_gate\": %.17g,\n"
             "  \"closure_ok\": %s\n}\n", gate, ok ? "true" : "false");

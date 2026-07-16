@@ -36,6 +36,13 @@ typedef struct Ray {
     kcplx Es, Ep;               /* Jones; power = |Es|^2 + |Ep|^2 */
     double lam;                 /* vacuum wavelength [m] */
     double opl;                 /* accumulated Sum(Re(n) ds) [m] */
+    /* pulsed-optics P7 time-domain accumulators (time_products only; see
+     * rays.py:54-61). gopl = Sum(n_g ds) [m], envelope arrival time =
+     * gopl/c; born nonzero only under an SPM source's stratum birth-time
+     * offset (sources.apply_stratum_t0). gdd_acc = Sum((phi2/L) ds) [s^2].
+     * Isotropic media only in C — a crystal+time scene routes to Python
+     * (detect_features' time_directional_index guard). */
+    double gopl, gdd_acc;
     double n_eff;               /* >0: e-ray phase-index override (phase F) */
     double birth_power;         /* primary's emission power [W] (floor ref) */
     int16_t medium[MEDIUM_STACK_DEPTH];   /* body-index stack, AMBIENT=-1 */

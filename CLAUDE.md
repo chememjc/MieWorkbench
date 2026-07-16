@@ -67,9 +67,12 @@ python3 scripts/run_pipeline.py --models example.FCStd --preset quick
 #   (pulsed source auto-enables pulse,spectrogram; 'none' suppresses);
 #   --time-bins preset-scaled 128/256/512; --time-window ns; --time-envelope
 #   analytic|histogram; --gdd-budget = per-element GD/GDD/TOD table (free
-#   when time products run; on CW forces group-delay tracking). All
-#   time/NLO features Python-route (tokens time_products/gdd_budget/
-#   nonlinear/saturable/tpa/kerr).
+#   when time products run; on CW forces group-delay tracking). time_products
+#   and gdd_budget are PORTED to the C engine (P7 tranche 1: gopl/gdd
+#   accumulators + arrival records + the bulk-path tally; dispersion resolved
+#   Python-side, finalize_time/build_gdd_budget untouched — a crystal+time
+#   scene still Python-routes via time_directional_index). The NLO features
+#   (nonlinear/saturable/tpa/kerr) + ray_differentials still Python-route.
 
 # GUI
 env/bin/python -m mieworkbench [model.FCStd|X.MieWB|X.MieSim]   # or bin/mieworkbench

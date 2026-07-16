@@ -59,6 +59,16 @@ PORTED = frozenset({
     "ghost_analysis",           # phase H (refl_hist face-id history)
     "viz_pattern",              # phase H (glue-level: Python viz-only
                                 #   pass supplies the overlay rays)
+    "gdd_budget",               # P7 tranche 1: per-body power-weighted bulk
+                                #   path tallied in C; ALL dispersion (group
+                                #   index / GDD / TOD) resolved Python-side
+                                #   in build_gdd_budget (untouched)
+    "time_products",            # P7 tranche 1: per-ray gopl/gdd accumulators
+                                #   (group index / GDD-per-length pre-resolved
+                                #   in the request) + per-detector arrival
+                                #   records; Python finalize_time bins them
+                                #   UNCHANGED. Crystal scenes emit the unported
+                                #   time_directional_index token instead.
     # NOTE: "surface:qforbes" (raytracer.surfaces.QForbes, the ISO 10110-12
     # Forbes Q-type asphere -- engine3.md Sec 7.6) is DELIBERATELY absent.
     # detect_features()'s per-face loop below emits it automatically
@@ -251,6 +261,14 @@ def detect_features(args, scene):
     from .detector import resolve_time_products
     if resolve_time_products(args, scene):
         feats.add("time_products")
+        # The C gopl accumulator uses the medium's SCALAR group index. A
+        # uniaxial e-ray / biaxial slow-fast ray carries a DIRECTIONAL group
+        # index frozen at the crystal entry interface (rays.py n_g_eff,
+        # birefringence.n_group_e_theta) that the C engine does not carry —
+        # so a crystal + time-products scene must route to Python. Emit an
+        # unported token (never a silent wrong group delay through a crystal).
+        if any(b.birefringent or b.biaxial for b in scene.bodies):
+            feats.add("time_directional_index")
     # --gdd-budget forces group-delay tracking (per-body path tally) even
     # on a CW scene with no time products — Python engine only (P5)
     if getattr(args, "gdd_budget", False):
@@ -400,8 +418,21 @@ def _emit_dir_policy(face):
             "flip_all": flip_all}
 
 
+def _track_time_active(args, scene):
+    """True when this case tracks pulsed-optics time-domain quantities —
+    time products (explicit --time-products OR the pulsed-source auto-enable,
+    both folded by resolve_time_products) OR an explicit --gdd-budget. The
+    single authority both the request builder and detect_features consult so
+    routing and the C trace flag can never disagree (mirrors run_trace's
+    track_time = bool(time_products) or args.gdd_budget)."""
+    from .detector import resolve_time_products
+    return bool(resolve_time_products(args, scene)) or \
+        bool(getattr(args, "gdd_budget", False))
+
+
 def build_request(args, scene, seed, lam_range, grids, out_dir,
                   export_this_seed=False, track_this_seed=False,
+                  time_this_seed=False,
                   primary_lo=0, primary_hi=None, gather_skip=False,
                   gather_only=False, gather_input=None):
     """Serialize one seed's trace request. grids: {fid: DetectorGrid} from
@@ -430,6 +461,20 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
         return n
 
     amb = n_table(-1)
+
+    # ---- pulsed-optics P7 time products: group index / GDD-per-length,
+    # pre-resolved at every stratum wavelength through the SAME Python
+    # material stencil the Python engine uses (scene.medium_group_index /
+    # medium_gdd_per_length). The C trace only multiplies these by the
+    # segment length, so gopl/gdd_acc match Python bit-for-bit. Resolved
+    # only when time products run on THIS seed (seed 0). ----
+    def ng_table(body_index):
+        return np.asarray(scene.medium_group_index(body_index, lams),
+                          dtype=np.float64)
+
+    def gdd_table(body_index):
+        return np.asarray(scene.medium_gdd_per_length(body_index, lams),
+                          dtype=np.float64)
 
     # ---- coatings, pre-resolved at every stratum wavelength (D1) ----
     # scene.face_coatings: {fid: coating name}; serialize each distinct
@@ -492,6 +537,12 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
         if body.filter_lam_um is not None:
             alpha = body.filter_alpha(lams)
             entry["filter_alpha"] = [float(x) for x in np.asarray(alpha)]
+        if time_this_seed:
+            # source housings are never traced through — mirror n_table's
+            # ambient fallback so the array is always present & lam-sized
+            bidx = -1 if body.role == "source" else body.index
+            entry["n_g"] = [float(x) for x in ng_table(bidx)]
+            entry["gdd_per_m"] = [float(x) for x in gdd_table(bidx)]
         entry["birefringence"] = None
         if body.birefringent:
             n_o, n_e = scene.uniaxial_indices(body, lams)
@@ -650,6 +701,13 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
         entry["sample_area"] = [
             float(sa[(sid, st, ps)])
             for st in range(n_strata) for ps in range(n_pol)]
+        # pulsed-optics P7 SPM chirp: per-stratum birth-time offset [s]
+        # (sources.install_spm sets src["_stratum_t0"]; absent otherwise).
+        # Only carried when time products run on this seed.
+        if time_this_seed:
+            t0 = src.get("_stratum_t0")
+            if t0 is not None:
+                entry["stratum_t0"] = [float(x) for x in np.asarray(t0)]
         sources.append(entry)
 
     detectors = []
@@ -701,12 +759,28 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
             "importance_aim": bool(getattr(args, "importance_aim",
                                            False)),
             "track_history": bool(track_this_seed),
+            # pulsed-optics P7: group-delay accumulators + the per-body
+            # power-weighted bulk-path tally (the GDD-budget input). Active
+            # whenever the case runs time products OR --gdd-budget, on EVERY
+            # chunk/seed (path_tally is a linear tally; the merge sums it and
+            # build_gdd_budget consumes seed 0). resolve_time_products folds
+            # in both the explicit flag and the pulsed-source auto-enable, so
+            # this can never disagree with run_trace's activation.
+            "track_time": bool(_track_time_active(args, scene)),
+            # pulsed-optics P7 time products: also accumulate the gopl/gdd
+            # group-delay ray slots + record per-detector arrival records.
+            # Seed 0 only (like the Python engine's time_rec), so the request
+            # carries the n_g/gdd tables + stratum_t0 only then.
+            "time_products": bool(time_this_seed),
             "linear_scan": bool(os.environ.get("MIEWB_CENGINE_LINEAR")
                                 == "1"),
         },
         "lams_m": [float(x) for x in lams],
         "ambient_n_re": [float(x) for x in np.real(amb)],
         "ambient_n_im": [float(x) for x in np.imag(amb)],
+        **({"ambient_n_g": [float(x) for x in ng_table(-1)],
+            "ambient_gdd_per_m": [float(x) for x in gdd_table(-1)]}
+           if time_this_seed else {}),
         "bodies": bodies,
         "faces": faces,
         "sources": sources,
@@ -1161,6 +1235,12 @@ def _merge_ledger(reports):
     closure_error is recomputed from the summed emitted/buckets."""
     out = {"sources": {}, "by_surface_W": {}, "by_body_W": {},
            "element_flux_W": {}, "detected_W": {}, "closure_gate": 1e-3}
+    # pulsed-optics P7: the per-body bulk-path tally rides along as a plain
+    # label->W*m numeric dict (present only under time tracking). It is a
+    # linear tally, so it sums (scaled) exactly like by_body_W.
+    has_path = any("path_tally_Wm" in rep for rep, _ in reports)
+    if has_path:
+        out["path_tally_Wm"] = {}
     for rep, scale in reports:
         for label, sd in rep.get("sources", {}).items():
             dst = out["sources"].setdefault(label, {})
@@ -1168,7 +1248,10 @@ def _merge_ledger(reports):
                 if k == "closure_error":
                     continue
                 dst[k] = dst.get(k, 0.0) + float(v) * scale
-        for sect in ("by_surface_W", "by_body_W", "detected_W"):
+        sects = ["by_surface_W", "by_body_W", "detected_W"]
+        if has_path:
+            sects.append("path_tally_Wm")
+        for sect in sects:
             for label, v in rep.get(sect, {}).items():
                 out[sect][label] = out[sect].get(label, 0.0) \
                     + float(v) * scale
@@ -1188,6 +1271,71 @@ def _merge_ledger(reports):
             all_ok = False
     out["closure_ok"] = all_ok
     return out
+
+
+class _LedgerShim:
+    """Just enough of audit.PowerLedger for run_trace.build_gdd_budget:
+    .emitted (array by source index) and .flux (label -> {in_W}). Built from
+    a merged C ledger.json report."""
+    def __init__(self, emitted, flux):
+        self.emitted = emitted
+        self.flux = flux
+
+
+class _ResultShim:
+    """Just enough of tracer.TraceResult for build_gdd_budget: .path_tally
+    and .ledger."""
+    def __init__(self, path_tally, ledger):
+        self.path_tally = path_tally
+        self.ledger = ledger
+
+
+def _gdd_budget_from_report(scene, merged_rep):
+    """Build case.json's 'gdd_budget' block from a merged C ledger report,
+    reusing run_trace.build_gdd_budget UNCHANGED — ALL dispersion resolution
+    (group index / GDD / TOD, the finite-difference stencil) stays in Python
+    exactly as the Python engine computes it. The C engine supplies only the
+    geometric per-body power-weighted bulk path (path_tally_Wm). Returns None
+    when nothing was tallied (matches the Python None case)."""
+    from run_trace import build_gdd_budget
+    path_tally = {k: float(v)
+                  for k, v in merged_rep.get("path_tally_Wm", {}).items()}
+    if not path_tally:
+        return None
+    flux = merged_rep.get("element_flux_W", {})
+    srcs = merged_rep.get("sources", {})
+    emitted = np.array(
+        [float(srcs.get(scene.bodies[bidx].label, {}).get("emitted_W", 0.0))
+         for bidx, _ in scene.sources], dtype=np.float64)
+    result = _ResultShim(path_tally, _LedgerShim(emitted, flux))
+    return build_gdd_budget(scene, result)
+
+
+def _load_time_records(grids, det_order, chunk_dir):
+    """Fold one trace chunk's per-detector time-product arrival records
+    (detector.c det_write_times: time_<i>_*.npy columns) into the grids'
+    time_records lists, in the SAME compact-column dict shape the Python
+    DetectorGrid._record_time_arrivals appends (detector.py:181-194). The
+    Python finalize_time then bins the C records with NO code change. Silent
+    no-op when a chunk wrote no time files (non-time seed). t is already
+    gopl/c (seconds) — the C writer did the division."""
+    _dt = {"t": np.float64, "fx": np.float32, "fy": np.float32,
+           "lam": np.float32, "power": np.float64,
+           "source_id": np.int16, "lam_stratum": np.int16, "gdd": np.float32}
+    for i, fid in enumerate(det_order):
+        tpath = chunk_dir / ("time_%d_t.npy" % i)
+        if not tpath.exists() or len(np.load(tpath)) == 0:
+            continue
+        g = grids[fid]
+        cols = ["t", "fx", "fy", "lam", "power", "source_id", "lam_stratum"]
+        # analytic-envelope grids carry per-record GDD (histogram mode
+        # ignores it — finalize_time keys off self.time_envelope); the C
+        # engine always dumps it, so include the column iff the grid wants it
+        if g.time_envelope == "analytic":
+            cols.append("gdd")
+        rec = {c: np.load(chunk_dir / ("time_%d_%s.npy" % (i, c))).astype(
+            _dt[c]) for c in cols}
+        g.time_records.append(rec)
 
 
 def _load_checkpoint(ckpt_path):
@@ -1268,6 +1416,19 @@ def run_c_case(args, case_dir, scene, lam_range, case):
     stride = _align_stride(scene, args)
     shash = scene_hash(args, scene)
 
+    # pulsed-optics P7 time products: recorded on seed 0 only (like the
+    # Python engine's time_rec). resolve_time_products folds in the explicit
+    # flag AND the pulsed-source auto-enable, so routing never disagrees.
+    from run_trace import build_time_cfg, set_time_products_case
+    from .detector import resolve_time_products
+    time_products = resolve_time_products(args, scene)
+    time_cfg = build_time_cfg(args, scene, time_products) \
+        if time_products else None
+    if time_products:
+        # the case.json 'time_products' block, byte-identical to the Python
+        # path (run_trace uses the same helper)
+        set_time_products_case(case, args, time_products)
+
     # export/ghost/save-fields/importance/viz-pattern keep their existing
     # seed-0 diagnostic paths simplest by running the whole trace in ONE
     # chunk (still gather_skip + single Python gather; just not split).
@@ -1335,7 +1496,11 @@ def run_c_case(args, case_dir, scene, lam_range, case):
     # ================= Phase 1: TRACE (gather_skip chunks) =================
     for si in range(args.seeds):
         seed = args.seed0 + si
-        grids = build_detectors(scene, args, lam_range)
+        # seed-0 grids record time products (self.time_record on) so the
+        # C arrival records can be folded in + finalize_time can bin them.
+        time_rec = ({"envelope": args.time_envelope}
+                    if (time_products and seed == args.seed0) else None)
+        grids = build_detectors(scene, args, lam_range, time_rec=time_rec)
         if det_order is None:
             det_order = list(grids.keys())
         # re-merge already-completed chunks (resume/extend) from disk
@@ -1343,6 +1508,8 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                         key=lambda c: c["lo"]):
             _merge_chunk(grids, det_order, cdir / c["dir"],
                          float(c["rays_denom"]) / target)
+            if time_products and seed == args.seed0:
+                _load_time_records(grids, det_order, cdir / c["dir"])
         cursor = _seed_cursor(ckpt["chunks"], seed)
         while cursor < target:
             lo = cursor
@@ -1355,11 +1522,13 @@ def run_c_case(args, case_dir, scene, lam_range, case):
             out_dir = cdir / chunk_name
             out_dir.mkdir(parents=True, exist_ok=True)
             export_on = args.export_rays or args.ghost_analysis
+            time_this = bool(time_products) and seed == args.seed0
             req = build_request(
                 args, scene, seed, lam_range, grids, out_dir,
                 export_this_seed=(export_on and seed == args.seed0),
                 track_this_seed=(args.ghost_analysis
                                  and seed == args.seed0),
+                time_this_seed=time_this,
                 primary_lo=lo, primary_hi=hi, gather_skip=True)
             req_path = out_dir / "request.json"
             req_path.write_text(json.dumps(req))
@@ -1379,6 +1548,8 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                 _shutdown_worker()
                 return None
             _merge_chunk(grids, det_order, out_dir, 1.0)
+            if time_this:
+                _load_time_records(grids, det_order, out_dir)
             ckpt["chunks"].append(
                 {"seed": seed, "lo": lo, "hi": hi, "rays_denom": target,
                  "dir": chunk_name, "wall_s": wall_s})
@@ -1498,7 +1669,15 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                         key=lambda c: c["lo"]):
             rep = json.loads((cdir / c["dir"] / "ledger.json").read_text())
             reps.append((rep, float(c["rays_denom"]) / target))
-        audits.append(_merge_ledger(reps))
+        merged_rep = _merge_ledger(reps)
+        audits.append(merged_rep)
+        # pulsed-optics P7 GDD budget: built from seed 0's per-body bulk-path
+        # tally (Python run_trace does the same, seed 0 only). All dispersion
+        # math is Python-side (build_gdd_budget); C supplied only path_tally.
+        if seed == args.seed0 and _track_time_active(args, scene):
+            budget = _gdd_budget_from_report(scene, merged_rep)
+            if budget is not None:
+                case["gdd_budget"] = budget
         # viz overlay: the lo==0 chunk of the first seed holds the first
         # viz_cap primaries (identical to a single run's viz prefix)
         if seed == args.seed0:
@@ -1542,6 +1721,13 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                 viz_batches.append(vb)
         if viz_batches:
             all_viz = viz_tracer.run(viz_batches).viz.as_array()
+
+    # pulsed-optics P7 time products: bin the seed-0 arrival records into the
+    # selected products (seed 0 only, exactly like run_trace's Python path);
+    # save_detectors then writes the time_data/time_attrs alongside the cubes.
+    if time_cfg is not None and grids_list:
+        for grid in grids_list[0].values():
+            grid.finalize_time(time_cfg)
 
     common.progress_emit("trace", 0.97, "writing detectors",
                          case_dir=case_dir)

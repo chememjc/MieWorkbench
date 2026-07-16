@@ -468,6 +468,12 @@ SceneC *request_load(const char *path) {
         v = yyjson_obj_get(par, "track_history");
         s->track_history = (uint8_t)(v && yyjson_is_bool(v)
                                      && yyjson_get_bool(v));
+        v = yyjson_obj_get(par, "track_time");
+        s->track_time = (uint8_t)(v && yyjson_is_bool(v)
+                                  && yyjson_get_bool(v));
+        v = yyjson_obj_get(par, "time_products");
+        s->time_products = (uint8_t)(v && yyjson_is_bool(v)
+                                     && yyjson_get_bool(v));
         v = yyjson_obj_get(par, "importance_aim");
         s->importance_aim = (uint8_t)(v && yyjson_is_bool(v)
                                       && yyjson_get_bool(v));
@@ -526,6 +532,14 @@ SceneC *request_load(const char *path) {
                                  (size_t)s->n_lams);
     s->amb_n_im = need_dbl_array(root, "ambient_n_im", "root",
                                  (size_t)s->n_lams);
+    /* pulsed-optics P7: ambient group index / GDD-per-length (present only
+     * under time products; pre-resolved through scene.medium_* at body -1) */
+    if (s->time_products) {
+        s->amb_n_g = need_dbl_array(root, "ambient_n_g", "root",
+                                    (size_t)s->n_lams);
+        s->amb_gdd_per_m = need_dbl_array(root, "ambient_gdd_per_m", "root",
+                                          (size_t)s->n_lams);
+    }
 
     /* bodies */
     yyjson_val *bodies = need(root, "bodies", "root");
@@ -554,6 +568,13 @@ SceneC *request_load(const char *path) {
         b->filter_alpha = (fa && !yyjson_is_null(fa))
             ? need_dbl_array(bobj, "filter_alpha", ctx, (size_t)s->n_lams)
             : NULL;
+        /* pulsed-optics P7: pre-resolved group index / GDD-per-length per lam
+         * (present only under time products). */
+        if (s->time_products) {
+            b->n_g = need_dbl_array(bobj, "n_g", ctx, (size_t)s->n_lams);
+            b->gdd_per_m = need_dbl_array(bobj, "gdd_per_m", ctx,
+                                          (size_t)s->n_lams);
+        }
         /* uniaxial birefringence (optional) */
         yyjson_val *bir = yyjson_obj_get(bobj, "birefringence");
         if (bir && !yyjson_is_null(bir)) {
@@ -800,6 +821,12 @@ SceneC *request_load(const char *path) {
             ? need_dbl_array(sobj, "sample_area", ctx,
                              (size_t)(src->n_strata * src->n_pol))
             : NULL;
+        /* pulsed-optics P7 SPM chirp: per-stratum birth-time offset [s]
+         * (sources._stratum_t0). Optional — absent on non-SPM sources. */
+        yyjson_val *st0 = yyjson_obj_get(sobj, "stratum_t0");
+        src->stratum_t0 = (st0 && !yyjson_is_null(st0))
+            ? need_dbl_array(sobj, "stratum_t0", ctx, (size_t)src->n_strata)
+            : NULL;
         parse_face_into(&src->emit_face, need(sobj, "emit_face", ctx),
                         ctx, 0);
         source_uv_bounds(src, ctx);
@@ -955,6 +982,8 @@ void scene_free(SceneC *s) {
         free(s->bodies[i].pol_T_perp);
         free(s->bodies[i].bir_n_o);
         free(s->bodies[i].bir_n_e);
+        free(s->bodies[i].n_g);
+        free(s->bodies[i].gdd_per_m);
     }
     for (int i = 0; i < s->n_coatings; i++) {
         free(s->coatings[i].layer_n_re);
@@ -993,6 +1022,7 @@ void scene_free(SceneC *s) {
         free((void *)s->sources[i].emit_face.trim.pts_u);
         free((void *)s->sources[i].emit_face.trim.pts_v);
         free(s->sources[i].sample_area);
+        free(s->sources[i].stratum_t0);
     }
     for (int i = 0; i < s->n_dets; i++) {
         free(s->dets[i].inc);
@@ -1008,5 +1038,7 @@ void scene_free(SceneC *s) {
     free(s->lams_m);
     free(s->amb_n_re);
     free(s->amb_n_im);
+    free(s->amb_n_g);
+    free(s->amb_gdd_per_m);
     free(s);
 }

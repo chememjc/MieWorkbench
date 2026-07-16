@@ -112,6 +112,39 @@ void det_collect_exports(SceneC *s, const ExportVec *e);
 void det_write_exports(const SceneC *s);
 void det_free_exports(SceneC *s);
 
+/* pulsed-optics P7 time products: one per-detector-hit arrival record
+ * (detector._record_time_arrivals, detector.py:167-195). Recorded for BOTH
+ * the coherent and incoherent detector branches at the GEOMETRIC hit — t is
+ * the group-delay arrival gopl/c, power the geometric power. Bit-for-bit the
+ * columns the Python DetectorGrid.time_records dict carries, so the Python
+ * finalize_time bins the C records with NO code change. */
+typedef struct {
+    int32_t det;
+    double t;               /* gopl / c [s] (fp64: the energy invariant) */
+    float fx, fy;           /* raw fractional pixel coords of the hit point */
+    float lam;              /* vacuum wavelength [m] */
+    double power;           /* geometric arrival power [W] (fp64) */
+    float gdd;              /* accumulated GDD [s^2] (analytic envelope) */
+    int16_t source_id, lam_stratum;
+} TimeRec;
+
+typedef struct {
+    TimeRec *v;
+    int64_t n, cap;
+} TimeVec;
+
+void timevec_init(TimeVec *t);
+void timevec_free(TimeVec *t);
+void timevec_push(TimeVec *t, const TimeRec *r);
+void timevec_clear(TimeVec *t);
+
+/* merge thread time buffers into per-detector arrays; write per-detector
+ * time_<i>_*.npy column files (t/fx/fy/lam/power/source_id/lam_stratum/gdd)
+ * consumed by run_c_case -> grid.time_records -> finalize_time. */
+void det_collect_times(SceneC *s, const TimeVec *t);
+void det_write_times(const SceneC *s);
+void det_free_times(SceneC *s);
+
 typedef struct {
     DetHit *v;
     int64_t n, cap;

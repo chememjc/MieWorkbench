@@ -51,6 +51,12 @@ typedef struct BodyC {
      * — scene.py:454-477): */
     double *n_re, *n_im;
     double *filter_alpha;       /* additive bulk alpha [1/m]; NULL if none */
+    /* pulsed-optics P7 (time_products only; NULL otherwise): group index and
+     * material GDD-per-length [s^2/m] per lam, PRE-RESOLVED in Python through
+     * scene.medium_group_index / medium_gdd_per_length (the exact finite-
+     * difference stencil). The C trace only multiplies by the segment length,
+     * so gopl/gdd_acc match the Python accumulators bit-for-bit. */
+    double *n_g, *gdd_per_m;    /* [n_lams] each */
     /* uniaxial birefringence (scene.py:137-144; biaxial is Python-routed) */
     uint8_t birefringent;
     kvec3 crystal_axis;         /* unit optic axis */
@@ -182,6 +188,10 @@ typedef struct {
     /* --export-rays landing records (opaque here; detector.c owns) */
     void *exports;
     int64_t n_exports, cap_exports;
+    /* pulsed-optics P7 time-product arrival records (opaque TimeRec here;
+     * detector.c owns) */
+    void *times;
+    int64_t n_times, cap_times;
 } DetC;
 
 /* Emission policy (sources.py:240-266 "toward-origin sign policy"):
@@ -214,6 +224,10 @@ typedef struct {
     /* per-(stratum, pol) gather normalization areas [m^2]
      * (run_trace.compute_sample_area) — [n_strata * n_pol] */
     double *sample_area;
+    /* pulsed-optics P7 SPM chirp (time_products only): per-stratum birth-time
+     * offset [s] (sources._stratum_t0). A primary is born with gopl =
+     * c * stratum_t0[stratum] (sources.apply_stratum_t0). NULL => all zero. */
+    double *stratum_t0;         /* [n_strata] seconds, or NULL */
 } SourceC;
 
 /* continuum-mode particle cloud (particles.py _continuum): all tables
@@ -258,6 +272,10 @@ typedef struct SceneC {
     int n_lams;
     double *lams_m;             /* global wavelength union */
     double *amb_n_re, *amb_n_im;    /* ambient medium per lam */
+    /* pulsed-optics P7 (time_products only): ambient group index / GDD-per-
+     * length per lam (scene.medium_group_index/medium_gdd_per_length at
+     * body -1). NULL unless time_products. */
+    double *amb_n_g, *amb_gdd_per_m;
 
     int n_bodies;
     BodyC *bodies;
@@ -306,6 +324,15 @@ typedef struct SceneC {
                                  * gather_nufft.c / cengine/README.md */
     uint8_t export_rays;        /* --export-rays (this seed) */
     uint8_t track_history;      /* --ghost-analysis (this seed) */
+    uint8_t track_time;         /* pulsed-optics time tracking (P7): the
+                                 * per-body power-weighted bulk-path tally
+                                 * (GDD budget). Set when time_products OR
+                                 * --gdd-budget is active (params.track_time). */
+    uint8_t time_products;      /* pulsed-optics time products (P7): also
+                                 * accumulate the gopl/gdd group-delay ray
+                                 * slots and record per-detector arrival
+                                 * records. Requires the n_g/gdd tables above.
+                                 * (params.time_products) */
     uint8_t importance_aim;     /* --importance-aim (opt-in) */
 
     int max_strata;             /* max n_strata over sources (tally dims) */
@@ -335,6 +362,23 @@ static inline double scene_filter_alpha(const SceneC *s, int body_index,
     if (body_index < 0) return 0.0;
     const double *fa = s->bodies[body_index].filter_alpha;
     return fa ? fa[lam_idx] : 0.0;
+}
+
+/* Group index of the medium a ray is in (time_products only). Port of
+ * scene.medium_group_index — pre-resolved Python-side, so this is a table
+ * read, body index or AMBIENT, at the ray's lam_idx. */
+static inline double scene_medium_group_index(const SceneC *s, int body_index,
+                                              int lam_idx) {
+    if (body_index < 0) return s->amb_n_g[lam_idx];
+    return s->bodies[body_index].n_g[lam_idx];
+}
+
+/* Material GDD-per-length [s^2/m] of the medium a ray is in (time_products
+ * only). Port of scene.medium_gdd_per_length; pre-resolved Python-side. */
+static inline double scene_medium_gdd_per_m(const SceneC *s, int body_index,
+                                            int lam_idx) {
+    if (body_index < 0) return s->amb_gdd_per_m[lam_idx];
+    return s->bodies[body_index].gdd_per_m[lam_idx];
 }
 
 /* Canonical geometric normal of a face at a surface point (analytic
