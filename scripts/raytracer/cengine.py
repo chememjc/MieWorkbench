@@ -658,6 +658,10 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
             # selects the plain fp64 reference kernel (bit-exact anchor)
             "mode": ("exact" if getattr(args, "gather_exact", False)
                      else "tiled"),
+            # EXPERIMENTAL NUFFT angular-spectrum route (cuFINUFFT); OFF by
+            # default (opt-in via --gather-nufft). The per-key runtime gate
+            # is the real switch; see cengine/src/gather_nufft.c.
+            "nufft": bool(getattr(args, "gather_nufft", False)),
         },
     }
 

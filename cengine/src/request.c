@@ -483,6 +483,7 @@ SceneC *request_load(const char *path) {
         s->occlusion = 0;
         s->occ_tile = 16;
         s->gather_exact = 0;
+        s->gather_nufft = 0;      /* OFF by default: opt-in (gather.nufft) */
         if (g && !yyjson_is_null(g)) {
             char bk[16] = "auto";
             yyjson_val *v = yyjson_obj_get(g, "backend");
@@ -509,6 +510,9 @@ SceneC *request_load(const char *path) {
             if (v && yyjson_is_str(v)
                     && strcmp(yyjson_get_str(v), "exact") == 0)
                 s->gather_exact = 1;
+            v = yyjson_obj_get(g, "nufft");
+            if (v && yyjson_is_bool(v))
+                s->gather_nufft = (uint8_t)yyjson_get_bool(v);
         }
     }
 

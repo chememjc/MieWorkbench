@@ -49,6 +49,7 @@ add_executable(miewb-trace
   src/ledger.c
   src/detector.c
   src/gather.c
+  src/gather_nufft.c
   src/trace.c
   vendor/yyjson/yyjson.c
 )
@@ -83,6 +84,40 @@ if(CMAKE_CUDA_COMPILER)
   find_package(CUDAToolkit REQUIRED)
   target_link_libraries(miewb-trace PRIVATE CUDA::cudart)
   message(STATUS "CUDA gather enabled (${CMAKE_CUDA_COMPILER})")
+
+  # ---- cuFINUFFT (P1 NUFFT angular-spectrum gather fast path) — OPTIONAL.
+  # Auto-detect the build-time-fetched checkout (cengine/vendor/finufft,
+  # built by vendor/fetch_finufft.sh); MIEWB_CUFINUFFT overrides with a
+  # prebuilt root. Absent => the NUFFT route compiles out and the gather
+  # falls through to the tiled/exact kernels (all tests still pass).
+  set(_finufft_root "$ENV{MIEWB_CUFINUFFT}")
+  if(NOT _finufft_root)
+    set(_finufft_root "${CMAKE_CURRENT_SOURCE_DIR}/vendor/finufft")
+  endif()
+  find_path(CUFINUFFT_INCLUDE_DIR cufinufft.h
+    HINTS "${_finufft_root}/include" "${_finufft_root}" NO_DEFAULT_PATH)
+  # A self-contained SHARED libcufinufft.so (built by fetch_finufft.sh with
+  # FINUFFT_STATIC_LINKING=OFF) sidesteps CUDA relocatable-device-code
+  # linking into this C executable — the .so device-links internally.
+  find_library(CUFINUFFT_LIB cufinufft
+    HINTS "${_finufft_root}/build-cuda" "${_finufft_root}/build"
+          "${_finufft_root}/lib" "${_finufft_root}" NO_DEFAULT_PATH)
+  if(CUFINUFFT_INCLUDE_DIR AND CUFINUFFT_LIB)
+    get_filename_component(_cufinufft_dir "${CUFINUFFT_LIB}" DIRECTORY)
+    target_compile_definitions(miewb-trace PRIVATE MIEWB_HAS_CUFINUFFT)
+    target_include_directories(miewb-trace PRIVATE ${CUFINUFFT_INCLUDE_DIR})
+    target_link_libraries(miewb-trace PRIVATE ${CUFINUFFT_LIB} CUDA::cufft)
+    # find the .so at runtime without LD_LIBRARY_PATH
+    set_property(TARGET miewb-trace APPEND PROPERTY
+      BUILD_RPATH "${_cufinufft_dir}")
+    set_property(TARGET miewb-trace APPEND PROPERTY
+      INSTALL_RPATH "${_cufinufft_dir}")
+    message(STATUS "NUFFT gather enabled (cuFINUFFT: ${CUFINUFFT_LIB})")
+  else()
+    message(STATUS "cuFINUFFT not found — NUFFT gather route disabled "
+                   "(run cengine/vendor/fetch_finufft.sh or set "
+                   "MIEWB_CUFINUFFT)")
+  endif()
 else()
   message(STATUS "CUDA not found — CPU gather only")
 endif()

@@ -288,6 +288,15 @@ typedef struct {
     uint8_t gather_exact;       /* --gather-exact: plain fp64 kernel (the
                                  * bit-exact reference path); default is
                                  * the tile-factorized kernel */
+    uint8_t gather_nufft;       /* NUFFT angular-spectrum route enabled
+                                 * (request gather.nufft, default 0 = OFF /
+                                 * opt-in); the per-key runtime gate is the
+                                 * real switch, and --gather-exact/occlusion
+                                 * disable it. OFF by default because the
+                                 * band-limited route cannot reproduce the
+                                 * exact per-pair kernel on Monte-Carlo point
+                                 * samples (white spatial spectrum) — see
+                                 * gather_nufft.c / cengine/README.md */
     uint8_t export_rays;        /* --export-rays (this seed) */
     uint8_t track_history;      /* --ghost-analysis (this seed) */
     uint8_t importance_aim;     /* --importance-aim (opt-in) */
