@@ -817,21 +817,40 @@ optic axis. `birefringence.py`'s model (Born & Wolf / Yariv):
   refraction uses the same wavevector tangential-continuity method and
   reduces exactly to ordinary Fresnel refraction for the o-mode.
 
-At an interface, the incident Jones vector is decomposed **first** into
-the o/e eigenbasis (`bir.eigenbasis()`), and each channel's own R/T is
-applied using an **effective-index Fresnel approximation** (`n_o` for the
-o-channel, the angle-dependent `n(theta)` for the e-channel) — the true
-anisotropic-boundary Fresnel solution is not solved. This decompose-first
-order matters: applying a single Fresnel R/T to the whole field instead
-(rather than per-channel) broke the energy ledger's closure at the ~1e-2
-level during development; decomposing first and applying each channel's
-own coefficients keeps R+T=1 per channel, with any dropped cross-terms
-absorbed into `absorbed_surface` via the exact power difference (so
-overall energy closure is still exact, though the per-channel phase is an
-approximation without a stated numeric error bound beyond that). `mirror`/
-`absorbance` still apply to birefringent bodies; **coating and roughness
-are not modeled on a birefringent face** (bare Fresnel is used instead,
-with a one-time warning).
+At an interface the amplitudes are computed **exactly** (default) by
+solving the uniaxial boundary-value problem Lekner (*J. Phys.: Condens.
+Matter* **3**, 6121, 1991) factors in closed form — continuity of
+tangential **E** and **H** across the interface, a 4×4 linear system per
+ray (`bir.uniaxial_interface_in` / `_out`, ~Fresnel cost). This gives the
+full o/e transmission split **and** the reflected s/p Jones matrix
+*including* the cross terms `r_sp`/`r_ps` that the older approximation
+dropped — those are odd in the optic-axis azimuth, vanish at 0°/90° and
+peak near 45° (cross-checked against Lekner, *JOSA A* **40**, 722, 2023).
+Amplitudes are **Poynting-flux normalized** (the e-wave's walk-off makes
+S_z differ from a `k_z`-weighting), so the flux-normalized scattering
+matrix is unitary and `|R_ss|²+|R_ps|²+T_o+T_e = 1` to 1e-10 for calcite
+and quartz (positive and negative birefringence). The exit transmission
+into the isotropic medium is likewise exact; the mode-preserving internal
+reflection carries the exact remaining power `R = 1 − T` (energy
+conservation — the crystal-side incident/reflected fields interfere, so a
+self-flux split is not clean). Non-absorbing uniaxial media only; the
+transmitted-into-lower-index wave goes evanescent honestly under TIR.
+See `birefringence.py`'s header for conventions and the transmitted-e
+branch choice; oracles in `test_birefringence.py`.
+
+The legacy **effective-index Fresnel approximation** (`n_o` for the
+o-channel, angle-dependent `n(theta)` for the e-channel, cross terms
+dropped into `absorbed_surface`) is retained behind **`--biref-approx`**
+for A/B comparison and C-engine parity. Its error vs the exact path is
+≈0 at azimuth 0°/90° and O(1%) near 45° (quantified in
+`test_uniaxial_approx_error_finding`). **Routing:** the exact path is
+Python-only (the C engine's `birefk.h` still carries the effective-index
+form), so a uniaxial scene emits the unported `biref_exact` feature token
+and honestly routes to the Python engine; under `--biref-approx` it emits
+the ported `birefringence` token and the C engine (matching Python) is
+available. `mirror`/`absorbance` still apply to birefringent bodies;
+**coating and roughness are not modeled on a birefringent face** (bare
+interface amplitudes are used, with a one-time warning).
 
 o/e rays carry a per-ray `pol_mode` (0=isotropic/ordinary, 1=
 extraordinary) and `n_eff` (the e-ray's fixed direction-dependent phase
@@ -908,9 +927,11 @@ Rays carry `pol_mode` 2 (slow) / 3 (fast) inside a biaxial body (0/1 stay
 reserved for isotropic/uniaxial-extraordinary); as with uniaxial e-mode
 rays, `n_eff`/OPL bookkeeping is ordinary from the gather's point of view
 — there is no dedicated biaxial code in `gather.py`. Interface Fresnel
-amplitudes use the **same effective-index approximation** as uniaxial
-(each sheet's own `n_phase` fed into isotropic Fresnel formulas per
-channel); the cross-terms this drops are absorbed into `absorbed_surface`
+amplitudes use the **effective-index approximation** (each sheet's own
+`n_phase` fed into isotropic Fresnel formulas per channel) — the same tier
+the uniaxial path uses under `--biref-approx`; no exact Lekner-style
+boundary solve is done for the two-sheet biaxial case yet. The cross-terms
+this drops are absorbed into `absorbed_surface`
 via the exact power difference, so energy closure holds by construction
 even though per-channel phase/amplitude near a principal plane is not
 claimed exact. **KTP @ 1064 nm** (Kato & Takaoka 2002) is the validation
@@ -1164,9 +1185,11 @@ Two-part model, in `scripts/raytracer/`:
   1e-12 (§11).
 - Uniaxial double refraction (o/e wavevector geometry, walk-off,
   tangential continuity) validated to 1e-12 (calcite walk-off vs
-  literature to 0.05°, §5.6); the effective-index Fresnel amplitude
-  approximation used per o/e channel is documented in §5.6, not claimed
-  exact.
+  literature to 0.05°, §5.6); interface amplitudes are the EXACT
+  Lekner-1991 boundary solution by default — reduces to Fresnel to 1e-12,
+  Poynting-flux closure to 1e-10, azimuth cross-term parity to 1e-14
+  (§5.6, `test_birefringence.py`). The legacy effective-index per-channel
+  approximation is retained under `--biref-approx`.
 - The Kogelnik thin-hologram and Dammann exact-Fourier grating models'
   closed-form special cases (Bragg-peak `eta=1` at `nu=pi/2`; Parseval
   sum; reduction to the lamellar duty=0.5 case) — validated (§5.5/§11).

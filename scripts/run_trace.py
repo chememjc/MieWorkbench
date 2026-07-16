@@ -480,7 +480,8 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                           args, "importance_scatter", False),
                       importance_limit=getattr(
                           args, "importance_limit", 1.0),
-                      pol_transport=getattr(args, "pol_transport", False))
+                      pol_transport=getattr(args, "pol_transport", False),
+                      biref_approx=getattr(args, "biref_approx", False))
     particles = None
     part_diag = None
     if args.particles:
@@ -562,7 +563,8 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
                           args, "importance_scatter", False),
                       importance_limit=getattr(
                           args, "importance_limit", 1.0),
-                      pol_transport=getattr(args, "pol_transport", False))
+                      pol_transport=getattr(args, "pol_transport", False),
+                      biref_approx=getattr(args, "biref_approx", False))
     particles = None
     if args.particles:
         from raytracer.particles import ParticleCloud

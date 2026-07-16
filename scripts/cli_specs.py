@@ -356,6 +356,10 @@ def _build_pipeline_parser():
     g.add_argument("--rough-fresnel", default=None,
                    choices=["micro", "macro"],
                    help="roughness-lobe Fresnel model (default micro)")
+    g.add_argument("--biref-approx", action="store_true",
+                   help="legacy isotropic effective-index Fresnel at "
+                        "uniaxial interfaces instead of the default EXACT "
+                        "Lekner-1991 amplitudes (A/B + C-engine parity)")
     g.add_argument("--ray-differentials", action="store_true",
                    help="per-ray wavefront-patch dA tracking (exact "
                         "gather normalization; costs memory)")
@@ -637,6 +641,13 @@ def _build_trace_parser():
                    help="roughness-lobe Fresnel: microfacet-local per-"
                         "polarization (physical) or legacy nominal-angle "
                         "scalar average")
+    p.add_argument("--biref-approx", action="store_true",
+                   help="use the legacy isotropic effective-index Fresnel "
+                        "at uniaxial-crystal interfaces (o/e channels, cross "
+                        "terms dropped) instead of the default EXACT "
+                        "Lekner-1991 amplitudes (A/B + C-engine parity; "
+                        "routes to the C engine, whereas the exact path "
+                        "Python-routes)")
     p.add_argument("--source-face", action="append", default=[],
                    help="override: Body.Feature.FaceN (matched to the "
                         "source body owning that face)")

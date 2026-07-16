@@ -356,6 +356,324 @@ def refract_out(k_hat_int, mode_is_e, n_hat, c_axis, n_o, n_e, n2):
 
 
 # ===========================================================================
+# EXACT uniaxial interface amplitudes  (Lekner 1991 boundary-value problem)
+# ===========================================================================
+# WHAT THIS IS.  refract_in/refract_out above give the GEOMETRY (o/e
+# wavevectors, walk-off ray directions, phase indices).  The interface
+# AMPLITUDES — how much of the incident field couples into each reflected
+# and transmitted mode — were historically computed in the tracer with an
+# "isotropic effective-index" approximation: the incident field is split
+# into an o-channel (Fresnel with n_o) and an e-channel (Fresnel with the
+# e phase index n(theta)), and the s<->p / o<->e CROSS terms are dropped.
+# That approximation is worst exactly where the cross terms r_sp / r_ps are
+# largest — optic axis at ~45 deg azimuth (they are ODD in azimuth and
+# vanish at 0/90 deg; Lekner, J. Opt. Soc. Am. A 40, 722 (2023)).
+#
+# The functions below replace it with the EXACT amplitudes for a
+# non-absorbing isotropic/uniaxial interface.  They solve the same
+# boundary-value problem Lekner factors analytically in J. Phys.: Condens.
+# Matter 3 (1991) 6121: continuity of tangential E and tangential H across
+# the interface, four scalar conditions in four unknown mode amplitudes.
+# We assemble and solve that 4x4 linear system per ray (vectorized,
+# ~Fresnel cost) rather than transcribing Lekner's explicit closed forms —
+# the linear solve IS the closed-form solution of the same equations, is
+# far less error-prone, and reduces to fresnel.fresnel_coeffs by
+# construction in the isotropic limit (oracle-pinned to 1e-12).
+#
+# CONVENTIONS (pinned; DO NOT introduce a second basis).
+#   * d, n_hat as everywhere else: n_hat points INTO the incident medium,
+#     cos_i = -d . n_hat >= 0.  zhat = -n_hat points INTO the transmission
+#     medium.
+#   * s/p basis is EXACTLY fresnel.pol_basis: s_hat = normalize(d x n_hat)
+#     (perpendicular to the plane of incidence), p_hat = d x s_hat.  The
+#     reflection Jones (r_ss, r_sp, r_ps, r_pp) returned here is in this
+#     basis for BOTH the incident and the reflected wave (the reflected
+#     p-direction is pol_basis(reflect_dir(d), n_hat).p), so it drops
+#     straight into the tracer's rotate_jones bookkeeping and equals
+#     fresnel rs/rp in the isotropic limit with NO extra sign flips.
+#   * Crystal modes are returned in the o/e EIGENMODE basis: the ordinary
+#     E-field is along e_o_hat = normalize(k x c) (D=E for the o wave);
+#     the extraordinary E-field is E_e = eps^{-1} D_e with D_e = e_e_hat
+#     (the in-plane transverse D of eigenbasis()), eps = n_o^2 I +
+#     (n_e^2 - n_o^2) c c^T.  E_e is NOT transverse to k_e (walk-off).
+#   * Every field is a plane wave exp(i(k.r - w t)); in k0 = w/c units
+#     (|k| = refractive index) Faraday gives H = k x E for every mode,
+#     isotropic or anisotropic.
+#
+# ENERGY / FLUX NORMALIZATION (engine3.md Sec 7.4).  Amplitudes are E-field
+# ratios, but energy must be counted with the NORMAL time-averaged Poynting
+# flux S_z = (1/2) Re(E x H*) . zhat — NOT |amp|^2 * k_z, because the
+# e-wave's walk-off makes S_z differ from the k_z-weighting.  We therefore
+# return every transmitted/reflected amplitude FLUX-NORMALIZED: multiplied
+# by sqrt(|S_z(mode)| / S_z(incident)).  With that normalization the 4x4
+# scattering matrix is UNITARY for a lossless interface, so the modulus-
+# squared of each amplitude is directly its power fraction and
+# |r_ss|^2 + |r_ps|^2 + T_o + T_e == 1 (checked to 1e-10 on a dense
+# (theta, alpha, phi) grid for calcite and quartz).
+#
+# BRANCH CHOICE (documented per the P6 contract).  The transmitted e-wave
+# normal component is the root of the ellipsoid quadratic that carries
+# energy INTO the transmission medium.  refract_in() selects the inward
+# WAVEVECTOR root s = (-b - sqrt(disc))/(2a); for a non-absorbing uniaxial
+# this coincides with the positive-Poynting-flux (causal) root, which the
+# flux-closure oracle confirms by returning S_z(e) > 0 across the whole
+# grid (a wrong branch would give S_z(e) < 0 and break closure).  For the
+# EXIT problem the two crystal modes share the tangential wavevector K_t;
+# the reflected (back-into-crystal) o-root is +sqrt(n_o^2 - |K_t|^2) and
+# the reflected e-root is s_refl = -b/a - s_incident (Vieta on the same
+# quadratic — the second intersection of the K_t line with the ellipsoid),
+# which is exact and needs no separate sign hunt.  The transmitted-into-
+# lower-index mode is allowed to go evanescent (complex k_z under TIR):
+# the arithmetic is complex128 throughout, so its normal flux Re(...) -> 0
+# automatically and all the energy returns to the reflected channels.
+# ---------------------------------------------------------------------------
+def _eps_inv_apply(v, c, n_o, n_e):
+    """eps^{-1} v for the uniaxial tensor eps = n_o^2 I + (n_e^2-n_o^2)cc^T:
+    v/n_o^2 + (1/n_e^2 - 1/n_o^2)(c.v) c.  v may be complex, c/n_o/n_e real,
+    all (n,3)/(n,)."""
+    inv_o2 = 1.0 / n_o ** 2
+    return v * inv_o2[:, None] \
+        + ((1.0 / n_e ** 2 - inv_o2) * _dot(c, v))[:, None] * c
+
+
+def _pz(K, E, zhat):
+    """Normal time-averaged Poynting flux (x2, the 1/2 cancels in ratios)
+    of a unit-amplitude plane wave: Re( (E x conj(H)) . zhat ), H = K x E.
+    K may be complex (evanescent); E complex; zhat real unit (n,3)."""
+    H = np.cross(K, E)
+    return np.real(_dot(np.cross(E, np.conj(H)), zhat))
+
+
+def _solve_bvp(cols, rhs):
+    """Solve the interface 4x4 for the mode amplitudes.
+
+    cols : sequence of four (n,4) complex arrays — the columns of the
+           system matrix (one per unknown mode amplitude), each already
+           containing [.s, .t, H.s, H.t] tangential projections.
+    rhs  : (n,4,K) complex right-hand side(s).
+    Returns x (n,4,K) with the four amplitudes stacked on axis 1.
+    """
+    A = np.stack(cols, axis=2)                       # (n,4,4)
+    return np.linalg.solve(A, rhs)
+
+
+def _tang_cols(vE, vH, s_hat, t_hat):
+    """[vE.s, vE.t, vH.s, vH.t] stacked to (n,4) — a single BVP column."""
+    return np.stack([_dot(vE, s_hat), _dot(vE, t_hat),
+                     _dot(vH, s_hat), _dot(vH, t_hat)], axis=1)
+
+
+def uniaxial_interface_in(d_in, n_hat, c_axis, n1, n_o, n_e, res=None):
+    """EXACT amplitudes for an isotropic (n1) -> uniaxial interface.
+
+    Returns a dict of per-ray arrays:
+      rss, rsp, rps, rpp  : complex reflection Jones in the pol_basis(d)
+                            s/p basis (reflected field = R . incident,
+                            with R = [[rss, rsp], [rps, rpp]]); already
+                            flux-normalized (reflection is same-medium).
+      tos, top            : complex flux-normalized coupling of the
+                            incident s / p field into the ORDINARY mode
+                            (A_o = tos*Es_i + top*Ep_i; |A_o|^2 = o power).
+      tes, tep            : same for the EXTRAORDINARY mode.
+      s_new, p_new        : the incident s/p basis vectors (n,3).
+      eo_o                : ordinary child D/E direction (unit, = child s_hat).
+      eo_e                : extraordinary child s_hat (= eigenbasis eo of k_e).
+    Geometry (k_o, k_e, s_e, n_phase_e, n_ray_e, tir_o, tir_e) is unchanged
+    from refract_in(); pass its result as `res` to avoid recomputing it."""
+    d = _unit(d_in)
+    n = d.shape[0]
+    nh = _unit(_bcast_vec(n_hat, n))
+    c = _unit(_bcast_vec(c_axis, n))
+    n1 = _bcast_scalar(n1, n)
+    n_o = _bcast_scalar(n_o, n)
+    n_e = _bcast_scalar(n_e, n)
+    if res is None:
+        res = refract_in(d, nh, c, n1, n_o, n_e)
+
+    zhat = -nh
+    s_hat, p_i = fresnel.pol_basis(d, nh)            # incident s, p
+    t_hat = np.cross(zhat, s_hat)                    # 2nd tangential dir
+
+    Ki = (n1[:, None] * d).astype(np.complex128)
+    d_r = fresnel.reflect_dir(d, nh)
+    Kr = (n1[:, None] * d_r).astype(np.complex128)
+    p_r = np.cross(d_r, s_hat)                        # reflected p-basis
+
+    ko_dir = res["k_o"]
+    Ko = (n_o[:, None] * ko_dir).astype(np.complex128)
+    eo_o, _ = eigenbasis(ko_dir, c)                  # ordinary E (unit)
+    ke_dir = res["k_e"]
+    Ke = (res["n_phase_e"][:, None] * ke_dir).astype(np.complex128)
+    eo_e, ee_e = eigenbasis(ke_dir, c)               # D_e = ee_e
+    E_e = _eps_inv_apply(ee_e.astype(np.complex128), c, n_o, n_e)
+
+    s_c = s_hat.astype(np.complex128)
+    p_r_c = p_r.astype(np.complex128)
+    eo_o_c = eo_o.astype(np.complex128)
+    # H = K x E for every mode
+    H_rs = np.cross(Kr, s_c)
+    H_rp = np.cross(Kr, p_r_c)
+    H_o = np.cross(Ko, eo_o_c)
+    H_e = np.cross(Ke, E_e)
+    H_is = np.cross(Ki, s_c)
+    H_ip = np.cross(Ki, p_i.astype(np.complex128))
+
+    # unknowns [r_s, r_p, t_o, t_e]; BVP  cols . x = -[E_inc; H_inc]
+    cols = [
+        _tang_cols(s_c, H_rs, s_hat, t_hat),
+        _tang_cols(p_r_c, H_rp, s_hat, t_hat),
+        _tang_cols(-eo_o_c, -H_o, s_hat, t_hat),
+        _tang_cols(-E_e, -H_e, s_hat, t_hat),
+    ]
+    rhs = -np.stack([
+        _tang_cols(s_c, H_is, s_hat, t_hat),                 # incident s
+        _tang_cols(p_i.astype(np.complex128), H_ip, s_hat, t_hat),  # inc p
+    ], axis=2)                                       # (n,4,2)
+    x = _solve_bvp(cols, rhs)                        # (n,4,2)
+
+    # flux normalization: fraction of incident normal Poynting flux
+    pz_inc = np.maximum(_pz(Ki, s_c, zhat), 1e-300)  # = n1 cos_i (both pols)
+    pz_o = _pz(Ko, eo_o_c, zhat)
+    pz_e = _pz(Ke, E_e, zhat)
+    fo = np.sqrt(np.clip(pz_o, 0.0, None) / pz_inc)
+    fe = np.sqrt(np.clip(pz_e, 0.0, None) / pz_inc)
+
+    rss, rps, t_o_s, t_e_s = x[:, 0, 0], x[:, 1, 0], x[:, 2, 0], x[:, 3, 0]
+    rsp, rpp, t_o_p, t_e_p = x[:, 0, 1], x[:, 1, 1], x[:, 2, 1], x[:, 3, 1]
+    return {
+        "rss": rss, "rsp": rsp, "rps": rps, "rpp": rpp,
+        "tos": t_o_s * fo, "top": t_o_p * fo,
+        "tes": t_e_s * fe, "tep": t_e_p * fe,
+        "s_new": s_hat, "p_new": p_i,
+        "eo_o": eo_o, "eo_e": eo_e,
+    }
+
+
+def uniaxial_interface_out(k_hat_int, mode_is_e, n_hat, c_axis,
+                           n_o, n_e, n2, d_out=None):
+    """EXACT amplitudes for a uniaxial -> isotropic (n2) interface.
+
+    The incident is a single crystal eigenmode (mode_is_e selects o vs e)
+    with internal wavevector DIRECTION k_hat_int (unit).  Returns a dict:
+      t_s, t_p   : complex flux-normalized coupling of the incident mode
+                   into the transmitted isotropic s / p field
+                   (Es_out = t_s*A_in, Ep_out = t_p*A_in; |t_s|^2+|t_p|^2 =
+                   T_total).  Basis = pol_basis(k_hat_int, n_hat); the
+                   transmitted p-direction is pol_basis(d_out, n_hat).p.
+                   These come from the FULL 4x4 BVP (both reflected crystal
+                   modes present), so they are exact.
+      T_total    : real transmitted power fraction |t_s|^2+|t_p|^2.  The
+                   transmission side is isotropic, so this is clean and
+                   unambiguous; reflectance is R = 1 - T_total by energy
+                   conservation (the crystal-side incident/reflected fields
+                   interfere, so the reflected mode fluxes do NOT simply add
+                   to R — full-field S_z continuity across the interface is
+                   exact to machine precision, but the SELF-flux split is
+                   not, unlike the isotropic-reflected ENTRY problem).
+      refl_phase : arg of the same-mode reflection amplitude (a sensible
+                   phase for the tracer's mode-preserving internal-reflection
+                   child, which carries the exact power R = 1 - T_total).
+      s_new, p_new : incident s/p basis (n,3).
+      tir        : bool, transmitted wave evanescent (no real refraction).
+    """
+    kh = _unit(k_hat_int)
+    n = kh.shape[0]
+    nh = _unit(_bcast_vec(n_hat, n))
+    c = _unit(_bcast_vec(c_axis, n))
+    n_o = _bcast_scalar(n_o, n)
+    n_e = _bcast_scalar(n_e, n)
+    n2 = _bcast_scalar(n2, n)
+    is_e = np.asarray(mode_is_e, dtype=bool)
+    zhat = -nh
+
+    cos_kc = _dot(kh, c)
+    n_phase = np.where(is_e, n_e_theta(cos_kc, n_o, n_e), n_o)
+    K_in = n_phase[:, None] * kh
+    t_vec = K_in - _dot(K_in, nh)[:, None] * nh      # conserved tangential
+    Kt2 = _dot(t_vec, t_vec)
+
+    # incident-mode E-vector (o: unit e_o; e: eps^{-1} D_e)
+    eo_i, ee_i = eigenbasis(kh, c)
+    E_in = np.where(is_e[:, None],
+                    _eps_inv_apply(ee_i.astype(np.complex128), c, n_o, n_e),
+                    eo_i.astype(np.complex128))
+    K_in_c = K_in.astype(np.complex128)
+
+    # reflected ORDINARY (sphere): back into the crystal, K.nh > 0
+    s_o = np.sqrt(np.clip(n_o ** 2 - Kt2, 0.0, None))
+    K_ro = t_vec + s_o[:, None] * nh
+    eo_ro, _ = eigenbasis(_unit(K_ro), c)
+    K_ro_c = K_ro.astype(np.complex128)
+    E_ro = eo_ro.astype(np.complex128)
+
+    # reflected EXTRAORDINARY: second root of the ellipsoid quadratic for
+    # this K_t (Vieta: s1+s2 = -b/a; incident root = K_in.nh).
+    p = _dot(t_vec, c)
+    q = _dot(nh, c)
+    kappa = n_e ** 2 / n_o ** 2 - 1.0
+    a = 1.0 + kappa * q ** 2
+    b = 2.0 * kappa * p * q
+    s_in = _dot(K_in, nh)
+    s_re = -b / a - s_in
+    K_re = t_vec + s_re[:, None] * nh
+    ke_dir_r = _unit(K_re)
+    _, ee_re = eigenbasis(ke_dir_r, c)
+    K_re_c = K_re.astype(np.complex128)
+    E_re = _eps_inv_apply(ee_re.astype(np.complex128), c, n_o, n_e)
+
+    # transmitted isotropic s/p (n2); complex k_z handles TIR
+    s_hat, _ = fresnel.pol_basis(kh, nh)
+    t_hat = np.cross(zhat, s_hat)
+    if d_out is None:
+        d_out, _ = refract_out(kh, is_e, nh, c, n_o, n_e, np.real(n2))
+    s2 = (n2 ** 2 - Kt2).astype(np.complex128)
+    tir = np.real(s2) < 0.0
+    qz = np.sqrt(s2)                                 # complex under TIR
+    # transmitted wavevector = K_t + qz * zhat  (zhat into medium 2)
+    Kt2v = t_vec.astype(np.complex128)
+    K_ts = Kt2v + qz[:, None] * zhat
+    E_ts = s_hat.astype(np.complex128)               # transmitted s
+    p_out = np.cross(d_out, s_hat)                    # transmitted p dir
+    E_tp = p_out.astype(np.complex128)
+    # under TIR both transmitted modes are evanescent with the same
+    # complex qz; when propagating |K_ts| = n2.  Both share K_t + qz*zhat.
+    K_tp = K_ts
+
+    H_ro = np.cross(K_ro_c, E_ro)
+    H_re = np.cross(K_re_c, E_re)
+    H_ts = np.cross(K_ts, E_ts)
+    H_tp = np.cross(K_tp, E_tp)
+    H_in = np.cross(K_in_c, E_in)
+
+    cols = [
+        _tang_cols(E_ro, H_ro, s_hat, t_hat),        # r_o
+        _tang_cols(E_re, H_re, s_hat, t_hat),        # r_e
+        _tang_cols(-E_ts, -H_ts, s_hat, t_hat),      # t_s
+        _tang_cols(-E_tp, -H_tp, s_hat, t_hat),      # t_p
+    ]
+    rhs = -_tang_cols(E_in, H_in, s_hat, t_hat)[:, :, None]   # (n,4,1)
+    x = _solve_bvp(cols, rhs)[:, :, 0]               # (n,4)
+
+    pz_inc = np.maximum(np.abs(_pz(K_in_c, E_in, zhat)), 1e-300)
+    f_ro = np.sqrt(np.abs(_pz(K_ro_c, E_ro, zhat)) / pz_inc)
+    f_re = np.sqrt(np.abs(_pz(K_re_c, E_re, zhat)) / pz_inc)
+    f_ts = np.sqrt(np.clip(_pz(K_ts, E_ts, zhat), 0.0, None) / pz_inc)
+    f_tp = np.sqrt(np.clip(_pz(K_tp, E_tp, zhat), 0.0, None) / pz_inc)
+
+    r_o, r_e, t_s, t_p = x[:, 0], x[:, 1], x[:, 2], x[:, 3]
+    ts_n = t_s * f_ts
+    tp_n = t_p * f_tp
+    T_total = np.abs(ts_n) ** 2 + np.abs(tp_n) ** 2
+    r_same = np.where(is_e, r_e * f_re, r_o * f_ro)
+    return {
+        "t_s": ts_n, "t_p": tp_n, "T_total": T_total,
+        "refl_phase": np.angle(r_same),
+        "s_new": s_hat, "p_new": np.cross(kh, s_hat),
+        "tir": tir,
+    }
+
+
+# ===========================================================================
 # BIAXIAL crystals (slow/fast two-sheet split) — see module header
 # ===========================================================================
 def _bcast_frame(frame, n):

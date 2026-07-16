@@ -346,15 +346,21 @@ round's fix loop (each names its seam):
 
 ### (b) Higher-fidelity physics (still open)
 
-- **Exact uniaxial Fresnel at a birefringent interface.** The current
-  model decomposes the incident field into the o/e eigenbasis and applies
-  each channel's own *isotropic*-effective-index Fresnel coefficients
-  (`n_o`/`n(theta)`) rather than solving the true anisotropic boundary-
-  value problem; energy still closes exactly via the ledger, but per-
-  channel phase/amplitude is an approximation, worst near grazing
-  incidence (`tracer._birefringent_children`, README §5.6). A rigorous
-  fix solves the 4-wave (2 incident + 2 reflected, or +2 transmitted)
-  boundary-matching problem directly.
+- **Exact uniaxial Fresnel at a birefringent interface — LANDED (P6,
+  Python engine).** The interface amplitudes now solve the exact uniaxial
+  boundary-value problem (Lekner 1991, a 4×4 tangential-E/H match per ray,
+  `bir.uniaxial_interface_in`/`_out`): full o/e transmission split plus the
+  reflected s/p Jones *including* the `r_sp`/`r_ps` cross terms, Poynting-
+  flux normalized (unitary to 1e-10 for calcite/quartz). The legacy
+  effective-index approximation stays behind `--biref-approx`. Two seams
+  remain open: (i) the **C engine** still carries the effective-index form
+  (`birefk.h`), so exact-uniaxial scenes Python-route via the `biref_exact`
+  feature token — a shared CPU/CUDA port of the complex 4×4 solve +
+  Poynting normalization is the follow-up; (ii) **exit internal reflection**
+  is still mode-preserving in geometry (its total power is exact via
+  `R = 1 − T`, but o↔e mode conversion on internal reflection and its
+  reflected-mode split are not propagated). The full-anisotropy Berreman
+  4×4 (biaxial/absorbing/gyrotropic) remains the final option (§7.4-2).
 - **Optical activity / chiral media (e.g. quartz's rotary power along its
   own optic axis).** Not modeled at all today — `birefringence.py`'s
   header explicitly scopes this out. Needed for a physically complete
@@ -515,7 +521,7 @@ narrative + exact code seam for each stays in its own section above (or in
 ### Backlog (b) — higher-fidelity physics
 | Item | Effort | Impact | Note |
 |--|:--:|:--:|--|
-|Exact uniaxial Fresnel at a birefringent interface|L|Med|4-wave boundary-match; today's effective-index approx worst near grazing|
+|Exact uniaxial Fresnel at a birefringent interface|✅|—|**LANDED (P6, Python):** Lekner-1991 4×4 boundary-match; C-engine port + exit mode-conversion remain|
 |Optical activity / chiral media|L|Low|**no competitor here has it** (`features.md` C6); research-only|
 |Biaxial conical refraction|M|Low|corner-case of a MieWorkbench-unique win (C5)|
 |Absorbing (dichroic) uniaxial crystals|M|Low|`Im(n_o)/Im(n_e)` currently ignored|
@@ -654,7 +660,7 @@ would make it exact.
 
 | Partial feature | Approximation today | Rigorous ideal | Seam |
 |--|--|--|--|
-|**Uniaxial interface Fresnel** (C4)|Field decomposed into o/e eigenbasis; each channel applies its own **effective-index isotropic** Fresnel coefficients. Energy still closes via the ledger; per-channel phase/amplitude approximate, worst near grazing.|Solve the true 4-wave anisotropic boundary-value problem directly.|`tracer._birefringent_children` (README §5.6)|
+|**Uniaxial interface Fresnel** (C4)|**EXACT (P6, Python engine):** Lekner-1991 4×4 tangential-E/H boundary match per ray — full o/e split + reflected s/p Jones incl. `r_sp`/`r_ps` cross terms, Poynting-flux-normalized (unitary to 1e-10). Legacy effective-index kept behind `--biref-approx`.|C-engine port of the 4×4 solve (exact path currently Python-routes via `biref_exact`); propagate o↔e conversion on exit internal reflection.|`bir.uniaxial_interface_in`/`_out`; `tracer._birefringent_children` (README §5.6)|
 |**SHG / χ² conversion** (S2)|Undepleted Boyd quadratic, η clamped ≤0.5; **no walk-off, no angular detuning, equal s/p harmonic split, no cascaded re-conversion**.|Depleted coupled-wave tanh²; type-I/II e/o geometry with Poynting walk-off; cascade.|bulk SHG event (README §6.12); needs exact-uniaxial Fresnel|
 |**Self-phase modulation** (S4)|**Source-side only**, quasi-classical single-time-per-frequency; exact FFT spectrum installed as an SPD.|Split-step NLSE with real intra-train SPM+GVD interplay.|`sources.py` SPM transform (README §5.2.1); split-step propagator|
 |**GDD budget** (S3)|**Material dispersion only**; geometric GDD (gratings/prisms/angular chirp) shows up in the traced time products instead, not the analytic table.|Unified analytic GD/GDD/TOD incl. angular-dispersion dθ/dλ term.|GDD-budget table (README §6.11)|
