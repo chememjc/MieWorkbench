@@ -9,6 +9,9 @@ def pytest_configure(config):
         "(slow; run with MIEWB_RUN_FREECAD=1)")
     config.addinivalue_line(
         "markers", "needs_gl: needs a real OpenGL context (skipped offscreen)")
+    config.addinivalue_line(
+        "markers", "slow: long-running (e.g. the Optiland oracle shells out to "
+        "the C engine); deselect with -m 'not slow'")
 
 
 def pytest_collection_modifyitems(config, items):

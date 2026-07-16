@@ -177,6 +177,42 @@ That SHA is NOT prysm's tip-of-master — the two commits after it
 that one test file — `pytest.importorskip("prysm")` at its top makes it a
 no-op skip, not a failure, when prysm isn't installed.
 
+### 4.2 Optional: the Optiland parity oracle (P4a)
+
+`mieworkbench/tests/test_optiland_oracle.py` is the **P4a parity oracle**
+(engine3.md §5 / §15 P4a): it cross-checks the MieWorkbench C ray-tracer
+against [Optiland](https://github.com/optiland/optiland) (MIT), an
+independent sequential ray tracer, on the shared `geometry/` scenes —
+best-focus position, per-ray landing across the pupil fan, and spot RMS
+all agree to floating-point round-off. This arbiter must exist **before**
+any Optiland-based optimizer/designer (P4b) adds a second physics truth.
+
+Optiland is a normal PyPI package, installed into the SAME `env/` GUI venv
+— never into `/home3/optics/env`, and never imported by the engine itself
+(the bridge `scripts/raytracer/optiland_bridge.py` is the ONLY module that
+imports it, and it runs under `env/bin/python`):
+
+```bash
+env/bin/pip install "optiland==0.6.0"
+```
+
+**PINNED VERSION: `optiland==0.6.0`** — the newest release that supports
+Python 3.10 (the GUI venv's interpreter). 0.6.1 (and later) require
+Python ≥ 3.11 and will not install here; the resolver would silently fall
+back to an ancient release, so pin explicitly. It pulls
+numba/pandas/pyyaml/seaborn/tabulate into `env/` (no torch — that is an
+optional Optiland extra we do not install).
+
+The oracle cases additionally shell out to the optics-env C engine to
+generate the Monte-Carlo comparison bundle (`run_trace.py --export-rays`);
+if `/home3/optics/env` or `cengine/build/miewb-trace` is absent they skip.
+The bridge structural + unit-contract tests need only Optiland. Skip the
+whole file with `pytest.importorskip("optiland")` when Optiland isn't
+installed. The two adjudications that reconciled the engines to machine
+precision (the real-air ambient index n=1.000272, and Optiland's
+reported-image-direction convention) are recorded in that test's module
+docstring.
+
 ---
 
 ## 5. First run
