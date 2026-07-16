@@ -640,6 +640,10 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
             "save_fields": bool(args.save_fields),
             "occlusion": bool(args.gather_occlusion),
             "occlusion_tile": 16,
+            # P1 tile-factorized kernel is the default; --gather-exact
+            # selects the plain fp64 reference kernel (bit-exact anchor)
+            "mode": ("exact" if getattr(args, "gather_exact", False)
+                     else "tiled"),
         },
     }
 

@@ -20,7 +20,7 @@
 #define SUBGRID_MAX 24                 /* _subgrid_factor s_max */
 
 /* ------------------------------------------------------------ CPU kernel */
-void gather_points_cpu(const GatherJob *j) {
+void gather_points_cpu(GatherJob *j) {
     memset(j->Ex, 0, (size_t)j->G * j->Q * 2 * sizeof(float));
     memset(j->Ey, 0, (size_t)j->G * j->Q * 2 * sizeof(float));
     #pragma omp parallel for schedule(static)
@@ -51,6 +51,221 @@ void gather_points_cpu(const GatherJob *j) {
             j->Ey[((size_t)g * j->Q + q) * 2 + 1] = ey[g].im;
         }
     }
+}
+
+/* ------------------------------------------------ tile factorization */
+/* Host-side point tiling for the P1 tile-factorized kernel: a permutation
+ * of the Q points into tiles of <= GATHER_TILE_CAP, each with an fp64
+ * centre (member mean) and max member distance dpmax. One code path
+ * serves the structured detector grid (TH x TW pixel tiles) and the
+ * arbitrary hot-pixel subgrid point lists (contiguous chunks). */
+typedef struct {
+    int64_t n_ptiles;
+    double *centers;                    /* n*3 */
+    int64_t *start;                     /* n+1 */
+    int64_t *order;                     /* Q */
+    float *dpmax;                       /* n */
+    float dpmax_max;
+} PTiles;
+
+static void ptiles_finalize(PTiles *pt, const double *pts) {
+    pt->dpmax_max = 0.0f;
+    for (int64_t t = 0; t < pt->n_ptiles; t++) {
+        double cx = 0.0, cy = 0.0, cz = 0.0;
+        int64_t q0 = pt->start[t], q1 = pt->start[t + 1];
+        for (int64_t l = q0; l < q1; l++) {
+            const double *p = pts + pt->order[l] * 3;
+            cx += p[0]; cy += p[1]; cz += p[2];
+        }
+        double inv = q1 > q0 ? 1.0 / (double)(q1 - q0) : 0.0;
+        cx *= inv; cy *= inv; cz *= inv;
+        pt->centers[t * 3] = cx;
+        pt->centers[t * 3 + 1] = cy;
+        pt->centers[t * 3 + 2] = cz;
+        double d2max = 0.0;
+        for (int64_t l = q0; l < q1; l++) {
+            const double *p = pts + pt->order[l] * 3;
+            double dx = p[0] - cx, dy = p[1] - cy, dz = p[2] - cz;
+            double d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 > d2max) d2max = d2;
+        }
+        pt->dpmax[t] = (float)sqrt(d2max);
+        if (pt->dpmax[t] > pt->dpmax_max) pt->dpmax_max = pt->dpmax[t];
+    }
+}
+
+static void ptiles_alloc(PTiles *pt, int64_t n_ptiles, int64_t Q) {
+    pt->n_ptiles = n_ptiles;
+    pt->centers = (double *)malloc((size_t)n_ptiles * 3 * sizeof(double));
+    pt->start = (int64_t *)malloc(((size_t)n_ptiles + 1) * sizeof(int64_t));
+    pt->order = (int64_t *)malloc((size_t)Q * sizeof(int64_t));
+    pt->dpmax = (float *)malloc((size_t)n_ptiles * sizeof(float));
+    if (!pt->centers || !pt->start || !pt->order || !pt->dpmax)
+        die(EXIT_PHYSICS, "gather: point-tile allocation failed");
+}
+
+static void ptiles_free(PTiles *pt) {
+    free(pt->centers); free(pt->start); free(pt->order); free(pt->dpmax);
+    memset(pt, 0, sizeof *pt);
+}
+
+/* fp32 phase-error budget for the tiled kernel (rad); the tile size is
+ * chosen so the gatherk.h bound 5e-7*k*dpmax stays inside it */
+#define GATHER_PHASE_BUDGET_RAD 1e-3
+
+/* detector grid: TH x TW pixel tiles, starting at 16x8 (== the CUDA
+ * block) and halving until the tile half-diagonal fits the phase budget
+ * at k_max. Smaller tiles amortize less fp64 but never break the
+ * budget; 1x1 degenerates to the exact per-point staging (dp = 0). */
+static void ptiles_build_grid(int32_t H, int32_t W, const double *pts,
+                              double pixel_m, double k_max, PTiles *pt) {
+    int32_t TH = 8, TW = 16;
+    double dp_allowed = GATHER_PHASE_BUDGET_RAD / (5e-7 * k_max);
+    while (TH * TW > 1
+           && 0.5 * pixel_m * sqrt((double)TW * TW + (double)TH * TH)
+              > dp_allowed) {
+        if (TW >= TH) TW = (TW + 1) / 2;
+        else TH = (TH + 1) / 2;
+    }
+    int32_t Th = (H + TH - 1) / TH, Tw = (W + TW - 1) / TW;
+    ptiles_alloc(pt, (int64_t)Th * Tw, (int64_t)H * W);
+    int64_t at = 0;
+    for (int32_t tr = 0; tr < Th; tr++)
+        for (int32_t tc = 0; tc < Tw; tc++) {
+            pt->start[(int64_t)tr * Tw + tc] = at;
+            int32_t y1 = (tr + 1) * TH < H ? (tr + 1) * TH : H;
+            int32_t x1 = (tc + 1) * TW < W ? (tc + 1) * TW : W;
+            for (int32_t iy = tr * TH; iy < y1; iy++)
+                for (int32_t ix = tc * TW; ix < x1; ix++)
+                    pt->order[at++] = (int64_t)iy * W + ix;
+        }
+    pt->start[pt->n_ptiles] = at;
+    ptiles_finalize(pt, pts);
+}
+
+/* arbitrary point list (hot-pixel subgrid): contiguous chunks */
+static void ptiles_build_chunks(int64_t Q, const double *pts, PTiles *pt) {
+    int64_t n = (Q + GATHER_TILE_CAP - 1) / GATHER_TILE_CAP;
+    ptiles_alloc(pt, n, Q);
+    for (int64_t q = 0; q < Q; q++) pt->order[q] = q;
+    for (int64_t t = 0; t <= n; t++) {
+        int64_t s = t * GATHER_TILE_CAP;
+        pt->start[t] = s < Q ? s : Q;
+    }
+    ptiles_finalize(pt, pts);
+}
+
+/* staged per-(tile, sample) record, shared layout with the CUDA kernel */
+typedef struct {
+    float ux, uy, uz, R, ph0;
+    float dirx, diry, dirz;
+    float exr, exi, eyr, eyi;
+    uint8_t group, near;
+} StagedS;
+
+#define STAGE_CHUNK 256
+
+/* CPU tile-factorized kernel: OpenMP over tiles, samples staged in
+ * chunks against the tile centre, fp32 inner loop; near-field samples
+ * routed through the exact fp64 gather_pair. */
+static void gather_points_cpu_tiled(GatherJob *j) {
+    memset(j->Ex, 0, (size_t)j->G * j->Q * 2 * sizeof(float));
+    memset(j->Ey, 0, (size_t)j->G * j->Q * 2 * sizeof(float));
+    float nxf = (float)j->nrm.x, nyf = (float)j->nrm.y,
+          nzf = (float)j->nrm.z;
+    float k_f = (float)j->k;
+    int64_t near_total = 0;
+    #pragma omp parallel for schedule(dynamic) reduction(+:near_total)
+    for (int64_t t = 0; t < j->n_ptiles; t++) {
+        int64_t q0 = j->tile_start[t], q1 = j->tile_start[t + 1];
+        int np = (int)(q1 - q0);
+        if (np <= 0) continue;
+        kvec3 p0 = v3(j->tile_centers[t * 3], j->tile_centers[t * 3 + 1],
+                      j->tile_centers[t * 3 + 2]);
+        double near_R = GATHER_NEAR_FACTOR * (double)j->tile_dpmax[t];
+        kvec3 P[GATHER_TILE_CAP];
+        float dpx[GATHER_TILE_CAP], dpy[GATHER_TILE_CAP],
+              dpz[GATHER_TILE_CAP], dp2[GATHER_TILE_CAP];
+        const uint8_t *occ_of_p[GATHER_TILE_CAP];
+        for (int l = 0; l < np; l++) {
+            int64_t q = j->point_order[q0 + l];
+            P[l] = v3(j->points[q * 3], j->points[q * 3 + 1],
+                      j->points[q * 3 + 2]);
+            dpx[l] = (float)(P[l].x - p0.x);
+            dpy[l] = (float)(P[l].y - p0.y);
+            dpz[l] = (float)(P[l].z - p0.z);
+            dp2[l] = dpx[l] * dpx[l] + dpy[l] * dpy[l] + dpz[l] * dpz[l];
+            occ_of_p[l] = (j->occ_mask && j->tile_of_point)
+                ? j->occ_mask + (size_t)j->tile_of_point[q] * j->M : NULL;
+        }
+        kcplx32 ex[GATHER_TILE_CAP][4], ey[GATHER_TILE_CAP][4];
+        memset(ex, 0, sizeof ex);
+        memset(ey, 0, sizeof ey);
+        StagedS sh[STAGE_CHUNK];
+        for (int64_t base = 0; base < j->M; base += STAGE_CHUNK) {
+            int chunk = (int)((j->M - base < STAGE_CHUNK)
+                              ? (j->M - base) : STAGE_CHUNK);
+            int n_near = 0;
+            for (int i = 0; i < chunk; i++) {
+                int64_t s = base + i;
+                kvec3 pos = v3(j->pos[s * 3], j->pos[s * 3 + 1],
+                               j->pos[s * 3 + 2]);
+                double R = gather_stage_tile(p0, pos, j->opl[s], j->k,
+                                             &sh[i].ux, &sh[i].uy,
+                                             &sh[i].uz, &sh[i].R,
+                                             &sh[i].ph0);
+                sh[i].dirx = (float)j->dir[s * 3];
+                sh[i].diry = (float)j->dir[s * 3 + 1];
+                sh[i].dirz = (float)j->dir[s * 3 + 2];
+                sh[i].exr = j->Exs[s * 2];
+                sh[i].exi = j->Exs[s * 2 + 1];
+                sh[i].eyr = j->Eys[s * 2];
+                sh[i].eyi = j->Eys[s * 2 + 1];
+                sh[i].group = j->group ? j->group[s] : 0;
+                sh[i].near = R < near_R;
+                if (sh[i].near) n_near++;
+            }
+            near_total += (int64_t)n_near * np;
+            for (int l = 0; l < np; l++) {
+                for (int i = 0; i < chunk; i++) {
+                    float vis = occ_of_p[l]
+                        ? (float)occ_of_p[l][base + i] : 1.0f;
+                    int g = sh[i].group;
+                    if (sh[i].near) {
+                        int64_t s = base + i;
+                        kcplx32 Exs = {sh[i].exr, sh[i].exi};
+                        kcplx32 Eys = {sh[i].eyr, sh[i].eyi};
+                        gather_pair(P[l],
+                                    v3(j->pos[s * 3], j->pos[s * 3 + 1],
+                                       j->pos[s * 3 + 2]),
+                                    v3(j->dir[s * 3], j->dir[s * 3 + 1],
+                                       j->dir[s * 3 + 2]),
+                                    j->opl[s], Exs, Eys, j->k, j->nrm,
+                                    vis, &ex[l][g], &ey[l][g]);
+                    } else {
+                        kcplx32 Exs = {sh[i].exr, sh[i].exi};
+                        kcplx32 Eys = {sh[i].eyr, sh[i].eyi};
+                        gather_pair_tile(dpx[l], dpy[l], dpz[l], dp2[l],
+                                         sh[i].ux, sh[i].uy, sh[i].uz,
+                                         sh[i].R, sh[i].ph0, sh[i].dirx,
+                                         sh[i].diry, sh[i].dirz,
+                                         nxf, nyf, nzf, k_f, Exs, Eys,
+                                         vis, &ex[l][g], &ey[l][g]);
+                    }
+                }
+            }
+        }
+        for (int l = 0; l < np; l++) {
+            int64_t q = j->point_order[q0 + l];
+            for (int g = 0; g < j->G; g++) {
+                j->Ex[((size_t)g * j->Q + q) * 2] = ex[l][g].re;
+                j->Ex[((size_t)g * j->Q + q) * 2 + 1] = ex[l][g].im;
+                j->Ey[((size_t)g * j->Q + q) * 2] = ey[l][g].re;
+                j->Ey[((size_t)g * j->Q + q) * 2 + 1] = ey[l][g].im;
+            }
+        }
+    }
+    j->near_exact_pairs = near_total;
 }
 
 /* ------------------------------------------------------------- helpers */
@@ -300,7 +515,8 @@ static void run_job(GatherJob *j, uint8_t backend) {
         die(EXIT_CUDA, "gather backend=cuda requested but this binary was "
             "built without CUDA");
 #endif
-    gather_points_cpu(j);
+    if (j->use_tiled) gather_points_cpu_tiled(j);
+    else gather_points_cpu(j);
 }
 
 /* per-population intensity at points via the G-group cross-estimator
@@ -438,6 +654,19 @@ int64_t gather_run(SceneC *s) {
         if (d->n_gkeys == 0) continue;
         double *grid_pts = det_grid_points(s, d);
         int64_t Q = (int64_t)d->H * d->W;
+        int tiled = !s->gather_exact;
+        PTiles gridtiles;
+        memset(&gridtiles, 0, sizeof gridtiles);
+        if (tiled) {
+            /* size tiles for the shortest wavelength this detector will
+             * gather (largest k) so every key meets the phase budget */
+            double lam_min = INFINITY;
+            for (int32_t ki = 0; ki < d->n_gkeys; ki++)
+                if (d->gkeys[ki].lam[0] < lam_min)
+                    lam_min = d->gkeys[ki].lam[0];
+            ptiles_build_grid(d->H, d->W, grid_pts, d->pixel_m,
+                              K_TWO_PI / lam_min, &gridtiles);
+        }
         fprintf(jf, "%s\n  \"%s\": {", first_det ? "" : ",", d->label);
         first_det = 0;
         int first_key = 1;
@@ -445,6 +674,8 @@ int64_t gather_run(SceneC *s) {
         for (int32_t ki = 0; ki < d->n_gkeys; ki++) {
             GKey *g = &d->gkeys[ki];
             int64_t M = g->n;
+            int64_t near_pairs_key = 0;
+            float dpmax_key = tiled ? gridtiles.dpmax_max : 0.0f;
             log_progress("trace", 0.96, "gather %s key %d/%d (%lld "
                          "samples, %s)", d->label, ki + 1, d->n_gkeys,
                          (long long)M, backend_name);
@@ -605,6 +836,14 @@ int64_t gather_run(SceneC *s) {
                 job.points = grid_pts;
                 job.nrm = d->normal;
                 job.k = K_TWO_PI / g->lam[0];
+                if (tiled) {
+                    job.use_tiled = 1;
+                    job.n_ptiles = gridtiles.n_ptiles;
+                    job.tile_centers = gridtiles.centers;
+                    job.tile_start = gridtiles.start;
+                    job.point_order = gridtiles.order;
+                    job.tile_dpmax = gridtiles.dpmax;
+                }
                 job.Ex = (float *)malloc((size_t)N_CROSS_GROUPS * Q * 2
                                          * sizeof(float));
                 job.Ey = (float *)malloc((size_t)N_CROSS_GROUPS * Q * 2
@@ -615,6 +854,7 @@ int64_t gather_run(SceneC *s) {
                 cross_intensity(s, &job, unbiased, g->lam[0], pop_inten,
                                 field_ex, field_ey);
                 total_pairs += n_sel * Q;
+                near_pairs_key += job.near_exact_pairs;
 
                 /* ---- hot-pixel sub-grid refinement ---- */
                 int32_t hy[HOT_CAP], hx[HOT_CAP];
@@ -674,6 +914,16 @@ int64_t gather_run(SceneC *s) {
                     sj.Q = n_pts;
                     sj.points = spts;
                     sj.tile_of_point = stile;
+                    PTiles subtiles;
+                    memset(&subtiles, 0, sizeof subtiles);
+                    if (tiled) {
+                        ptiles_build_chunks(n_pts, spts, &subtiles);
+                        sj.n_ptiles = subtiles.n_ptiles;
+                        sj.tile_centers = subtiles.centers;
+                        sj.tile_start = subtiles.start;
+                        sj.point_order = subtiles.order;
+                        sj.tile_dpmax = subtiles.dpmax;
+                    }
                     sj.Ex = (float *)malloc((size_t)N_CROSS_GROUPS
                                             * n_pts * 2 * sizeof(float));
                     sj.Ey = (float *)malloc((size_t)N_CROSS_GROUPS
@@ -684,6 +934,10 @@ int64_t gather_run(SceneC *s) {
                     cross_intensity(s, &sj, unbiased, g->lam[0], sinten,
                                     NULL, NULL);
                     total_pairs += n_sel * n_pts;
+                    near_pairs_key += sj.near_exact_pairs;
+                    if (tiled && subtiles.dpmax_max > dpmax_key)
+                        dpmax_key = subtiles.dpmax_max;
+                    if (tiled) ptiles_free(&subtiles);
                     for (int64_t h = 0; h < n_hot; h++) {
                         double mean = 0.0;
                         for (int c = 0; c < s_sub * s_sub; c++)
@@ -786,6 +1040,11 @@ int64_t gather_run(SceneC *s) {
             size_t key = ((size_t)g->source_id * s->max_strata
                           + g->lam_stratum) * s->max_pol
                          + g->pol_stratum;
+            /* fp32 roundoff bound for the tile-factorized path (see
+             * gatherk.h error budget): ~5e-7*k*dpmax + phase0-cast floor */
+            double kk = K_TWO_PI / g->lam[0];
+            double phase_bound = tiled
+                ? 5e-7 * kk * (double)dpmax_key + 4e-7 : 0.0;
             fprintf(jf,
                     "%s\n    \"%d/%d/%d\": {\"n_samples\": %lld, "
                     "\"effective_samples\": %.17g, \"lambda_nm\": %.17g, "
@@ -794,12 +1053,17 @@ int64_t gather_run(SceneC *s) {
                     "\"noise_floor_W_per_px\": %.17g, "
                     "\"n_differential_dA\": 0, "
                     "\"backend\": \"%s\", "
+                    "\"gather_mode\": \"%s\", "
+                    "\"phase_err_bound_rad\": %.6g, "
+                    "\"near_exact_pairs\": %lld, "
                     "\"occlusion_frac_blocked\": %.6g, "
                     "\"populations\": {%s}}",
                     first_key ? "" : ",", g->source_id, g->lam_stratum,
                     g->pol_stratum, (long long)M, m_eff,
                     g->lam[0] / 1e-9, step, d->det_geom_W[key],
-                    noise_floor, backend_name, occ_frac, popdiag);
+                    noise_floor, backend_name,
+                    tiled ? "tiled" : "exact", phase_bound,
+                    (long long)near_pairs_key, occ_frac, popdiag);
             first_key = 0;
             fflush(jf);     /* per-key flush: partial gather.json stays
                              * readable for progress introspection */
@@ -816,6 +1080,7 @@ int64_t gather_run(SceneC *s) {
             free(tile_of_point);
         }
         fprintf(jf, "\n  }");
+        if (tiled) ptiles_free(&gridtiles);
         free(grid_pts);
     }
     fprintf(jf, "%s}\n", first_det ? "" : "\n");

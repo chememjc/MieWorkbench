@@ -127,13 +127,142 @@ __global__ void gather_kernel(int64_t M, int64_t Q, int G,
     }
 }
 
+/* ---- P1 tile-factorized kernel: one block per point tile ----
+ * fp64 staging against the tile centre is shared by the whole block
+ * (BLOCK-x amortization of the fp64 MUFU chains); the per-(point,sample)
+ * inner loop is fp32 via the exact-identity residual (gatherk.h). Near
+ * samples (R < GATHER_NEAR_FACTOR*dpmax) take the exact fp64 gather_pair
+ * from global memory; they are counted for the diagnostics block. */
+struct StagedTS {
+    float ux, uy, uz, R, ph0;
+    float dirx, diry, dirz;
+    float exr, exi, eyr, eyi;
+    unsigned char group, near;
+};
+
+__global__ void gather_kernel_tiled(
+        int64_t M, int64_t Q, int G,
+        const double *__restrict__ pos,
+        const double *__restrict__ dir,
+        const double *__restrict__ opl,
+        const float *__restrict__ Exs,
+        const float *__restrict__ Eys,
+        const unsigned char *__restrict__ group,
+        const unsigned char *__restrict__ occ_mask,
+        const int *__restrict__ tile_of_point,
+        const double *__restrict__ points,
+        const double *__restrict__ tile_centers,
+        const int64_t *__restrict__ tile_start,
+        const int64_t *__restrict__ point_order,
+        const float *__restrict__ tile_dpmax,
+        double nx, double ny, double nz, double k,
+        float *__restrict__ Ex, float *__restrict__ Ey,
+        unsigned long long *__restrict__ near_count) {
+    __shared__ StagedTS sh[SAMPLE_CHUNK];
+    __shared__ unsigned int near_chunk;
+    int64_t t = blockIdx.x;
+    int64_t q0 = tile_start[t], q1 = tile_start[t + 1];
+    int np = (int)(q1 - q0);
+    int l = threadIdx.x;
+    int active = l < np;
+    kvec3 p0 = v3(tile_centers[t * 3], tile_centers[t * 3 + 1],
+                  tile_centers[t * 3 + 2]);
+    double near_R = GATHER_NEAR_FACTOR * (double)tile_dpmax[t];
+    kvec3 P = v3(0.0, 0.0, 0.0);
+    float dpx = 0.f, dpy = 0.f, dpz = 0.f, dp2 = 0.f;
+    int64_t q = 0;
+    const unsigned char *occ_col = NULL;
+    if (active) {
+        q = point_order[q0 + l];
+        P = v3(points[q * 3], points[q * 3 + 1], points[q * 3 + 2]);
+        dpx = (float)(P.x - p0.x);
+        dpy = (float)(P.y - p0.y);
+        dpz = (float)(P.z - p0.z);
+        dp2 = dpx * dpx + dpy * dpy + dpz * dpz;
+        if (occ_mask && tile_of_point)
+            occ_col = occ_mask + (size_t)tile_of_point[q] * M;
+    }
+    kvec3 nrm = v3(nx, ny, nz);
+    float nxf = (float)nx, nyf = (float)ny, nzf = (float)nz;
+    float k_f = (float)k;
+    kcplx32 ex[G_MAX] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
+    kcplx32 ey[G_MAX] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
+    unsigned long long near_local = 0;
+
+    for (int64_t base = 0; base < M; base += SAMPLE_CHUNK) {
+        int chunk = (int)((M - base < SAMPLE_CHUNK) ? (M - base)
+                                                    : SAMPLE_CHUNK);
+        __syncthreads();
+        if (threadIdx.x == 0) near_chunk = 0;
+        __syncthreads();
+        for (int i = threadIdx.x; i < chunk; i += blockDim.x) {
+            int64_t si = base + i;
+            kvec3 posv = v3(pos[si * 3], pos[si * 3 + 1],
+                            pos[si * 3 + 2]);
+            double R = gather_stage_tile(p0, posv, opl[si], k,
+                                         &sh[i].ux, &sh[i].uy, &sh[i].uz,
+                                         &sh[i].R, &sh[i].ph0);
+            sh[i].dirx = (float)dir[si * 3];
+            sh[i].diry = (float)dir[si * 3 + 1];
+            sh[i].dirz = (float)dir[si * 3 + 2];
+            sh[i].exr = Exs[si * 2];
+            sh[i].exi = Exs[si * 2 + 1];
+            sh[i].eyr = Eys[si * 2];
+            sh[i].eyi = Eys[si * 2 + 1];
+            sh[i].group = group ? group[si] : 0;
+            unsigned char nr = R < near_R;
+            sh[i].near = nr;
+            if (nr) atomicAdd(&near_chunk, 1u);
+        }
+        __syncthreads();
+        if (threadIdx.x == 0 && near_chunk)
+            near_local += (unsigned long long)near_chunk
+                          * (unsigned long long)np;
+        if (active) {
+            for (int i = 0; i < chunk; i++) {
+                float vis = occ_col ? (float)occ_col[base + i] : 1.0f;
+                int g = sh[i].group;
+                kcplx32 exs = {sh[i].exr, sh[i].exi};
+                kcplx32 eys = {sh[i].eyr, sh[i].eyi};
+                if (sh[i].near) {
+                    int64_t si = base + i;
+                    gather_pair(P,
+                                v3(pos[si * 3], pos[si * 3 + 1],
+                                   pos[si * 3 + 2]),
+                                v3(dir[si * 3], dir[si * 3 + 1],
+                                   dir[si * 3 + 2]),
+                                opl[si], exs, eys, k, nrm, vis,
+                                &ex[g], &ey[g]);
+                } else {
+                    gather_pair_tile(dpx, dpy, dpz, dp2,
+                                     sh[i].ux, sh[i].uy, sh[i].uz,
+                                     sh[i].R, sh[i].ph0,
+                                     sh[i].dirx, sh[i].diry, sh[i].dirz,
+                                     nxf, nyf, nzf, k_f, exs, eys, vis,
+                                     &ex[g], &ey[g]);
+                }
+            }
+        }
+    }
+    if (active) {
+        for (int g = 0; g < G; g++) {
+            Ex[((size_t)g * Q + q) * 2] = ex[g].re;
+            Ex[((size_t)g * Q + q) * 2 + 1] = ex[g].im;
+            Ey[((size_t)g * Q + q) * 2] = ey[g].re;
+            Ey[((size_t)g * Q + q) * 2 + 1] = ey[g].im;
+        }
+    }
+    if (threadIdx.x == 0 && near_local && near_count)
+        atomicAdd(near_count, near_local);
+}
+
 extern "C" int gather_cuda_available(void) {
     int n = 0;
     cudaError_t e = cudaGetDeviceCount(&n);
     return e == cudaSuccess && n > 0;
 }
 
-extern "C" int gather_points_cuda(const GatherJob *j) {
+extern "C" int gather_points_cuda(GatherJob *j) {
     if (!gather_cuda_available()) return 1;
 
     double *d_pos = NULL, *d_dir = NULL, *d_opl = NULL, *d_pts = NULL;
@@ -182,13 +311,52 @@ extern "C" int gather_points_cuda(const GatherJob *j) {
                               cudaMemcpyHostToDevice));
     }
 
-    int64_t blocks = ((int64_t)Q + BLOCK - 1) / BLOCK;
-    gather_kernel<<<(unsigned)blocks, BLOCK>>>(
-        j->M, j->Q, j->G, d_pos, d_dir, d_opl, d_Exs, d_Eys, d_group,
-        d_occ, d_tile, d_pts, j->nrm.x, j->nrm.y, j->nrm.z, j->k,
-        d_Ex, d_Ey);
+    double *d_centers = NULL;
+    int64_t *d_tstart = NULL, *d_order = NULL;
+    float *d_dpmax = NULL;
+    unsigned long long *d_near = NULL;
+    if (j->use_tiled) {
+        /* one block per point tile; GATHER_TILE_CAP must equal BLOCK */
+        static_assert(GATHER_TILE_CAP == BLOCK,
+                      "tile cap and CUDA block size must match");
+        size_t nt = (size_t)j->n_ptiles;
+        CUDA_CHECK(cudaMalloc(&d_centers, nt * 3 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_tstart, (nt + 1) * sizeof(int64_t)));
+        CUDA_CHECK(cudaMalloc(&d_order, Q * sizeof(int64_t)));
+        CUDA_CHECK(cudaMalloc(&d_dpmax, nt * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_near, sizeof(unsigned long long)));
+        CUDA_CHECK(cudaMemcpy(d_centers, j->tile_centers,
+                              nt * 3 * sizeof(double),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_tstart, j->tile_start,
+                              (nt + 1) * sizeof(int64_t),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_order, j->point_order,
+                              Q * sizeof(int64_t),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_dpmax, j->tile_dpmax, nt * sizeof(float),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemset(d_near, 0, sizeof(unsigned long long)));
+        gather_kernel_tiled<<<(unsigned)j->n_ptiles, BLOCK>>>(
+            j->M, j->Q, j->G, d_pos, d_dir, d_opl, d_Exs, d_Eys, d_group,
+            d_occ, d_tile, d_pts, d_centers, d_tstart, d_order, d_dpmax,
+            j->nrm.x, j->nrm.y, j->nrm.z, j->k, d_Ex, d_Ey, d_near);
+    } else {
+        int64_t blocks = ((int64_t)Q + BLOCK - 1) / BLOCK;
+        gather_kernel<<<(unsigned)blocks, BLOCK>>>(
+            j->M, j->Q, j->G, d_pos, d_dir, d_opl, d_Exs, d_Eys, d_group,
+            d_occ, d_tile, d_pts, j->nrm.x, j->nrm.y, j->nrm.z, j->k,
+            d_Ex, d_Ey);
+    }
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
+    if (j->use_tiled) {
+        unsigned long long near_pairs = 0;
+        CUDA_CHECK(cudaMemcpy(&near_pairs, d_near,
+                              sizeof(unsigned long long),
+                              cudaMemcpyDeviceToHost));
+        j->near_exact_pairs = (int64_t)near_pairs;
+    }
 
     CUDA_CHECK(cudaMemcpy(j->Ex, d_Ex,
                           (size_t)j->G * Q * 2 * sizeof(float),
@@ -208,5 +376,10 @@ extern "C" int gather_points_cuda(const GatherJob *j) {
     cudaFree(d_group);
     cudaFree(d_occ);
     cudaFree(d_tile);
+    cudaFree(d_centers);
+    cudaFree(d_tstart);
+    cudaFree(d_order);
+    cudaFree(d_dpmax);
+    cudaFree(d_near);
     return 0;
 }
