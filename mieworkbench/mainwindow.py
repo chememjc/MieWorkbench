@@ -70,6 +70,7 @@ from .panes.problems import ProblemsPane
 from .panes.prop_editor import PropEditorPane
 from .panes.py_console import PyConsolePane
 from .panes.results import ResultsPane
+from .panes.rundialog import RunDialog
 from .panes.scene3d import Scene3DPane
 from .panes.train_editor import TrainEditorPane
 from .panes.transform_panel import TransformPanel
@@ -128,6 +129,13 @@ class MainWindow(QMainWindow):
         self._train_refresh_pending = False   # 0-ms coalescing guard
 
         self.settings = Settings()
+        # RunDialog "don't ask again this session": stored via the same
+        # QSettings-backed Settings wrapper every other toggle uses, but
+        # explicitly reset here on every launch -- the owner requirement
+        # is "always ask per run", so a skip must never survive a
+        # restart; only checking the box DURING this session suppresses
+        # the dialog for its remaining runs.
+        self.settings.set_bool("run_dialog_skip_session", False)
         self.project = Project(self.settings)
         self.selection = SelectionModel(self)
         self.raypreview = RayPreviewController(self)
@@ -2578,13 +2586,35 @@ class MainWindow(QMainWindow):
             config["sweep_mode"] = vp.sweep_mode
         return config
 
-    def _single_run_estimate_s(self):
-        p = self.config_matrix.estimate_params()
+    def _model_stem(self):
+        if not self.model_path:
+            return None
+        return os.path.splitext(os.path.basename(self.model_path))[0]
+
+    def _run_estimate(self, params=None):
+        """(params, estimate_dict, calibrated) for the current
+        config-matrix settings -- the ONE place that calls
+        common.estimate()/estimate_is_calibrated(), so the Estimate
+        button (info-only RunDialog) and the pre-run RunDialog can never
+        show different numbers. params defaults to
+        config_matrix.estimate_params(); model_stem is filled in from the
+        open model when the caller didn't already set one (so per-scene
+        calibration -- trace_rps_<eng>:<stem> / spr:<stem> -- applies)."""
+        params = dict(params or self.config_matrix.estimate_params())
+        params.setdefault("model_stem", self._model_stem())
+        model_stem = params.get("model_stem")
         result = common.estimate(
-            p["rays"], p["resolution"], p["nlambda"],
-            p["n_coherent_sources"], p["backend"],
-            n_detectors=p["n_detectors"], save_fields=p["save_fields"],
-            n_pol_strata=p["n_pol_strata"])
+            params["rays"], params["resolution"], params["nlambda"],
+            params["n_coherent_sources"], params["backend"],
+            n_detectors=params["n_detectors"],
+            save_fields=params["save_fields"],
+            n_pol_strata=params["n_pol_strata"], model_stem=model_stem)
+        calibrated = common.estimate_is_calibrated(
+            params["backend"], model_stem=model_stem)
+        return params, result, calibrated
+
+    def _single_run_estimate_s(self):
+        _, result, _ = self._run_estimate()
         return result["total_s"]
 
     @staticmethod
@@ -2620,6 +2650,27 @@ class MainWindow(QMainWindow):
                 common.fmt_duration(total_s)),
         }
 
+    def _confirm_run_dialog(self):
+        """P1 per-run accuracy-vs-time confirmation (owner requirement:
+        "always ask per run"). isVisible-guarded like _confirm_sweep --
+        a hidden window (offscreen tests) always proceeds without
+        blocking on the modal. Honors the in-session "don't ask again"
+        skip (settings key run_dialog_skip_session, reset every launch
+        in __init__ -- see the comment there)."""
+        if self.settings.get_bool("run_dialog_skip_session", False):
+            return True
+        if not self.isVisible():
+            return True
+        params, result, calibrated = self._run_estimate()
+        dialog = RunDialog(params, result, calibrated=calibrated,
+                           info_only=False, parent=self)
+        self._last_run_dialog = dialog     # test hook
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        if dialog.skip_requested():
+            self.settings.set_bool("run_dialog_skip_session", True)
+        return True
+
     def _confirm_sweep(self, summary):
         """Dialog-free (tests call directly): confirm a multi-variant
         launch. Hidden windows default to True so offscreen tests never
@@ -2633,10 +2684,15 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _run_pipeline(self, dry_run=False):
-        """Save + validate + merge the sweep, confirm a multi-variant run,
-        write its manifest, then launch. Dialog-free except the sweep
-        confirmation (isVisible-guarded). Returns True on launch."""
+        """Save + validate + merge the sweep, confirm the run (accuracy-
+        vs-time RunDialog, then a multi-variant sweep-count confirm if
+        applicable), write the sweep manifest, then launch. Dialog-free
+        except those two confirmations (both isVisible-guarded, and the
+        RunDialog is skipped outright on dry_run -- it never actually
+        traces anything). Returns True on launch."""
         if self._preflight() is None:     # save + validate (warns on error)
+            return False
+        if not dry_run and not self._confirm_run_dialog():
             return False
         config = self._merged_run_config()
         args = RunController.build_args(config)
@@ -2767,22 +2823,18 @@ class MainWindow(QMainWindow):
         self._show_estimate(self.config_matrix.estimate_params())
 
     def _show_estimate(self, params):
-        result = common.estimate(
-            params["rays"], params["resolution"], params["nlambda"],
-            params["n_coherent_sources"], params["backend"],
-            n_detectors=params["n_detectors"],
-            save_fields=params["save_fields"],
-            n_pol_strata=params["n_pol_strata"])
-        message = (
-            "Trace:  %s\n"
-            "Gather: %s\n"
-            "Total:  %s\n"
-            "Accumulator memory: %.3f GB"
-            % (common.fmt_duration(result["trace_s"]),
-               common.fmt_duration(result["gather_s"]),
-               common.fmt_duration(result["total_s"]),
-               result["accumulator_GB"]))
-        QMessageBox.information(self, "Runtime Estimate", message)
+        """The ConfigMatrix "Estimate runtime" button: an info-only
+        RunDialog (Close button only, no Run/Cancel/skip checkbox) built
+        from the SAME common.estimate() call _confirm_run_dialog uses, so
+        the two entry points can never disagree. isVisible-guarded so
+        offscreen tests can call this directly without blocking."""
+        params, result, calibrated = self._run_estimate(params)
+        dialog = RunDialog(params, result, calibrated=calibrated,
+                           info_only=True, parent=self)
+        self._last_estimate_dialog = dialog     # test hook
+        if self.isVisible():
+            dialog.exec()
+        return dialog
 
     def _on_dry_run(self):
         self._run_pipeline(dry_run=True)

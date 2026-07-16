@@ -974,6 +974,37 @@ def gpu_free_vram_bytes():
     except Exception:
         return None
 
+def estimate_is_calibrated(backend, model_stem=None):
+    """Best-effort GUI label helper: True if estimate() would draw at
+    least one of its trace/gather/spr rates from a REAL recorded sample
+    in .calibration.json rather than a static FALLBACK_* constant, for
+    this backend/model_stem. Mirrors estimate()'s own lookup chain
+    (trace_rps_<eng>:<model_stem> -> trace_c/trace_rays_per_s_v2 ->
+    fallback; gather_pairs_per_s_<backend_key> -> fallback;
+    spr:<model_stem> -> DEFAULT_SPR) WITHOUT feeding the runtime law
+    itself -- purely so a caller can print "estimate (calibrated)" vs
+    "estimate (uncalibrated fallback)"."""
+    backend_key = ("c_cuda" if backend == "c"
+                   else backend if backend in ("c_cuda", "c_cpu")
+                   else "torch" if backend in ("auto", "torch")
+                   else "numpy")
+    eng = "c" if backend_key.startswith("c_") else "py"
+    try:
+        with open(CALIBRATION_JSON) as fh:
+            kinds = {e.get("kind") for e in json.load(fh)
+                     if e.get("rate", 0) > 0}
+    except (OSError, ValueError, KeyError):
+        return False
+    if model_stem and ("trace_rps_%s:%s" % (eng, model_stem)) in kinds:
+        return True
+    if ("trace_c" if eng == "c" else "trace_rays_per_s_v2") in kinds:
+        return True
+    if ("gather_pairs_per_s_" + backend_key) in kinds:
+        return True
+    if model_stem and ("spr:" + model_stem) in kinds:
+        return True
+    return False
+
 def estimate(rays, resolution, nlambda, n_coherent_sources, backend,
              n_detectors=1, save_fields=False, n_pol_strata=1,
              model_stem=None):
