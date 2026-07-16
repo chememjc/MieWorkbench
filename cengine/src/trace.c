@@ -661,12 +661,9 @@ static void optic_children(const SceneC *s, const FaceC *face,
     if (entering)
         cx->ledger.flux_in[body->index] += ray_power(r);
 
-    /* ---- uniaxial birefringence: dedicated o/e split path
-     * (tracer.py:491-494; biaxial is Python-routed) ---- */
-    if (body->birefringent) {
-        biref_children(s, face, body, r, entering, n_hat, cos_i, cx);
-        return;
-    }
+    /* uniaxial birefringence (tracer.py:491-494) is now its OWN terminal
+     * InteractionDef (biref_children_apply, m_biref); m_optic_default
+     * excludes birefringent bodies, so this handler never sees one. */
     /* mode-tagged crystal ray at a non-birefringent boundary (nested
      * body inside a crystal): continue as ordinary (tracer.py:498-510) */
     Ray fixed;
@@ -1263,11 +1260,41 @@ static void grating_children_apply(const SceneC *s, ThreadCtx *cx,
     grating_children(s, h->face, h->body, r, cx);
 }
 /* -- step 3 / terminal DEFAULT: the optic chain (bare Fresnel + mirror +
- * absorber + coating/polarizer/roughness/scatter/birefringence). Stays
- * whole until §3 step 4 splits its reflect/transmit core out. -- */
+ * absorber, composing the coating/polarizer/roughness/scatter effects). -- */
 static void optic_children_apply(const SceneC *s, ThreadCtx *cx,
                                  const Ray *r, const HitInfo *h) {
     optic_children(s, h->face, h->body, r, cx);
+}
+/* -- step 7: uniaxial birefringence — its own terminal interaction. The
+ * entry preamble (canonical normal, entering test, seam-leak guard,
+ * incidence cosine, entry flux tally) is REPRODUCED VERBATIM from
+ * optic_children's head (the historical biref path ran through exactly that
+ * preamble before the `if (body->birefringent)` branch); biref_children is
+ * unchanged. m_biref and m_optic_default partition the optic faces, so the
+ * two terminals are mutually exclusive. -- */
+static void biref_children_apply(const SceneC *s, ThreadCtx *cx,
+                                 const Ray *r, const HitInfo *h) {
+    const FaceC *face = h->face;
+    const BodyC *body = h->body;
+    kvec3 n_out = v3_scale(face_normal_canonical(face, r->pos),
+                           face->outward_sign);
+    double cos_with_out = v3_dot(r->dir, n_out);
+    int entering = cos_with_out < 0.0;
+    int top = ray_current_medium(r);
+    int leak = entering ? (top == body->index) : (top != body->index);
+    if (leak) {
+        double p = ray_power(r);
+        ledger_credit(&cx->ledger, BK_SEAM_LOSS, r->source_id, p);
+        cx->ledger.by_body[body->index + 1] += p;
+        return;
+    }
+    kvec3 n_hat = entering ? n_out : v3_scale(n_out, -1.0);
+    double cos_i = -v3_dot(r->dir, n_hat);
+    if (cos_i < 0.0) cos_i = 0.0;
+    if (cos_i > 1.0) cos_i = 1.0;
+    if (entering)
+        cx->ledger.flux_in[body->index] += ray_power(r);
+    biref_children(s, face, body, r, entering, n_hat, cos_i, cx);
 }
 
 /* match predicates — pure functions of the scene, resolved once at build. */
@@ -1283,18 +1310,27 @@ static int m_grating(const SceneC *s, int32_t fid) {
     return f->detector < 0 && s->bodies[f->body].role != ROLE_DETECTOR
            && f->grating >= 0;
 }
+/* birefringence terminal: an optic face on a uniaxial-crystal body. Shares
+ * the optic exclusions (not a detector/grating) and adds birefringent — so
+ * m_biref and m_optic_default partition the optic faces exactly. */
+static int m_biref(const SceneC *s, int32_t fid) {
+    const FaceC *f = &s->faces[fid];
+    return f->detector < 0 && s->bodies[f->body].role != ROLE_DETECTOR
+           && f->grating < 0 && s->bodies[f->body].birefringent;
+}
 static int m_optic_default(const SceneC *s, int32_t fid) {
     const FaceC *f = &s->faces[fid];
     return f->detector < 0 && s->bodies[f->body].role != ROLE_DETECTOR
-           && f->grating < 0;
+           && f->grating < 0 && !s->bodies[f->body].birefringent;
 }
 
 static const InteractionDef INTERACTIONS[] = {
-    { "detector", m_detector_screen, detector_event_apply },
-    { "detector", m_detector_screen, screen_children_apply },
-    { "detector", m_detector_solid,  detector_solid_apply },
-    { "grating",  m_grating,         grating_children_apply },
-    { "optic",    m_optic_default,   optic_children_apply },
+    { "detector",      m_detector_screen, detector_event_apply },
+    { "detector",      m_detector_screen, screen_children_apply },
+    { "detector",      m_detector_solid,  detector_solid_apply },
+    { "grating",       m_grating,         grating_children_apply },
+    { "birefringence", m_biref,           biref_children_apply },
+    { "optic",         m_optic_default,   optic_children_apply },
 };
 
 /* composed surface-effect matches (REGISTRY.md §3 steps 4-7). Each gates a

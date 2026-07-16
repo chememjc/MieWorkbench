@@ -33,12 +33,9 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
     { "surface:torus",    "geometry" },
     { "surface:asphere",  "geometry" },
     { "surface:mesh",     "geometry" },
-    /* still handled INSIDE the terminal optic-default handler; each gets
-     * its own dispatch entry in later core-v3 steps (§3 steps 4-8).
-     * coating (step 4) + polarizer (step 5) + roughness/scatter (step 6)
-     * are now registered SurfaceEffectDefs; birefringence follows in
-     * step 7. */
-    { "birefringence", "optic-default" },
+    /* coating (step 4) + polarizer (step 5) + roughness/scatter (step 6)
+     * are registered SurfaceEffectDefs; birefringence (step 7) is its own
+     * terminal InteractionDef — none live here any more. */
     /* bulk / volume effects the homogeneous propagator carries (filter =
      * additive bulk alpha; particles = continuum medium interception) */
     { "filter",    "volume" },
