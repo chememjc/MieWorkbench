@@ -24,6 +24,7 @@
 #define MIEWB_LOG_H
 
 #include <stdarg.h>
+#include <setjmp.h>
 
 enum {
     LOG_DEBUG = 0,
@@ -56,6 +57,18 @@ void log_msg(int level, const char *fmt, ...)
 void die_at(int code, const char *file, int line, const char *fmt, ...)
     __attribute__((noreturn, format(printf, 4, 5)));
 #define die(code, ...) die_at(code, __FILE__, __LINE__, __VA_ARGS__)
+
+/* Persistent-worker (--serve) recovery. When a jump target is armed, a
+ * die() whose failure is RECOVERABLE longjmps back to *target with the
+ * exit code as the setjmp return value instead of exit()ing, so the serve
+ * loop can report rc!=0 on its protocol line and keep serving. Recoverable
+ * = the die happened single-threaded (NOT inside an OpenMP parallel region,
+ * where a longjmp is undefined) AND code != EXIT_CUDA (a CUDA fault can
+ * leave the context unusable — the worker exits so the client re-runs the
+ * request one-shot with a fresh context). die() stays noreturn: it never
+ * returns to its caller either way (exit or longjmp). Pass NULL to disarm;
+ * the one-shot binary (no armed target) always exit()s exactly as before. */
+void log_set_die_recovery(jmp_buf *target);
 
 /* "@MIEWB {json}" progress lines on stdout, enabled by MIEWB_PROGRESS=1
  * (call log_progress_init once at startup to read the env). Mirrors

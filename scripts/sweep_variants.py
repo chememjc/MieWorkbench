@@ -237,6 +237,23 @@ def main():
             print("+ " + " ".join(cmp_cmd))
         return 0
 
+    # TODO(P3 persistent worker, REGISTRY.md §6): each variant already
+    # amortizes the C-engine worker WITHIN its case — run_pipeline.py ->
+    # run_trace.py -> cengine.run_c_case spawns ONE `miewb-trace --serve`
+    # child that serves every chunk trace + the final gather for that case
+    # (V chunks x S seeds pay one context init). Reusing a SINGLE worker
+    # ACROSS variants is deliberately NOT done here: this loop spawns
+    # run_pipeline.py subprocesses (extract -> trace -> post -> viz, each a
+    # different geometry/case), and sweep_variants.py is system-python3
+    # stdlib-ONLY by contract while cengine.Worker lives in the optics env —
+    # driving the binary directly across variants would cross that
+    # interpreter boundary and duplicate run_trace's request-building.
+    # Interface if ever wanted: a long-lived cengine.Worker whose stdin is
+    # fed request.json paths (worker.run(path) -> rc); every variant's
+    # per-seed/per-chunk request.json is already on disk under
+    # <case>/cengine/, so a future optics-env driver could pool one worker
+    # over the whole sweep. The per-case amortization already captures the
+    # dominant win (context + buffer-pool reuse).
     failures = []
     produced = []
     for i, (cmd, dirs) in enumerate(zip(cmds, case_dirs_per_job), 1):

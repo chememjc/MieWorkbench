@@ -86,6 +86,39 @@ the engine is a separate process, so failures are isolated.
 threads internally with OpenMP (`--threads` / request `params.threads`,
 0 = all cores).
 
+### Persistent worker (`--serve`, REGISTRY.md §6)
+
+By default `run_c_case()` spawns ONE `miewb-trace --serve` child per
+run_trace process and feeds it every request path — the P1 chunk traces
+(V chunks × S seeds) AND the final gather_only stage — over stdin, so the
+whole case pays a SINGLE process spawn + CUDA primary-context init +
+device-buffer-pool warm-up instead of one per invocation. The worker reads
+newline-delimited request-file paths and, per request, writes one protocol
+line to stdout with a LEADING newline (the fcserver discipline):
+
+```
+\n@MIEWB-WORKER {"request": "<path>", "rc": <int>}\n
+```
+
+The Python client (`cengine.Worker`) scans for the `@MIEWB-WORKER ` prefix
+mid-line and forwards any other stdout (incl. `@MIEWB` progress) verbatim.
+A recoverable per-request `die()` (scene-load / request-validation /
+single-threaded physics, non-CUDA) reports `rc!=0` and the loop keeps
+serving; a process-fatal signal, an OpenMP-region die, or a CUDA fault ends
+the worker, and the client kills it and falls back to per-invocation one-shot
+`--config` runs (the un-answered request re-runs one-shot) — results are
+byte-identical either way. The device-buffer pool grows monotonically and is
+freed only at worker exit (EOF on stdin).
+
+- **`MIEWB_CENGINE_ONESHOT=1`** — escape hatch: disable the worker, use the
+  classic per-invocation `miewb-trace --config` path. Bit-identical output;
+  useful for debugging or profiling a single invocation.
+- **`MIEWB_WORKER_TIMEOUT`** — per-request wall-clock ceiling in seconds
+  (default 1800); a worker that exceeds it is treated as dead → one-shot
+  fallback.
+- **`MIEWB_WORKER_DIE_AFTER=N`** — test hook: the worker `_exit`s before
+  responding to its Nth request (exercises the fallback path).
+
 ## Design decisions (locked; see the c-engine plan)
 
 - **D1 — λ-table pre-resolution.** Every ray's wavelength is one of the
@@ -138,6 +171,18 @@ splats into the float64 cube. Consequences:
   respects `--log-level` / `MIEWB_LOG_LEVEL`.
 - Progress: `@MIEWB {json}` stdout lines under `MIEWB_PROGRESS=1`
   (run_trace re-broadcasts; Python keeps owning `progress.json`).
+- **`die()` recovery boundary (`--serve` only).** In one-shot mode `die()`
+  always `exit()`s (unchanged). Under `--serve` a jump target is armed per
+  request: a `die()` longjmps back to the serve loop (reporting `rc!=0` and
+  continuing) ONLY when it is single-threaded (NOT inside an OpenMP parallel
+  region, where longjmp is undefined) AND `code != EXIT_CUDA` (a CUDA fault
+  can poison the context). Everything else — a die inside the trace kernel's
+  parallel region, a CUDA error, or a fatal signal — is process-fatal, so the
+  worker exits and the client re-runs the request one-shot with a fresh
+  process/context. Scene-load + request-validation errors (the common failure
+  class) are all on the recoverable side. A recovered request leaks its
+  partially-built scene (bounded, per failed request); the worker exits at
+  stdin EOF regardless.
 
 ## Source map
 

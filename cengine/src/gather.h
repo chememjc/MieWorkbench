@@ -99,6 +99,11 @@ void gather_points_cpu(GatherJob *job);
 /* returns 0 on success, nonzero if CUDA unavailable at runtime */
 int gather_points_cuda(GatherJob *job);
 int gather_cuda_available(void);
+/* P3 persistent worker: warm the primary context at serve start; release the
+ * reusable device-buffer pool at worker exit. Both are no-ops when no CUDA
+ * device is present. */
+void gather_cuda_worker_init(void);
+void gather_cuda_pool_free(void);
 #endif
 
 /* P1 NUFFT angular-spectrum route (gather_nufft.c). Fills job->Ex/Ey

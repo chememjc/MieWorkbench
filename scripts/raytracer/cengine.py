@@ -771,6 +771,121 @@ def _run_binary(request_path, log_level=None):
 
 
 # ---------------------------------------------------------------------------
+# P3 persistent worker (REGISTRY.md §6). One miewb-trace --serve process per
+# run_trace process amortizes the spawn + CUDA context init + device-buffer
+# pool over every chunk trace AND the final gather of a case (V chunks x S
+# seeds pay ONE init). The client feeds request-file paths on the worker's
+# stdin and reads its `@MIEWB-WORKER {json}` protocol lines from stdout with
+# a mid-line prefix scan (the fcclient discipline: the worker emits a LEADING
+# newline so engine noise cannot glue onto the response). @MIEWB progress
+# lines the worker emits are forwarded to our stdout so run_pipeline's
+# progress parsing is unchanged. A dead/malformed/timed-out worker raises
+# WorkerError; the caller kills it and falls back to one-shot _run_binary.
+#
+# MIEWB_CENGINE_ONESHOT=1 forces the classic per-invocation path (the escape
+# hatch documented in cengine/README.md).
+# ---------------------------------------------------------------------------
+_WORKER_PREFIX = "@MIEWB-WORKER "
+# per-request wall-clock ceiling; generous (a chunk of a big case can be
+# slow) but bounded so a hung worker can't wedge the run. Override via env.
+_WORKER_TIMEOUT_S = float(os.environ.get("MIEWB_WORKER_TIMEOUT", "1800"))
+
+
+class WorkerError(RuntimeError):
+    """The persistent worker died, timed out, or emitted a malformed line."""
+
+
+class Worker:
+    """A single miewb-trace --serve child. run(request_path) feeds the path
+    and returns the request's exit code (rc). Not thread-safe: one request in
+    flight at a time (run_c_case drives it sequentially)."""
+
+    def __init__(self, log_level=None, timeout=_WORKER_TIMEOUT_S):
+        import queue
+        import threading
+        self.timeout = timeout
+        cmd = [str(binary_path()), "--serve"]
+        if log_level:
+            cmd += ["--log-level", log_level]
+        print("[trace] cengine: %s (persistent worker)" % " ".join(cmd),
+              flush=True)
+        # stderr inherited (cengine.log-style noise + crash backtraces show);
+        # only stdout is piped (protocol + forwarded @MIEWB progress).
+        self.proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            text=True, bufsize=1)
+        self._q = queue.Queue()
+        self._reader = threading.Thread(target=self._pump, daemon=True)
+        self._reader.start()
+
+    def _pump(self):
+        """Feed the worker's stdout lines into a queue; None marks EOF."""
+        try:
+            for line in self.proc.stdout:
+                self._q.put(line)
+        finally:
+            self._q.put(None)
+
+    def run(self, request_path):
+        import queue
+        req = str(request_path)
+        try:
+            self.proc.stdin.write(req + "\n")
+            self.proc.stdin.flush()
+        except (BrokenPipeError, ValueError, OSError) as exc:
+            raise WorkerError("worker stdin closed: %s" % exc)
+        deadline = time.time() + self.timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise WorkerError("worker timed out after %.0fs on %s"
+                                  % (self.timeout, req))
+            try:
+                line = self._q.get(timeout=remaining)
+            except queue.Empty:
+                raise WorkerError("worker timed out after %.0fs on %s"
+                                  % (self.timeout, req))
+            if line is None:
+                raise WorkerError("worker exited (EOF) before responding "
+                                  "to %s" % req)
+            idx = line.find(_WORKER_PREFIX)
+            if idx < 0:
+                # engine noise / @MIEWB progress — forward it verbatim so the
+                # pipeline's progress parser still sees it.
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                continue
+            payload = line[idx + len(_WORKER_PREFIX):].strip()
+            try:
+                resp = json.loads(payload)
+                return int(resp["rc"])
+            except (ValueError, KeyError, TypeError) as exc:
+                raise WorkerError("malformed worker response %r: %s"
+                                  % (payload, exc))
+
+    def kill(self):
+        try:
+            self.proc.kill()
+        except Exception:
+            pass
+        self.close()
+
+    def close(self):
+        try:
+            if self.proc.stdin and not self.proc.stdin.closed:
+                self.proc.stdin.close()        # EOF -> clean worker exit
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=10)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # P1 chunked-run contract: checkpoint / resume / additive extension
 #
 # The C engine traces primaries in CHUNKS (gather_skip mode: each invocation
@@ -1085,6 +1200,40 @@ def run_c_case(args, case_dir, scene, lam_range, case):
     cdir.mkdir(parents=True, exist_ok=True)
     ckpt_path = cdir / "checkpoint.json"
 
+    # P3: one persistent worker for the WHOLE case (every chunk trace + the
+    # final gather_only stage), unless the one-shot escape hatch is set. On
+    # any worker failure we kill it and fall back to per-invocation _run_binary
+    # for the rest of the case (the killed request re-runs one-shot).
+    _log_level = getattr(args, "cengine_log_level", None)
+    _worker = None
+    if os.environ.get("MIEWB_CENGINE_ONESHOT") != "1":
+        try:
+            _worker = Worker(log_level=_log_level)
+        except Exception as exc:                # spawn failed: stay one-shot
+            print("[trace] cengine: worker spawn failed (%s) — one-shot"
+                  % exc, flush=True)
+            _worker = None
+
+    def invoke(req_path):
+        """Run one request via the worker; on worker trouble, kill it and
+        fall back to one-shot for this and every subsequent request."""
+        nonlocal _worker
+        if _worker is not None:
+            try:
+                return _worker.run(req_path)
+            except WorkerError as exc:
+                print("[trace] cengine: worker failed (%s) — falling back to "
+                      "one-shot invocations" % exc, flush=True)
+                _worker.kill()
+                _worker = None
+        return _run_binary(req_path, _log_level)
+
+    def _shutdown_worker():
+        nonlocal _worker
+        if _worker is not None:
+            _worker.close()
+            _worker = None
+
     resume = bool(getattr(args, "resume", False))
     extend = getattr(args, "extend", None)
     target = int(args.rays)
@@ -1194,11 +1343,12 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                                  % (si + 1, args.seeds, hi, target),
                                  case_dir=case_dir)
             t0 = time.time()
-            rc = _run_binary(req_path)
+            rc = invoke(req_path)
             wall_s = time.time() - t0
             if rc != 0:
                 print("[trace] ERROR: miewb-trace exited %d (see %s)"
                       % (rc, out_dir / "cengine.log"), flush=True)
+                _shutdown_worker()
                 return None
             _merge_chunk(grids, det_order, out_dir, 1.0)
             ckpt["chunks"].append(
@@ -1262,10 +1412,11 @@ def run_c_case(args, case_dir, scene, lam_range, case):
               "[C engine, gather_only]"
               % (seed, sum(1 for c in ckpt["chunks"] if c["seed"] == seed)),
               flush=True)
-        rc = _run_binary(req_path)
+        rc = invoke(req_path)
         if rc != 0:
             print("[trace] ERROR: miewb-trace (gather_only) exited %d "
                   "(see %s)" % (rc, gout / "cengine.log"), flush=True)
+            _shutdown_worker()
             return None
         gather_json = gout / "gather.json"
         gdiags = json.loads(gather_json.read_text()) \
@@ -1278,6 +1429,7 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                 print("[trace] ERROR: gather_only cube shape %s != "
                       "expected %s for detector %s"
                       % (cube.shape, g.inc.shape, g.label), flush=True)
+                _shutdown_worker()
                 return None
             g.inc = cube          # snapshot + gathered coherent intensity
             # adopt the binary's tallies verbatim (identical values —
@@ -1427,6 +1579,7 @@ def run_c_case(args, case_dir, scene, lam_range, case):
             common.record_calibration(
                 "spr:" + Path(args.model_json).parent.name,
                 total_samples_c / total_rays_c)
+    _shutdown_worker()          # all invoke()s done; release the GPU context
     print("[trace] done: %d seed(s), %d chunk(s), closure %s, outputs in %s "
           "[C engine]" % (args.seeds, len(ckpt["chunks"]),
                           "OK" if closure_ok else "FAILED", case_dir),
