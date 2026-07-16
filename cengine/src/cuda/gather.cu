@@ -46,6 +46,60 @@ extern "C" {
 #define SAMPLE_CHUNK 256        /* smem: 256 * 76 B ~ 19 KB */
 #define BLOCK 128
 
+/* ---------------------------------------------------------------------------
+ * Persistent device-buffer pool (P3 worker mode).
+ *
+ * The one-shot binary cudaMalloc'd + cudaFree'd every gather buffer per call.
+ * In --serve mode the process (hence the CUDA primary context) outlives many
+ * gathers, so those allocations are pure per-request overhead. Each buffer
+ * grows monotonically to the largest request seen and is REUSED across
+ * requests; nothing is freed until gather_cuda_pool_free() at worker exit.
+ * The pool is a process-global singleton — the gather host path is single-
+ * threaded (no omp region around gather_points_cuda), so no locking is
+ * needed. In one-shot mode the pool is still used (one grow, freed by
+ * main() before exit / reclaimed by context teardown), so the code path is
+ * identical and the parity tests cover both.
+ * ------------------------------------------------------------------------- */
+typedef struct { void *ptr; size_t cap; } DevBuf;
+static DevBuf g_pos, g_dir, g_opl, g_pts, g_Exs, g_Eys, g_Ex, g_Ey,
+              g_group, g_occ, g_tile, g_centers, g_tstart, g_order,
+              g_dpmax, g_near;
+
+/* Reserve >= need bytes in b, reusing the existing allocation when it is
+ * already large enough. Grows by freeing + reallocating (contents are
+ * overwritten by the caller's H2D copy every request, so no data is kept).
+ * need==0 returns the current pointer untouched (optional-buffer case). */
+static void *dev_reserve(DevBuf *b, size_t need) {
+    if (need == 0) return b->ptr;
+    if (b->cap < need) {
+        if (b->ptr) cudaFree(b->ptr);
+        b->ptr = NULL;
+        b->cap = 0;
+        CUDA_CHECK(cudaMalloc(&b->ptr, need));
+        b->cap = need;
+    }
+    return b->ptr;
+}
+
+extern "C" void gather_cuda_pool_free(void) {
+    DevBuf *all[] = {&g_pos, &g_dir, &g_opl, &g_pts, &g_Exs, &g_Eys, &g_Ex,
+                     &g_Ey, &g_group, &g_occ, &g_tile, &g_centers, &g_tstart,
+                     &g_order, &g_dpmax, &g_near};
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+        if (all[i]->ptr) cudaFree(all[i]->ptr);
+        all[i]->ptr = NULL;
+        all[i]->cap = 0;
+    }
+}
+
+/* Force primary-context creation up front (serve start) so the first served
+ * request does not pay it. Best-effort: a co-tenanted / absent GPU just
+ * means the gather falls back to the CPU kernel at run time, so failure here
+ * is ignored rather than fatal. */
+extern "C" void gather_cuda_worker_init(void) {
+    if (gather_cuda_available()) (void)cudaFree(0);
+}
+
 /* staged sample record in shared memory */
 struct SampleS {
     double px, py, pz;
@@ -265,20 +319,21 @@ extern "C" int gather_cuda_available(void) {
 extern "C" int gather_points_cuda(GatherJob *j) {
     if (!gather_cuda_available()) return 1;
 
-    double *d_pos = NULL, *d_dir = NULL, *d_opl = NULL, *d_pts = NULL;
-    float *d_Exs = NULL, *d_Eys = NULL, *d_Ex = NULL, *d_Ey = NULL;
     unsigned char *d_group = NULL, *d_occ = NULL;
     int *d_tile = NULL;
     size_t M = (size_t)j->M, Q = (size_t)j->Q;
 
-    CUDA_CHECK(cudaMalloc(&d_pos, M * 3 * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_dir, M * 3 * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_opl, M * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_Exs, M * 2 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_Eys, M * 2 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_pts, Q * 3 * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_Ex, (size_t)j->G * Q * 2 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_Ey, (size_t)j->G * Q * 2 * sizeof(float)));
+    /* pooled: reused + grown across served requests (never freed here) */
+    double *d_pos = (double *)dev_reserve(&g_pos, M * 3 * sizeof(double));
+    double *d_dir = (double *)dev_reserve(&g_dir, M * 3 * sizeof(double));
+    double *d_opl = (double *)dev_reserve(&g_opl, M * sizeof(double));
+    float *d_Exs = (float *)dev_reserve(&g_Exs, M * 2 * sizeof(float));
+    float *d_Eys = (float *)dev_reserve(&g_Eys, M * 2 * sizeof(float));
+    double *d_pts = (double *)dev_reserve(&g_pts, Q * 3 * sizeof(double));
+    float *d_Ex = (float *)dev_reserve(
+        &g_Ex, (size_t)j->G * Q * 2 * sizeof(float));
+    float *d_Ey = (float *)dev_reserve(
+        &g_Ey, (size_t)j->G * Q * 2 * sizeof(float));
     CUDA_CHECK(cudaMemcpy(d_pos, j->pos, M * 3 * sizeof(double),
                           cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_dir, j->dir, M * 3 * sizeof(double),
@@ -292,7 +347,7 @@ extern "C" int gather_points_cuda(GatherJob *j) {
     CUDA_CHECK(cudaMemcpy(d_pts, j->points, Q * 3 * sizeof(double),
                           cudaMemcpyHostToDevice));
     if (j->group && j->G > 1) {
-        CUDA_CHECK(cudaMalloc(&d_group, M));
+        d_group = (unsigned char *)dev_reserve(&g_group, M);
         CUDA_CHECK(cudaMemcpy(d_group, j->group, M,
                               cudaMemcpyHostToDevice));
     }
@@ -303,10 +358,10 @@ extern "C" int gather_points_cuda(GatherJob *j) {
             if (j->tile_of_point[q] > max_tile)
                 max_tile = j->tile_of_point[q];
         size_t mask_bytes = ((size_t)max_tile + 1) * M;
-        CUDA_CHECK(cudaMalloc(&d_occ, mask_bytes));
+        d_occ = (unsigned char *)dev_reserve(&g_occ, mask_bytes);
         CUDA_CHECK(cudaMemcpy(d_occ, j->occ_mask, mask_bytes,
                               cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMalloc(&d_tile, Q * sizeof(int)));
+        d_tile = (int *)dev_reserve(&g_tile, Q * sizeof(int));
         CUDA_CHECK(cudaMemcpy(d_tile, j->tile_of_point, Q * sizeof(int),
                               cudaMemcpyHostToDevice));
     }
@@ -320,11 +375,13 @@ extern "C" int gather_points_cuda(GatherJob *j) {
         static_assert(GATHER_TILE_CAP == BLOCK,
                       "tile cap and CUDA block size must match");
         size_t nt = (size_t)j->n_ptiles;
-        CUDA_CHECK(cudaMalloc(&d_centers, nt * 3 * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_tstart, (nt + 1) * sizeof(int64_t)));
-        CUDA_CHECK(cudaMalloc(&d_order, Q * sizeof(int64_t)));
-        CUDA_CHECK(cudaMalloc(&d_dpmax, nt * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_near, sizeof(unsigned long long)));
+        d_centers = (double *)dev_reserve(&g_centers, nt * 3 * sizeof(double));
+        d_tstart = (int64_t *)dev_reserve(&g_tstart,
+                                          (nt + 1) * sizeof(int64_t));
+        d_order = (int64_t *)dev_reserve(&g_order, Q * sizeof(int64_t));
+        d_dpmax = (float *)dev_reserve(&g_dpmax, nt * sizeof(float));
+        d_near = (unsigned long long *)dev_reserve(
+            &g_near, sizeof(unsigned long long));
         CUDA_CHECK(cudaMemcpy(d_centers, j->tile_centers,
                               nt * 3 * sizeof(double),
                               cudaMemcpyHostToDevice));
@@ -365,21 +422,7 @@ extern "C" int gather_points_cuda(GatherJob *j) {
                           (size_t)j->G * Q * 2 * sizeof(float),
                           cudaMemcpyDeviceToHost));
 
-    cudaFree(d_pos);
-    cudaFree(d_dir);
-    cudaFree(d_opl);
-    cudaFree(d_Exs);
-    cudaFree(d_Eys);
-    cudaFree(d_pts);
-    cudaFree(d_Ex);
-    cudaFree(d_Ey);
-    cudaFree(d_group);
-    cudaFree(d_occ);
-    cudaFree(d_tile);
-    cudaFree(d_centers);
-    cudaFree(d_tstart);
-    cudaFree(d_order);
-    cudaFree(d_dpmax);
-    cudaFree(d_near);
+    /* Buffers stay in the pool (dev_reserve) for reuse by the next served
+     * request; gather_cuda_pool_free() releases them at worker exit. */
     return 0;
 }

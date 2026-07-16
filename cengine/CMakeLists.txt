@@ -50,6 +50,7 @@ add_executable(miewb-trace
   src/detector.c
   src/gather.c
   src/gather_nufft.c
+  src/registry.c
   src/trace.c
   vendor/yyjson/yyjson.c
 )
