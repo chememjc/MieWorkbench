@@ -230,6 +230,20 @@ the detected power 0.6% where sin² predicts 61%. The transverse
 Pockels physics is pinned instead by the engine oracle
 (test_nlo_elements: sin²(πV/2V_π) at 1% on a beat-length cell).
 
+### Virtual instrument bench (P2.5)
+
+One demo exercising the virtual instrument layer (engine3.md §9): the
+same 5 mW/633 nm collimated source split by a 50:50 plate beamsplitter
+onto two DIFFERENT instrument classes, so a bench comparison against
+real gear compares like-for-like from day one. Authored entirely through
+`Demo._import` → `Project.set_property` — the same generic string
+body-property pass-through `qe_curve` already uses; no Project API
+change was needed to assign `instrument`.
+
+| Demo | System | What it shows | Measured (quick preset) |
+|---|---|---|---|
+| `instrument_bench` | 633 nm collimated laser → 50:50 plate BS → DetCamera (`camera_generic:full`, reflected arm) + DetPower (`powermeter_generic:ideal`, transmitted arm) | One physical split beam read through two instrument profiles in the SAME run: DetCamera's counts image carries the seeded shot+read+dark noise chain, DetPower's reading is deterministic response only | DetCamera: mean 534.8 / max 4095 counts (12-bit), saturation 13.0%, SNR≈9993, `seed=1548320933450205935`; DetPower: **2.329 mW** reported (2.33 mW raw detected power — ideal mode recovers it exactly through the responsivity inversion) |
+
 ## Rendered gallery
 
 Representative detector renders (quick preset) for the eleven
@@ -292,6 +306,7 @@ document, 2026-07-11). ✅ = exercised by a runnable demo/scene today;
 | Photometric units (lux/lm) | **multiled_photometry** |
 | Tabulated emission spectra (white LED) | **multiled_photometry** (CIE LED-B1) |
 | Curved (Petzval) detector | curved_focal (cylinder), **curved_focal_surface** (sphere) |
+| Virtual instrument layer (camera/power-meter/spectrometer readout, ideal/full modes) | **instrument_bench** |
 | Stress / photoelastic birefringence | ⏳ `future.md` backlog (a): stress birefringence + the photoelastic_stress demo spec |
 | Merit-function optimization | ✅ `scripts/optimize.py` (scipy + nevergrad/CMA); validation scene `auto_designed_lens` lives in `scripts/make_test_scenes.py`, not the demos/ gallery |
 | Monte-Carlo tolerancing + sensitivity/compensators | ✅ `scripts/tolerance.py`; validation scene `tolerance_lens` lives in `scripts/make_test_scenes.py`, not the demos/ gallery |

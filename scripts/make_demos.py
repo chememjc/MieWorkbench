@@ -2061,6 +2061,49 @@ def demo_shg_green_bench(d):
             "time_bins": 256}
 
 
+def demo_instrument_bench(d):
+    """Virtual-instrument-layer bench (engine3.md P2.5 §9): a 633 nm
+    collimated laser through a 50:50 plate beamsplitter onto two
+    DIFFERENT instrument classes reading the same physical split beam --
+    DetCamera (camera_generic, 'full' mode: shot + read + dark-current
+    noise chain, seeded from case-seed x row x label) on the reflected
+    arm, DetPower (powermeter_generic, 'ideal' mode: deterministic
+    responsivity-weighted power reading, no noise) on the transmitted
+    arm. Built entirely through Demo._import -> Project.set_property --
+    the SAME generic string-property pass-through qe_curve already uses
+    (fcops.op_set_property adds an arbitrary App::PropertyString), so no
+    Project API gap blocks 'instrument' assignment; nothing new was
+    needed there."""
+    bs_exit = 3.0 * math.sqrt(2.0)   # 3 mm plate thickness, 45 deg tilt
+    d.add("laser_collimated", "Laser", pos=(-40, 0, 0),
+          params={"diameter": 4.0},
+          props={"lambdac": 633.0, "coherent": False})
+    # tilt_ry=45: +x input reflects to -y (michelson's convention); the
+    # transmit port stays collinear +x (pass-through, never redirects)
+    d.chain("bs_plate", "BS", "Laser", 40.0, tilt_ry=45.0,
+            params={"width": 20.0, "thickness": 3.0, "round_flag": 1,
+                    "wedge_deg": 0.0})
+    d.chain("detector_plane", "DetCamera", "BS", 60.0, port="reflect",
+            params={"width": 15.0, "round_flag": 0},
+            props={"material": "detector",
+                   "instrument": "camera_generic:full"})
+    d.chain("detector_plane", "DetPower", "BS", 60.0 - bs_exit,
+            port="transmit",
+            params={"width": 15.0, "round_flag": 0},
+            props={"material": "detector",
+                   "instrument": "powermeter_generic:ideal"})
+    d.expect("BS", (0, 0, 0))
+    d.expect("DetCamera", (0, -60, 0))
+    d.expect("DetPower", (60, 0, 0))
+    d.pin_detector("DetCamera", (0.0, -1.0, 0.0))
+    d.pin_detector("DetPower", (1.0, 0.0, 0.0))
+    d.note("instrument_bench: DetCamera (camera_generic:full) on the "
+           "reflected arm, DetPower (powermeter_generic:ideal) on the "
+           "transmitted arm -- same source split two ways, read through "
+           "two different virtual instrument profiles")
+    return {"preset": "quick"}
+
+
 def demo_treacy_compressor(d):
     """Treacy grating pair (single pass, TRANSMISSION geometry): 100 fs
     pulses at 800 nm hit a 600 g/mm transmission grating at normal
@@ -2143,6 +2186,7 @@ DEMOS = {
     "microscope_objective": demo_microscope_objective,
     "fiber_coupler": demo_fiber_coupler,
     "schmidt_cassegrain": demo_schmidt_cassegrain,
+    "instrument_bench": demo_instrument_bench,
 }
 
 

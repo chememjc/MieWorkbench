@@ -275,6 +275,8 @@ fields on each `PartDesign::Body`:
 | `diffuser` | String, optional | ground glass: `'grit:120'` \| `'slope:0.08'` \| `'@dg_600'`, whole-body or per-face map `'Face2=@dg_600'` (§5.4.1) — mutually exclusive with `roughness` on the same face |
 | `grating` | String, optional | a per-face map `'Face2=600:v:orders=-1..1'` or `'Face2=@registryname'` (§5.5) — must name specific faces, not the whole body |
 | `detector_face` | String, optional | detector-only: pin the recorded PRIMARY face — a bare `'FaceN'` (this body) or a full `'Body.Tip.FaceN'` id — overriding the closest-to-origin auto-pick (§5.2). Replaces the primary face in place (no extra screen), so the scene stays C-engine-routable, unlike the additive CLI `--detector-face` |
+| `qe_curve` | String, optional | detector-only: a row name in `opticalproperties/detector/detectors.miedet` — `post_process.py` reports a QE-weighted photocurrent block (§7.8) |
+| `instrument` | String, optional | detector-only: `'row'` or `'row:mode'` (mode `ideal`\|`full`, default `full`) naming a row in `opticalproperties/instrument/instruments.mieinst` — `post_process.py`'s virtual instrument layer (§7.11) reads that detector's ideal spectral cube through the named instrument profile |
 | `polarization` | String, optional | source-only: `'unpolarized'` (default) `'linear:<deg>'` `'circular:left|right'` `'elliptical:<psi>:<chi>'` (§5.2) |
 | `lambdamin`, `lambdamax` (nm, optional), `coherent` (bool, default False) | — | source-only, see §5.2 |
 | `spectrum` | String, optional | source-only: `emission/emitters.miesrc` registry row naming a tabulated emission spectrum (§5.2); supersedes `lambdamin`/`lambdamax` |
@@ -1785,6 +1787,52 @@ engineering approximation anchored to those numbers rather than a pixel
 digitization. Treat any such row as "physically plausible, not
 vendor-exact" unless its `reference` says otherwise.
 
+### 7.11 `instrument/instruments.mieinst` (+ `instrument/tables/*.mietab`) — virtual instrument layer
+
+A **post-process layer over an ideal detector plane** (never a tracer
+change): a detector body carrying an `instrument` property (`'row'` or
+`'row:mode'`, mode `ideal`\|`full`, default `full` — §5.1) gets its
+already-computed spectral cube read through the named
+`instruments.mieinst` row by `post_process.py`'s `render_instrument`
+dispatcher, and a `report.json` `detectors.<label>.instrument` block is
+added (`row`, `class`, `mode`, plus per-class fields below). `ideal` mode
+is deterministic response only (QE/responsivity weighting, integration,
+resolution convolution, stray-light floor, full-well saturation
+clipping, bit-depth/ADC quantization — no rng draw, no `seed` key
+reported); `full` mode additionally draws a reproducible noise chain
+seeded from `sha256(case_seed | row_name | detector_label)` (recorded as
+`seed` in the block, so a run's instrument view can be reproduced
+bit-for-bit from `case.json`'s own seed). `--instruments {on,off}`
+(default `on`) is a run-time override — `off` skips the layer even when
+assigned; there is no CLI way to render it on a detector that carries no
+`instrument` property, matching `qe_curve`'s posture.
+
+One wide CSV header (`name, class, reference, notes` + every class's own
+columns, sparse per row — the same shape as `nonlinear/nonlinear.mienlo`)
+covers three shipped classes and three schema-defined **placeholder**
+classes with no shipped rows (`polarimeter`, `wavefront_sensor`,
+`autocorrelator` — gear the owner does not have yet; their columns are
+still hard-validated the moment a row is authored):
+
+| class | key columns | outputs |
+|---|---|---|
+| `camera` | `pixel_pitch_um, width_px, height_px, fill_factor, qe_table, full_well_e, read_noise_e, dark_current_e_per_s, bit_depth, adc_gain_e_per_dn, integration_time_s_default` | `<case>/instrument/instr_<label>_camera_<mode>.png` + `..._counts.npy` (a full-well-clipped, bit-depth-quantized counts image on the SAME (H,W) grid as the ideal detector plane — see `detector.spectral_cube_to_electrons`'s docstring for why the counts image is not resampled to the camera's native pixel count); report fields `integration_time_s, saturation_fraction, mean_counts, max_counts, snr_estimate` |
+| `powermeter` | EXACTLY ONE of `responsivity_table` / `flat_responsivity_a_w`, `aperture_mm, nep_w_per_sqrthz, bandwidth_hz, display_digits` | report fields `power_reported_W, power_reported_display` (sig-fig rounded), `lam_ref_nm` (the cube's own power-weighted mean wavelength — exact for a monochromatic source), `responsivity_a_w_at_ref` |
+| `spectrometer` | `lam_lo_nm, lam_hi_nm, resolution_fwhm_nm, slit_um, stray_light_floor, detector_qe_table` | `<case>/spectra/instrument_<label>_spectrum_<mode>.png` + `.csv` under `--emit-csv` (Gaussian-convolved to `resolution_fwhm_nm`, QE-weighted, stray-light floor added, clipped to `[lam_lo_nm, lam_hi_nm]`); report fields `lam_lo_nm, lam_hi_nm, resolution_fwhm_nm, peak_power_W, stray_light_floor` |
+
+Three generic starter rows ship, each citing a real datasheet:
+`camera_generic` (Sony IMX264 Pregius global-shutter CMOS, 3.45 µm,
+2448×2048, per FLIR Blackfly S BFS-U3-51S5M-C's technical reference),
+`powermeter_generic` (Thorlabs S130C Si photodiode sensor, the sensor
+behind the PM16-130 power meter), `spectrometer_generic` (Ocean
+Optics/Ocean Insight USB4000, Toshiba TCD1304AP CCD, VIS-NIR
+configuration). GUI: a detector's instrument assignment lands beside
+`qe_curve` in its property panel; the Results pane's "Instrument" tab
+flattens the report block into a table above a thumbnail gallery of
+`<case>/instrument/*.png` (the spectrometer's own PNG stays in the
+existing Spectra tab, prefixed `instrument_`, rather than duplicating
+into a second gallery).
+
 ---
 
 ## 8. Command reference
@@ -1810,7 +1858,7 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--source-face SPEC]... [--detector-face SPEC]...
     [--grating SPEC]... [--rough SPEC]... [--particles SPEC]
     [--particle-threshold F] [--suppress-body NAME]...
-    [--photometric] [--spectrometer]
+    [--photometric] [--spectrometer] [--instruments {on,off}]
     [--time-products LIST] [--time-bins N] [--time-window T0,T1]
     [--time-cube-res N] [--time-envelope {analytic,histogram}]
     [--gdd-budget]
@@ -1853,7 +1901,12 @@ function) and reports `photometric.{luminous_flux_lm, peak_illuminance_lux,
 mean_illuminance_lux}` in `report.json`. `--spectrometer` generates
 wavelength-centroid and λ-vs-position profile maps and reports
 `spectrometer.{lambda_min_nm, lambda_max_nm, dispersion_nm_per_mm, fit_r2}`
-(wavelength resolution quantized by `--spectral-bins`). `--emit-csv`
+(wavelength resolution quantized by `--spectral-bins`). `--instruments`
+(default `on`) is an override on the data-driven virtual instrument layer
+(§7.11) — `off` skips it even when a detector body carries an `instrument`
+property (a fast-preview escape hatch); there is no way to turn it *on*
+from the CLI beyond assigning the property, same posture as `qe_curve`.
+`--emit-csv`
 (forwarded to **post**) writes `results/<case>/data/*.csv` beside every
 PNG chart plus a `data/index.csv` (§8.3). `--export-rays`/
 `--export-rays-max` (forwarded to **trace**) capture per-detector ray
@@ -1985,7 +2038,7 @@ without reconstructing the scene. Both flags are **seed 0 only**, like
 /home3/optics/env/bin/python scripts/post_process.py \
     --case-dir DIR --model-json PATH [--viz-generations N]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
-    [--photometric] [--spectrometer]
+    [--photometric] [--spectrometer] [--instruments {on,off}]
     [--emit-csv] [--wavefront-point X_MM,Y_MM]
     [--image-sim PATH] [--image-sim-coherence {incoherent,coherent,partial}]
     [--image-sim-sigma F]

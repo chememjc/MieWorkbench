@@ -732,6 +732,8 @@ def validate_model(model):
             _req(det, "face", str, bctx + ".detector")
             if det.get("qe_curve") is not None:
                 _req(det, "qe_curve", str, bctx + ".detector")
+            if det.get("instrument") is not None:
+                _req(det, "instrument", str, bctx + ".detector")
         if role == "optic":
             _req(b, "material", str, bctx)
         # ---- v2 optional per-body optical properties ----

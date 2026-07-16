@@ -24,12 +24,23 @@ MAT_HEADER = ("name,class,model,p1,p2,p3,p4,p5,p6,nk_file,density_kg_m3,"
               "transmission_um_min,transmission_um_max,notes,reference\n")
 
 
+INSTRUMENT_HEADER = (
+    "name,class,reference,notes,pixel_pitch_um,width_px,height_px,"
+    "fill_factor,qe_table,full_well_e,read_noise_e,dark_current_e_per_s,"
+    "bit_depth,adc_gain_e_per_dn,integration_time_s_default,"
+    "responsivity_table,flat_responsivity_a_w,aperture_mm,"
+    "nep_w_per_sqrthz,bandwidth_hz,display_digits,lam_lo_nm,lam_hi_nm,"
+    "resolution_fwhm_nm,slit_um,stray_light_floor,detector_qe_table,"
+    "analyzer_states,extinction_ratio,retarder_error_deg,opd_sampling_um,"
+    "reference_arm_model,shg_crystal,delay_range_fs\n")
+
+
 @pytest.fixture
 def optroot(tmp_path):
     root = tmp_path / "opticalproperties"
     for sub in ("nk", "birefringence", "polarizer/tables", "filter/tables",
                 "coating/tables", "grating/tables", "detector/tables",
-                "emission/tables"):
+                "emission/tables", "instrument/tables"):
         (root / sub).mkdir(parents=True)
     (root / "materials.csv").write_text(
         MAT_HEADER
@@ -87,6 +98,20 @@ def optroot(tmp_path):
         "500,10.0\n"
         "600,5.0\n"
         "700,0.0\n")
+    (root / "instrument" / "instruments.csv").write_text(
+        INSTRUMENT_HEADER
+        + "cam_test,camera,synthetic,test cam,5.0,640,480,1.0,cam_test.csv,"
+          "20000,3.0,50,12,4.0,0.02,,,,,,,,,,,,,,,,,,,\n"
+        + "pm_test,powermeter,synthetic,test pm,,,,,,,,,,,,pm_test.csv,,"
+          "9.5,1e-13,10,4,,,,,,,,,,,,,\n"
+        + "spec_test,spectrometer,synthetic,test spec,,,,,,,,,,,,,,,,,,"
+          "400,900,1.0,25,0.001,spec_test.csv,,,,,,,\n")
+    (root / "instrument" / "tables" / "cam_test.csv").write_text(
+        "wavelength_nm,qe\n400,0.40\n700,0.60\n")
+    (root / "instrument" / "tables" / "pm_test.csv").write_text(
+        "wavelength_nm,responsivity_a_w\n400,0.2\n700,0.5\n")
+    (root / "instrument" / "tables" / "spec_test.csv").write_text(
+        "wavelength_nm,qe\n400,0.3\n900,0.1\n")
     return root
 
 
@@ -107,6 +132,7 @@ def test_full_tree_loads(props):
     assert set(props.uniaxial) == {"calcite"}
     assert set(props.detectors) == {"det_test"}
     assert set(props.emission) == {"led_test"}
+    assert set(props.instruments) == {"cam_test", "pm_test", "spec_test"}
 
 
 def test_uniaxial_attached_to_db(props):
@@ -234,6 +260,151 @@ def test_emission_too_few_rows_rejected(optroot):
         "wavelength_nm,relative_power\n500,1.0\n")
     with pytest.raises(MaterialError, match="fewer than 2 rows"):
         optprops.load_emission(optroot / "emission" / "emitters.csv")
+
+
+# ---------------------------------------------------------------------------
+# instrument/instruments.csv -- virtual instrument layer (P2.5, engine3.md
+# §9). See optprops.load_instruments docstring for the full per-class field
+# list; these tests exercise the loader's own validation branches, not the
+# post_process render_instrument_* pipeline (covered by
+# test_detector_instrument.py).
+# ---------------------------------------------------------------------------
+def test_instrument_registry_camera(props):
+    cam = props.instruments["cam_test"]
+    assert cam["class"] == "camera"
+    assert cam["pixel_pitch_um"] == 5.0
+    assert cam["width_px"] == 640 and cam["height_px"] == 480
+    assert cam["fill_factor"] == 1.0
+    assert cam["lam_um"].tolist() == pytest.approx([0.4, 0.7])
+    assert cam["qe"].tolist() == [0.40, 0.60]
+    assert cam["full_well_e"] == 20000.0
+    assert cam["bit_depth"] == 12
+    assert cam["reference"] == "synthetic"
+
+
+def test_instrument_registry_powermeter(props):
+    pm = props.instruments["pm_test"]
+    assert pm["class"] == "powermeter"
+    assert pm["resp_table"]["lam_um"].tolist() == pytest.approx([0.4, 0.7])
+    assert pm["resp_table"]["responsivity_a_w"].tolist() == [0.2, 0.5]
+    assert pm["flat_responsivity_a_w"] is None
+    assert pm["aperture_mm"] == 9.5
+    assert pm["display_digits"] == 4
+
+
+def test_instrument_registry_spectrometer(props):
+    spec = props.instruments["spec_test"]
+    assert spec["class"] == "spectrometer"
+    assert spec["lam_lo_nm"] == 400.0 and spec["lam_hi_nm"] == 900.0
+    assert spec["resolution_fwhm_nm"] == 1.0
+    assert spec["stray_light_floor"] == 0.001
+    assert spec["lam_um"].tolist() == pytest.approx([0.4, 0.9])
+
+
+def test_instrument_unknown_class_rejected(optroot):
+    (optroot / "instrument" / "instruments.csv").write_text(
+        INSTRUMENT_HEADER
+        + "bad,telescope,synthetic,x," + "," * 29 + "\n")
+    with pytest.raises(MaterialError, match="class"):
+        optprops.load_instruments(optroot / "instrument" / "instruments.csv")
+
+
+def test_instrument_camera_qe_over_unity_rejected(optroot):
+    (optroot / "instrument" / "tables" / "cam_test.csv").write_text(
+        "wavelength_nm,qe\n400,0.4\n700,1.5\n")
+    with pytest.raises(MaterialError, match="qe_table qe"):
+        optprops.load_instruments(optroot / "instrument" / "instruments.csv")
+
+
+def test_instrument_powermeter_needs_exactly_one_responsivity(optroot):
+    # both responsivity_table AND flat_responsivity_a_w set -> rejected
+    (optroot / "instrument" / "instruments.csv").write_text(
+        INSTRUMENT_HEADER
+        + ("pm_bad,powermeter,synthetic,x," + "," * 11
+           + "pm_test.csv,0.4,9.5,1e-13,10,4," + "," * 12 + "\n"))
+    with pytest.raises(MaterialError, match="exactly one"):
+        optprops.load_instruments(optroot / "instrument" / "instruments.csv")
+    # neither set -> also rejected
+    (optroot / "instrument" / "instruments.csv").write_text(
+        INSTRUMENT_HEADER
+        + ("pm_bad,powermeter,synthetic,x," + "," * 11
+           + ",,9.5,1e-13,10,4," + "," * 12 + "\n"))
+    with pytest.raises(MaterialError, match="exactly one"):
+        optprops.load_instruments(optroot / "instrument" / "instruments.csv")
+
+
+def test_instrument_spectrometer_bad_range_rejected(optroot):
+    (optroot / "instrument" / "instruments.csv").write_text(
+        INSTRUMENT_HEADER
+        + ("spec_bad,spectrometer,synthetic,x," + "," * 17
+           + "900,400,1.0,25,0.001,spec_test.csv," + "," * 7 + "\n"))
+    with pytest.raises(MaterialError, match="lam_hi_nm must be > lam_lo_nm"):
+        optprops.load_instruments(optroot / "instrument" / "instruments.csv")
+
+
+def test_instrument_missing_reference_rejected(optroot):
+    (optroot / "instrument" / "instruments.csv").write_text(
+        "name,class,reference,notes\ncam_test,camera,,x\n")
+    with pytest.raises(MaterialError, match="reference"):
+        optprops.load_instruments(optroot / "instrument" / "instruments.csv")
+
+
+def test_instrument_placeholder_class_validates_when_present(optroot):
+    # PLACEHOLDER_INSTRUMENT_CLASSES ship with no rows, but the schema is
+    # hard-validated the moment a row IS authored -- e.g. polarimeter needs
+    # analyzer_states >= 2.
+    (optroot / "instrument" / "instruments.csv").write_text(
+        INSTRUMENT_HEADER
+        + ("pol_test,polarimeter,synthetic,x," + "," * 23
+           + "4,1000,0.1,,,,\n"))
+    props = optprops.load_instruments(
+        optroot / "instrument" / "instruments.csv")
+    pol = props["pol_test"]
+    assert pol["analyzer_states"] == 4
+    assert pol["extinction_ratio"] == 1000.0
+    assert pol["retarder_error_deg"] == 0.1
+
+
+def test_instrument_placeholder_class_analyzer_states_floor(optroot):
+    (optroot / "instrument" / "instruments.csv").write_text(
+        INSTRUMENT_HEADER
+        + ("pol_bad,polarimeter,synthetic,x," + "," * 23
+           + "1,1000,0.1,,,,\n"))
+    with pytest.raises(MaterialError, match="analyzer_states must be >= 2"):
+        optprops.load_instruments(optroot / "instrument" / "instruments.csv")
+
+
+def test_instrument_classes_constant_includes_placeholders():
+    assert set(optprops.PLACEHOLDER_INSTRUMENT_CLASSES) == {
+        "polarimeter", "wavefront_sensor", "autocorrelator"}
+    assert set(optprops.PLACEHOLDER_INSTRUMENT_CLASSES) < set(
+        optprops.INSTRUMENT_CLASSES)
+
+
+# ---------------------------------------------------------------------------
+# shipped opticalproperties/instrument/ -- generic camera/powermeter/
+# spectrometer rows (P2.5), datasheet-sourced starter profiles.
+# ---------------------------------------------------------------------------
+def test_shipped_instrument_generic_rows_load(shipped_props):
+    assert set(shipped_props.instruments) == {
+        "camera_generic", "powermeter_generic", "spectrometer_generic"}
+    cam = shipped_props.instruments["camera_generic"]
+    assert cam["class"] == "camera"
+    assert cam["width_px"] == 2448 and cam["height_px"] == 2048
+    assert 0 < cam["fill_factor"] <= 1.0
+    assert np.all((cam["qe"] > 0) & (cam["qe"] <= 1))
+    assert "IMX264" in cam["reference"]
+
+    pm = shipped_props.instruments["powermeter_generic"]
+    assert pm["class"] == "powermeter"
+    assert pm["resp_table"] is not None
+    assert pm["flat_responsivity_a_w"] is None
+    assert "Thorlabs" in pm["reference"]
+
+    spec = shipped_props.instruments["spectrometer_generic"]
+    assert spec["class"] == "spectrometer"
+    assert spec["lam_lo_nm"] < spec["lam_hi_nm"]
+    assert "USB4000" in spec["reference"]
 
 
 def test_optional_categories_absent(optroot):
@@ -558,6 +729,15 @@ def test_validate_model_v2_additions():
     common.validate_model(model)
     # ... and rejects a non-string
     model["bodies"][2]["detector"]["qe_curve"] = 42
+    with pytest.raises(common.ContractError):
+        common.validate_model(model)
+    model["bodies"][2]["detector"]["qe_curve"] = "hamamatsu_s1223"
+    # optional detector.instrument (P2.5 virtual instrument layer) accepts
+    # a string ('row' or 'row:mode') ...
+    model["bodies"][2]["detector"]["instrument"] = "camera_generic:ideal"
+    common.validate_model(model)
+    # ... and rejects a non-string
+    model["bodies"][2]["detector"]["instrument"] = 42
     with pytest.raises(common.ContractError):
         common.validate_model(model)
 

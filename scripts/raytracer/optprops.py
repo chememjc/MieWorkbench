@@ -904,6 +904,213 @@ def load_nonlinear(csv_path=None, uniaxial=None, biaxial=None):
     return out
 
 
+# ---------------------------------------------------------------------------
+# instrument/instruments.mieinst + tables/  (virtual instrument layer,
+# engine3.md §9 -- P2.5)
+#
+# A "row" here is a parametrized RESPONSE model of a real (or not-yet-owned)
+# bench instrument, read as a POST-PROCESS layer over an ideal detector
+# plane (post_process.render_instrument). Every row carries a 'class'
+# discriminator (INSTRUMENT_CLASSES); each class has its own required
+# columns, validated below. Because the classes need very different
+# parameters, the registry csv is intentionally WIDE (one header covers
+# every class; a given row leaves the columns of every OTHER class blank)
+# -- the same "one shared header, sparse per-row" shape as this repo's
+# nonlinear/nonlinear.mienlo registry.
+#
+# PLACEHOLDER CLASSES: 'polarimeter', 'wavefront_sensor', 'autocorrelator'
+# have their column schemas defined and validated below (so a future
+# authored row is hard-checked exactly like the shipped ones), but the
+# shipped instruments.mieinst carries NO rows of these classes yet -- the
+# owner does not have this bench gear (engine3.md §9.2 table, "bench twin
+# exists: not yet owned"). Do not remove the placeholder validation branches
+# just because len(instruments) shows no polarimeter/wavefront_sensor/
+# autocorrelator rows; they exist so the FIRST row of that class is caught
+# by the loader instead of silently mis-parsed by post_process.
+# ---------------------------------------------------------------------------
+DEFAULT_INSTRUMENTS_CSV = DEFAULT_OPTPROPS_DIR / "instrument" / "instruments.mieinst"
+
+INSTRUMENT_CLASSES = ("camera", "powermeter", "spectrometer",
+                      "polarimeter", "wavefront_sensor", "autocorrelator")
+# classes with a schema but (by design) no shipped rows this round -- see
+# module note above.
+PLACEHOLDER_INSTRUMENT_CLASSES = ("polarimeter", "wavefront_sensor",
+                                  "autocorrelator")
+
+
+def _reg_int(row, col, ctx, positive=False):
+    """Like _nlo_float but for an integer-valued registry column (pixel
+    counts, bit depth, digit counts, analyzer-state counts)."""
+    raw = (row.get(col) or "").strip()
+    if not raw:
+        raise MaterialError("%s: %s is required" % (ctx, col))
+    try:
+        val = int(raw)
+    except ValueError:
+        raise MaterialError("%s: %s %r is not an integer" % (ctx, col, raw))
+    if positive and val <= 0:
+        raise MaterialError("%s: %s must be > 0 (got %d)" % (ctx, col, val))
+    return val
+
+
+def load_instruments(csv_path=None):
+    """-> {name: row-dict} from instrument/instruments.mieinst. One 'class'
+    key discriminates row types (INSTRUMENT_CLASSES); per class the parsed
+    fields are:
+
+      camera      : pixel_pitch_um, width_px, height_px (int),
+                    fill_factor (0,1], qe (from qe_table: {"lam_um","qe"}),
+                    full_well_e, read_noise_e (>=0), dark_current_e_per_s
+                    (>=0), bit_depth (int>0), adc_gain_e_per_dn,
+                    integration_time_s_default
+      powermeter  : EXACTLY ONE of {"resp_table": {"lam_um",
+                    "responsivity_a_w"}, "flat_responsivity_a_w": float} is
+                    set (the other is None), aperture_mm, nep_w_per_sqrthz,
+                    bandwidth_hz (>0), display_digits (int>=1)
+      spectrometer: lam_lo_nm < lam_hi_nm, resolution_fwhm_nm (>0),
+                    slit_um (>0), stray_light_floor ([0,1)),
+                    qe (from detector_qe_table: {"lam_um","qe"})
+      polarimeter (PLACEHOLDER, no shipped rows): analyzer_states (int>=2),
+                    extinction_ratio (>0), retarder_error_deg (>=0)
+      wavefront_sensor (PLACEHOLDER, no shipped rows): opd_sampling_um (>0),
+                    reference_arm_model (non-empty str)
+      autocorrelator (PLACEHOLDER, no shipped rows): shg_crystal (non-empty
+                    str), delay_range_fs (>0)
+
+    plus 'reference' (required, hard-validated) and 'notes' on every row.
+    Table columns (qe_table/responsivity_table/detector_qe_table) resolve
+    against tables/ next to the csv via _read_table, exactly like
+    load_detectors/load_polarizers."""
+    csv_path = Path(csv_path) if csv_path is not None \
+        else DEFAULT_INSTRUMENTS_CSV
+    tables_dir = csv_path.parent / "tables"
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "class", "reference"}, "instruments"):
+        klass = (row.get("class") or "").strip()
+        if klass not in INSTRUMENT_CLASSES:
+            raise MaterialError("%s: class %r must be one of %s"
+                                % (ctx, klass, ", ".join(INSTRUMENT_CLASSES)))
+        entry = {"class": klass,
+                 "reference": (row.get("reference") or "").strip(),
+                 "notes": (row.get("notes") or "").strip()}
+        if klass == "camera":
+            table = _read_table(
+                tables_dir / (row.get("qe_table") or "").strip(),
+                ("qe",), ctx)
+            qe = table["qe"]
+            if np.any(qe <= 0) or np.any(qe > 1):
+                raise MaterialError(
+                    "%s: qe_table qe must be in (0, 1]" % ctx)
+            entry.update(
+                pixel_pitch_um=_nlo_float(row, "pixel_pitch_um", ctx,
+                                          positive=True),
+                width_px=_reg_int(row, "width_px", ctx, positive=True),
+                height_px=_reg_int(row, "height_px", ctx, positive=True),
+                fill_factor=_nlo_float(row, "fill_factor", ctx,
+                                       positive=True),
+                lam_um=table["lam_um"], qe=qe,
+                full_well_e=_nlo_float(row, "full_well_e", ctx,
+                                       positive=True),
+                read_noise_e=_nlo_float(row, "read_noise_e", ctx,
+                                        nonnegative=True),
+                dark_current_e_per_s=_nlo_float(
+                    row, "dark_current_e_per_s", ctx, nonnegative=True),
+                bit_depth=_reg_int(row, "bit_depth", ctx, positive=True),
+                adc_gain_e_per_dn=_nlo_float(row, "adc_gain_e_per_dn", ctx,
+                                             positive=True),
+                integration_time_s_default=_nlo_float(
+                    row, "integration_time_s_default", ctx, positive=True))
+            if entry["fill_factor"] > 1.0:
+                raise MaterialError("%s: fill_factor must be in (0, 1]" % ctx)
+        elif klass == "powermeter":
+            resp_raw = (row.get("responsivity_table") or "").strip()
+            flat_raw = (row.get("flat_responsivity_a_w") or "").strip()
+            if bool(resp_raw) == bool(flat_raw):
+                raise MaterialError(
+                    "%s: exactly one of responsivity_table / "
+                    "flat_responsivity_a_w is required" % ctx)
+            resp_table = None
+            flat_resp = None
+            if resp_raw:
+                table = _read_table(tables_dir / resp_raw,
+                                    ("responsivity_a_w",), ctx)
+                r = table["responsivity_a_w"]
+                if np.any(r <= 0):
+                    raise MaterialError(
+                        "%s: responsivity_a_w must be > 0" % ctx)
+                resp_table = {"lam_um": table["lam_um"],
+                             "responsivity_a_w": r}
+            else:
+                flat_resp = _nlo_float(row, "flat_responsivity_a_w", ctx,
+                                       positive=True)
+            entry.update(
+                resp_table=resp_table, flat_responsivity_a_w=flat_resp,
+                aperture_mm=_nlo_float(row, "aperture_mm", ctx,
+                                       positive=True),
+                nep_w_per_sqrthz=_nlo_float(row, "nep_w_per_sqrthz", ctx,
+                                            positive=True),
+                bandwidth_hz=_nlo_float(row, "bandwidth_hz", ctx,
+                                        positive=True),
+                display_digits=_reg_int(row, "display_digits", ctx,
+                                        positive=True))
+        elif klass == "spectrometer":
+            lam_lo = _nlo_float(row, "lam_lo_nm", ctx, positive=True)
+            lam_hi = _nlo_float(row, "lam_hi_nm", ctx, positive=True)
+            if lam_hi <= lam_lo:
+                raise MaterialError(
+                    "%s: lam_hi_nm must be > lam_lo_nm" % ctx)
+            stray = _nlo_float(row, "stray_light_floor", ctx,
+                               nonnegative=True)
+            if stray >= 1.0:
+                raise MaterialError(
+                    "%s: stray_light_floor must be in [0, 1)" % ctx)
+            table = _read_table(
+                tables_dir / (row.get("detector_qe_table") or "").strip(),
+                ("qe",), ctx)
+            qe = table["qe"]
+            if np.any(qe <= 0) or np.any(qe > 1):
+                raise MaterialError(
+                    "%s: detector_qe_table qe must be in (0, 1]" % ctx)
+            entry.update(
+                lam_lo_nm=lam_lo, lam_hi_nm=lam_hi,
+                resolution_fwhm_nm=_nlo_float(row, "resolution_fwhm_nm", ctx,
+                                              positive=True),
+                slit_um=_nlo_float(row, "slit_um", ctx, positive=True),
+                stray_light_floor=stray,
+                lam_um=table["lam_um"], qe=qe)
+        elif klass == "polarimeter":
+            entry.update(
+                analyzer_states=_reg_int(row, "analyzer_states", ctx,
+                                         positive=True),
+                extinction_ratio=_nlo_float(row, "extinction_ratio", ctx,
+                                            positive=True),
+                retarder_error_deg=_nlo_float(row, "retarder_error_deg", ctx,
+                                              nonnegative=True))
+            if entry["analyzer_states"] < 2:
+                raise MaterialError(
+                    "%s: analyzer_states must be >= 2" % ctx)
+        elif klass == "wavefront_sensor":
+            ref_arm = (row.get("reference_arm_model") or "").strip()
+            if not ref_arm:
+                raise MaterialError(
+                    "%s: reference_arm_model is required" % ctx)
+            entry.update(
+                opd_sampling_um=_nlo_float(row, "opd_sampling_um", ctx,
+                                           positive=True),
+                reference_arm_model=ref_arm)
+        elif klass == "autocorrelator":
+            crystal = (row.get("shg_crystal") or "").strip()
+            if not crystal:
+                raise MaterialError("%s: shg_crystal is required" % ctx)
+            entry.update(
+                shg_crystal=crystal,
+                delay_range_fs=_nlo_float(row, "delay_range_fs", ctx,
+                                          positive=True))
+        out[name] = entry
+    return out
+
+
 class OpticalProperties:
     """Everything loaded from an opticalproperties/ root. Attributes:
     matdb (MaterialDB, with uniaxial attached), coatings, polarizers,
@@ -911,11 +1118,12 @@ class OpticalProperties:
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
                  "gratings", "uniaxial", "biaxial", "diffusers", "detectors",
-                 "scatter", "emission", "nonlinear")
+                 "scatter", "emission", "nonlinear", "instruments")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
                  uniaxial, diffusers=None, detectors=None, biaxial=None,
-                 scatter=None, emission=None, nonlinear=None):
+                 scatter=None, emission=None, nonlinear=None,
+                 instruments=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -929,6 +1137,7 @@ class OpticalProperties:
         self.scatter = scatter if scatter is not None else {}
         self.emission = emission if emission is not None else {}
         self.nonlinear = nonlinear if nonlinear is not None else {}
+        self.instruments = instruments if instruments is not None else {}
 
 
 def load_optical_properties(root=None, db=None):
@@ -974,7 +1183,9 @@ def load_optical_properties(root=None, db=None):
                           root / "emission" / "emitters.miesrc"),
         nonlinear=optional(load_nonlinear,
                            root / "nonlinear" / "nonlinear.mienlo",
-                           uniaxial=uniaxial, biaxial=biaxial))
+                           uniaxial=uniaxial, biaxial=biaxial),
+        instruments=optional(load_instruments,
+                             root / "instrument" / "instruments.mieinst"))
 
 
 # ---------------------------------------------------------------------------
@@ -998,3 +1209,5 @@ if __name__ == "__main__":
                                       ", ".join(sorted(props.emission))))
     print("  nonlinear : %d  (%s)" % (len(props.nonlinear),
                                       ", ".join(sorted(props.nonlinear))))
+    print("  instruments: %d  (%s)" % (len(props.instruments),
+                                       ", ".join(sorted(props.instruments))))
