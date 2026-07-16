@@ -29,6 +29,7 @@
 
 #define K_PI 3.14159265358979323846
 #define K_TWO_PI 6.28318530717958647692
+#define K_INV_TWO_PI 0.15915494309189533577
 
 /* ------------------------------------------------------------------ vec3 */
 typedef struct { double x, y, z; } kvec3;
@@ -51,6 +52,18 @@ KFN kvec3 v3_unit(kvec3 a) {
 /* a + t*b — the ubiquitous ray-advance operation */
 KFN kvec3 v3_fma(kvec3 a, double t, kvec3 b) {
     return v3(a.x + t*b.x, a.y + t*b.y, a.z + t*b.z);
+}
+
+/* 1/sqrt(x). On the device this is a single MUFU-seeded Newton chain
+ * (<=2 ulp) instead of the sqrt + divide pair (two chains); the host form
+ * is the exact pair. Callers that derive both r and 1/r from one k_rsqrt
+ * accept an ulp-level difference in r (see gatherk.h phase note). */
+KFN double k_rsqrt(double x) {
+#ifdef __CUDA_ARCH__
+    return rsqrt(x);
+#else
+    return 1.0 / sqrt(x);
+#endif
 }
 
 /* Deterministic orthonormal in-plane frame for a unit normal — EXACT port

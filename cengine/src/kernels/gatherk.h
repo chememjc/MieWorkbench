@@ -43,8 +43,12 @@ KFN void gather_pair(kvec3 P, kvec3 pos, kvec3 dir, double opl,
     double dx = P.x - pos.x, dy = P.y - pos.y, dz = P.z - pos.z;
     double r2 = dx * dx + dy * dy + dz * dz;
     if (r2 < 1e-18) r2 = 1e-18;                 /* gather.py:147 clamp */
-    double r = sqrt(r2);
-    double inv_r = 1.0 / r;
+    /* one k_rsqrt chain instead of sqrt + divide (two MUFU Newton chains on
+     * the device). r = r2*inv_r differs from sqrt(r2) by <=2 ulp; the phase
+     * impact k*|dr| is O(1e-9 rad), far below both the fp32 trig cast and
+     * the MC speckle pedestal. */
+    double inv_r = k_rsqrt(r2);
+    double r = r2 * inv_r;
     double rhat_dot_dir = (dx * dir.x + dy * dir.y + dz * dir.z) * inv_r;
     double cos_det = fabs(dx * nrm.x + dy * nrm.y + dz * nrm.z) * inv_r;
     double K = 0.5 * (rhat_dot_dir + cos_det);
@@ -53,8 +57,14 @@ KFN void gather_pair(kvec3 P, kvec3 pos, kvec3 dir, double opl,
     if (rhat_dot_dir <= 0.0) K = 0.0;           /* no back-radiation */
     K *= occ_vis;
     if (K == 0.0) return;
-    /* phase in f64, reduced mod 2pi BEFORE f32 trig (gather.py:156-159) */
-    double phase = fmod(k * (opl + GATHER_C_AMBIENT_N * r), K_TWO_PI);
+    /* phase in f64, reduced mod 2pi BEFORE f32 trig (gather.py:156-159).
+     * x - 2pi*trunc(x*inv2pi) replaces IEEE-exact fmod, whose RCP64H Newton
+     * chains were ~27% of the kernel. x >= 0 here (opl, r > 0) so trunc is
+     * floor; the reduced phase differs from fmod by O(n_waves*eps*2pi)
+     * < ~5e-9 rad at 1e6 waves — below the fp32 cast resolution of the
+     * trig argument. The f64-before-f32-trig contract is preserved. */
+    double ph_x = k * (opl + GATHER_C_AMBIENT_N * r);
+    double phase = ph_x - K_TWO_PI * trunc(ph_x * K_INV_TWO_PI);
     float w = (float)(K * inv_r);
 #ifdef __CUDA_ARCH__
     float sp, cp;
