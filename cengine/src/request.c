@@ -913,6 +913,31 @@ SceneC *request_load(const char *path) {
         }
     }
 
+    /* ---- interaction registry (REGISTRY.md §2) ----
+     * (a) hard-error on any feature token this build has no implementation
+     *     for — the end of the PORTED silent-skip class. features[] carries
+     *     detect_features()'s emitted token list (cengine.py build_request).
+     *     Optional: an older request without it still loads (every token it
+     *     could carry is checked, none is a silent skip). */
+    {
+        yyjson_val *feats = yyjson_obj_get(root, "features");
+        if (feats && yyjson_is_arr(feats)) {
+            size_t nf = yyjson_arr_size(feats);
+            if (nf > 0) {
+                const char **arr = (const char **)malloc(nf * sizeof(char *));
+                if (!arr) die(EXIT_INPUT, "request: OOM (features)");
+                size_t fi, fmax, k = 0;
+                yyjson_val *fv;
+                yyjson_arr_foreach(feats, fi, fmax, fv)
+                    arr[k++] = yyjson_is_str(fv) ? yyjson_get_str(fv) : "";
+                registry_check_features(arr, (int)nf);   /* exit 2 if unknown */
+                free(arr);
+            }
+        }
+        /* (b) resolve every face's ordered handler list from the registry. */
+        registry_resolve_faces(s);
+    }
+
     /* basic cross-validation echo */
     LOGI("scene: %d bodies, %d faces, %d sources, %d detectors, %d lams",
          s->n_bodies, s->n_faces, s->n_sources, s->n_dets, s->n_lams);

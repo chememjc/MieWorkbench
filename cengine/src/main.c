@@ -24,6 +24,7 @@
 #include "detector.h"
 #include "gather.h"
 #include "ledger.h"
+#include "registry.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,15 @@
 int main(int argc, char **argv) {
     const char *config = NULL;
     int threads_override = -1;
+
+    /* --tokens: dump the interaction-registry token set and exit (the
+     * token-parity backstop, REGISTRY.md §4). Pre-scan so it needs no
+     * --config and stays out of the serve-loop arg handling below. */
+    for (int i = 1; i < argc; i++)
+        if (strcmp(argv[i], "--tokens") == 0) {
+            registry_dump_tokens(stdout);
+            return 0;
+        }
 
     log_progress_init();
     log_install_crash_handlers(argv[0]);

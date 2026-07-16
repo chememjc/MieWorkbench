@@ -643,6 +643,11 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
     from run_trace import resolve_workers
     return {
         "schema": 1,
+        # P3 interaction registry (REGISTRY.md §2.2): the detected feature
+        # tokens travel with the request so the C engine can hard-error on
+        # any token it has no implementation for (the belt-and-suspenders
+        # backstop to choose_engine's routing — never a silent skip).
+        "features": sorted(detect_features(args, scene)),
         "out_dir": str(out_dir),
         "params": {
             "max_reflections": int(args.max_reflections),

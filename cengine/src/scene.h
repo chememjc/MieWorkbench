@@ -21,6 +21,7 @@
 #include "raybuf.h"
 #include "bvh.h"
 #include "mesh.h"
+#include "registry.h"
 
 #define MIEWB_MAX_NAME 96
 
@@ -38,7 +39,7 @@ enum {
     POL_CIRCULAR_RIGHT = 2,
 };
 
-typedef struct {
+typedef struct BodyC {
     char label[MIEWB_MAX_NAME];
     char name[MIEWB_MAX_NAME];
     uint8_t role;
@@ -114,7 +115,7 @@ typedef struct {
                                  * exactly like grating.apply_to_batch) */
 } GratC;
 
-typedef struct {
+typedef struct FaceC {
     char id[MIEWB_MAX_NAME];    /* "Body.Feature.FaceN" contract name */
     int32_t body;               /* owning body index */
     SurfC surf;
@@ -130,6 +131,12 @@ typedef struct {
     /* conservative world AABB (Python glue: STL-union-trim padded, or
      * analytic full-primitive bounds; +-INF when unknown = never culled) */
     kvec3 aabb_lo, aabb_hi;
+    /* ordered surface-interaction handler list, resolved at scene build by
+     * registry_resolve_faces() (REGISTRY.md §2.1). Order encodes the
+     * historical process_ray precedence. Pointers into the static
+     * INTERACTIONS table (program-lifetime). */
+    const InteractionDef *handlers[MIEWB_MAX_FACE_HANDLERS];
+    int n_handlers;
 } FaceC;
 
 /* One (source, lam_stratum, pol_stratum) coherent sample set on a
@@ -223,7 +230,7 @@ typedef struct {
     double *inv_phase;          /* [n_lams][n_quad][n_u] mu(u) */
 } ParticleC;
 
-typedef struct {
+typedef struct SceneC {
     /* trace parameters (TraceConfig, tracer.py:52-78) */
     int max_reflections;
     double power_floor;
