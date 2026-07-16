@@ -438,6 +438,22 @@ SceneC *request_load(const char *path) {
         yyjson_val *gs = yyjson_obj_get(par, "gather_skip");
         s->gather_skip = (uint8_t)(gs && yyjson_is_bool(gs)
                                    && yyjson_get_bool(gs));
+        /* gather_only: skip tracing, load the merged sample dump from
+         * gather_input and run the in-binary gather (P1 final stage). */
+        yyjson_val *go = yyjson_obj_get(par, "gather_only");
+        s->gather_only = (uint8_t)(go && yyjson_is_bool(go)
+                                   && yyjson_get_bool(go));
+        s->gather_input[0] = 0;
+        yyjson_val *gi = yyjson_obj_get(par, "gather_input");
+        if (gi && yyjson_is_str(gi))
+            snprintf(s->gather_input, sizeof s->gather_input, "%s",
+                     yyjson_get_str(gi));
+        if (s->gather_only && !s->gather_input[0])
+            die(EXIT_INPUT, "request: gather_only needs gather_input "
+                "(merged sample-dump directory)");
+        if (s->gather_only && s->gather_skip)
+            die(EXIT_INPUT, "request: gather_only and gather_skip are "
+                "mutually exclusive");
     }
     {
         yyjson_val *v = yyjson_obj_get(par, "linear_scan");

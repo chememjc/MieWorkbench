@@ -23,6 +23,7 @@
 #include "trace.h"
 #include "detector.h"
 #include "gather.h"
+#include "ledger.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,7 +90,19 @@ int main(int argc, char **argv) {
         det_compute_mask(&scene->dets[i], scene);
 
     TraceResultC result;
-    trace_run(scene, &result);
+    if (scene->gather_only) {
+        /* P1 final stage: no tracing — load the driver's merged sample
+         * dump + accumulator snapshots and run the normal gather below.
+         * The ledger is all-zero here (the Python driver merged the real
+         * per-chunk ledgers itself); rays_viz.npy is empty likewise. */
+        ledger_init(&result.ledger, scene);
+        memset(&result.viz, 0, sizeof result.viz);   /* empty viz store */
+        result.rays_traced = 0;
+        result.trace_seconds = 0.0;
+        det_load_gather_state(scene);
+    } else {
+        trace_run(scene, &result);
+    }
 
     /* coherent Huygens gather over the collected detector samples
      * (no-op for purely incoherent scenes). P1 gather_skip: this invocation
@@ -138,6 +151,7 @@ int main(int argc, char **argv) {
             "  \"primary_hi\": %lld,\n"
             "  \"rays_total\": %lld,\n"
             "  \"gather_skip\": %s,\n"
+            "  \"gather_only\": %s,\n"
             "  \"closure_err_max\": %.6g\n"
             "}\n",
             MIEWB_CENGINE_VERSION, result.trace_seconds, gather_seconds,
@@ -145,6 +159,7 @@ int main(int argc, char **argv) {
             (long long)result.rays_traced, (long long)result.viz.n,
             (long long)scene->primary_lo, (long long)scene->primary_hi,
             (long long)scene->rays, scene->gather_skip ? "true" : "false",
+            scene->gather_only ? "true" : "false",
             ledger_closure_max(&result.ledger));
     fclose(f);
 

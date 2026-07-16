@@ -236,8 +236,14 @@ typedef struct {
      * aligns lo/hi to n_strata*n_pol and the C engine ASSERTS it. */
     int64_t primary_lo, primary_hi;
     uint8_t gather_skip;        /* 1 = trace only, dump gkey samples to disk
-                                 * (Python does the single final gather), no
-                                 * in-binary gather_run */
+                                 * (accumulated across chunks by the Python
+                                 * driver), no in-binary gather_run */
+    uint8_t gather_only;        /* 1 = skip tracing entirely: load the merged
+                                 * sample dump + accumulator snapshots from
+                                 * gather_input and run the normal in-binary
+                                 * gather_run (tiled kernel; gather.mode=
+                                 * exact still selects the plain one) */
+    char gather_input[1024];    /* gather_only: merged-dump directory */
     uint64_t seed;
     int64_t batch_size;         /* children split bound (1<<20) */
     int threads;                /* 0 = OpenMP default */

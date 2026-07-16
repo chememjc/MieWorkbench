@@ -20,6 +20,11 @@
 void npy_write(const char *path, const void *data, const char *dtype,
                int ndim, const size_t *shape);
 
+/* P1 gather_only: read a C-order little-endian .npy of the asserted dtype.
+ * Returns a malloc'd buffer (caller frees); *n_elems = total elements.
+ * Dies on any format/dtype mismatch. */
+void *npy_read(const char *path, const char *dtype, size_t *n_elems);
+
 /* Convenience wrappers */
 void npy_write_f64_1d(const char *path, const double *a, size_t n);
 void npy_write_f64_2d(const char *path, const double *a, size_t n0, size_t n1);

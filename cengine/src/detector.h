@@ -56,8 +56,14 @@ void det_free_gkeys(DetC *d);
 /* P1 chunked-run contract (gather_skip trace-only mode): serialize every
  * detector's per-key coherent sample sets to <out_dir>/gk_*.npy plus a
  * gkeys.json manifest, so the Python driver can accumulate samples across
- * chunks and run the single final gather. */
+ * chunks for the single final gather. */
 void det_dump_gkeys(const SceneC *s);
+
+/* P1 gather_only mode: load the driver's MERGED sample dump + accumulator
+ * snapshots (same layout + acc_<i>_*.npy) from s->gather_input into the
+ * DetC/GKey structures, so the normal in-binary gather_run (tiled kernel)
+ * runs over them. */
+void det_load_gather_state(SceneC *s);
 
 /* --export-rays: one per-detector-event landing record (the ray state AT
  * the hit — pos/opl already advanced; tracer._export_records) */

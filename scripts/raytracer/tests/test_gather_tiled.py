@@ -45,7 +45,9 @@ def _run(case_dir, extra):
     with h5py.File(next((case_dir / "detectors").glob("*.h5"))) as f:
         cube = f["spectral_cube_mean"][...]
     detected = json.loads((case_dir / "case.json").read_text())["detected"]
-    gj = json.loads(next(case_dir.glob("cengine/seed*/gather.json"))
+    # P1 chunked-run layout: the final gather runs in a gather_only stage
+    # under cengine/seed<k>/gather/ (was cengine/seed<k>/ pre-chunking)
+    gj = json.loads(next(case_dir.glob("cengine/seed*/gather/gather.json"))
                     .read_text())
     return cube, detected, gj
 

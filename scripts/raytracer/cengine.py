@@ -344,7 +344,8 @@ def _emit_dir_policy(face):
 
 def build_request(args, scene, seed, lam_range, grids, out_dir,
                   export_this_seed=False, track_this_seed=False,
-                  primary_lo=0, primary_hi=None, gather_skip=False):
+                  primary_lo=0, primary_hi=None, gather_skip=False,
+                  gather_only=False, gather_input=None):
     """Serialize one seed's trace request. grids: {fid: DetectorGrid} from
     run_trace.build_detectors — the SAME objects later filled with the C
     cubes, so grid geometry is shared by construction."""
@@ -614,6 +615,11 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
             "primary_hi": int(args.rays if primary_hi is None
                               else primary_hi),
             "gather_skip": bool(gather_skip),
+            # P1 final stage: no tracing — load the merged sample dump +
+            # accumulator snapshots from gather_input, run the in-binary
+            # gather (tiled kernel; gather.mode=exact still honored)
+            "gather_only": bool(gather_only),
+            "gather_input": str(gather_input) if gather_input else None,
             "seed": int(seed),
             "batch_size": 1 << 20,
             "threads": 0 if args.workers == "auto"
@@ -721,12 +727,15 @@ def _run_binary(request_path, log_level=None):
 #
 # The C engine traces primaries in CHUNKS (gather_skip mode: each invocation
 # dumps its coherent samples + incoherent cube + ledger instead of gathering).
-# The Python driver merges the chunk payloads into DetectorGrid accumulators
-# and runs the SINGLE final coherent gather ONCE at the end (the reference
-# run_trace._do_gather kernel; the C in-binary gather stays for the
-# direct-binary parity tests). checkpoint.json makes an interrupted trace
-# resumable and a completed run extendable, and the per-chunk sample dumps on
-# disk ARE the durable accumulator (rebuilt into grids on resume).
+# The Python driver merges the chunk payloads into DetectorGrid accumulators,
+# sorts the samples canonically, writes the MERGED dump back to disk, and
+# invokes the binary once more in gather_only mode: it loads the dump +
+# accumulator snapshots and runs the normal in-binary gather — the
+# tile-factorized kernel (~75x the Python torch gather; --gather-exact
+# still selects the plain fp64 reference kernel). checkpoint.json makes an
+# interrupted trace resumable and a completed run extendable, and the
+# per-chunk sample dumps on disk ARE the durable accumulator (rebuilt into
+# grids on resume).
 #
 # Bit-identity: coherent samples are sorted by the UNIQUE (ray_key,event_ctr)
 # key before the gather, so a merged N-chunk sample set is byte-identical to a
@@ -873,9 +882,9 @@ def _finalize_sorted_samples(grids):
     """Collapse each detector's per-chunk sample records into ONE record with
     the samples in the canonical (ray_key,event_ctr) order — a total order
     (each is unique), so the merged multi-chunk order is byte-identical to a
-    single trace's, making the final gather bit-reproducible. The hidden
-    _ray_key/_evt columns are dropped afterward (render_coherent never sees
-    them)."""
+    single trace's, making the final gather bit-reproducible. The _ray_key/
+    _evt columns are KEPT: the C gather's cross-estimator groups by
+    (ray_key & 3), and the merged dump round-trips them."""
     for g in grids.values():
         for key, recs in list(g.samples.items()):
             rk = np.concatenate([r["_ray_key"] for r in recs])
@@ -883,8 +892,76 @@ def _finalize_sorted_samples(grids):
             order = np.lexsort((ev, rk))       # primary key rk, tiebreak ev
             rec = {f: np.concatenate([r[f] for r in recs])[order]
                    for f in _SAMPLE_FIELDS}
+            rec["_ray_key"] = rk[order]
+            rec["_evt"] = ev[order]
             g.samples[key] = [rec]
             g.detected_geometric[key] = float(np.sum(rec["power"]))
+
+
+def _tally_dims(scene, args):
+    """(n_sources, max_strata, max_pol) — the C engine's flat detected-tally
+    dimensions (request.c mirrors this exactly)."""
+    from raytracer.sources import wavelength_strata, n_pol_strata
+    n_src = len(scene.sources)
+    max_strata = max((len(wavelength_strata(src, args.nlambda))
+                      for _, src in scene.sources), default=1)
+    max_pol = max((n_pol_strata(src) for _, src in scene.sources),
+                  default=1)
+    return n_src, max_strata, max_pol
+
+
+def _write_merged_dump(scene, args, grids, det_order, dump_dir):
+    """Serialize the canonically sorted merged sample sets + accumulator
+    snapshots for the C engine's gather_only stage (det_load_gather_state's
+    exact input layout: gkeys.json + gk_* SoA arrays + acc_<i>_inc /
+    acc_<i>_tinc_W / acc_<i>_tinc_n snapshots)."""
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    n_src, max_strata, max_pol = _tally_dims(scene, args)
+    manifest = {}
+    for i, fid in enumerate(det_order):
+        g = grids[fid]
+        np.save(dump_dir / ("acc_%d_inc.npy" % i),
+                np.ascontiguousarray(g.inc, dtype=np.float64))
+        tw = np.zeros(n_src * max_strata * max_pol)
+        tn = np.zeros(n_src * max_strata * max_pol, dtype=np.int64)
+        for (s, l, p), v in g.detected_incoherent.items():
+            tw[(s * max_strata + l) * max_pol + p] = v
+        for (s, l, p), v in g.detected_incoherent_n.items():
+            tn[(s * max_strata + l) * max_pol + p] = v
+        np.save(dump_dir / ("acc_%d_tinc_W.npy" % i), tw)
+        np.save(dump_dir / ("acc_%d_tinc_n.npy" % i), tn)
+        entries = []
+        for (s, l, p), recs in sorted(g.samples.items()):
+            rec = recs[0]
+            n = int(len(rec["power"]))
+            entries.append([int(s), int(l), int(p), n])
+            if n == 0:
+                continue
+            base = str(dump_dir / ("gk_%d_%d_%d_%d_" % (i, s, l, p)))
+            np.save(base + "pos.npy", np.ascontiguousarray(
+                rec["pos"], dtype=np.float64))
+            np.save(base + "dir.npy", np.ascontiguousarray(
+                rec["dir"], dtype=np.float64))
+            np.save(base + "shat.npy", np.ascontiguousarray(
+                rec["s_hat"], dtype=np.float64))
+            np.save(base + "Es.npy", np.ascontiguousarray(
+                rec["Es"], dtype=np.complex128))
+            np.save(base + "Ep.npy", np.ascontiguousarray(
+                rec["Ep"], dtype=np.complex128))
+            np.save(base + "lam.npy", np.ascontiguousarray(
+                rec["lam"], dtype=np.float64))
+            np.save(base + "opl.npy", np.ascontiguousarray(
+                rec["opl"], dtype=np.float64))
+            np.save(base + "power.npy", np.ascontiguousarray(
+                rec["power"], dtype=np.float64))
+            np.save(base + "scat.npy", np.ascontiguousarray(
+                rec["scattered"], dtype=np.uint8))
+            np.save(base + "key.npy", np.ascontiguousarray(
+                rec["_ray_key"], dtype=np.uint64))
+            np.save(base + "evt.npy", np.ascontiguousarray(
+                rec["_evt"], dtype=np.uint32))
+        manifest[str(i)] = entries
+    (dump_dir / "gkeys.json").write_text(json.dumps(manifest))
 
 
 def _merge_ledger(reports):
@@ -948,12 +1025,13 @@ def run_c_case(args, case_dir, scene, lam_range, case):
     code, or None on C-engine failure (auto falls back to Python).
 
     Honors getattr(args,'resume') / getattr(args,'extend') and auto-resumes a
-    matching checkpoint. The C engine traces each chunk (gather_skip); Python
-    accumulates and runs the single final gather."""
+    matching checkpoint. The C engine traces each chunk (gather_skip);
+    Python accumulates, then hands the merged sorted samples BACK to the
+    binary for the single final in-binary gather (gather_only mode — the
+    tile-factorized kernel)."""
     import common
     from run_trace import (build_detectors, build_detected_block,
-                           save_detectors, compute_sample_area, _do_gather,
-                           resolve_save_fields_detectors)
+                           save_detectors)
 
     cdir = case_dir / "cengine"
     cdir.mkdir(parents=True, exist_ok=True)
@@ -1025,10 +1103,9 @@ def run_c_case(args, case_dir, scene, lam_range, case):
 
     grids_by_seed = {}
     det_order = None
-    save_fields_labels = resolve_save_fields_detectors(
-        args, sorted(scene.faces[fid].id
-                     for fid in (set(scene.detector_faces)
-                                 | set(scene.extra_detector_faces))))
+    # (--save-fields-detectors already forced the Python engine at routing
+    # time — the C gather saves fields for EVERY detector under
+    # --save-fields, so no per-detector subset is needed here.)
 
     # ================= Phase 1: TRACE (gather_skip chunks) =================
     for si in range(args.seeds):
@@ -1106,7 +1183,13 @@ def run_c_case(args, case_dir, scene, lam_range, case):
     ckpt["status"] = "trace_complete"
     common.write_json(ckpt_path, ckpt)
 
-    # ================= Phase 2: single final gather =======================
+    # ================= Phase 2: single final gather (C, gather_only) ======
+    # The merged, canonically sorted samples + accumulator snapshots are
+    # handed BACK to the binary, which runs the normal in-binary gather —
+    # the tile-factorized kernel (or the plain fp64 one under
+    # --gather-exact). Routing through the Python torch gather here would
+    # be a ~75x regression on exactly the long coherent runs chunking
+    # exists for.
     common.progress_emit("trace", 0.94, "final gather", case_dir=case_dir)
     grids_list = []
     audits = []
@@ -1115,15 +1198,69 @@ def run_c_case(args, case_dir, scene, lam_range, case):
     all_viz = None
     trace_s_total = sum(c["wall_s"] for c in ckpt["chunks"])
     gather_s_total = 0.0
-    sample_area = compute_sample_area(scene, args, total_rays=target)
     for si in range(args.seeds):
         seed = args.seed0 + si
         grids = grids_by_seed[seed]
         _finalize_sorted_samples(grids)
-        gdiags, gather_s = _do_gather(
-            grids, args, scene, sample_area,
-            save_fields_labels=save_fields_labels)
-        gather_s_total += gather_s
+        merged_dir = cdir / ("seed%d" % seed) / "merged"
+        _write_merged_dump(scene, args, grids, det_order, merged_dir)
+        gout = cdir / ("seed%d" % seed) / "gather"
+        gout.mkdir(parents=True, exist_ok=True)
+        req = build_request(args, scene, seed, lam_range, grids, gout,
+                            gather_only=True, gather_input=merged_dir)
+        req_path = gout / "request.json"
+        req_path.write_text(json.dumps(req))
+        print("[trace] seed %d final gather over %d chunk(s) "
+              "[C engine, gather_only]"
+              % (seed, sum(1 for c in ckpt["chunks"] if c["seed"] == seed)),
+              flush=True)
+        rc = _run_binary(req_path)
+        if rc != 0:
+            print("[trace] ERROR: miewb-trace (gather_only) exited %d "
+                  "(see %s)" % (rc, gout / "cengine.log"), flush=True)
+            return None
+        gather_json = gout / "gather.json"
+        gdiags = json.loads(gather_json.read_text()) \
+            if gather_json.exists() else {}
+        detected = json.loads((gout / "detected.json").read_text())
+        for i, fid in enumerate(det_order):
+            g = grids[fid]
+            cube = np.load(gout / ("det_%d_inc.npy" % i))
+            if cube.shape != g.inc.shape:
+                print("[trace] ERROR: gather_only cube shape %s != "
+                      "expected %s for detector %s"
+                      % (cube.shape, g.inc.shape, g.label), flush=True)
+                return None
+            g.inc = cube          # snapshot + gathered coherent intensity
+            # adopt the binary's tallies verbatim (identical values —
+            # the snapshots round-tripped through the dump)
+            g.detected_incoherent.clear()
+            g.detected_incoherent_n.clear()
+            g.detected_geometric.clear()
+            for skey, entry in detected.get(g.label, {}).items():
+                key = tuple(int(x) for x in skey.split("/"))
+                if "incoherent_W" in entry:
+                    g.detected_incoherent[key] = \
+                        float(entry["incoherent_W"])
+                    g.detected_incoherent_n[key] = int(entry["n"])
+                if "coherent_W" in entry:
+                    g.detected_geometric[key] = float(entry["coherent_W"])
+            # --save-fields: complex Ex/Ey maps (seed0 only, matching the
+            # Python engine's save_detectors contract)
+            if args.save_fields and seed == args.seed0:
+                fields = {}
+                for skey in gdiags.get(g.label, {}):
+                    key = tuple(int(x) for x in skey.split("/"))
+                    ex_p = gout / ("det_%d_field_%d_%d_%d_Ex.npy"
+                                   % ((i,) + key))
+                    ey_p = gout / ("det_%d_field_%d_%d_%d_Ey.npy"
+                                   % ((i,) + key))
+                    if ex_p.exists() and ey_p.exists():
+                        fields[key] = (np.load(ex_p), np.load(ey_p))
+                if fields:
+                    g.fields = fields
+        summary = json.loads((gout / "summary.json").read_text())
+        gather_s_total += float(summary.get("gather_seconds") or 0.0)
         grids_list.append(grids)
         gather_diags_all["seed%d" % seed] = gdiags
         detected_all["seed%d" % seed] = build_detected_block(grids, gdiags)
