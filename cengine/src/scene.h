@@ -143,6 +143,10 @@ typedef struct {
     double *lam, *opl, *power;
     uint8_t *scattered;
     uint64_t *ray_key;              /* cross-estimator grouping (D2) */
+    uint32_t *event_ctr;            /* P1: (ray_key,event_ctr) is the stable
+                                     * canonical sort key the Python driver
+                                     * uses to make a merged multi-chunk
+                                     * sample set bit-identical to one chunk */
 } GKey;
 
 /* Planar detector grid — geometry computed by the Python glue with the
@@ -223,7 +227,17 @@ typedef struct {
     /* trace parameters (TraceConfig, tracer.py:52-78) */
     int max_reflections;
     double power_floor;
-    int64_t rays;               /* per source */
+    int64_t rays;               /* per source (the NORMALIZATION denominator:
+                                 * p_ray = power_W / rays, regardless of the
+                                 * [lo,hi) chunk actually traced) */
+    /* P1 chunked-run contract: this invocation traces primaries [lo,hi) of
+     * every source (default 0..rays). Keys stay index-pure (i % n_strata,
+     * (i/n_strata) % n_pol) so a chunk is a pure slice; the Python driver
+     * aligns lo/hi to n_strata*n_pol and the C engine ASSERTS it. */
+    int64_t primary_lo, primary_hi;
+    uint8_t gather_skip;        /* 1 = trace only, dump gkey samples to disk
+                                 * (Python does the single final gather), no
+                                 * in-binary gather_run */
     uint64_t seed;
     int64_t batch_size;         /* children split bound (1<<20) */
     int threads;                /* 0 = OpenMP default */

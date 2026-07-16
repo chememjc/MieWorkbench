@@ -427,6 +427,19 @@ SceneC *request_load(const char *path) {
     s->batch_size = need_int(par, "batch_size", "params");
     s->threads = (int)need_int(par, "threads", "params");
     {
+        /* P1 chunked-run contract: optional primary range [lo,hi) + the
+         * trace-only (gather_skip) flag. Defaults reproduce the full run. */
+        yyjson_val *plo = yyjson_obj_get(par, "primary_lo");
+        yyjson_val *phi = yyjson_obj_get(par, "primary_hi");
+        s->primary_lo = (plo && yyjson_is_int(plo))
+                        ? yyjson_get_sint(plo) : 0;
+        s->primary_hi = (phi && yyjson_is_int(phi))
+                        ? yyjson_get_sint(phi) : s->rays;
+        yyjson_val *gs = yyjson_obj_get(par, "gather_skip");
+        s->gather_skip = (uint8_t)(gs && yyjson_is_bool(gs)
+                                   && yyjson_get_bool(gs));
+    }
+    {
         yyjson_val *v = yyjson_obj_get(par, "linear_scan");
         s->linear_scan = (uint8_t)(v && yyjson_is_bool(v)
                                    && yyjson_get_bool(v));
@@ -848,6 +861,36 @@ SceneC *request_load(const char *path) {
         if (unbounded)
             LOGW("tlas: %d face(s) have unbounded AABBs (no culling for "
                  "them)", unbounded);
+    }
+
+    /* P1 chunked-run contract: the [lo,hi) primary range MUST be aligned to
+     * each source's n_strata*n_pol so every stratum/pol gets an equal count
+     * in any prefix [0,cursor) (the gather normalization divides the cursor
+     * by n_strata*n_pol). Alignment is the PYTHON driver's job; the C engine
+     * only asserts it and hard-errors — never silently rebalances. hi==rays
+     * is the natural final boundary and is exempt (rays itself need not be a
+     * multiple, exactly as the single-run normalization already tolerated). */
+    if (!s->importance_aim
+            && (s->primary_lo != 0 || s->primary_hi != s->rays)) {
+        if (s->primary_lo < 0 || s->primary_hi > s->rays
+                || s->primary_lo > s->primary_hi)
+            die(EXIT_INPUT, "request: primary range [%lld,%lld) out of "
+                "bounds for rays=%lld", (long long)s->primary_lo,
+                (long long)s->primary_hi, (long long)s->rays);
+        for (int si = 0; si < s->n_sources; si++) {
+            int64_t stride = (int64_t)s->sources[si].n_strata
+                             * s->sources[si].n_pol;
+            if (stride <= 0) continue;
+            if (s->primary_lo % stride != 0
+                    || (s->primary_hi != s->rays
+                        && s->primary_hi % stride != 0))
+                die(EXIT_INPUT, "request: primary range [%lld,%lld) is not "
+                    "aligned to source %s stride n_strata*n_pol=%lld — the "
+                    "Python driver must align chunk boundaries (misaligned "
+                    "chunks would unbalance the gather normalization)",
+                    (long long)s->primary_lo, (long long)s->primary_hi,
+                    s->sources[si].label, (long long)stride);
+        }
     }
 
     /* basic cross-validation echo */

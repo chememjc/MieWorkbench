@@ -35,6 +35,7 @@ typedef struct {
     double lam, opl, power;
     uint8_t scattered;
     uint64_t ray_key;
+    uint32_t event_ctr;         /* P1 canonical-sort tiebreaker */
 } GatherHit;
 
 typedef struct {
@@ -51,6 +52,12 @@ void gathhits_clear(GatherHitVec *h);
  * GKey sample sets on their detectors + the detected_geometric tallies. */
 void det_apply_gather_hits(SceneC *s, const GatherHitVec *hits);
 void det_free_gkeys(DetC *d);
+
+/* P1 chunked-run contract (gather_skip trace-only mode): serialize every
+ * detector's per-key coherent sample sets to <out_dir>/gk_*.npy plus a
+ * gkeys.json manifest, so the Python driver can accumulate samples across
+ * chunks and run the single final gather. */
+void det_dump_gkeys(const SceneC *s);
 
 /* --export-rays: one per-detector-event landing record (the ray state AT
  * the hit — pos/opl already advanced; tracer._export_records) */

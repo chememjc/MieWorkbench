@@ -210,8 +210,10 @@ static GKey *det_gkey(DetC *d, int16_t src, int16_t ls, int16_t ps) {
     g->power = (double *)malloc((size_t)g->cap * sizeof(double));
     g->scattered = (uint8_t *)malloc((size_t)g->cap);
     g->ray_key = (uint64_t *)malloc((size_t)g->cap * sizeof(uint64_t));
+    g->event_ctr = (uint32_t *)malloc((size_t)g->cap * sizeof(uint32_t));
     if (!g->pos || !g->dir || !g->s_hat || !g->Es || !g->Ep || !g->lam
-            || !g->opl || !g->power || !g->scattered || !g->ray_key)
+            || !g->opl || !g->power || !g->scattered || !g->ray_key
+            || !g->event_ctr)
         die(EXIT_PHYSICS, "detector: gkey sample allocation failed");
     return g;
 }
@@ -230,8 +232,11 @@ static void gkey_grow(GKey *g) {
     g->scattered = (uint8_t *)realloc(g->scattered, (size_t)cap);
     g->ray_key = (uint64_t *)realloc(g->ray_key,
                                      (size_t)cap * sizeof(uint64_t));
+    g->event_ctr = (uint32_t *)realloc(g->event_ctr,
+                                       (size_t)cap * sizeof(uint32_t));
     if (!g->pos || !g->dir || !g->s_hat || !g->Es || !g->Ep || !g->lam
-            || !g->opl || !g->power || !g->scattered || !g->ray_key)
+            || !g->opl || !g->power || !g->scattered || !g->ray_key
+            || !g->event_ctr)
         die(EXIT_PHYSICS, "detector: gather sample growth to %lld failed "
             "— out of memory; reduce --rays", (long long)cap);
     g->cap = cap;
@@ -261,6 +266,7 @@ void det_apply_gather_hits(SceneC *s, const GatherHitVec *hits) {
         g->power[j] = h->power;
         g->scattered[j] = h->scattered;
         g->ray_key[j] = h->ray_key;
+        g->event_ctr[j] = h->event_ctr;
         size_t key = ((size_t)h->source_id * s->max_strata
                       + h->lam_stratum) * s->max_pol + h->pol_stratum;
         d->det_geom_W[key] += h->power;
@@ -273,11 +279,86 @@ void det_free_gkeys(DetC *d) {
         free(g->pos); free(g->dir); free(g->s_hat);
         free(g->Es); free(g->Ep);
         free(g->lam); free(g->opl); free(g->power);
-        free(g->scattered); free(g->ray_key);
+        free(g->scattered); free(g->ray_key); free(g->event_ctr);
     }
     free(d->gkeys);
     d->gkeys = NULL;
     d->n_gkeys = d->cap_gkeys = 0;
+}
+
+/* P1: serialize coherent sample sets for the Python driver's final gather.
+ * Layout under out_dir: gkeys.json manifest + per-key SoA .npy arrays. The
+ * Python side (cengine._load_chunk_gkeys) reads these into DetectorGrid
+ * .samples records, sorts by (ray_key,event_ctr), and gathers once. */
+void det_dump_gkeys(const SceneC *s) {
+    char path[1300];
+    /* manifest keyed by detector index -> [[src,ls,ps,n], ...] */
+    snprintf(path, sizeof path, "%s/gkeys.json", s->out_dir);
+    FILE *mf = fopen(path, "w");
+    if (!mf) die(EXIT_PHYSICS, "detector: cannot write %s", path);
+    fprintf(mf, "{");
+    int first_det = 1;
+    for (int i = 0; i < s->n_dets; i++) {
+        const DetC *d = &s->dets[i];
+        fprintf(mf, "%s\"%d\":[", first_det ? "" : ",", i);
+        first_det = 0;
+        for (int32_t k = 0; k < d->n_gkeys; k++) {
+            const GKey *g = &d->gkeys[k];
+            fprintf(mf, "%s[%d,%d,%d,%lld]", k ? "," : "",
+                    g->source_id, g->lam_stratum, g->pol_stratum,
+                    (long long)g->n);
+            size_t n = (size_t)g->n;
+            /* Es/Ep are kcplx (== C _Complex double, layout of complex128) */
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_pos.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            { size_t sh[2] = {n, 3}; npy_write(path, g->pos, "<f8", 2, sh); }
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_dir.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            { size_t sh[2] = {n, 3}; npy_write(path, g->dir, "<f8", 2, sh); }
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_shat.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            { size_t sh[2] = {n, 3}; npy_write(path, g->s_hat, "<f8", 2, sh); }
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_Es.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            npy_write(path, g->Es, "<c16", 1, &n);
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_Ep.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            npy_write(path, g->Ep, "<c16", 1, &n);
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_lam.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            npy_write(path, g->lam, "<f8", 1, &n);
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_opl.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            npy_write(path, g->opl, "<f8", 1, &n);
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_power.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            npy_write(path, g->power, "<f8", 1, &n);
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_scat.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            npy_write(path, g->scattered, "|u1", 1, &n);
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_key.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            npy_write(path, g->ray_key, "<u8", 1, &n);
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_evt.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            npy_write(path, g->event_ctr, "<u4", 1, &n);
+        }
+        fprintf(mf, "]");
+    }
+    fprintf(mf, "}\n");
+    if (fclose(mf) != 0)
+        die(EXIT_PHYSICS, "detector: short write to gkeys.json");
 }
 
 /* ---------------------------------------------------------------- mask */

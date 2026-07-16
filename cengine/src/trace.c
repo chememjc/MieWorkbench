@@ -1013,6 +1013,7 @@ static void detector_event(const SceneC *s, const FaceC *face, const Ray *r,
         gh.power = ray_power(r);
         gh.scattered = r->scattered;
         gh.ray_key = r->ray_key;
+        gh.event_ctr = r->event_ctr;
         gathhits_push(&cx->ghits, &gh);
         if (s->export_rays) {
             ExportRec er;
@@ -1322,9 +1323,16 @@ static void sample_source_c(const SceneC *s, int source_index, RayVec *batch,
              (long long)m, (long long)n);
         n = m;
     }
-    double p_ray = src->power_W / (double)n;
+    /* p_ray is normalized by the FULL per-source ray count (s->rays), NOT
+     * the chunk width — every chunk deposits per-ray power_W/rays, so the
+     * accumulators sum across chunks to the same result as one run
+     * (P1 chunked-run contract). importance-aim keeps its per-candidate
+     * power_W/m and always runs the full [0,m) candidate loop. */
+    double p_ray = src->power_W / (double)(s->importance_aim ? n : s->rays);
+    int64_t lo = s->importance_aim ? 0 : s->primary_lo;
+    int64_t hi = s->importance_aim ? n : s->primary_hi;
 
-    for (int64_t i = 0; i < n; i++) {
+    for (int64_t i = lo; i < hi; i++) {
         uint64_t key = rng_primary_key(s->seed, (uint32_t)source_index,
                                        (uint64_t)i);
         kvec3 pos = sample_emit_position(src, key, src->label);

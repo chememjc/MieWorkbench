@@ -92,10 +92,20 @@ int main(int argc, char **argv) {
     trace_run(scene, &result);
 
     /* coherent Huygens gather over the collected detector samples
-     * (no-op for purely incoherent scenes) */
+     * (no-op for purely incoherent scenes). P1 gather_skip: this invocation
+     * is a TRACE-ONLY chunk — serialize the coherent samples instead and let
+     * the Python driver run the single final gather over the merged set. */
     struct timespec g0, g1;
     clock_gettime(CLOCK_MONOTONIC, &g0);
-    int64_t gather_pairs = gather_run(scene);
+    int64_t gather_pairs = 0;
+    if (scene->gather_skip) {
+        det_dump_gkeys(scene);
+        LOGI("gather_skip: dumped coherent samples for the Python driver's "
+             "final gather (primary range [%lld,%lld))",
+             (long long)scene->primary_lo, (long long)scene->primary_hi);
+    } else {
+        gather_pairs = gather_run(scene);
+    }
     clock_gettime(CLOCK_MONOTONIC, &g1);
     double gather_seconds = (double)(g1.tv_sec - g0.tv_sec)
                             + 1e-9 * (double)(g1.tv_nsec - g0.tv_nsec);
@@ -124,11 +134,17 @@ int main(int argc, char **argv) {
             "  \"gather_pairs\": %lld,\n"
             "  \"ray_interactions\": %lld,\n"
             "  \"viz_segments\": %lld,\n"
+            "  \"primary_lo\": %lld,\n"
+            "  \"primary_hi\": %lld,\n"
+            "  \"rays_total\": %lld,\n"
+            "  \"gather_skip\": %s,\n"
             "  \"closure_err_max\": %.6g\n"
             "}\n",
             MIEWB_CENGINE_VERSION, result.trace_seconds, gather_seconds,
             (long long)gather_pairs,
             (long long)result.rays_traced, (long long)result.viz.n,
+            (long long)scene->primary_lo, (long long)scene->primary_hi,
+            (long long)scene->rays, scene->gather_skip ? "true" : "false",
             ledger_closure_max(&result.ledger));
     fclose(f);
 
