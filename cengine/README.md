@@ -23,6 +23,43 @@ the binary, `--engine auto` silently runs everything on the Python engine.
 Binary discovery: `cengine/build/miewb-trace`, overridable with the
 `MIEWB_CENGINE` env var (repo convention).
 
+### NUFFT gather (cuFINUFFT) — optional, experimental, OFF by default
+
+The P1 NUFFT angular-spectrum gather route (`src/gather_nufft.c`) links
+**cuFINUFFT v2.5.1** (Apache-2.0). It is **not vendored** in-repo (a whole
+CUDA library, unlike single-file yyjson): fetch + build it once with
+
+```bash
+cengine/vendor/fetch_finufft.sh          # clones tag v2.5.1, builds .so
+#   needs CMake ≥ 3.24 (cuFINUFFT's floor; the system cmake here is 3.22 —
+#   `CMAKE=/path/to/newer/cmake cengine/vendor/fetch_finufft.sh`, e.g. a
+#   `pip install cmake` binary). Builds a self-contained shared
+#   libcufinufft.so pinned to the CUDA-13 toolkit.
+```
+
+CMake auto-detects `cengine/vendor/finufft` (or a prebuilt root via
+`MIEWB_CUFINUFFT`). It is an **OPTIONAL** dependency — `miewb-trace` builds
+and passes every test **without** it; the route simply compiles out and the
+gather falls through to the tiled/exact kernels.
+
+The route is a THIRD gather path (beside exact fp64 and tile-factorized),
+chosen per coherence key by a runtime gate (logged into `gather.json` as
+`gather_mode` + `nufft_gate`): type-1 cuFINUFFT (samples → uniform k-grid) →
+exact RS-I propagator on the grid → type-2 cuFINUFFT (grid → detector
+pixels). Gate: separating plane > 10 λ, obliquity-separability < 1e-3, k-grid
+fits VRAM − 2 GiB (`cudaMemGetInfo`), NUFFT cost < tiled. `--gather-exact`
+and occlusion veto it.
+
+**It is OFF by default** (opt-in: `--gather-nufft`, request `gather.nufft`).
+Known limitation: the route is band-limited, but the Monte-Carlo Huygens
+samples are ideal POINT emitters with a white spatial spectrum, so band
+truncation gives an irreducible ~few-% Gibbs floor vs the exact per-pair
+kernel (measured — the ctest `nufft_route` documents it). It therefore does
+**not** satisfy the "same physics on every path" contract on point-sample
+gathers, and the gate additionally rejects every wide-angle/near-field real
+scene, so nothing silently takes the inaccurate route. The infrastructure is
+complete for a future band-limited-field application.
+
 ## How it plugs in
 
 ```
