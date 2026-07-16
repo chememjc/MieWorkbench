@@ -2062,7 +2062,8 @@ class MainWindow(QMainWindow):
                 miewb_tool.pack_miewb(
                     self.model_path, self.miewb_path,
                     optprops_dir=self._workspace_optprops(),
-                    simparams=self.config_matrix.values())
+                    simparams=self.config_matrix.values(),
+                    prescription=self._prescription_or_none())
                 miewb_tool.pack_miesim(
                     self.workspace, out, self.miewb_path,
                     model_stem=os.path.splitext(
@@ -2357,7 +2358,8 @@ class MainWindow(QMainWindow):
                             optprops)
         self.library_manager.set_project_root(ws)
         miewb_tool.pack_miewb(model, path, optprops_dir=optprops,
-                              simparams=self.config_matrix.values())
+                              simparams=self.config_matrix.values(),
+                              prescription=self._prescription_or_none())
 
     def open_model(self, path):
         # the outgoing session's ray overlays/selection/results must never
@@ -2398,6 +2400,18 @@ class MainWindow(QMainWindow):
             if os.path.isdir(d):
                 return d
         return os.path.join(REPO, "opticalproperties")
+
+    def _prescription_or_none(self):
+        """The prescription doc to embed when packing a .MieWB (engine3 Sec
+        3, P5), or None. Never raises -- a prescription is an optional,
+        additive member, so any failure just packs a prescription-free
+        workbench exactly as before."""
+        try:
+            if self.project is None:
+                return None
+            return self.project.build_prescription()
+        except Exception:
+            return None
 
     def _open_fcstd(self, path):
         self.workspace = None
@@ -2484,7 +2498,8 @@ class MainWindow(QMainWindow):
                 miewb_tool.pack_miewb(
                     self.model_path, self.miewb_path,
                     optprops_dir=self._workspace_optprops(),
-                    simparams=self.config_matrix.values())
+                    simparams=self.config_matrix.values(),
+                    prescription=self._prescription_or_none())
                 self.statusBar().showMessage(
                     "Saved and repacked %s" % self.miewb_path, 5000)
             else:
@@ -2507,7 +2522,8 @@ class MainWindow(QMainWindow):
                 miewb_tool.pack_miewb(
                     self.model_path, path,
                     optprops_dir=self._workspace_optprops(),
-                    simparams=self.config_matrix.values())
+                    simparams=self.config_matrix.values(),
+                    prescription=self._prescription_or_none())
                 # retarget the session: the existing workspace stays the
                 # live unpacked session; File->Save now repacks into the
                 # new archive
@@ -2559,7 +2575,8 @@ class MainWindow(QMainWindow):
             miewb_tool.pack_miewb(
                 src, wb_path,
                 optprops_dir=self._workspace_optprops(),
-                simparams=self.config_matrix.values())
+                simparams=self.config_matrix.values(),
+                prescription=self._prescription_or_none())
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
             return
@@ -2897,7 +2914,8 @@ class MainWindow(QMainWindow):
             miewb_tool.pack_miewb(
                 self.model_path, self.miewb_path,
                 optprops_dir=self._workspace_optprops(),
-                simparams=values)
+                simparams=values,
+                prescription=self._prescription_or_none())
             self.statusBar().showMessage(
                 "Simulation settings saved into %s" % self.miewb_path,
                 5000)

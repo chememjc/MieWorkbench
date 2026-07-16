@@ -2089,6 +2089,143 @@ def _build_mirror_parabolic(doc, group, p):
     return [body]
 
 
+# ---------------------------------------------------------------------------
+# Prescription emission (engine3.md Sec 3, P5): the SAME dim params that drive
+# the geometry builders above ALSO imply the exact analytic optical surfaces.
+# build_prescription_entry() computes them in BODY-LOCAL SI-metre coordinates
+# (optical axis local +x, front vertex at the origin -- the primitive
+# convention), in the model.json surface language (raytracer.prescription /
+# common._SURFACE_REQ). This is PURE (no FreeCAD) so the GUI, make_primitives
+# and make_demos can all emit prescriptions without a worker, and it is the
+# SINGLE authoring path: editing a dim param regenerates the geometry AND its
+# prescription through this one function.
+#
+# Scope this round -- the clean analytic lens/mirror family:
+#   spheres  (pcx/pcv/dcx/dcv/meniscus caps, ball)  -> emitted-from-prescription
+#   asphere  (lens_asphere front, mirror_parabolic) -> emitted-from-prescription
+#   cylinder (rod/cyl barrel, lens edge rims)        -> verified against the
+#            prescription, kept in native OCC form (already exact, and a
+#            cylinder's origin along its own axis is a free parameter)
+# Flat backs stay with the extractor's native-OCC plane classification (exact,
+# no canonicalization risk) and are not carried in the prescription.
+# ---------------------------------------------------------------------------
+_PRESCRIPTION_KINDS = frozenset((
+    "lens_pcx", "lens_dcx", "lens_pcv", "lens_dcv", "lens_meniscus",
+    "lens_ball", "lens_rod", "lens_cyl", "lens_asphere", "mirror_parabolic",
+))
+
+_MM = 1e-3   # mm -> m
+
+
+def prescription_kinds():
+    """The primitive kinds build_prescription_entry() can emit for."""
+    return set(_PRESCRIPTION_KINDS)
+
+
+def _presc_material(kind):
+    return PRIMITIVES.get(kind, {}).get("props", {}).get("material")
+
+
+def _sph_surface(role, material, cx_m, R_m):
+    return {"role": role, "material": material, "type": "sphere",
+            "center": [cx_m, 0.0, 0.0], "radius": abs(R_m)}
+
+
+def _cyl_surface(role, material, ox_m, r_m, axis):
+    return {"role": role, "material": material, "type": "cylinder",
+            "origin": [ox_m, 0.0, 0.0], "axis": list(axis),
+            "radius": abs(r_m)}
+
+
+def _asph_surface(role, material, R_m, k, coeffs_si, r_max_m):
+    return {"role": role, "material": material, "type": "asphere",
+            "vertex": [0.0, 0.0, 0.0], "axis": [1.0, 0.0, 0.0],
+            "R": R_m, "k": float(k), "coeffs": list(coeffs_si),
+            "r_max": r_max_m}
+
+
+def _asphere_coeff_si(order, a_mm):
+    """A_n (mm^(1-n) coefficient of the r^n sag term, r/sag in mm) -> SI
+    (m^(1-n)): A_n_SI = A_n_mm * 1000^(n-1). Mirrors extract_geometry's
+    build_asphere_surface coeff conversion exactly."""
+    return a_mm * (1000.0 ** (order - 1))
+
+
+def build_prescription_entry(kind, params_mm, key=None):
+    """Pure: dim-sheet params (FreeCAD internal units: mm / deg) -> a
+    prescription entry {kind, params (SI), surfaces (LOCAL SI)} for the
+    covered lens/mirror family, or None for any other kind. `key` is unused
+    here (the caller keys the element in the document); accepted so callers
+    can pass it uniformly."""
+    if kind not in _PRESCRIPTION_KINDS:
+        return None
+    p = params_mm
+    mat = _presc_material(kind)
+    surfaces = []
+    si_params = {}
+
+    if kind in ("lens_pcx", "lens_dcx", "lens_pcv", "lens_dcv",
+                "lens_meniscus"):
+        R1_mm, R2_mm = PRIMITIVES[kind]["meridian"](p)
+        ct_m = p["ct"] * _MM
+        sa_m = (p["aperture"] / 2.0) * _MM
+        si_params = {"ct": ct_m, "aperture": p["aperture"] * _MM}
+        if R1_mm is not None:
+            si_params["R_front"] = R1_mm * _MM
+            surfaces.append(_sph_surface("front", mat, R1_mm * _MM, R1_mm * _MM))
+        if R2_mm is not None:
+            si_params["R_back"] = R2_mm * _MM
+            surfaces.append(_sph_surface(
+                "back", mat, (p["ct"] + R2_mm) * _MM, R2_mm * _MM))
+        surfaces.append(_cyl_surface("edge", mat, 0.0, sa_m, [1.0, 0.0, 0.0]))
+
+    elif kind == "lens_ball":
+        R_m = (p["diameter"] / 2.0) * _MM
+        si_params = {"diameter": p["diameter"] * _MM}
+        surfaces.append(_sph_surface("sphere", mat, R_m, R_m))
+
+    elif kind == "lens_rod":
+        R_m = (p["diameter"] / 2.0) * _MM
+        si_params = {"diameter": p["diameter"] * _MM, "length": p["length"] * _MM}
+        # barrel: revolved about local +z, centre-of-section at x = R
+        surfaces.append(_cyl_surface("barrel", mat, R_m, R_m, [0.0, 0.0, 1.0]))
+
+    elif kind == "lens_cyl":
+        R_mm = p["R"]      # signed: <0 concave
+        R_m = R_mm * _MM
+        si_params = {"R": R_m, "ct": p["ct"] * _MM,
+                     "aperture": p["aperture"] * _MM, "height": p["height"] * _MM}
+        # cylinder axis || local +z; axis-line at x = R (like a sphere centre)
+        surfaces.append(_cyl_surface("front", mat, R_m, R_m, [0.0, 0.0, 1.0]))
+
+    elif kind == "lens_asphere":
+        R_m = p["R"] * _MM
+        sa_m = (p["aperture"] / 2.0) * _MM
+        a4 = p.get("A4_mm3", 0.0)
+        coeffs = [_asphere_coeff_si(4, a4)] if a4 else []
+        si_params = {"R": R_m, "k": float(p["k"]), "ct": p["ct"] * _MM,
+                     "aperture": p["aperture"] * _MM}
+        if a4:
+            si_params["A4"] = _asphere_coeff_si(4, a4)
+        surfaces.append(_asph_surface("front", mat, R_m, p["k"], coeffs, sa_m))
+        surfaces.append(_cyl_surface("edge", mat, 0.0, sa_m, [1.0, 0.0, 0.0]))
+
+    elif kind == "mirror_parabolic":
+        # builder DECLARES the positive R = 2*rfl (the extractor's asphere
+        # verifier flips its own local axis to match the concave geometry),
+        # k = -1 always (a true parabola). Match that declaration here.
+        R_decl_m = (2.0 * p["rfl"]) * _MM
+        sa_m = (p["aperture"] / 2.0) * _MM
+        si_params = {"rfl": p["rfl"] * _MM, "aperture": p["aperture"] * _MM,
+                     "thickness": p["thickness"] * _MM}
+        surfaces.append(_asph_surface("front", mat, R_decl_m, -1.0, [], sa_m))
+        surfaces.append(_cyl_surface("edge", mat, 0.0, sa_m, [1.0, 0.0, 0.0]))
+
+    if not surfaces:
+        return None
+    return {"kind": kind, "params": si_params, "surfaces": surfaces}
+
+
 def _lens_builder(kind):
     meridian = PRIMITIVES[kind]["meridian"]
     return lambda doc, group, p: _simple_lens(doc, group, p, meridian(p))
