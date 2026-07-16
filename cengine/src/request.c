@@ -468,6 +468,9 @@ SceneC *request_load(const char *path) {
         v = yyjson_obj_get(par, "track_history");
         s->track_history = (uint8_t)(v && yyjson_is_bool(v)
                                      && yyjson_get_bool(v));
+        v = yyjson_obj_get(par, "track_time");
+        s->track_time = (uint8_t)(v && yyjson_is_bool(v)
+                                  && yyjson_get_bool(v));
         v = yyjson_obj_get(par, "importance_aim");
         s->importance_aim = (uint8_t)(v && yyjson_is_bool(v)
                                       && yyjson_get_bool(v));

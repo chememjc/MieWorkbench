@@ -54,12 +54,13 @@ PYTHON_ONLY = frozenset({
     "temperature",                      # thermo-optic dn/dT
     "rough_fresnel_macro",              # legacy nominal-angle rough model
     "scatter_g_ne_2", "scatter_btdf", "scatter_importance",
+    "grating_table_v2",                 # P6 RCWA v2 complex-amplitude tables
     "coating_phase",                    # phase-carrying table coating (P2)
     "extra_detector_faces", "curved_detector",
     "particles_explicit",               # explicit realization (continuum ported)
     "ray_differentials",
     "pol_transport",                    # P2 parallel-transport Q/J bookkeeping
-    "time_products", "gdd_budget",      # P4/P5 time domain
+    "time_products",                    # P4 time domain (P7 tranche 2)
 })
 
 

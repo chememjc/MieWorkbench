@@ -46,6 +46,11 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
     { "export_rays",    "diagnostic" },
     { "ghost_analysis", "diagnostic" },
     { "viz_pattern",    "glue" },
+    /* pulsed-optics P7 tranche 1: per-body power-weighted bulk-path tally
+     * (the GDD-budget input). The trace accumulates ledger.path_tally under
+     * track_time; ALL dispersion resolution stays Python-side in
+     * build_gdd_budget. Diagnostic — no dispatch entry. */
+    { "gdd_budget",     "diagnostic" },
     /* structural body properties folded into the optic-default handler's
      * unified Fresnel/mirror/absorbance core (not emitted as gate tokens by
      * detect_features; listed so --tokens documents that the C engine owns

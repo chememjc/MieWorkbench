@@ -306,6 +306,11 @@ typedef struct SceneC {
                                  * gather_nufft.c / cengine/README.md */
     uint8_t export_rays;        /* --export-rays (this seed) */
     uint8_t track_history;      /* --ghost-analysis (this seed) */
+    uint8_t track_time;         /* pulsed-optics time tracking (P7): gopl/
+                                 * gdd group-delay accumulators + the per-body
+                                 * power-weighted bulk-path tally (GDD budget).
+                                 * Set when time_products OR --gdd-budget is
+                                 * active (params.track_time). */
     uint8_t importance_aim;     /* --importance-aim (opt-in) */
 
     int max_strata;             /* max n_strata over sources (tally dims) */

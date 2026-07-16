@@ -59,6 +59,10 @@ PORTED = frozenset({
     "ghost_analysis",           # phase H (refl_hist face-id history)
     "viz_pattern",              # phase H (glue-level: Python viz-only
                                 #   pass supplies the overlay rays)
+    "gdd_budget",               # P7 tranche 1: per-body power-weighted bulk
+                                #   path tallied in C; ALL dispersion (group
+                                #   index / GDD / TOD) resolved Python-side
+                                #   in build_gdd_budget (untouched)
     # NOTE: "surface:qforbes" (raytracer.surfaces.QForbes, the ISO 10110-12
     # Forbes Q-type asphere -- engine3.md Sec 7.6) is DELIBERATELY absent.
     # detect_features()'s per-face loop below emits it automatically
@@ -400,6 +404,18 @@ def _emit_dir_policy(face):
             "flip_all": flip_all}
 
 
+def _track_time_active(args, scene):
+    """True when this case tracks pulsed-optics time-domain quantities —
+    time products (explicit --time-products OR the pulsed-source auto-enable,
+    both folded by resolve_time_products) OR an explicit --gdd-budget. The
+    single authority both the request builder and detect_features consult so
+    routing and the C trace flag can never disagree (mirrors run_trace's
+    track_time = bool(time_products) or args.gdd_budget)."""
+    from .detector import resolve_time_products
+    return bool(resolve_time_products(args, scene)) or \
+        bool(getattr(args, "gdd_budget", False))
+
+
 def build_request(args, scene, seed, lam_range, grids, out_dir,
                   export_this_seed=False, track_this_seed=False,
                   primary_lo=0, primary_hi=None, gather_skip=False,
@@ -701,6 +717,14 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
             "importance_aim": bool(getattr(args, "importance_aim",
                                            False)),
             "track_history": bool(track_this_seed),
+            # pulsed-optics P7: group-delay accumulators + the per-body
+            # power-weighted bulk-path tally (the GDD-budget input). Active
+            # whenever the case runs time products OR --gdd-budget, on EVERY
+            # chunk/seed (path_tally is a linear tally; the merge sums it and
+            # build_gdd_budget consumes seed 0). resolve_time_products folds
+            # in both the explicit flag and the pulsed-source auto-enable, so
+            # this can never disagree with run_trace's activation.
+            "track_time": bool(_track_time_active(args, scene)),
             "linear_scan": bool(os.environ.get("MIEWB_CENGINE_LINEAR")
                                 == "1"),
         },
@@ -1161,6 +1185,12 @@ def _merge_ledger(reports):
     closure_error is recomputed from the summed emitted/buckets."""
     out = {"sources": {}, "by_surface_W": {}, "by_body_W": {},
            "element_flux_W": {}, "detected_W": {}, "closure_gate": 1e-3}
+    # pulsed-optics P7: the per-body bulk-path tally rides along as a plain
+    # label->W*m numeric dict (present only under time tracking). It is a
+    # linear tally, so it sums (scaled) exactly like by_body_W.
+    has_path = any("path_tally_Wm" in rep for rep, _ in reports)
+    if has_path:
+        out["path_tally_Wm"] = {}
     for rep, scale in reports:
         for label, sd in rep.get("sources", {}).items():
             dst = out["sources"].setdefault(label, {})
@@ -1168,7 +1198,10 @@ def _merge_ledger(reports):
                 if k == "closure_error":
                     continue
                 dst[k] = dst.get(k, 0.0) + float(v) * scale
-        for sect in ("by_surface_W", "by_body_W", "detected_W"):
+        sects = ["by_surface_W", "by_body_W", "detected_W"]
+        if has_path:
+            sects.append("path_tally_Wm")
+        for sect in sects:
             for label, v in rep.get(sect, {}).items():
                 out[sect][label] = out[sect].get(label, 0.0) \
                     + float(v) * scale
@@ -1188,6 +1221,44 @@ def _merge_ledger(reports):
             all_ok = False
     out["closure_ok"] = all_ok
     return out
+
+
+class _LedgerShim:
+    """Just enough of audit.PowerLedger for run_trace.build_gdd_budget:
+    .emitted (array by source index) and .flux (label -> {in_W}). Built from
+    a merged C ledger.json report."""
+    def __init__(self, emitted, flux):
+        self.emitted = emitted
+        self.flux = flux
+
+
+class _ResultShim:
+    """Just enough of tracer.TraceResult for build_gdd_budget: .path_tally
+    and .ledger."""
+    def __init__(self, path_tally, ledger):
+        self.path_tally = path_tally
+        self.ledger = ledger
+
+
+def _gdd_budget_from_report(scene, merged_rep):
+    """Build case.json's 'gdd_budget' block from a merged C ledger report,
+    reusing run_trace.build_gdd_budget UNCHANGED — ALL dispersion resolution
+    (group index / GDD / TOD, the finite-difference stencil) stays in Python
+    exactly as the Python engine computes it. The C engine supplies only the
+    geometric per-body power-weighted bulk path (path_tally_Wm). Returns None
+    when nothing was tallied (matches the Python None case)."""
+    from run_trace import build_gdd_budget
+    path_tally = {k: float(v)
+                  for k, v in merged_rep.get("path_tally_Wm", {}).items()}
+    if not path_tally:
+        return None
+    flux = merged_rep.get("element_flux_W", {})
+    srcs = merged_rep.get("sources", {})
+    emitted = np.array(
+        [float(srcs.get(scene.bodies[bidx].label, {}).get("emitted_W", 0.0))
+         for bidx, _ in scene.sources], dtype=np.float64)
+    result = _ResultShim(path_tally, _LedgerShim(emitted, flux))
+    return build_gdd_budget(scene, result)
 
 
 def _load_checkpoint(ckpt_path):
@@ -1498,7 +1569,15 @@ def run_c_case(args, case_dir, scene, lam_range, case):
                         key=lambda c: c["lo"]):
             rep = json.loads((cdir / c["dir"] / "ledger.json").read_text())
             reps.append((rep, float(c["rays_denom"]) / target))
-        audits.append(_merge_ledger(reps))
+        merged_rep = _merge_ledger(reps)
+        audits.append(merged_rep)
+        # pulsed-optics P7 GDD budget: built from seed 0's per-body bulk-path
+        # tally (Python run_trace does the same, seed 0 only). All dispersion
+        # math is Python-side (build_gdd_budget); C supplied only path_tally.
+        if seed == args.seed0 and _track_time_active(args, scene):
+            budget = _gdd_budget_from_report(scene, merged_rep)
+            if budget is not None:
+                case["gdd_budget"] = budget
         # viz overlay: the lo==0 chunk of the first seed holds the first
         # viz_cap primaries (identical to a single run's viz prefix)
         if seed == args.seed0:

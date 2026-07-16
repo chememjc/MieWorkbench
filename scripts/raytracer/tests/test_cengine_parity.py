@@ -489,3 +489,57 @@ def test_routing_reasons(tmp_path):
     r = run_engine(model_json, case, "auto")
     assert r["case"]["engine"] == "c"
     assert "ported" in r["case"]["engine_reason"]
+
+
+# ---------------------------------------------------------------------------
+# P7 tranche 1: pulsed-optics time domain
+# ---------------------------------------------------------------------------
+def _run_time(model_json, case_dir, engine, extra):
+    """run_trace over a scene with the P7 time-domain flags. extra is the
+    extra CLI list (--gdd-budget and/or --time-products ...)."""
+    import run_trace
+    argv = [
+        "--model-json", str(model_json),
+        "--case-dir", str(case_dir),
+        "--rays", str(RAYS),
+        "--resolution", "64",
+        "--nlambda", str(NLAMBDA),
+        "--spectral-bins", "8",
+        "--engine", engine,
+        "--workers", "1",
+        "--seeds", "1",
+    ] + list(extra)
+    rc = run_trace.main(argv)
+    assert rc == 0, "run_trace --engine %s exited %s" % (engine, rc)
+    return json.loads((case_dir / "case.json").read_text())
+
+
+def test_gdd_budget_parity(tmp_path):
+    """P7 tranche 1 (gdd_budget): the C engine tallies the per-body
+    power-weighted bulk path; build_gdd_budget resolves the dispersion in
+    Python UNCHANGED. On a CW glass slab (deterministic normal incidence)
+    the C case.json gdd_budget block must match the Python one — path lengths
+    to ~1e-9, and every DISPERSION quantity (n_g / gd / gdd / tod) BIT-exact
+    since both engines call the identical Python material stencil."""
+    model_json = cengine_scenes.write_scene("c_plate", tmp_path / "geometry")
+    py = _run_time(model_json, tmp_path / "case_py", "python", ["--gdd-budget"])
+    cc = _run_time(model_json, tmp_path / "case_c", "c", ["--gdd-budget"])
+    assert py["engine"] == "python"
+    assert cc["engine"] == "c", cc.get("engine_reason")
+    pb, cb = py.get("gdd_budget"), cc.get("gdd_budget")
+    assert pb is not None and cb is not None, (pb, cb)
+    assert pb["reference_source"] == cb["reference_source"]
+    rel_close(pb["lambda_ref_nm"], cb["lambda_ref_nm"], 1e-12, "lambda_ref")
+    assert [r["label"] for r in pb["rows"]] == [r["label"] for r in cb["rows"]]
+    for pr, cr in zip(pb["rows"], cb["rows"]):
+        assert pr["material"] == cr["material"]
+        # geometric path: statistical (different RNG realizations), 1e-9 bar
+        rel_close(pr["L_bar_mm"], cr["L_bar_mm"], 1e-9,
+                  "%s L_bar_mm" % pr["label"])
+        # dispersion quantities: n_g is BIT-identical (Python stencil on the
+        # same reference wavelength); gd/gdd/tod inherit L_bar's tiny drift
+        rel_close(pr["n_g"], cr["n_g"], 1e-14, "%s n_g" % pr["label"])
+        for k in ("gd_fs", "gdd_fs2", "tod_fs3"):
+            rel_close(pr[k], cr[k], 1e-9, "%s %s" % (pr["label"], k))
+    for k in ("gd_fs", "gdd_fs2", "tod_fs3"):
+        rel_close(pb["total"][k], cb["total"][k], 1e-9, "total %s" % k)

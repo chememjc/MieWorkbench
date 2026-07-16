@@ -49,6 +49,12 @@ typedef struct {
     double *flux_in, *flux_out; /* [n_bodies] element boundary tallies */
     double *detected;           /* [n_dets] detected_W */
     double by_particles;        /* by_body_W["particles"] diagnostic */
+    /* pulsed-optics P7 (track_time only): per-body power-weighted bulk path
+     * Sum(surviving_power * segment) [W*m], the GDD-budget mean-path input
+     * (tracer.py:466-468 path_tally). Linear tally: merges by sum, weighted
+     * by post-bulk-absorption power so a mirror's nm evanescent skin does
+     * not book a spurious long metal path. */
+    double *path_tally;         /* [n_bodies]; NULL unless track_time */
 } LedgerC;
 
 void ledger_init(LedgerC *l, const SceneC *s);

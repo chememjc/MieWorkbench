@@ -1419,6 +1419,15 @@ static void homogeneous_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
     }
     double n_phase = (r->n_eff > 0.0) ? r->n_eff : n_med.re;
     r->opl += n_phase * seg;
+
+    /* pulsed-optics P7 time-domain accumulators (track_time only; STRICTLY
+     * additive — no opl/Es/Ep/ledger-bucket/RNG side effects, tracer.py:
+     * 438-471). The per-body power-weighted bulk path uses the SURVIVING
+     * power (ray_power AFTER the bulk-absorption scaling above), so a
+     * transparent-transmitted fraction dying in a metal skin books no
+     * spurious long metal path (tracer.py:456-465). */
+    if (s->track_time && med >= 0)
+        cx->ledger.path_tally[med] += ray_power(r) * seg;
 }
 
 /* particles continuum — a registered VOLUME propagator (REGISTRY.md §3
