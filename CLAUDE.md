@@ -23,7 +23,8 @@ Layout: `scripts/` engine + pipeline + tools · `scripts/fcserver/` headless
 FreeCAD worker · `mieworkbench/` the GUI package (`core/` logic, `panes/`
 dock widgets, `widgets/` VTK, `tests/`) · `opticalproperties/` property
 library · `primitives/` parametric element library · `basemodels/` test
-scenes · `demos/` eleven classic-system `.MieWB` galleries (built by
+scenes · `demos/` 34 classic-system `.MieWB` galleries — benchmark set is
+11 scenes, 15 designs have committed baselines — (built by
 `scripts/make_demos.py` through the Project/chain op path; `demos/README.md`
 has prescriptions+citations, `demos/UXNOTES.md` + `demos/UXNOTES_ROUND2.md`
 the shakedown logs; `demos/baselines/` committed placement+power oracles
@@ -420,9 +421,11 @@ never behaviorally modified). Build: `cd cengine && ./build.sh` (gcc,
 cmake, ninja; CUDA 13 at /usr/local/cuda-13 — the system nvcc is 11.5,
 CMake pins the right one). Binary override: `MIEWB_CENGINE`. Parity:
 `test_cengine_parity.py` (side-by-side scenes, root fuzz, TLAS==linear,
-thread invariance). RNG is lineage-keyed Philox (bit-identical across
-thread counts; NOT numpy streams — parity bar is 1e-12 deterministic /
-3-seed statistical). Engine+reason recorded in case.json; C failures
+thread invariance). RNG is lineage-keyed Philox, C-engine-only
+(bit-identical across thread counts); the Python engine uses numpy
+default_rng and agrees statistically only — parity bar is 1e-9
+deterministic / 2% statistical, single-seed (1e-12 on emitted_W only).
+Engine+reason recorded in case.json; C failures
 fall back to Python under auto. `--workers` is Python-only (C threads
 internally). Benchmarks: `cengine/BENCHMARKS.md`;
 docs: `docs/RAYTRACER.md` §13, `cengine/README.md` (incl. torch-gather

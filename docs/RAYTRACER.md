@@ -2482,11 +2482,12 @@ biaxial crystals, explicit-realization particles, beam/apodization
 sources, `--ray-differentials`, curved detectors, extra CLI detector
 faces, `rough_fresnel=macro`, ABg g != 2.
 
-Determinism: the C engine's RNG is counter-based Philox4x32-10 keyed by
-ray lineage — results are bit-identical across thread counts. It does
-NOT reproduce numpy's streams; parity is deterministic (~1e-12) for
-non-random physics and statistical (3-seed +-max(3sigma,1%)) for MC
-aggregates, the same bar the demo-equivalence gate uses.
+Determinism: the C engine's RNG is counter-based Philox4x32-10 (C-engine-only) keyed by
+ray lineage — results are bit-identical across thread counts; the Python engine uses
+numpy default_rng and agrees statistically only. It does
+NOT reproduce numpy's streams; parity is deterministic (1e-9) for
+non-random physics and statistical (2%) for MC
+aggregates, single-seed; 1e-12 applies to emitted_W only. This is the same bar the demo-equivalence gate uses.
 
 Performance: see `cengine/BENCHMARKS.md` (committed table). Headlines at
 production settings: trace-bound scenes ~13x per stage; gather-bound

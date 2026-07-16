@@ -15,8 +15,8 @@
  *     interaction use consecutive `draw` indices.
  *
  *   It intentionally does NOT reproduce numpy's PCG64 streams — the agreed
- *   parity bar is deterministic (1e-12) for non-random physics and
- *   statistical (3-seed +-max(3sigma,1%)) for Monte-Carlo aggregates.
+ *   parity bar is deterministic (1e-9) for non-random physics and
+ *   statistical (2%) for Monte-Carlo aggregates, single-seed; 1e-12 applies to emitted_W only.
  *
  * Philox4x32-10 reference: Salmon et al., "Parallel random numbers: as easy
  * as 1, 2, 3" (SC'11). Constants below are the canonical ones (identical to
