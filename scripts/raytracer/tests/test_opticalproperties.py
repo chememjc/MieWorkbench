@@ -441,7 +441,8 @@ def test_library_expansion_counts(shipped_props):
     # scripts/tools/import_agf.py appended the Schott+Ohara Zemax AGF glass
     # catalogs (679 new rows; see library_data/agf/README.md).
     assert len(shipped_props.matdb) == 847
-    assert len(shipped_props.coatings) == 38
+    # P2: +1 for bs_5050_vis_45_ph (phase-carrying table-coating demo row)
+    assert len(shipped_props.coatings) == 39
     assert len(shipped_props.filters) == 56
     assert len(shipped_props.polarizers) == 17
     assert len(shipped_props.gratings) == 8

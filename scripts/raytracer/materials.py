@@ -753,20 +753,52 @@ def _parse_layers_field(layers_raw, ctx):
     return layers
 
 
+# P2: optional per-row phase columns on a table coating, Zemax TABLE
+# coating convention -- reflection/transmission phase ANGLE IN DEGREES,
+# s/p separately (Ars/Arp/Ats/Atp there; lower-cased + '_deg' suffixed
+# here). All four or none: a table with SOME phase columns is almost
+# always a typo/partial paste, and a half-specified phase model is worse
+# than none (silently mixes measured phase with the bare-Fresnel
+# fallback) -- see _load_coating_table's all-or-none check below.
+_PHASE_COLS = ("ars_deg", "arp_deg", "ats_deg", "atp_deg")
+
+
 def _load_coating_table(path, ctx):
-    """coating/tables/<name>.csv: wavelength_nm,Rs,Rp,Ts,Tp (fractions).
-    Hard-validated: strictly increasing lambda, all in [0,1], Rs+Ts<=1 and
-    Rp+Tp<=1 per row (remainder = absorption)."""
+    """coating/tables/<name>.csv: wavelength_nm,Rs,Rp,Ts,Tp (fractions),
+    plus OPTIONAL phase columns ars_deg,arp_deg,ats_deg,atp_deg (Zemax
+    TABLE-coating convention: s/p reflection+transmission phase angle in
+    DEGREES at each row). Phase from amplitude alone is provably
+    impossible in general (Blaschke factors) -- tables without phase
+    columns get phase_valid=False and the tracer falls back to borrowing
+    the bare-interface Fresnel phase (documented approximation); tables
+    WITH all four columns get phase_valid=True and the tracer uses the
+    measured/derived phase directly.
+    Hard-validated: strictly increasing lambda, all Rs/Rp/Ts/Tp in [0,1],
+    Rs+Ts<=1 and Rp+Tp<=1 per row (remainder = absorption); phase columns
+    are all-or-none."""
     path = Path(path)
     if not path.exists():
         raise MaterialError("%s: coating table not found: %s" % (ctx, path))
-    cols = {"wavelength_nm": [], "Rs": [], "Rp": [], "Ts": [], "Tp": []}
+    required = ("wavelength_nm", "Rs", "Rp", "Ts", "Tp")
     with open(path, newline="") as fh:
         reader = csv.DictReader(fh)
-        missing = set(cols) - set(reader.fieldnames or [])
+        fieldnames = set(reader.fieldnames or [])
+        missing = set(required) - fieldnames
         if missing:
             raise MaterialError("%s: coating table %s missing column(s) %s"
                                 % (ctx, path, sorted(missing)))
+        present_phase = [c for c in _PHASE_COLS if c in fieldnames]
+        has_phase = len(present_phase) == len(_PHASE_COLS)
+        if present_phase and not has_phase:
+            raise MaterialError(
+                "%s: coating table %s has partial phase columns %s -- "
+                "%s must be present together or not at all"
+                % (ctx, path, sorted(present_phase),
+                   ", ".join(_PHASE_COLS)))
+        cols = {k: [] for k in required}
+        if has_phase:
+            for k in _PHASE_COLS:
+                cols[k] = []
         for j, r in enumerate(reader):
             try:
                 for key in cols:
@@ -781,7 +813,7 @@ def _load_coating_table(path, ctx):
     if np.any(np.diff(lam_um) <= 0):
         raise MaterialError("%s: coating table %s wavelength_nm not strictly "
                             "increasing" % (ctx, path))
-    out = {"lam_um": lam_um}
+    out = {"lam_um": lam_um, "phase_valid": has_phase}
     for key in ("Rs", "Rp", "Ts", "Tp"):
         arr = np.asarray(cols[key], dtype=np.float64)
         if np.any((arr < 0) | (arr > 1)):
@@ -793,6 +825,9 @@ def _load_coating_table(path, ctx):
         raise MaterialError(
             "%s: coating table %s violates R+T<=1 (per polarization) — "
             "energy would not close" % (ctx, path))
+    if has_phase:
+        for key in _PHASE_COLS:
+            out[key] = np.asarray(cols[key], dtype=np.float64)
     return out
 
 
@@ -854,10 +889,16 @@ def load_coatings(csv_path=None, db=None):
           n(lambda0) applies at trace time (thinfilm.resolve_coating_layers
           consumes exactly this shape);
       {"kind": "table", "lam_um": arr, "Rs": arr, "Rp": arr, "Ts": arr,
-       "Tp": arr, "aoi_deg": float, "reference": str}
+       "Tp": arr, "aoi_deg": float, "reference": str, "phase_valid": bool,
+       # present only when phase_valid:
+       "ars_deg": arr, "arp_deg": arr, "ats_deg": arr, "atp_deg": arr}
           measured/tabulated coating (hot/cold mirrors, PBS interfaces,
-          dichroics) -- amplitudes carry the bare-interface Fresnel phase
-          at trace time (documented approximation, README §6).
+          dichroics). phase_valid=False (no ars/arp/ats/atp_deg columns
+          in the table csv): amplitudes carry the bare-interface Fresnel
+          phase at trace time (documented approximation, README §6).
+          phase_valid=True (all four phase columns present, Zemax TABLE
+          coating convention): the tracer uses the table's own s/p
+          reflection/transmission phase instead.
     Every TMM layer's material is hard-validated against `db`.
     """
     csv_path = Path(csv_path) if csv_path is not None else DEFAULT_COATINGS_CSV

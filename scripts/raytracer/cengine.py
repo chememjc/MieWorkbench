@@ -148,6 +148,18 @@ def detect_features(args, scene):
                 feats.add("scatter_g_ne_2")
     if scene.face_coatings:
         feats.add("coating")
+        # P2: a phase-carrying table coating (materials.py phase_valid)
+        # changes the emitted amplitude's phase, not just its magnitude --
+        # the C engine's table-coating path (still the phase-invalid
+        # bare-Fresnel-phase borrow) would silently give a DIFFERENT
+        # (wrong) coherent answer than Python for the same scene. Force
+        # Python routing until the C side implements it (not this round's
+        # scope) -- same "every feature emits its token" rule that the P8
+        # NLO incident above enforces (a ported-looking scene silently
+        # skipping unported physics).
+        if any(scene.coatings[cname].get("phase_valid")
+               for cname in set(scene.face_coatings.values())):
+            feats.add("coating_phase")
     if scene.extra_detector_faces:
         feats.add("extra_detector_faces")
     for fid in scene.detector_faces:

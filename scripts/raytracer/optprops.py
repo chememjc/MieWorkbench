@@ -71,6 +71,26 @@ def interp_hard(lam_um, lam_tab, val_tab, ctx):
     return np.interp(lam_um, lam_tab, val_tab)
 
 
+def interp_phase_deg(lam_um, lam_tab, phase_deg_tab, ctx):
+    """Interpolate a table of phase angles (degrees) at lam_um, returning
+    radians (matches np.angle()'s convention, so callers can feed the
+    result straight into np.exp(1j * ...)).
+
+    Phase angles CANNOT be linearly interpolated as raw numbers across a
+    +-180 deg branch cut (two adjacent rows of e.g. +178 deg and -178 deg
+    are 4 deg apart physically but ~356 deg apart numerically). Instead
+    this interpolates the complex UNIT vector (cos + i sin) of each row's
+    angle component-wise via interp_hard, then takes the angle of the
+    result -- exact for a smoothly-varying physical phase curve, branch
+    cut or not (P2 coating-phase columns; materials.py's table-coating
+    loader documents the matching all-or-none ars/arp/ats/atp_deg
+    columns)."""
+    rad = np.deg2rad(np.asarray(phase_deg_tab, dtype=np.float64))
+    re = interp_hard(lam_um, lam_tab, np.cos(rad), ctx)
+    im = interp_hard(lam_um, lam_tab, np.sin(rad), ctx)
+    return np.arctan2(im, re)
+
+
 def _read_registry(csv_path, required_cols, what):
     csv_path = resolve_prop_path(Path(csv_path))
     if not csv_path.exists():

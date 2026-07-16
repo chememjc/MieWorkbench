@@ -919,6 +919,25 @@ def _main_locked(args, case_dir):
               "the fields/ groups will be empty and no Stokes/PSF/MTF "
               "products will render — set coherent=true on a source if "
               "you want field maps", file=sys.stderr)
+    if n_coh > 0:
+        # P2: table coatings without ars/arp/ats/atp_deg columns borrow
+        # the bare-interface Fresnel phase (materials.py phase_valid) --
+        # fine for incoherent power, silently approximate for coherent
+        # interference. Headless-CLI mirror of mieworkbench.core.
+        # validation.check_coating_phase (GUI pre-run check).
+        no_phase_coatings = sorted({
+            cname for cname in set(scene.face_coatings.values())
+            if scene.coatings.get(cname, {}).get("kind") == "table"
+            and not scene.coatings.get(cname, {}).get("phase_valid")})
+        if no_phase_coatings:
+            print("[trace] WARNING: coherent source(s) present with "
+                  "phase-invalid table coating(s) %s: interference "
+                  "through %s coating uses bare-interface phase — supply "
+                  "Ars/Arp/Ats/Atp columns or a TMM stack for "
+                  "phase-accurate results"
+                  % (", ".join(repr(c) for c in no_phase_coatings),
+                     "this" if len(no_phase_coatings) == 1 else "these"),
+                  file=sys.stderr)
     # ---- engine routing decision (hoisted above the estimate so the
     # estimate bills against the engine that will actually run — the C
     # gather/trace rates differ from the torch/numpy ones by ~6x/8x) ----
