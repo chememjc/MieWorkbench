@@ -62,6 +62,12 @@ typedef struct InteractionDef {
      * through the ledger. Owns its complete energy bookkeeping. */
     void (*apply)(const SceneC *s, ThreadCtx *cx, const Ray *ray,
                   const HitInfo *hit);
+    /* Seam stub (REGISTRY.md §3 tail): registered so the seam is named +
+     * its oracle recorded, but it has NO physics yet — match() can never
+     * fire and the token is treated as UNAVAILABLE (absent from --tokens /
+     * registry_supported_token, so a scene demanding it hard-errors / routes
+     * to Python). 0 for every real handler. */
+    int stub;
 } InteractionDef;
 
 /* Volume propagator (REGISTRY.md §1.2). */
@@ -71,6 +77,8 @@ typedef struct PropagatorDef {
     /* advance the ray by the segment to t_hit: position stays with the
      * caller, fp64 OPL and bulk absorption (ledger) are the propagator's. */
     void (*advance)(const SceneC *s, ThreadCtx *cx, Ray *ray, double t_hit);
+    /* Seam stub — see InteractionDef.stub. 0 for real propagators. */
+    int stub;
 } PropagatorDef;
 
 /* Composed surface effect (REGISTRY.md §3 steps 4-7): coating, polarizer,

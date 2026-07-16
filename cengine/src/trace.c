@@ -109,7 +109,17 @@ static void push_child(const SceneC *s, ThreadCtx *cx, const Ray *child) {
 }
 
 /* medium stack ops — port of rays.py push_medium/pop_medium including the
- * hard errors (overlapping-solids diagnostics must not be lost in C) */
+ * hard errors (overlapping-solids diagnostics must not be lost in C).
+ *
+ * MEDIUM-STACK DISCIPLINE (REGISTRY.md §3 step 9): the LIFO medium stack is
+ * mutated ONLY by the surface interaction handlers, at the exact refract /
+ * transmit events — optic_children's transmitted child (push on entry / pop
+ * on exit), grating_children's transmitted orders, and biref_children's o/e
+ * transmit + exit. The VOLUME PROPAGATORS (homogeneous, particles) never
+ * push or pop: they only READ the current medium (ray_current_medium) to
+ * pick n / alpha for the segment. This split is deliberate and unchanged by
+ * the registry port — the propagator seam is a pure segment operator over a
+ * medium the surface handlers own. Do not move push/pop into a propagator. */
 static void push_medium(Ray *r, int16_t body_index, const SceneC *s,
                         const char *face_id) {
     if (r->depth >= MEDIUM_STACK_DEPTH)
@@ -1327,13 +1337,38 @@ static int m_optic_default(const SceneC *s, int32_t fid) {
            && f->grating < 0 && !s->bodies[f->body].birefringent;
 }
 
+/* seam-stub predicates/handlers (REGISTRY.md §3 tail): registered so the
+ * seam is named and its validation oracle recorded, but with NO physics —
+ * the match can never fire and the token is flagged `stub` (unavailable in
+ * --tokens / registry_supported_token). A scene demanding one hard-errors at
+ * load and routes to Python. stub_apply/stub_advance are never reached. */
+static int m_never(const SceneC *s, int32_t fid) { (void)s; (void)fid; return 0; }
+static int m_never_med(const SceneC *s, const Ray *r) {
+    (void)s; (void)r; return 0;
+}
+static void stub_apply(const SceneC *s, ThreadCtx *cx, const Ray *r,
+                       const HitInfo *h) {
+    (void)s; (void)cx; (void)r; (void)h;
+    die(EXIT_PHYSICS, "registry: seam-stub interaction handler invoked — its "
+        "match predicate should never fire (no physics implemented)");
+}
+static void stub_advance(const SceneC *s, ThreadCtx *cx, Ray *r, double seg) {
+    (void)s; (void)cx; (void)r; (void)seg;
+    die(EXIT_PHYSICS, "registry: seam-stub propagator invoked — its "
+        "match_medium should never fire (no physics implemented)");
+}
+
 static const InteractionDef INTERACTIONS[] = {
-    { "detector",      m_detector_screen, detector_event_apply },
-    { "detector",      m_detector_screen, screen_children_apply },
-    { "detector",      m_detector_solid,  detector_solid_apply },
-    { "grating",       m_grating,         grating_children_apply },
-    { "birefringence", m_biref,           biref_children_apply },
-    { "optic",         m_optic_default,   optic_children_apply },
+    { "detector",      m_detector_screen, detector_event_apply,  0 },
+    { "detector",      m_detector_screen, screen_children_apply, 0 },
+    { "detector",      m_detector_solid,  detector_solid_apply,  0 },
+    { "grating",       m_grating,         grating_children_apply,0 },
+    { "birefringence", m_biref,           biref_children_apply,  0 },
+    { "optic",         m_optic_default,   optic_children_apply,  0 },
+    /* seam stub — surface (REGISTRY.md §3 tail): full-anisotropy Berreman
+     * 4x4. Oracle: alpha-quartz optical activity 21.77 deg/mm @589.3 nm
+     * (rotatory power) + a Passler-Paarmann absorbing-anisotropic case. */
+    { "berreman",      m_never,           stub_apply,            1 },
 };
 
 /* composed surface-effect matches (REGISTRY.md §3 steps 4-7). Each gates a
@@ -1408,8 +1443,15 @@ static void particles_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
 }
 
 static const PropagatorDef PROPAGATORS[] = {
-    { "homogeneous", m_homogeneous, homogeneous_advance },  /* always-true default */
-    { "particles",   m_particles,   particles_advance },    /* volume cloud */
+    { "homogeneous", m_homogeneous, homogeneous_advance, 0 }, /* always-true default */
+    { "particles",   m_particles,   particles_advance,   0 }, /* volume cloud */
+    /* seam stubs — volume (REGISTRY.md §3 tail); match_medium never fires: */
+    /* fluorescence: lambda-shifting emission medium. Oracle: ledger closure
+     * with lambda-shifted output (absorbed pump == re-emitted Stokes power). */
+    { "fluorescence", m_never_med,  stub_advance,        1 },
+    /* grin: RK4 curved propagation + fp64 OPL. Oracle: Luneburg /
+     * Maxwell-fisheye analytic foci. */
+    { "grin",         m_never_med,  stub_advance,        1 },
 };
 
 const InteractionDef *registry_interactions(int *n_out) {
@@ -1428,7 +1470,8 @@ const PropagatorDef *registry_propagators(int *n_out) {
 static const PropagatorDef *select_propagator(const SceneC *s, const Ray *r) {
     int np = (int)(sizeof PROPAGATORS / sizeof PROPAGATORS[0]);
     for (int i = 1; i < np; i++)
-        if (PROPAGATORS[i].match_medium(s, r)) return &PROPAGATORS[i];
+        if (!PROPAGATORS[i].stub && PROPAGATORS[i].match_medium(s, r))
+            return &PROPAGATORS[i];
     return &PROPAGATORS[0];
 }
 

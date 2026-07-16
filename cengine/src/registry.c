@@ -60,11 +60,11 @@ int registry_supported_token(const char *token) {
     int ni;
     const InteractionDef *ia = registry_interactions(&ni);
     for (int i = 0; i < ni; i++)
-        if (strcmp(ia[i].token, token) == 0) return 1;
+        if (!ia[i].stub && strcmp(ia[i].token, token) == 0) return 1;
     int np;
     const PropagatorDef *pp = registry_propagators(&np);
     for (int i = 0; i < np; i++)
-        if (strcmp(pp[i].token, token) == 0) return 1;
+        if (!pp[i].stub && strcmp(pp[i].token, token) == 0) return 1;
     int nse;
     const SurfaceEffectDef *se = registry_surface_effects(&nse);
     for (int i = 0; i < nse; i++)
@@ -100,6 +100,7 @@ void registry_resolve_faces(SceneC *s) {
         FaceC *f = &s->faces[fid];
         f->n_handlers = 0;
         for (int i = 0; i < ni; i++) {
+            if (ia[i].stub) continue;                 /* seam stub — no physics */
             if (!ia[i].match(s, (int32_t)fid)) continue;
             if (f->n_handlers >= MIEWB_MAX_FACE_HANDLERS)
                 die(EXIT_INPUT,
@@ -130,6 +131,7 @@ void registry_dump_tokens(FILE *out) {
     int ni;
     const InteractionDef *ia = registry_interactions(&ni);
     for (int i = 0; i < ni; i++) {
+        if (ia[i].stub) continue;    /* seam stub — not a supported token */
         if (seen_before(seen, n_seen, ia[i].token)) continue;
         if (n_seen < 256) seen[n_seen++] = ia[i].token;
         fprintf(out, "%s\tinteraction\n", ia[i].token);
@@ -137,6 +139,7 @@ void registry_dump_tokens(FILE *out) {
     int np;
     const PropagatorDef *pp = registry_propagators(&np);
     for (int i = 0; i < np; i++) {
+        if (pp[i].stub) continue;    /* seam stub — not a supported token */
         if (seen_before(seen, n_seen, pp[i].token)) continue;
         if (n_seen < 256) seen[n_seen++] = pp[i].token;
         fprintf(out, "%s\tpropagator\n", pp[i].token);
