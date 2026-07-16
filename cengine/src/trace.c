@@ -703,16 +703,18 @@ static void optic_children(const SceneC *s, const FaceC *face,
     double Rs = mc.Rs, Rp = mc.Rp, Ts = mc.Ts, Tp = mc.Tp;
     (void)Rs; (void)Rp;
 
-    /* ---- roughness: specular attenuation factor (tracer.py:620-628) */
-    const RoughC *rough = face->rough >= 0 ? &s->roughs[face->rough]
-                                           : NULL;
+    /* ---- roughness: specular attenuation factor (tracer.py:620-628);
+     * gated by the registered SURFACE_EFFECTS "roughness" match (step 6) */
+    const RoughC *rough = m_roughness(s, fid) ? &s->roughs[face->rough]
+                                              : NULL;
     double A_spec = rough
         ? rough_specular_factor(rough->sigma_m, cos_i, r->lam) : 1.0;
     double sqrtA = sqrt(A_spec);
 
     /* ---- ABg scatter: reflected-side specular/scatter split
-     * (tracer.py:630-645) ---- */
-    const ScatC *scat = face->scat >= 0 ? &s->scats[face->scat] : NULL;
+     * (tracer.py:630-645); gated by the registered SURFACE_EFFECTS
+     * "scatter" match (step 6) ---- */
+    const ScatC *scat = m_scatter(s, fid) ? &s->scats[face->scat] : NULL;
     double tis = 0.0;
     if (scat) {
         tis = abg_tis_g2(scat->A, scat->B, cos_i);
@@ -1305,6 +1307,8 @@ static int m_coating(const SceneC *s, int32_t fid) {
 static const SurfaceEffectDef SURFACE_EFFECTS[] = {
     { "coating",   m_coating },    /* step 4: TMM/table coefficient providers */
     { "polarizer", m_polarizer },  /* step 5: dichroic Jones diattenuator */
+    { "roughness", m_roughness },  /* step 6: Davies specular + Beckmann lobes */
+    { "scatter",   m_scatter },    /* step 6: ABg TIS split + reflected lobes */
 };
 const SurfaceEffectDef *registry_surface_effects(int *n_out) {
     *n_out = (int)(sizeof SURFACE_EFFECTS / sizeof SURFACE_EFFECTS[0]);
