@@ -616,7 +616,8 @@ def test_library_expansion_counts(shipped_props):
     assert len(shipped_props.coatings) == 39
     assert len(shipped_props.filters) == 56
     assert len(shipped_props.polarizers) == 17
-    assert len(shipped_props.gratings) == 8
+    # +1 for rcwa_fs_600_v2 (P6 v2 RCWA complex-amplitude table)
+    assert len(shipped_props.gratings) == 9
     assert len(shipped_props.uniaxial) == 13
 
 
