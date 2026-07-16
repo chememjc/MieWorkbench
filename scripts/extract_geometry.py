@@ -67,7 +67,12 @@
 #   'FaceN=asphere:R=<mm>;k=<float>;A4=<mm^-3>;...;r_max=<mm>' to declare an
 #   analytic asphere on a revolved face in place of the mesh/canonicalized
 #   fallback; verified against the actual FreeCAD geometry to 1 um before
-#   being trusted (see build_asphere_surface()).
+#   being trusted (see build_asphere_surface()). Also supports
+#   'FaceN=qbfs:R=<mm>;k=<float>;A0=<mm>;A1=<mm>;...;r_max=<mm>' (or
+#   'qcon:...') for an ISO 10110-12 Forbes Q-type asphere (base conic + an
+#   orthonormal-in-slope/amplitude Q-polynomial departure); same 1 um
+#   verification gate (see build_qforbes_surface(), raytracer.surfaces.
+#   QForbes).
 #
 #   Pulsed-optics Phase P8 (optics only, group "Base"):
 #   nonlinear (string, registry row name in opticalproperties/nonlinear/
@@ -96,6 +101,7 @@
 # closed curves represented without repeating the first point.
 # =============================================================================
 import argparse
+import functools
 import json
 import math
 import os
@@ -508,6 +514,305 @@ def build_asphere_surface(face, face_id, override_val, warnings):
         % (face_id, R_m, k, coeffs_si, r_max_m, max_resid * 1e6,
            len(samples)))
     return {"type": "asphere", "vertex": pt_m(vertex_pt),
+            "axis": unit_vec(axis_dir), "R": R_m, "k": k,
+            "coeffs": coeffs_si, "r_max": r_max_m}
+
+
+# ---------------------------------------------------------------------------
+# QForbes surface_override: 'qbfs:R=<mm>;k=<float>;A0=<mm>;A1=<mm>;...;
+# r_max=<mm>' or 'qcon:...' (same field grammar, kind selects the basis --
+# ISO 10110-12 Forbes Q-type asphere, engine3.md Sec 7.6). r_max is
+# optional (defaults from the actual face's radial extent), same as
+# asphere. sag(r) = conic_sag(r; R, k) + sec(theta_c(r)) * envelope(u) *
+# Sum_n coeffs[n] * Q_n(...), u = r/r_max -- see raytracer.surfaces.QForbes
+# for the exact math (base conic + orthonormal-in-slope/amplitude Forbes
+# departure); same convention documented in common.py's
+# _SURFACE_REQ["qforbes"].
+#
+# Units: FreeCAD property values are mm. R_m = R_mm*1e-3; r_max_m =
+# r_max_mm*1e-3, same as asphere. Unlike asphere's power-series A_n (which
+# need a per-order m^(1-n) unit conversion), a Forbes coefficient a_n has
+# the SAME units as the sag itself -- the Q_n/P_n bases are dimensionless
+# functions of u = r/r_max -- so A_n_SI = A_n_mm * 1e-3 for EVERY n (no
+# exponent scaling, unlike asphere).
+# ---------------------------------------------------------------------------
+_QFORBES_COEFF_RE = re.compile(r"^A(\d+)$")
+_QFORBES_INV_SQRT19 = 1.0 / math.sqrt(19.0)
+
+
+# ---- pure-stdlib (no numpy -- this module runs under FreeCAD's embedded
+# python) Forbes Qbfs/Qcon sag-only recurrence, mirroring
+# raytracer.surfaces._qbfs_weighted_sum/_qcon_weighted_sum and their
+# _qbfs_departure/_qcon_departure envelope wrappers exactly (value only;
+# the extractor's <1 um verifier never needs the derivative). ----
+@functools.lru_cache(maxsize=None)
+def _f_qbfs_scalar(n):
+    if n == 0:
+        return 2.0
+    if n == 1:
+        return math.sqrt(19.0) / 2.0
+    term1 = n * (n + 1) + 3
+    term2 = _g_qbfs_scalar(n - 1) ** 2
+    term3 = _h_qbfs_scalar(n - 2) ** 2
+    return math.sqrt(term1 - term2 - term3)
+
+
+@functools.lru_cache(maxsize=None)
+def _g_qbfs_scalar(n_minus_1):
+    if n_minus_1 == 0:
+        return -0.5
+    n_minus_2 = n_minus_1 - 1
+    return -(1.0 + _g_qbfs_scalar(n_minus_2) * _h_qbfs_scalar(n_minus_2)) \
+        / _f_qbfs_scalar(n_minus_1)
+
+
+@functools.lru_cache(maxsize=None)
+def _h_qbfs_scalar(n_minus_2):
+    n = n_minus_2 + 2
+    return -n * (n - 1) / (2.0 * _f_qbfs_scalar(n_minus_2))
+
+
+def _qbfs_sag_scalar(coeffs, u):
+    x = u * u
+    M = len(coeffs) - 1
+    if M < 0:
+        return 0.0
+    R = coeffs[0]
+    if M > 0:
+        Q1 = _QFORBES_INV_SQRT19 * (13.0 - 16.0 * x)
+        R += coeffs[1] * Q1
+        if M > 1:
+            P_prev, P_curr = 2.0, 6.0 - 8.0 * x
+            Q_prev, Q_curr = 1.0, Q1
+            lin = 2.0 - 4.0 * x
+            for n in range(2, M + 1):
+                Pn = lin * P_curr - P_prev
+                g = _g_qbfs_scalar(n - 1)
+                h = _h_qbfs_scalar(n - 2)
+                Qn = (Pn - g * Q_curr - h * Q_prev) / _f_qbfs_scalar(n)
+                R += coeffs[n] * Qn
+                P_prev, P_curr = P_curr, Pn
+                Q_prev, Q_curr = Q_curr, Qn
+    return x * (1.0 - x) * R
+
+
+@functools.lru_cache(maxsize=None)
+def _jacobi04_abc_scalar(n):
+    a, b = 0.0, 4.0
+    s = a + b
+    A = (2 * n + s + 1) * (2 * n + s + 2) / (2.0 * (n + 1) * (n + s + 1))
+    B = ((a * a - b * b) * (2 * n + s + 1)
+        / (2.0 * (n + 1) * (n + s + 1) * (2 * n + s)))
+    C = ((n + a) * (n + b) * (2 * n + s + 2)
+        / ((n + 1) * (n + s + 1) * (2 * n + s)))
+    return A, B, C
+
+
+def _qcon_sag_scalar(coeffs, u):
+    x = 2.0 * u * u - 1.0
+    M = len(coeffs) - 1
+    if M < 0:
+        return 0.0
+    R = coeffs[0]
+    if M > 0:
+        P1 = 3.0 * x - 2.0
+        R += coeffs[1] * P1
+        if M > 1:
+            P_prev, P_curr = 1.0, P1
+            for n in range(2, M + 1):
+                A, B, C = _jacobi04_abc_scalar(n - 1)
+                lin = A * x + B
+                Pn = lin * P_curr - C * P_prev
+                R += coeffs[n] * Pn
+                P_prev, P_curr = P_curr, Pn
+    return (u ** 4) * R
+
+
+def qforbes_sag_m(r_m, R_m, k, kind, coeffs_si, r_max_m):
+    """sag(r) in metres, or None if the conic term is imaginary (r beyond
+    the surface's physical validity disc)."""
+    c = 1.0 / R_m
+    beta = (1.0 + k) * c * c
+    disc = 1.0 - beta * r_m * r_m
+    if disc <= 0.0:
+        return None
+    phi = math.sqrt(disc)
+    zc = c * r_m * r_m / (1.0 + phi)
+    zc1 = c * r_m / phi
+    sigma_inv = math.sqrt(1.0 + zc1 * zc1)
+    u = r_m / r_max_m if r_max_m else 0.0
+    dep = (_qbfs_sag_scalar(coeffs_si, u) if kind == "qbfs"
+          else _qcon_sag_scalar(coeffs_si, u))
+    return zc + sigma_inv * dep
+
+
+def parse_qforbes_override_value(raw):
+    """'qbfs:R=25.0;k=-0.6;A0=1.2e-3;A1=-4e-4;r_max=10' or 'qcon:...' (mm
+    units) -> dict with kind, R_mm, k, coeffs_mm (contiguous A0,A1,...
+    dense from 0, in order), r_max_mm (or None if not given)."""
+    raw = raw.strip()
+    prefix, sep, rest = raw.partition(":")
+    kind = prefix.strip().lower()
+    if kind not in ("qbfs", "qcon") or not sep:
+        raise ValueError(
+            "surface_override value %r is not a 'qbfs:...' or 'qcon:...' "
+            "spec" % raw)
+    fields = {}
+    for tok in rest.split(";"):
+        tok = tok.strip()
+        if not tok:
+            continue
+        fkey, s2, v = tok.partition("=")
+        if not s2:
+            raise ValueError("bad %s field %r in %r" % (kind, tok, raw))
+        fields[fkey.strip()] = v.strip()
+    if "R" not in fields:
+        raise ValueError("%s spec %r missing R=" % (kind, raw))
+    R_mm = float(fields.pop("R"))
+    if R_mm == 0.0:
+        raise ValueError("%s R must be nonzero in %r" % (kind, raw))
+    k_val = float(fields.pop("k", "0.0"))
+    r_max_mm = float(fields.pop("r_max")) if "r_max" in fields else None
+    coeff_items = []
+    for key, v in fields.items():
+        m = _QFORBES_COEFF_RE.match(key)
+        if not m:
+            raise ValueError("unknown %s field %r in %r" % (kind, key, raw))
+        order = int(m.group(1))
+        if order < 0:
+            raise ValueError("%s coeff order must be >= 0, got A%d in %r"
+                             % (kind, order, raw))
+        coeff_items.append((order, float(v)))
+    coeff_items.sort()
+    expected = 0
+    for order, _ in coeff_items:
+        if order != expected:
+            raise ValueError(
+                "%s coeffs must be contiguous orders starting at A0 (gap "
+                "before A%d) in %r" % (kind, order, raw))
+        expected += 1
+    return {"kind": kind, "R_mm": R_mm, "k": k_val,
+            "coeffs_mm": [v for _, v in coeff_items], "r_max_mm": r_max_mm}
+
+
+def build_qforbes_surface(face, face_id, override_val, warnings):
+    """Verify + emit an analytic Forbes Q-type surface dict for a face
+    declared via surface_override. Dies (never silently corrupts phase) if
+    the declaration doesn't match the actual FreeCAD geometry within 1 um.
+    Structurally identical to build_asphere_surface (same vertex/axis
+    recovery off a revolved face, same verification-grid + tolerance
+    gate); only the sag formula (qforbes_sag_m vs asphere_sag_m) and the
+    coefficient unit conversion differ."""
+    spec = parse_qforbes_override_value(override_val)
+    kind = spec["kind"]
+    surf = face.Surface
+    tname = type(surf).__name__
+    axis_pt = getattr(surf, "Location", None)
+    if axis_pt is None:
+        axis_pt = getattr(surf, "Position", None)
+    axis_dir = getattr(surf, "Direction", None)
+    if axis_dir is None:
+        axis_dir = getattr(surf, "Axis", None)
+    if axis_pt is None or axis_dir is None:
+        die("%s: surface_override=%s requires an axis-symmetric (revolved) "
+            "face to recover a vertex/axis; got surface type %r with no "
+            "recoverable axis attributes" % (face_id, kind, tname))
+    axis_dir = FreeCAD.Vector(axis_dir)
+    L = axis_dir.Length
+    if L < 1e-12:
+        die("%s: surface_override=%s: degenerate (zero-length) axis "
+            "direction" % (face_id, kind))
+    axis_dir = FreeCAD.Vector(axis_dir.x / L, axis_dir.y / L, axis_dir.z / L)
+
+    u0, u1, v0, v1 = face.ParameterRange
+    u_fixed = (u0 + u1) / 2.0
+    n_scan = 200
+    meridian = []
+    for i in range(n_scan):
+        v = v0 + (v1 - v0) * i / (n_scan - 1)
+        try:
+            p = face.Surface.value(u_fixed, v)
+        except Exception:
+            continue
+        w = p - axis_pt
+        axial = axis_dir.dot(w)
+        foot = axis_pt + axis_dir * axial
+        r_mm = (p - foot).Length
+        meridian.append((r_mm, axial))
+    if not meridian:
+        die("%s: surface_override=%s: could not sample the face's "
+            "meridian" % (face_id, kind))
+    best_r, best_axial = min(meridian, key=lambda s: s[0])
+    if best_r > 0.05:   # mm; the profile is expected to touch the axis
+        die("%s: surface_override=%s: could not locate a vertex on the "
+            "revolution axis (closest sample r=%.6g mm)"
+            % (face_id, kind, best_r))
+    vertex_pt = axis_pt + axis_dir * best_axial
+
+    near = sorted(meridian, key=lambda s: s[0])[:10]
+    signed_z = [a - best_axial for r, a in near if r > 1e-6]
+    if signed_z and (sum(signed_z) / len(signed_z)) < 0.0:
+        axis_dir = axis_dir * -1.0
+
+    R_m = spec["R_mm"] * 1e-3
+    k = spec["k"]
+    coeffs_si = [a * 1e-3 for a in spec["coeffs_mm"]]
+
+    samples = []
+    nu = ASPHERE_VERIFY_GRID
+    nv = ASPHERE_VERIFY_GRID - 1
+    for iu in range(nu):
+        uu = u0 + (u1 - u0) * (iu / (nu - 1))
+        for iv in range(nv):
+            vv = v0 + (v1 - v0) * (iv / (nv - 1))
+            try:
+                p = face.Surface.value(uu, vv)
+            except Exception:
+                continue
+            w = p - vertex_pt
+            z_mm = axis_dir.dot(w)
+            foot = w - axis_dir * z_mm
+            r_mm = foot.Length
+            samples.append((r_mm / 1000.0, z_mm / 1000.0))
+    if not samples:
+        die("%s: surface_override=%s: verification grid produced no "
+            "samples" % (face_id, kind))
+
+    r_max_m = (spec["r_max_mm"] * 1e-3 if spec["r_max_mm"] is not None
+              else max(r for r, z in samples))
+    if r_max_m <= 0.0:
+        die("%s: surface_override=%s: r_max must be > 0 (got %.6g m)"
+            % (face_id, kind, r_max_m))
+
+    max_resid = -1.0
+    first_bad = None
+    for r_m, z_m in samples:
+        if r_m > r_max_m * 1.001:
+            continue
+        sag_m = qforbes_sag_m(r_m, R_m, k, kind, coeffs_si, r_max_m)
+        if sag_m is None:
+            die("%s: surface_override=%s declaration is unphysical at "
+                "r=%.6g m (1-(1+k)*c^2*r^2 <= 0 for the declared R=%.6g m, "
+                "k=%.6g)" % (face_id, kind, r_m, R_m, k))
+        resid = abs(z_m - sag_m)
+        if resid > max_resid:
+            max_resid = resid
+        if resid >= ASPHERE_TOL_M and first_bad is None:
+            first_bad = (r_m, z_m, sag_m, resid)
+    if first_bad is not None:
+        r_m, z_m, sag_m, resid = first_bad
+        die("%s: surface_override=%s declaration does not match the "
+            "actual face geometry (max residual %.3g um over %d samples, "
+            "tolerance %.1g um); first bad sample: r=%.6g m z_actual=%.6g "
+            "m sag_declared=%.6g m residual=%.3g um"
+            % (face_id, kind, max_resid * 1e6, len(samples),
+               ASPHERE_TOL_M * 1e6, r_m, z_m, sag_m, resid * 1e6))
+
+    log("%s: surface_override=%s verified OK (R=%.6g m k=%.6g coeffs=%r "
+        "r_max=%.6g m, max residual %.3g um over %d samples)"
+        % (face_id, kind, R_m, k, coeffs_si, r_max_m, max_resid * 1e6,
+           len(samples)))
+    return {"type": "qforbes", "kind": kind, "vertex": pt_m(vertex_pt),
             "axis": unit_vec(axis_dir), "R": R_m, "k": k,
             "coeffs": coeffs_si, "r_max": r_max_m}
 
@@ -978,14 +1283,18 @@ def extract_faces(body, shape, tip_name, out_dir, strict, warnings,
         if surface_override:
             override_val = surface_override.get(
                 face_id, surface_override.get(common.FACEMAP_ALL))
-        if override_val is not None and override_val.strip().lower().startswith("asphere:"):
+        override_kind = (override_val.strip().lower().partition(":")[0]
+                        if override_val is not None else None)
+        if override_kind == "asphere":
             surf = build_asphere_surface(face, face_id, override_val, warnings)
+        elif override_kind in ("qbfs", "qcon"):
+            surf = build_qforbes_surface(face, face_id, override_val, warnings)
         else:
             if override_val is not None:
                 warn("%s: surface_override value %r not recognized "
-                     "(expected 'asphere:...'); ignoring, using "
-                     "auto-detected surface type" % (face_id, override_val),
-                     warnings)
+                     "(expected 'asphere:...', 'qbfs:...', or 'qcon:...'); "
+                     "ignoring, using auto-detected surface type"
+                     % (face_id, override_val), warnings)
             surf = classify_surface(face, face_id, warnings, strict)
         outward, nrm = orientation_probe(shape, face, face_id, surf,
                                          warnings)

@@ -142,7 +142,7 @@ class VizStore:
 
 class TraceResult:
     def __init__(self, detectors, ledger, viz, source_names,
-                 path_tally=None, shg_converted=None):
+                 path_tally=None, shg_converted=None, conical_guard=None):
         self.detectors = detectors        # face_id -> DetectorGrid
         self.ledger = ledger
         self.viz = viz
@@ -157,6 +157,14 @@ class TraceResult:
         # the P7b chi2 event (a power TRANSFER between strata, never a
         # closure bucket). Empty when no nonlinear body converted.
         self.shg_converted = shg_converted if shg_converted is not None \
+            else {}
+        # conical_guard: {crystal body label: ray count} -- rays whose
+        # incident wavevector fell inside a uniaxial crystal's conical-
+        # point degeneracy cone (birefringence.degeneracy_mask), where the
+        # o/e eigenbasis is arbitrary (engine3.md Sec 7.2). Diagnostic
+        # counter only, zero RNG use, never a closure bucket; empty when no
+        # ray ever traversed a degeneracy cone.
+        self.conical_guard = conical_guard if conical_guard is not None \
             else {}
 
 
@@ -181,6 +189,10 @@ class Tracer:
         self.path_tally = {}
         # P7b: per-body SHG transferred power [W] (see TraceResult)
         self.shg_converted = {}
+        # conical-point runtime guard (engine3.md Sec 7.2): {crystal body
+        # label: ray count} accumulated by _birefringent_children, warned
+        # once per body at the end of run() (see TraceResult.conical_guard)
+        self.conical_guard = {}
         # measured-scatter importance targets (§7.1): per-detector aim cones
         # {label -> (centre_world[3], radius_m)}. Precomputed once from the
         # detector grids so the scatter kernel can point children at their
@@ -259,9 +271,20 @@ class Tracer:
                 self.ledger.credit("truncated_generation", b.source_id,
                                    b.power)
         names = [self.scene.bodies[i].label for i, _ in self.scene.sources]
+        # conical-point guard: warn ONCE per crystal body, naming the final
+        # count for this run (never per-ray/per-batch -- see
+        # _birefringent_children, which only counts).
+        if self.conical_guard:
+            import warnings
+            for label, count in sorted(self.conical_guard.items()):
+                warnings.warn(
+                    "%d rays traversed the optic-axis degeneracy of %s; "
+                    "o/e decomposition is undefined there -- results for "
+                    "those rays are basis-arbitrary" % (count, label))
         return TraceResult(self.detectors, self.ledger, self.viz, names,
                            path_tally=self.path_tally,
-                           shg_converted=self.shg_converted)
+                           shg_converted=self.shg_converted,
+                           conical_guard=self.conical_guard)
 
     # ------------------------------------------------------------------
     def step(self, batch):
@@ -1570,6 +1593,19 @@ class Tracer:
             sub = grp.select(ent)
             nh = n_hat[ent]
             ci = cos_i[ent]
+            # conical-point runtime guard (engine3.md Sec 7.2): count rays
+            # whose incident k falls inside this crystal's optic-axis
+            # degeneracy cone -- the o/e eigenbasis used just below (eo_i,
+            # ee_i) is then an ARBITRARY transverse pair (bir.eigenbasis
+            # docstring), so those rays' o/e split is basis-arbitrary. No
+            # physics change: same eigenbasis() call as before, this just
+            # observes its own degeneracy test (bir.degeneracy_mask) to
+            # count -- see Tracer.run() for the once-per-run warning.
+            n_degen = int(np.count_nonzero(bir.degeneracy_mask(sub.dir,
+                                                                c_axis)))
+            if n_degen:
+                self.conical_guard[body.label] = (
+                    self.conical_guard.get(body.label, 0) + n_degen)
             cur = sub.current_medium()
             n1 = np.empty(len(ent), dtype=np.complex128)
             for mm in np.unique(cur):

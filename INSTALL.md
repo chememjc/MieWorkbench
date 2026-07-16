@@ -153,6 +153,30 @@ copy from the optics environment's (§3.2) — the GUI never imports
 `scripts/raytracer/`'s torch-dependent code, only reads/writes plain
 files (`model.json`, `.h5` detector cubes, etc.) with these lighter deps.
 
+### 4.1 Optional: the prysm oracle (Forbes Q-type surface tests only)
+
+`mieworkbench/tests/test_qforbes_prysm_oracle.py` checks
+`raytracer.surfaces.QForbes` (ISO 10110-12 Qbfs/Qcon aspheres) against
+[prysm](https://github.com/brandondube/prysm)'s own Forbes-polynomial
+implementation to 1e-12. prysm is MIT-licensed but not on a normal release
+cadence (PyPI is stale), so it is installed from a **pinned git SHA** into
+this same `env/` venv — never into `/home3/optics/env`, and never imported
+by the engine itself (test-only oracle dependency):
+
+```bash
+env/bin/pip install \
+  "git+https://github.com/brandondube/prysm@f8d72fb66f1c1e5858abdd3f4685805ef319d97b"
+```
+
+That SHA is NOT prysm's tip-of-master — the two commits after it
+(`eb52449`, `26a4209`) ship a `prysm.x.raytracing` package whose own
+`__init__.py` imports modules that were never committed upstream, so
+`import prysm.x.raytracing.sags` (what the oracle test needs) raises
+`ModuleNotFoundError` at either. `f8d72fb` is the newest commit confirmed
+(2026-07-16) to import cleanly. Skip this step entirely if you don't need
+that one test file — `pytest.importorskip("prysm")` at its top makes it a
+no-op skip, not a failure, when prysm isn't installed.
+
 ---
 
 ## 5. First run
