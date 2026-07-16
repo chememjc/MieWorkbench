@@ -119,6 +119,7 @@ import MeshPart
 # directory the way plain `python3 scripts/foo.py` does).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
+from raytracer import prescription as prescription_mod  # noqa: E402
 
 # Overwriting output on every rerun is expected (idempotent writes); disable
 # FreeCAD's "keep a .FCBak of the file I'm replacing" preference so batch
@@ -187,6 +188,11 @@ def parse_args():
     p.add_argument("--strict", action="store_true",
                     help="hard-fail (instead of warn) on any face that falls "
                          "back to tessellation-only ('mesh') representation")
+    p.add_argument("--prescription", default=None,
+                    help="prescription.json driving the prescription-primary "
+                         "cross-check (engine3 Sec 3). When omitted a "
+                         "sibling <stem>.prescription.json sidecar is used if "
+                         "present; otherwise every body extracts as before.")
     try:
         return p.parse_args(rest)
     except SystemExit:
@@ -818,6 +824,211 @@ def build_qforbes_surface(face, face_id, override_val, warnings):
 
 
 # ---------------------------------------------------------------------------
+# Prescription cross-check (engine3.md Sec 3, P5): when a prescription entry
+# exists for a body, its analytic optical surfaces are the TRUTH. For each
+# FreeCAD face that a prescription surface matches, we (a) VERIFY the
+# tessellated geometry against the prescription to the same 1 um gate the
+# asphere-override verifier uses, and (b) EMIT the model.json surface FROM THE
+# PRESCRIPTION (exact params, transformed to global through the body
+# Placement -- never FreeCAD's canonicalize_revolution sampling). A mismatch
+# > 1 um is a HARD ERROR (the CAD drifted from its prescription; we never
+# silently prefer either). Bodies WITHOUT a prescription extract exactly as
+# before (full backward compatibility).
+#
+# Policy by surface type (matches primitivelib.build_prescription_entry):
+#   sphere, asphere : emitted-from-prescription (verified). asphere reuses the
+#                     existing build_asphere_surface machinery (vertex/axis
+#                     recovered from the placed geometry; R/k/coeffs from the
+#                     prescription).
+#   cylinder        : VERIFIED against the prescription, kept in native OCC
+#                     form (already exact; origin along the axis is free).
+# ---------------------------------------------------------------------------
+PRESCRIPTION_TOL_M = ASPHERE_TOL_M          # 1 um, the same gate
+_PRESC_IDENTIFY_TOL_M = 1e-4                 # 100 um: loose "is this the face?"
+_PRESC_VERIFY_GRID = ASPHERE_VERIFY_GRID    # reuse the asphere grid density
+
+
+def presc_key_for_body(obj):
+    """The prescription element key for a FreeCAD body: its miewb_group
+    (stable across rebuilds / multi-body elements), falling back to Label."""
+    grp = getattr(obj, "miewb_group", None)
+    if isinstance(grp, str) and grp:
+        return grp
+    return obj.Label
+
+
+def _presc_point_to_global(placement, p_local_m):
+    """LOCAL SI-metre point -> GLOBAL SI-metre, via the body Placement (the
+    exact transform OCC applies to the geometry). Params are stored in mm
+    internally, so scale m->mm, transform, scale back."""
+    v = FreeCAD.Vector(p_local_m[0] * 1000.0, p_local_m[1] * 1000.0,
+                       p_local_m[2] * 1000.0)
+    g = placement.multVec(v)
+    return [g.x / 1000.0, g.y / 1000.0, g.z / 1000.0]
+
+
+def _presc_dir_to_global(placement, d_local):
+    g = placement.Rotation.multVec(FreeCAD.Vector(*d_local))
+    L = g.Length or 1.0
+    return [g.x / L, g.y / L, g.z / L]
+
+
+def _sample_face_points_m(face, grid):
+    """A (grid x grid-1) set of surface points, in SI metres, from the face's
+    parametric (u,v) range (the same sampling the asphere verifier uses)."""
+    u0, u1, v0, v1 = face.ParameterRange
+    pts = []
+    nu, nv = grid, grid - 1
+    for iu in range(nu):
+        uu = u0 + (u1 - u0) * (iu / (nu - 1))
+        for iv in range(nv):
+            vv = v0 + (v1 - v0) * (iv / (nv - 1))
+            try:
+                p = face.Surface.value(uu, vv)
+            except Exception:
+                continue
+            pts.append((p.x / 1000.0, p.y / 1000.0, p.z / 1000.0))
+    return pts
+
+
+def _sphere_residuals(pts, center, radius):
+    out = []
+    cx, cy, cz = center
+    for x, y, z in pts:
+        d = math.sqrt((x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2)
+        out.append(abs(d - radius))
+    return out
+
+
+def _cylinder_residuals(pts, origin, axis, radius):
+    ox, oy, oz = origin
+    ax, ay, az = axis
+    an = math.sqrt(ax * ax + ay * ay + az * az) or 1.0
+    ax, ay, az = ax / an, ay / an, az / an
+    out = []
+    for x, y, z in pts:
+        wx, wy, wz = x - ox, y - oy, z - oz
+        t = wx * ax + wy * ay + wz * az          # projection onto the axis
+        px, py, pz = wx - t * ax, wy - t * ay, wz - t * az
+        out.append(abs(math.sqrt(px * px + py * py + pz * pz) - radius))
+    return out
+
+
+def _presc_asphere_to_override_str(surf):
+    """A prescription 'asphere' surface (SI) -> the mm-unit 'asphere:...'
+    string build_asphere_surface() parses, so the existing verify+emit path
+    is reused verbatim (vertex/axis recovered from the placed geometry;
+    R/k/coeffs taken from the prescription)."""
+    R_mm = surf["R"] * 1000.0
+    parts = ["R=%.12g" % R_mm, "k=%.12g" % surf["k"]]
+    for i, a_si in enumerate(surf.get("coeffs", [])):
+        order = 4 + 2 * i
+        a_mm = a_si / (1000.0 ** (order - 1))
+        parts.append("A%d=%.12g" % (order, a_mm))
+    parts.append("r_max=%.12g" % (surf["r_max"] * 1000.0))
+    return "asphere:" + ";".join(parts)
+
+
+def try_prescription_face(face, face_id, placement, entry, claimed, warnings):
+    """Match this FreeCAD face to an unclaimed prescription surface of `entry`
+    and, on a match, verify (<1 um) + return the emitted model.json surface
+    dict (sphere/asphere) or None for verify-only surfaces (cylinder, where
+    the native OCC classification is kept). Records the claimed surface index
+    in `claimed`. Returns (surf_dict_or_None, matched_bool). Dies on a
+    verified surface whose geometry disagrees with the prescription by > 1 um
+    (the CAD drifted from its prescription)."""
+    surfaces = entry.get("surfaces", [])
+    native_name = type(face.Surface).__name__
+    is_revolution = (native_name == "SurfaceOfRevolution")
+    # A prescription surface may only match a FreeCAD face of a COMPATIBLE
+    # native OCC type (so a native Cylinder rim can never be mis-identified as
+    # a grazing sphere cap, etc.). SurfaceOfRevolution is allowed everywhere
+    # because OCC sometimes fails to natively recognize a spline-approximated
+    # sphere/cylinder (the canonicalize_revolution case) -- and a single
+    # element never carries both an asphere and a sphere/cylinder prescription
+    # surface, so there is no ambiguity.
+    _COMPAT = {
+        "sphere": ("Sphere", "SurfaceOfRevolution"),
+        "cylinder": ("Cylinder", "SurfaceOfRevolution"),
+        "asphere": ("SurfaceOfRevolution",),
+    }
+    pts = None
+    for idx, surf in enumerate(surfaces):
+        if idx in claimed:
+            continue
+        stype = surf["type"]
+        if native_name not in _COMPAT.get(stype, ()):
+            continue
+
+        if stype == "asphere":
+            # match the single revolved (aspheric) face by type
+            if not is_revolution:
+                continue
+            override_str = _presc_asphere_to_override_str(surf)
+            out = build_asphere_surface(face, face_id, override_str, warnings)
+            # carry the prescription role for downstream display
+            out["role"] = surf.get("role")
+            claimed.add(idx)
+            log("%s: prescription surface (asphere, role=%s) verified + "
+                "emitted from prescription" % (face_id, surf.get("role")))
+            return out, True
+
+        if stype == "sphere":
+            center = _presc_point_to_global(placement, surf["center"])
+            radius = surf["radius"]
+            if pts is None:
+                pts = _sample_face_points_m(face, _PRESC_VERIFY_GRID)
+            if not pts:
+                continue
+            resids = _sphere_residuals(pts, center, radius)
+            if min(resids) > _PRESC_IDENTIFY_TOL_M:
+                continue                      # not this face
+            max_r = max(resids)
+            if max_r >= PRESCRIPTION_TOL_M:
+                die("%s: CAD drifted from its prescription -- body %r "
+                    "sphere surface (role=%s) residual %.3g um over %d "
+                    "samples exceeds the %.1f um gate (prescription "
+                    "center=%s radius=%.6g m)"
+                    % (face_id, entry.get("kind"), surf.get("role"),
+                       max_r * 1e6, len(pts), PRESCRIPTION_TOL_M * 1e6,
+                       center, radius))
+            claimed.add(idx)
+            log("%s: prescription surface (sphere, role=%s) verified OK "
+                "(max residual %.3g um) + emitted from prescription"
+                % (face_id, surf.get("role"), max_r * 1e6))
+            return {"type": "sphere", "center": center, "radius": radius,
+                    "role": surf.get("role")}, True
+
+        if stype == "cylinder":
+            origin = _presc_point_to_global(placement, surf["origin"])
+            axis = _presc_dir_to_global(placement, surf["axis"])
+            radius = surf["radius"]
+            if pts is None:
+                pts = _sample_face_points_m(face, _PRESC_VERIFY_GRID)
+            if not pts:
+                continue
+            resids = _cylinder_residuals(pts, origin, axis, radius)
+            if min(resids) > _PRESC_IDENTIFY_TOL_M:
+                continue
+            max_r = max(resids)
+            if max_r >= PRESCRIPTION_TOL_M:
+                die("%s: CAD drifted from its prescription -- body %r "
+                    "cylinder surface (role=%s) residual %.3g um over %d "
+                    "samples exceeds the %.1f um gate (prescription "
+                    "radius=%.6g m)"
+                    % (face_id, entry.get("kind"), surf.get("role"),
+                       max_r * 1e6, len(pts), PRESCRIPTION_TOL_M * 1e6,
+                       radius))
+            claimed.add(idx)
+            log("%s: prescription surface (cylinder, role=%s) verified OK "
+                "(max residual %.3g um; kept native OCC form)"
+                % (face_id, surf.get("role"), max_r * 1e6))
+            return None, True
+
+    return None, False
+
+
+# ---------------------------------------------------------------------------
 # Surface classification (incl. SurfaceOfRevolution canonicalization)
 # ---------------------------------------------------------------------------
 def canonicalize_revolution(face, surf, face_id, warnings):
@@ -1270,11 +1481,13 @@ def sheet_echo(sheet, warnings):
 # Per-body face walk
 # ---------------------------------------------------------------------------
 def extract_faces(body, shape, tip_name, out_dir, strict, warnings,
-                  surface_override=None):
+                  surface_override=None, prescription_entry=None):
     faces_out = []
     closest_face_id = None
     closest_dist = None
     origin = FreeCAD.Vector(0, 0, 0)
+    presc_claimed = set()
+    placement = body.Placement
 
     for idx, face in enumerate(shape.Faces, start=1):
         face_id = "%s.%s.Face%d" % (body.Name, tip_name, idx)
@@ -1285,7 +1498,20 @@ def extract_faces(body, shape, tip_name, out_dir, strict, warnings,
                 face_id, surface_override.get(common.FACEMAP_ALL))
         override_kind = (override_val.strip().lower().partition(":")[0]
                         if override_val is not None else None)
-        if override_kind == "asphere":
+
+        # prescription-primary (engine3 Sec 3): if a prescription surface
+        # matches this face, it is the truth -- verify + emit from it,
+        # OVERRIDING both the surface_override property and native
+        # classification for that face.
+        presc_surf = None
+        if prescription_entry is not None:
+            presc_surf, _ = try_prescription_face(
+                face, face_id, placement, prescription_entry,
+                presc_claimed, warnings)
+
+        if presc_surf is not None:
+            surf = presc_surf
+        elif override_kind == "asphere":
             surf = build_asphere_surface(face, face_id, override_val, warnings)
         elif override_kind in ("qbfs", "qcon"):
             surf = build_qforbes_surface(face, face_id, override_val, warnings)
@@ -1329,31 +1555,62 @@ def extract_faces(body, shape, tip_name, out_dir, strict, warnings,
             closest_dist = d
             closest_face_id = face_id
 
+    # every prescription surface MUST have matched a face -- an unmatched one
+    # means the CAD topology no longer realizes the prescription (a hard
+    # error, same class as a > 1 um residual: the CAD drifted from its truth).
+    if prescription_entry is not None:
+        surfaces = prescription_entry.get("surfaces", [])
+        missing = [s for i, s in enumerate(surfaces) if i not in presc_claimed]
+        if missing:
+            die("%s.%s: CAD does not realize its prescription -- %d "
+                "prescription surface(s) matched no face: %s (kind=%r). "
+                "The geometry drifted from the prescription."
+                % (body.Name, tip_name, len(missing),
+                   ", ".join("%s/%s" % (m.get("role"), m["type"])
+                             for m in missing),
+                   prescription_entry.get("kind")))
+
     return faces_out, closest_face_id
 
 
 # ---------------------------------------------------------------------------
 # One FCStd -> one geometry/<stem>/model.json
 # ---------------------------------------------------------------------------
-def extract_one(fcstd_path, outdir, strict):
+def load_prescription_for(fcstd_path, explicit=None):
+    """Resolve the prescription doc for a model (document precedence): an
+    explicit --prescription path wins; else a sibling
+    <stem>.prescription.json sidecar; else None. Validated on load."""
+    if explicit:
+        return prescription_mod.load(explicit)
+    sidecar = prescription_mod.sidecar_path(fcstd_path)
+    if sidecar.exists():
+        log("using prescription sidecar %s" % sidecar)
+        return prescription_mod.load(sidecar)
+    return None
+
+
+def extract_one(fcstd_path, outdir, strict, prescription=None):
     """CLI wrapper: open the .FCStd, extract, close. The real work lives in
     extract_document() so scripts/fcserver/fcops.py can extract an
     ALREADY-OPEN document in place (the fast evaluator's persistent-worker
-    path) and produce byte-identical output."""
+    path) and produce byte-identical output. `prescription` may be a resolved
+    doc/path; when None a <stem>.prescription.json sidecar is auto-loaded."""
     fcstd_path = Path(fcstd_path).resolve()
     if not fcstd_path.exists():
         die("file not found: %s" % fcstd_path)
     stem = fcstd_path.stem
+    if prescription is None or isinstance(prescription, (str, Path)):
+        prescription = load_prescription_for(fcstd_path, prescription)
     doc = FreeCAD.openDocument(str(fcstd_path))
     try:
         return extract_document(doc, stem, outdir / stem, strict,
-                                fcstd_path)
+                                fcstd_path, prescription=prescription)
     finally:
         FreeCAD.closeDocument(doc.Name)
 
 
 def extract_document(doc, stem, out_dir, strict, source_fcstd,
-                     face_cache=None):
+                     face_cache=None, prescription=None):
     """Build, write and contract-validate <out_dir>/model.json (+ per-face
     faces/*.stl) from an already-open FreeCAD document.
 
@@ -1381,6 +1638,20 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
 
     warnings = []
     doc.recompute()
+
+    # prescription-primary (engine3 Sec 3, P5): {element key -> entry}. When a
+    # body carries a matching entry the extractor verifies its optical faces
+    # against the prescription (<1 um gate) and emits them FROM THE
+    # PRESCRIPTION. `prescription` is the full doc (schema_version/elements),
+    # a bare {key: entry} map, or None (every existing scene extracts
+    # unchanged).
+    presc_elements = {}
+    if prescription:
+        presc_elements = prescription.get("elements", prescription) \
+            if isinstance(prescription, dict) else {}
+        if presc_elements:
+            log("%s: prescription-primary cross-check active for %d "
+                "element(s)" % (stem, len(presc_elements)))
 
     sheets = [o for o in doc.Objects if o.TypeId == "Spreadsheet::Sheet"]
     # Primary sheet ('dim' by convention, else the first) echoes FLAT
@@ -1426,10 +1697,18 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
                 die("%s: bad surface_override spec %r: %s"
                     % (obj.Label, surf_override_raw, e))
 
+        presc_entry = presc_elements.get(presc_key_for_body(obj)) \
+            if presc_elements else None
+
         # face cache (fast evaluator, see docstring): replay an unchanged
-        # body's faces + warnings verbatim instead of re-tessellating.
+        # body's faces + warnings verbatim instead of re-tessellating. A body
+        # with a prescription bypasses the cache -- the cache key does not
+        # cover the prescription, so the verify+emit must run fresh (this is
+        # the correctness-first path; the fast evaluator does not drive
+        # prescriptions).
         cached = (face_cache.lookup(obj, tip_name, surf_override_raw)
-                  if face_cache is not None else None)
+                  if (face_cache is not None and presc_entry is None)
+                  else None)
         if cached is not None:
             faces = cached["faces"]
             closest_face_id = cached["closest_face_id"]
@@ -1439,8 +1718,8 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
             n_warn_mark = len(warnings)
             faces, closest_face_id = extract_faces(
                 obj, shape, tip_name, out_dir, strict, warnings,
-                surf_override_map)
-            if face_cache is not None:
+                surf_override_map, prescription_entry=presc_entry)
+            if face_cache is not None and presc_entry is None:
                 face_cache.store(obj, tip_name, surf_override_raw, {
                     "faces": faces,
                     "closest_face_id": closest_face_id,
@@ -1945,9 +2224,16 @@ def main():
     log("extract_geometry.py: processing %d model(s) -> %s%s"
         % (len(paths), outdir, "  [--strict]" if args.strict else ""))
 
+    # An explicit --prescription applies to a single-model run; with multiple
+    # models each still auto-discovers its own <stem>.prescription.json.
+    explicit_presc = args.prescription
+    if explicit_presc and len(paths) > 1:
+        die("--prescription names one file but %d models were given; use "
+            "per-model <stem>.prescription.json sidecars instead" % len(paths))
+
     for i, p in enumerate(paths):
         common.progress_emit("extract", i / len(paths), p.stem)
-        extract_one(p, outdir, args.strict)
+        extract_one(p, outdir, args.strict, prescription=explicit_presc)
 
     common.progress_emit("extract", 1.0,
                          "%d model(s) extracted" % len(paths),

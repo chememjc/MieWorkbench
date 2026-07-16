@@ -620,6 +620,37 @@ class Project(QObject):
         build one per interaction, never cache across mutations)."""
         return TrainModel(self.structure, self.body_states)
 
+    def build_prescription(self):
+        """The prescription-primary document (engine3 Sec 3, P5) for the
+        current scene, or None if no element is a covered primitive. Keyed by
+        miewb_group (== the TrainModel element label), computed from each
+        element's kind (miewb_primitive) + dim params through the SAME pure
+        primitivelib.build_prescription_entry the extractor cross-checks
+        against (the single authoring path). Packed into the .MieWB so the
+        extractor verifies + emits the optical surfaces from it."""
+        try:
+            import primitivelib
+            from raytracer import prescription as prescription_mod
+        except Exception:
+            return None
+        tm = self.train()
+        entries = {}
+        for element in tm.element_labels():
+            primary = tm.primary_body(element)
+            kind = (primary.get("properties", {}).get("miewb_primitive")
+                    or {}).get("value")
+            if not kind:
+                continue
+            params = tm._sheet_params(element)
+            if not params:
+                continue
+            entry = primitivelib.build_prescription_entry(kind, params)
+            if entry is not None:
+                entries[element] = entry
+        if not entries:
+            return None
+        return prescription_mod.new_document(entries)
+
     def train_variables(self):
         """{name: float} from the miewb_vars sheet (FreeCAD-evaluated)."""
         return variables_from_sheets(self.sheets())

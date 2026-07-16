@@ -90,6 +90,13 @@ sys.path.insert(0, os.path.normpath(
 import common  # noqa: E402  (stdlib-only shared contract hub)
 
 try:
+    import primitivelib as _primitivelib  # noqa: E402 (pure metadata + the
+    # pure build_prescription_entry; FreeCAD is guarded away under the GUI
+    # venv, and build_prescription_entry needs none of it)
+except Exception:                                    # pragma: no cover
+    _primitivelib = None
+
+try:
     from raytracer.optprops import load_optical_properties  # noqa: E402
 except Exception:                                    # pragma: no cover
     load_optical_properties = None
@@ -320,6 +327,7 @@ class ElementEditorPane(QWidget):
         self._build_properties_box()
         self._build_pulse_box()
         self._build_paraxial_box()
+        self._build_prescription_box()
         self._build_faces_box()
         self._build_sheet_box()
 
@@ -328,6 +336,7 @@ class ElementEditorPane(QWidget):
         body_layout.addWidget(self.props_box)
         body_layout.addWidget(self.pulse_box)
         body_layout.addWidget(self.paraxial_box)
+        body_layout.addWidget(self.prescription_box)
         body_layout.addWidget(self.faces_box)
         body_layout.addWidget(self.sheet_box)
         body_layout.addStretch(1)
@@ -712,6 +721,7 @@ class ElementEditorPane(QWidget):
             self._refresh_properties()
             self._refresh_sheet_table()
             self._refresh_paraxial()
+            self._refresh_prescription()
         self._refresh_assignments_table()
 
     # -- assignment data helpers ----------------------------------------------
@@ -1105,6 +1115,79 @@ class ElementEditorPane(QWidget):
         self.paraxial_box.setLayout(layout)
         self.paraxial_box.setVisible(False)
 
+    # -- prescription readout (read-only; engine3 Sec 3, P5) -----------------
+    def _build_prescription_box(self):
+        self.prescription_box = QGroupBox("Prescription")
+        self.prescription_label = QLabel("")
+        self.prescription_label.setWordWrap(True)
+        self.prescription_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse)
+        layout = QVBoxLayout()
+        layout.addWidget(self.prescription_label)
+        self.prescription_box.setLayout(layout)
+        self.prescription_box.setVisible(False)
+        self.prescription_box.setToolTip(
+            "The optical prescription this element implies (engine3 Sec 3): "
+            "the exact analytic surfaces the dim parameters generate, in the "
+            "same surface language model.json carries. This is the TRUTH the "
+            "extractor verifies the CAD against (<1 µm) and emits from. "
+            "Read-only — edit the dim parameters below to change it (the one "
+            "authoring path).")
+
+    def _refresh_prescription(self):
+        """Read-only display of the element's prescription surfaces (built
+        from the dim sheet via the same pure primitivelib code the extractor
+        cross-checks against). Hidden for elements P5 does not cover. Never a
+        modal — failures degrade to hidden with the reason as tooltip."""
+        try:
+            element = self._element_label()
+            if (element is None or self._project is None
+                    or _primitivelib is None):
+                self.prescription_box.setVisible(False)
+                return
+            tm = self._project.train()
+            primary = tm.primary_body(element)
+            props = {n: (e or {}).get("value")
+                     for n, e in (primary.get("properties") or {}).items()}
+            kind = props.get("miewb_primitive")
+            params = tm._sheet_params(element)
+            if not kind or not params:
+                self.prescription_box.setVisible(False)
+                return
+            entry = _primitivelib.build_prescription_entry(kind, params)
+            if entry is None:
+                self.prescription_box.setVisible(False)
+                return
+            lines = ["<b>kind:</b> %s" % entry["kind"]]
+            for s in entry["surfaces"]:
+                role = s.get("role", "?")
+                st = s["type"]
+                if st == "sphere":
+                    detail = "R = %.4g mm, centre x = %.4g mm" % (
+                        s["radius"] * 1e3, s["center"][0] * 1e3)
+                elif st == "cylinder":
+                    detail = "R = %.4g mm, axis = (%g, %g, %g)" % (
+                        s["radius"] * 1e3, s["axis"][0], s["axis"][1],
+                        s["axis"][2])
+                elif st == "asphere":
+                    detail = "R = %.5g mm, k = %.4g" % (
+                        s["R"] * 1e3, s["k"])
+                    if s.get("coeffs"):
+                        detail += ", A4… = %s" % ", ".join(
+                            "%.4g" % c for c in s["coeffs"])
+                    detail += ", r_max = %.4g mm" % (s["r_max"] * 1e3)
+                elif st == "plane":
+                    detail = "n = (%g, %g, %g)" % tuple(s["normal"])
+                else:
+                    detail = st
+                lines.append("&nbsp;&nbsp;<b>%s</b> (%s): %s"
+                             % (role, st, detail))
+            self.prescription_label.setText("<br>".join(lines))
+            self.prescription_box.setVisible(True)
+        except Exception as exc:                       # pragma: no cover
+            self.prescription_box.setVisible(False)
+            self.prescription_box.setToolTip("prescription readout: %s" % exc)
+
     # -- pulse readout (read-only, derived echo; pulsed-optics P11) -----------
     def _build_pulse_box(self):
         self.pulse_box = QGroupBox("Pulse (derived)")
@@ -1431,4 +1514,5 @@ class ElementEditorPane(QWidget):
         self._refresh_assignments_table()
         self._refresh_sheet_table()
         self._refresh_paraxial()
+        self._refresh_prescription()
         self._refresh_pulse()

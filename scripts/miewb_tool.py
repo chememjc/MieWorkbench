@@ -148,8 +148,12 @@ def _atomic_replace(tmp_path, final_path):
 # .MieWB
 # ---------------------------------------------------------------------------
 def pack_miewb(fcstd_path, out_path, optprops_dir=None, simparams=None,
-               project_meta=None):
-    """Create X.MieWB. simparams: dict or path to a JSON file."""
+               project_meta=None, prescription=None):
+    """Create X.MieWB. simparams: dict or path to a JSON file. prescription:
+    a prescription.json dict or path (engine3 Sec 3) -- carried verbatim as a
+    `prescription.json` member (round-tripped by unpack; consumed by the
+    extractor's prescription-primary cross-check). Omitted when None, so
+    prescription-free scenes pack exactly as before."""
     fcstd_path = Path(fcstd_path)
     if not fcstd_path.is_file():
         raise MieFormatError("no such model: %s" % fcstd_path)
@@ -160,6 +164,9 @@ def pack_miewb(fcstd_path, out_path, optprops_dir=None, simparams=None,
         with open(simparams) as fh:
             simparams = json.load(fh)
     simparams = simparams or {}
+    if isinstance(prescription, (str, Path)):
+        with open(prescription) as fh:
+            prescription = json.load(fh)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,6 +184,9 @@ def pack_miewb(fcstd_path, out_path, optprops_dir=None, simparams=None,
         if project_meta:
             zf.writestr("project.json",
                         json.dumps(project_meta, indent=1, sort_keys=True))
+        if prescription:
+            zf.writestr("prescription.json",
+                        json.dumps(prescription, indent=1, sort_keys=True))
     _atomic_replace(tmp, out_path)
     return manifest
 
@@ -345,6 +355,14 @@ def run_miewb(miewb_path, out_miesim, workdir=None, extra_args=None,
     if not named_model.exists():
         shutil.copy2(model, named_model)
 
+    # prescription-primary (engine3 Sec 3): if the .MieWB carried a
+    # prescription.json, drop it beside the named model as the
+    # <stem>.prescription.json sidecar so extract_geometry auto-discovers it
+    # (no run_pipeline flag needed). Prescription-free workbenches skip this.
+    packed_presc = workdir / "prescription.json"
+    if packed_presc.is_file():
+        shutil.copy2(packed_presc, workdir / ("%s.prescription.json" % stem))
+
     with open(workdir / "simparams.json") as fh:
         simparams = json.load(fh)
     args = simparams_to_args(simparams) + list(extra_args or [])
@@ -394,6 +412,9 @@ def main(argv=None):
     sp.add_argument("--optical-properties", default=None)
     sp.add_argument("--simparams", default=None,
                     help="JSON file of run_pipeline option values")
+    sp.add_argument("--prescription", default=None,
+                    help="prescription.json to embed (engine3 Sec 3 "
+                         "prescription-primary cross-check)")
 
     sp = sub.add_parser("unpack", help="explode an archive into a directory")
     sp.add_argument("archive")
@@ -429,7 +450,8 @@ def main(argv=None):
     if args.cmd == "pack":
         manifest = pack_miewb(args.model, args.out,
                               optprops_dir=args.optical_properties,
-                              simparams=args.simparams)
+                              simparams=args.simparams,
+                              prescription=args.prescription)
         print(json.dumps(manifest, indent=1, sort_keys=True))
     elif args.cmd == "unpack":
         manifest = unpack(args.archive, args.dest)
