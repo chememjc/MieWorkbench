@@ -306,3 +306,225 @@ def test_ray_k_roundtrip():
         cos_kc = np.abs(k @ c)
         expect = n_e_theta(k @ c, n_o, n_e)
         assert np.allclose(n_phase, expect, atol=1e-12)
+
+
+# ===========================================================================
+# EXACT Lekner-1991 interface amplitudes (uniaxial_interface_in/_out).
+# P6: replaces the effective-index approximation with the exact boundary-
+# value-problem solution. Oracles below are the P6 acceptance gates.
+# ===========================================================================
+QTZ_NO, QTZ_NE = 1.5443, 1.5534   # quartz (positive uniaxial); calcite above
+
+
+def _interface_geom(thetas_deg, alpha_deg, phi_deg):
+    """Interface normal +z; plane of incidence = x-z; incident ray travels
+    into the interface (d_z < 0). Optic axis at polar alpha from the normal,
+    azimuth phi from the plane of incidence (+x)."""
+    th = np.deg2rad(np.atleast_1d(thetas_deg).astype(float))
+    n = th.shape[0]
+    nh = np.tile([0, 0, 1.0], (n, 1))
+    d = np.stack([np.sin(th), np.zeros(n), -np.cos(th)], axis=1)
+    al, ph = np.deg2rad(alpha_deg), np.deg2rad(phi_deg)
+    c = np.tile([np.sin(al) * np.cos(ph), np.sin(al) * np.sin(ph),
+                 np.cos(al)], (n, 1))
+    return d, nh, c
+
+
+def test_uniaxial_interface_isotropic_reduction():
+    """ORACLE 1: n_o = n_e = n -> the exact amplitudes reduce to Fresnel to
+    1e-12 over 200 angles. Reflection Jones equals rs/rp with zero cross
+    terms; per-input transmitted power equals the Fresnel Ts/Tp."""
+    N = 200
+    thetas = np.linspace(0.1, 80, N)
+    d, nh, c = _interface_geom(thetas, 37.0, 41.0)
+    n1 = np.full(N, 1.0)
+    ncr = np.full(N, 1.55)
+    amp = bi.uniaxial_interface_in(d, nh, c, n1, ncr, ncr)
+    cos_i = -np.sum(d * nh, axis=1)
+    rs, rp, ts, tp, ct = fr.fresnel_coeffs(cos_i, n1.astype(complex),
+                                           ncr.astype(complex))
+    Rs, Rp, Ts, Tp = fr.power_coeffs(rs, rp, ts, tp, cos_i, ct,
+                                     n1.astype(complex), ncr.astype(complex))
+    assert np.max(np.abs(amp["rss"] - rs)) < 1e-12
+    assert np.max(np.abs(amp["rpp"] - rp)) < 1e-12
+    assert np.max(np.abs(amp["rsp"])) < 1e-12
+    assert np.max(np.abs(amp["rps"])) < 1e-12
+    Ts_bvp = np.abs(amp["tos"]) ** 2 + np.abs(amp["tes"]) ** 2
+    Tp_bvp = np.abs(amp["top"]) ** 2 + np.abs(amp["tep"]) ** 2
+    assert np.max(np.abs(Ts_bvp - Ts)) < 1e-12
+    assert np.max(np.abs(Tp_bvp - Tp)) < 1e-12
+
+
+@pytest.mark.parametrize("no,ne", [(CAL_NO, CAL_NE), (QTZ_NO, QTZ_NE)])
+def test_uniaxial_interface_energy_closure(no, ne):
+    """ORACLE 3: Poynting-flux closure. The flux-normalized 4x4 scattering
+    matrix is UNITARY across a dense (theta, alpha, phi) grid for calcite
+    (negative) AND quartz (positive) uniaxials: sum of |amplitude|^2 == 1
+    per input to 1e-10, and the two input columns are orthogonal.
+    Also pins the BRANCH CHOICE: the transmitted-e Poynting flux stays > 0
+    (a wrong ellipsoid root would flip its sign and break closure)."""
+    worst_norm = 0.0
+    worst_orth = 0.0
+    for alpha in np.linspace(0, 90, 10):
+        for phi in np.linspace(0, 90, 10):
+            thetas = np.linspace(0.01, 80, 40)
+            d, nh, c = _interface_geom(thetas, alpha, phi)
+            n1 = np.full(len(thetas), 1.0)
+            a = bi.uniaxial_interface_in(d, nh, c, n1,
+                                         np.full(len(thetas), no),
+                                         np.full(len(thetas), ne))
+            col_s = (np.abs(a["rss"]) ** 2 + np.abs(a["rps"]) ** 2
+                     + np.abs(a["tos"]) ** 2 + np.abs(a["tes"]) ** 2)
+            col_p = (np.abs(a["rsp"]) ** 2 + np.abs(a["rpp"]) ** 2
+                     + np.abs(a["top"]) ** 2 + np.abs(a["tep"]) ** 2)
+            orth = (np.conj(a["rss"]) * a["rsp"] + np.conj(a["rps"]) * a["rpp"]
+                    + np.conj(a["tos"]) * a["top"]
+                    + np.conj(a["tes"]) * a["tep"])
+            worst_norm = max(worst_norm, np.max(np.abs(col_s - 1)),
+                             np.max(np.abs(col_p - 1)))
+            worst_orth = max(worst_orth, np.max(np.abs(orth)))
+    assert worst_norm < 1e-10, worst_norm
+    assert worst_orth < 1e-10, worst_orth
+
+
+@pytest.mark.parametrize("no,ne", [(CAL_NO, CAL_NE), (QTZ_NO, QTZ_NE)])
+def test_uniaxial_azimuth_parity(no, ne):
+    """ORACLE 2 (cross-check vs Lekner, JOSA A 40, 722 (2023)): with the
+    optic axis IN the interface plane, r_sp and r_ps are ODD in the axis
+    azimuth phi and vanish identically at phi = 0 and 90 deg; the magnitude
+    peaks near 45 deg."""
+    theta, alpha = 50.0, 90.0        # axis in the surface (Lekner geometry)
+    for phi in (0.0, 90.0):
+        d, nh, c = _interface_geom([theta], alpha, phi)
+        a = bi.uniaxial_interface_in(d, nh, c, np.array([1.0]),
+                                     np.array([no]), np.array([ne]))
+        assert abs(a["rsp"][0]) < 1e-14
+        assert abs(a["rps"][0]) < 1e-14
+    for phi in (10.0, 22.5, 30.0, 45.0, 60.0):
+        dp, nhp, cp = _interface_geom([theta], alpha, phi)
+        dm, nhm, cm = _interface_geom([theta], alpha, -phi)
+        ap = bi.uniaxial_interface_in(dp, nhp, cp, np.array([1.0]),
+                                      np.array([no]), np.array([ne]))
+        am = bi.uniaxial_interface_in(dm, nhm, cm, np.array([1.0]),
+                                      np.array([no]), np.array([ne]))
+        assert abs(ap["rsp"][0] + am["rsp"][0]) < 1e-14   # odd in phi
+        assert abs(ap["rps"][0] + am["rps"][0]) < 1e-14
+    grid = np.linspace(0, 90, 19)
+    mags = []
+    for phi in grid:
+        dp, nhp, cp = _interface_geom([theta], alpha, phi)
+        ap = bi.uniaxial_interface_in(dp, nhp, cp, np.array([1.0]),
+                                      np.array([no]), np.array([ne]))
+        mags.append(abs(ap["rsp"][0]))
+    assert 40.0 <= grid[int(np.argmax(mags))] <= 55.0
+
+
+def test_uniaxial_normal_incidence_axis_in_plane():
+    """ORACLE 4: at normal incidence with the optic axis in the interface
+    plane, the two eigen-reflectivities equal the isotropic Fresnel values
+    with n_o and n_e respectively (textbook), to 1e-12, with no cross
+    coupling."""
+    d, nh, c = _interface_geom([0.0], 90.0, 0.0)   # axis along +x, in plane
+    a = bi.uniaxial_interface_in(d, nh, c, np.array([1.0]),
+                                 np.array([CAL_NO]), np.array([CAL_NE]))
+    r_o = abs((1 - CAL_NO) / (1 + CAL_NO))
+    r_e = abs((1 - CAL_NE) / (1 + CAL_NE))
+    got = sorted([abs(a["rss"][0]), abs(a["rpp"][0])])
+    assert abs(got[0] - r_e) < 1e-12 and abs(got[1] - r_o) < 1e-12
+    assert abs(a["rsp"][0]) < 1e-12 and abs(a["rps"][0]) < 1e-12
+
+
+def test_uniaxial_exit_isotropic_reduction():
+    """EXIT ORACLE 1: n_o = n_e -> the exit transmitted power reduces to
+    Fresnel. The incident (isotropic) o-mode's E projects onto s/p; the
+    exact T_total equals a_s^2*Ts + a_p^2*Tp."""
+    N = 100
+    thetas = np.linspace(0.1, 30, N)          # sub-critical crystal->air
+    th = np.deg2rad(thetas)
+    nh = np.tile([0, 0, 1.0], (N, 1))
+    kh = np.stack([np.sin(th), 0 * th, -np.cos(th)], axis=1)
+    c = np.tile([0.3, 0.5, 0.8], (N, 1))
+    ncr, n2 = np.full(N, 1.55), np.full(N, 1.0)
+    cos_k = -np.sum(kh * nh, axis=1)
+    rs, rp, ts, tp, ct = fr.fresnel_coeffs(cos_k, ncr.astype(complex),
+                                           n2.astype(complex))
+    _, _, Ts, Tp = fr.power_coeffs(rs, rp, ts, tp, cos_k, ct,
+                                   ncr.astype(complex), n2.astype(complex))
+    out = bi.uniaxial_interface_out(kh, np.zeros(N, bool), nh, c, ncr, ncr, n2)
+    eo, _ = bi.eigenbasis(kh, c)
+    s_new, p_new = fr.pol_basis(kh, nh)
+    a_s = np.sum(eo * s_new, axis=1)
+    a_p = np.sum(eo * p_new, axis=1)
+    assert np.max(np.abs(out["T_total"] - (a_s ** 2 * Ts + a_p ** 2 * Tp))) \
+        < 1e-12
+
+
+@pytest.mark.parametrize("no,ne", [(CAL_NO, CAL_NE), (QTZ_NO, QTZ_NE)])
+def test_uniaxial_exit_transmittance_physical(no, ne):
+    """EXIT: the exact transmitted power fraction is in [0, 1] and full-field
+    tangential-E/H continuity (energy conservation) holds; reflectance is
+    R = 1 - T_total (the crystal-side incident/reflected interference means
+    the self-flux split is not clean -- documented in birefringence.py)."""
+    for alpha in np.linspace(0, 90, 7):
+        for phi in np.linspace(0, 90, 7):
+            thetas = np.linspace(0.01, 25, 20)   # sub-critical internal
+            th = np.deg2rad(thetas)
+            nh = np.tile([0, 0, 1.0], (20, 1))
+            kh = np.stack([np.sin(th), 0 * th, -np.cos(th)], axis=1)
+            al, ph = np.deg2rad(alpha), np.deg2rad(phi)
+            cc = np.tile([np.sin(al) * np.cos(ph), np.sin(al) * np.sin(ph),
+                          np.cos(al)], (20, 1))
+            for is_e in (False, True):
+                out = bi.uniaxial_interface_out(kh, np.full(20, is_e), nh, cc,
+                                                np.full(20, no),
+                                                np.full(20, ne),
+                                                np.full(20, 1.0))
+                ok = ~out["tir"]
+                assert np.all(out["T_total"][ok] <= 1.0 + 1e-12)
+                assert np.all(out["T_total"][ok] >= -1e-12)
+
+
+def test_uniaxial_approx_error_finding():
+    """ORACLE 6 (a FINDING, not a hard gate): tabulate the reflected-Jones
+    error |exact - effective-index| for calcite with the optic axis at 45deg
+    polar and phi in {0, 22.5, 45} deg over theta 0..80 deg. engine3 Sec 7.4
+    predicts it is smallest at phi=0/90 and largest near phi=45; this pins
+    the SHAPE of that prediction. Representative table (s-input reflected
+    Jones L2 error), computed by scripts .../scratch val_biref.py:
+
+        phi     theta=10   30       50       70       80
+        0.0     0          ~1e-16   ~1e-16   ~1e-16   ~1e-16   (exact == approx)
+        22.5    1.6e-3     3.7e-3   4.4e-3   3.8e-3   3.1e-3
+        45.0    3.8e-3     8.7e-3   1.07e-2  9.4e-3   7.0e-3
+    """
+    no, ne = CAL_NO, CAL_NE
+    errs = {}
+    for phi in (0.0, 22.5, 45.0):
+        row = []
+        for theta in (10, 30, 50, 70, 80):
+            d, nh, c = _interface_geom([theta], 45.0, phi)
+            n1 = np.array([1.0])
+            res = bi.refract_in(d, nh, c, n1, np.array([no]), np.array([ne]))
+            a = bi.uniaxial_interface_in(d, nh, c, n1, np.array([no]),
+                                         np.array([ne]), res=res)
+            cos_i = -np.sum(d * nh, axis=1)
+            s_new, p_new = fr.pol_basis(d, nh)
+            eo_i, ee_i = bi.eigenbasis(d, c)
+            cs_o = np.sum(eo_i * s_new, axis=-1)
+            sn_o = np.sum(eo_i * p_new, axis=-1)
+            rs_o, rp_o, _, _, _ = fr.fresnel_coeffs(cos_i, n1.astype(complex),
+                                                    np.array([no], complex))
+            npe = res["n_phase_e"].astype(complex)
+            rs_e, rp_e, _, _, _ = fr.fresnel_coeffs(cos_i, n1.astype(complex),
+                                                    npe)
+            Eo_i, Ee_i = cs_o, -sn_o                 # channel proj, s-input
+            Es_ap = Eo_i * cs_o * rs_o - Ee_i * sn_o * rs_e
+            Ep_ap = Eo_i * sn_o * rp_o + Ee_i * cs_o * rp_e
+            err = np.hypot(abs(Es_ap[0] - a["rss"][0]),
+                           abs(Ep_ap[0] - a["rps"][0]))
+            row.append(err)
+        errs[phi] = np.array(row)
+    # SHAPE assertions (engine3 Sec 7.4 prediction)
+    assert np.max(errs[0.0]) < 1e-12                       # phi=0 -> exact
+    assert np.max(errs[45.0]) > np.max(errs[22.5]) > 5e-4  # grows toward 45
+    assert 1e-3 < np.max(errs[45.0]) < 5e-2                # O(1%) at 45deg

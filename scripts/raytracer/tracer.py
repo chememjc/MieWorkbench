@@ -58,7 +58,7 @@ class TraceConfig:
                  rough_fresnel="micro", export_rays=False,
                  track_history=False, track_time=False,
                  importance_scatter=False, importance_limit=1.0,
-                 pol_transport=False):
+                 pol_transport=False, biref_approx=False):
         self.max_reflections = max_reflections
         self.power_floor = power_floor
         self.n_lambda = n_lambda
@@ -103,6 +103,11 @@ class TraceConfig:
         # sampler, bit-for-bit. See Tracer._emit_scatter_side.
         self.importance_scatter = bool(importance_scatter)
         self.importance_limit = float(importance_limit)
+        # biref_approx: use the legacy isotropic effective-index Fresnel at
+        # uniaxial-crystal interfaces (o-channel n_o, e-channel n(theta),
+        # cross terms dropped) instead of the default EXACT Lekner-1991
+        # amplitudes. --biref-approx; kept for A/B and C-engine parity.
+        self.biref_approx = bool(biref_approx)
 
 
 class VizStore:
@@ -1750,47 +1755,90 @@ class Tracer:
             p_old = np.cross(sub.dir, sub.s_hat)
             Es_i, Ep_i = fr.rotate_jones(sub.Es, sub.Ep, sub.s_hat, p_old,
                                          s_new, p_new)
-            # ---- unitary o/e channel decomposition at the incident k ----
-            # the component of the incident field along e_o couples to the
-            # ordinary wave (n_o Fresnel), the e_e component to the
-            # extraordinary wave (n(theta) Fresnel). Decomposing FIRST and
-            # applying each channel's own R/T keeps R+T=1 per channel —
-            # applying n_o reflection to the e-coupled component overcounts
-            # energy by ~(Ts_e - Ts_o) and broke closure at the 1e-2 level.
-            eo_i, ee_i = bir.eigenbasis(sub.dir, c_axis)
-            Eo_i, Ee_i = fr.rotate_jones(Es_i, Ep_i, s_new, p_new,
-                                         eo_i, ee_i)
-            # each channel back in (s,p) (unit Jones direction * amplitude)
-            cs_o = np.sum(eo_i * s_new, axis=-1)   # cos/sin of the eigen
-            sn_o = np.sum(eo_i * p_new, axis=-1)   # rotation angle
-            # channel fields in (s,p): o-channel = Eo_i*(cs_o, sn_o),
-            # e-channel = Ee_i*(-sn_o, cs_o)  (orthogonal complement)
-            rs_o, rp_o, ts_o, tp_o, ct_o = fr.fresnel_coeffs(
-                ci, n1, n_o[ent].astype(np.complex128))
-            Rs_o, Rp_o, Ts_o, Tp_o = fr.power_coeffs(
-                rs_o, rp_o, ts_o, tp_o, ci, ct_o, n1,
-                n_o[ent].astype(np.complex128))
-            ne_th = res["n_phase_e"].astype(np.complex128)
-            rs_e, rp_e, ts_e, tp_e, ct_e = fr.fresnel_coeffs(ci, n1, ne_th)
-            _, _, Ts_e, Tp_e = fr.power_coeffs(rs_e, rp_e, ts_e, tp_e,
-                                               ci, ct_e, n1, ne_th)
+            # transmitted-mode eigenbases (o/e D directions at k_o, k_e)
+            eo_o, ee_o = bir.eigenbasis(res["k_o"], c_axis)
+            eo_e, ee_e = bir.eigenbasis(res["k_e"], c_axis)
+            approx = getattr(self.cfg, "biref_approx", False)
+            if approx:
+                # ---- effective-index approximation (A/B path, --biref-
+                # approx). Split the incident field into an o-channel
+                # (n_o Fresnel) and an e-channel (n(theta) Fresnel);
+                # decompose FIRST so R+T=1 per channel. The s<->p / o<->e
+                # CROSS amplitudes are dropped (README §6) -> the small
+                # power difference lands in absorbed_surface below. ----
+                eo_i, ee_i = bir.eigenbasis(sub.dir, c_axis)
+                Eo_i, Ee_i = fr.rotate_jones(Es_i, Ep_i, s_new, p_new,
+                                             eo_i, ee_i)
+                cs_o = np.sum(eo_i * s_new, axis=-1)
+                sn_o = np.sum(eo_i * p_new, axis=-1)
+                rs_o, rp_o, ts_o, tp_o, ct_o = fr.fresnel_coeffs(
+                    ci, n1, n_o[ent].astype(np.complex128))
+                Rs_o, Rp_o, Ts_o, Tp_o = fr.power_coeffs(
+                    rs_o, rp_o, ts_o, tp_o, ci, ct_o, n1,
+                    n_o[ent].astype(np.complex128))
+                ne_th = res["n_phase_e"].astype(np.complex128)
+                rs_e, rp_e, ts_e, tp_e, ct_e = fr.fresnel_coeffs(
+                    ci, n1, ne_th)
+                _, _, Ts_e, Tp_e = fr.power_coeffs(rs_e, rp_e, ts_e, tp_e,
+                                                   ci, ct_e, n1, ne_th)
+                amp_rs_o = np.sqrt(r_m + phys * np.abs(rs_o) ** 2) \
+                    * np.exp(1j * np.angle(rs_o))
+                amp_rp_o = np.sqrt(r_m + phys * np.abs(rp_o) ** 2) \
+                    * np.exp(1j * np.angle(rp_o))
+                amp_rs_e = np.sqrt(r_m + phys * np.abs(rs_e) ** 2) \
+                    * np.exp(1j * np.angle(rs_e))
+                amp_rp_e = np.sqrt(r_m + phys * np.abs(rp_e) ** 2) \
+                    * np.exp(1j * np.angle(rp_e))
+                refl_Es = Eo_i * cs_o * amp_rs_o - Ee_i * sn_o * amp_rs_e
+                refl_Ep = Eo_i * sn_o * amp_rp_o + Ee_i * cs_o * amp_rp_e
+                amp_ts_o = np.sqrt(phys * np.clip(Ts_o, 0.0, None)) \
+                    * np.exp(1j * np.angle(ts_o))
+                amp_tp_o = np.sqrt(phys * np.clip(Tp_o, 0.0, None)) \
+                    * np.exp(1j * np.angle(tp_o))
+                o_field, _ = fr.rotate_jones(
+                    Eo_i * cs_o * amp_ts_o, Eo_i * sn_o * amp_tp_o,
+                    s_new, np.cross(res["k_o"], s_new), eo_o, ee_o)
+                amp_ts_e = np.sqrt(phys * np.clip(Ts_e, 0.0, None)) \
+                    * np.exp(1j * np.angle(ts_e))
+                amp_tp_e = np.sqrt(phys * np.clip(Tp_e, 0.0, None)) \
+                    * np.exp(1j * np.angle(tp_e))
+                _, e_field = fr.rotate_jones(
+                    -Ee_i * sn_o * amp_ts_e, Ee_i * cs_o * amp_tp_e,
+                    s_new, np.cross(res["k_e"], s_new), eo_e, ee_e)
+            else:
+                # ---- EXACT Lekner-1991 interface amplitudes (default).
+                # Full o/e transmission split + reflected s/p Jones INCL.
+                # the cross terms r_sp/r_ps, flux-normalized so |amp|^2 is
+                # the true power fraction (birefringence.py header). ----
+                amp = bir.uniaxial_interface_in(
+                    sub.dir, nh, c_axis, np.real(n1),
+                    n_o[ent], n_e[ent], res=res)
+                Rvec_s = amp["rss"] * Es_i + amp["rsp"] * Ep_i
+                Rvec_p = amp["rps"] * Es_i + amp["rpp"] * Ep_i
+                R_pow = np.abs(Rvec_s) ** 2 + np.abs(Rvec_p) ** 2
+                # reflected power = r_m (mirror) + phys * Fresnel; scale the
+                # exact Fresnel reflection to that target (r_m ~ 0 for real
+                # crystals => scale = sqrt(phys), exact).
+                target = r_m * sub.power + phys * R_pow
+                safe = R_pow > 1e-300
+                scale = np.where(safe, np.sqrt(
+                    target / np.where(safe, R_pow, 1.0)), 0.0)
+                refl_Es = Rvec_s * scale
+                refl_Ep = Rvec_p * scale
+                A_o = amp["tos"] * Es_i + amp["top"] * Ep_i
+                A_e = amp["tes"] * Es_i + amp["tep"] * Ep_i
+                o_field = np.sqrt(phys) * A_o    # o mode: D along e_o_hat
+                e_field = np.sqrt(phys) * A_e    # e mode: D along e_e_hat
 
-            # reflected child: coherent sum of both channels' reflections
+            # reflected child (shared): field already in the (s_new, p_new)
+            # basis, reflected s_hat = s_new
             refl = sub.select(np.ones(len(ent), dtype=bool))
             _kill_differentials(refl)
             pt.kill(refl)   # o/e (or slow/fast) channel mix: not modeled
             refl.dir = fr.reflect_dir(sub.dir, nh)
             refl.s_hat = s_new
-            amp_rs_o = np.sqrt(r_m + phys * np.abs(rs_o) ** 2) \
-                * np.exp(1j * np.angle(rs_o))
-            amp_rp_o = np.sqrt(r_m + phys * np.abs(rp_o) ** 2) \
-                * np.exp(1j * np.angle(rp_o))
-            amp_rs_e = np.sqrt(r_m + phys * np.abs(rs_e) ** 2) \
-                * np.exp(1j * np.angle(rs_e))
-            amp_rp_e = np.sqrt(r_m + phys * np.abs(rp_e) ** 2) \
-                * np.exp(1j * np.angle(rp_e))
-            refl.Es = Eo_i * cs_o * amp_rs_o - Ee_i * sn_o * amp_rs_e
-            refl.Ep = Eo_i * sn_o * amp_rp_o + Ee_i * cs_o * amp_rp_e
+            refl.Es = refl_Es
+            refl.Ep = refl_Ep
             self._record_reflection(refl, fid)
             refl.generation += 1
             cr = can_reflect[ent]
@@ -1802,23 +1850,14 @@ class Tracer:
                 out.append(refl.select(keep))
             p_accounted[ent] += refl.power
 
-            # ordinary transmitted child: o-channel through n_o Fresnel,
-            # D field along e_o_hat of k_o
-            eo_o, ee_o = bir.eigenbasis(res["k_o"], c_axis)
-            amp_ts_o = np.sqrt(phys * np.clip(Ts_o, 0.0, None)) \
-                * np.exp(1j * np.angle(ts_o))
-            amp_tp_o = np.sqrt(phys * np.clip(Tp_o, 0.0, None)) \
-                * np.exp(1j * np.angle(tp_o))
-            Eso, Epo = fr.rotate_jones(
-                Eo_i * cs_o * amp_ts_o, Eo_i * sn_o * amp_tp_o,
-                s_new, np.cross(res["k_o"], s_new), eo_o, ee_o)
+            # ordinary transmitted child: D field along e_o_hat of k_o
             och = sub.select(np.ones(len(ent), dtype=bool))
             _kill_differentials(och)
             pt.kill(och)   # o/e channel mix: not modeled
             och.dir = res["k_o"]
             och.s_hat = eo_o
-            och.Es = Eso                     # o mode: D along e_o_hat only
-            och.Ep = np.zeros_like(Epo)
+            och.Es = o_field                 # o mode: D along e_o_hat only
+            och.Ep = np.zeros_like(o_field)
             och.pol_mode[:] = 0
             och.n_eff[:] = 0.0               # medium_index gives n_o
             och.n_g_eff[:] = 0.0             # medium_group_index: o group
@@ -1829,24 +1868,15 @@ class Tracer:
                 out.append(och.select(keep))
             p_accounted[ent] += och.power * ok_o
 
-            # extraordinary transmitted child: e-channel through n(theta)
-            # Fresnel; D along e_e_hat, RAY along the walk-off Poynting
-            # direction, phase index cached in n_eff
-            eo_e, ee_e = bir.eigenbasis(res["k_e"], c_axis)
-            amp_ts_e = np.sqrt(phys * np.clip(Ts_e, 0.0, None)) \
-                * np.exp(1j * np.angle(ts_e))
-            amp_tp_e = np.sqrt(phys * np.clip(Tp_e, 0.0, None)) \
-                * np.exp(1j * np.angle(tp_e))
-            Ese, Epe = fr.rotate_jones(
-                -Ee_i * sn_o * amp_ts_e, Ee_i * cs_o * amp_tp_e,
-                s_new, np.cross(res["k_e"], s_new), eo_e, ee_e)
+            # extraordinary transmitted child: D along e_e_hat, RAY along
+            # the walk-off Poynting direction, phase index cached in n_eff
             ech = sub.select(np.ones(len(ent), dtype=bool))
             _kill_differentials(ech)
             pt.kill(ech)   # o/e channel mix: not modeled
             ech.dir = res["s_e"]
             ech.s_hat = eo_e                 # _|_ s_e exactly (in-plane ray)
-            ech.Es = np.zeros_like(Ese)
-            ech.Ep = Epe                     # e mode: D along e_e_hat only
+            ech.Es = np.zeros_like(e_field)
+            ech.Ep = e_field                 # e mode: D along e_e_hat only
             ech.pol_mode[:] = 1
             ech.n_eff[:] = res["n_ray_e"]    # OPL per metre along the RAY
             if self.cfg.track_time:
@@ -1897,18 +1927,59 @@ class Tracer:
             cos_k = np.clip(-np.sum(k_int * nh, axis=-1), 0.0, 1.0)
             d_out, tir = bir.refract_out(k_int, is_e, nh, c_axis,
                                          n_o[exi], n_e[exi], np.real(n2))
-            # effective-index Fresnel at the exit
-            rs, rp, ts, tp, ct = fr.fresnel_coeffs(
-                cos_k, n_phase.astype(np.complex128), n2)
-            Rs, Rp, Ts, Tp = fr.power_coeffs(
-                rs, rp, ts, tp, cos_k, ct,
-                n_phase.astype(np.complex128), n2)
-            Ts = np.clip(Ts, 0.0, None)
-            Tp = np.clip(Tp, 0.0, None)
             s_new, p_new = fr.pol_basis(k_int, nh)
             p_old = np.cross(sub.dir, sub.s_hat)
             Es_i, Ep_i = fr.rotate_jones(sub.Es, sub.Ep, sub.s_hat, p_old,
                                          s_new, p_new)
+            approx = getattr(self.cfg, "biref_approx", False)
+            if approx:
+                # effective-index Fresnel at the exit (A/B path)
+                rs, rp, ts, tp, ct = fr.fresnel_coeffs(
+                    cos_k, n_phase.astype(np.complex128), n2)
+                Rs, Rp, Ts, Tp = fr.power_coeffs(
+                    rs, rp, ts, tp, cos_k, ct,
+                    n_phase.astype(np.complex128), n2)
+                Ts = np.clip(Ts, 0.0, None)
+                Tp = np.clip(Tp, 0.0, None)
+                tr_Es = Es_i * np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts))
+                tr_Ep = Ep_i * np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp))
+                rf_Es = Es_i * np.sqrt(r_m + phys * np.abs(rs) ** 2) \
+                    * np.exp(1j * np.angle(rs))
+                rf_Ep = Ep_i * np.sqrt(r_m + phys * np.abs(rp) ** 2) \
+                    * np.exp(1j * np.angle(rp))
+            else:
+                # ---- EXACT Lekner-1991 exit amplitudes (default). The
+                # incident single crystal mode refracts out into an exact
+                # s/p mix (transmission is clean: medium 2 is isotropic);
+                # the mode-preserving internal reflection carries the exact
+                # remaining power R = 1 - T_total (energy conservation --
+                # the crystal-side incident/reflected fields interfere, so
+                # a self-flux split is NOT clean; see birefringence.py). ----
+                out2 = bir.uniaxial_interface_out(
+                    k_int, is_e, nh, c_axis,
+                    n_o[exi], n_e[exi], np.real(n2), d_out=d_out)
+                # incident MODE amplitude (a single complex scalar; the ray
+                # is one pure eigenmode). A primary mode ray carries its
+                # whole field on ONE Jones slot -- o on Es (s_hat=e_o), e on
+                # Ep -- set that way at the entry face, so |A_dir|^2 = power
+                # and A_in = A_dir exactly. A crystal-internal-reflection
+                # ghost stored its field split across (s,p); renormalize the
+                # magnitude to the true power so energy is never lost (its
+                # exit polarization is then the same tier of approximation as
+                # the mode-preserving internal reflection itself).
+                A_dir = np.where(is_e, sub.Ep, sub.Es)
+                mag = np.sqrt(sub.power)
+                amag = np.abs(A_dir)
+                A_in = mag * np.where(amag > 1e-300, A_dir / np.where(
+                    amag > 1e-300, amag, 1.0), 1.0)
+                sqp = np.sqrt(phys)
+                tr_Es = sqp * out2["t_s"] * A_in
+                tr_Ep = sqp * out2["t_p"] * A_in
+                R_total = np.clip(1.0 - out2["T_total"], 0.0, None)
+                gfac = np.sqrt(r_m + phys * R_total) \
+                    * np.exp(1j * out2["refl_phase"])
+                rf_Es = Es_i * gfac
+                rf_Ep = Ep_i * gfac
 
             # transmitted child: leaves the crystal, mode resets
             tr = sub.select(np.ones(len(exi), dtype=bool))
@@ -1916,8 +1987,8 @@ class Tracer:
             pt.kill(tr)   # o/e (or slow/fast) channel mix: not modeled
             tr.dir = d_out
             tr.s_hat = s_new
-            tr.Es = Es_i * np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts))
-            tr.Ep = Ep_i * np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp))
+            tr.Es = tr_Es
+            tr.Ep = tr_Ep
             tr.pol_mode[:] = 0
             tr.n_eff[:] = 0.0
             tr.n_g_eff[:] = 0.0
@@ -1936,10 +2007,8 @@ class Tracer:
             pt.kill(rf)   # o/e (or slow/fast) channel mix: not modeled
             rf.dir = k_r
             rf.s_hat = s_new
-            rf.Es = Es_i * np.sqrt(r_m + phys * np.abs(rs) ** 2) \
-                * np.exp(1j * np.angle(rs))
-            rf.Ep = Ep_i * np.sqrt(r_m + phys * np.abs(rp) ** 2) \
-                * np.exp(1j * np.angle(rp))
+            rf.Es = rf_Es
+            rf.Ep = rf_Ep
             self._record_reflection(rf, fid)
             rf.generation += 1
             if np.any(is_e):

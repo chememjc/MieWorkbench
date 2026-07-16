@@ -102,9 +102,17 @@ def detect_features(args, scene):
             feats.add("beam")
         if src.get("apodization"):
             feats.add("apodization")
+    biref_approx = getattr(args, "biref_approx", False)
     for body in scene.bodies:
         if body.birefringent:
-            feats.add("birefringence")
+            # The C engine's birefk.h computes interface amplitudes with the
+            # legacy effective-index approximation (trace.c fresnel_eval on
+            # n_phase_e). The default Python path now uses the EXACT
+            # Lekner-1991 amplitudes, which are NOT ported -> emit the
+            # unported "biref_exact" token so exact-uniaxial scenes honestly
+            # route to Python. Under --biref-approx both engines agree, so
+            # emit the ported "birefringence" token (C stays available).
+            feats.add("birefringence" if biref_approx else "biref_exact")
         if body.biaxial:
             feats.add("biaxial")
         if body.polarizer:

@@ -243,6 +243,8 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--suppress-body", b]
     if args.rough_fresnel is not None:
         cmd += ["--rough-fresnel", args.rough_fresnel]
+    if getattr(args, "biref_approx", False):
+        cmd += ["--biref-approx"]
     if args.ray_differentials:
         cmd += ["--ray-differentials"]
     if args.gather_occlusion:

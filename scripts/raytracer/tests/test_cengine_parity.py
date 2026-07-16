@@ -52,9 +52,35 @@ def c_chunk_dir(case_dir, seed=42):
     return chunks[0]
 
 
+def _uniaxial_material_names():
+    """Crystal names in the uniaxial birefringence registry (first CSV
+    column)."""
+    import csv as _csv
+    import common as _common
+    path = _common.OPTPROPS_DIR / "birefringence" / "uniaxial.miebrf"
+    with open(path, newline="") as fh:
+        return {row["name"].strip().lower()
+                for row in _csv.DictReader(fh) if row.get("name")}
+
+
+def _is_uniaxial(model_json):
+    """True if the scene has a uniaxial-crystal body. The C engine's
+    birefringence kernel implements the legacy effective-index amplitudes,
+    while the Python default is the EXACT Lekner-1991 path (which routes to
+    Python, not C). Parity for these scenes is tested on the SHARED approx
+    path via --biref-approx; biaxial bodies always Python-route regardless."""
+    names = _uniaxial_material_names()
+    doc = json.loads(Path(model_json).read_text())
+    for b in doc.get("bodies", []):
+        mat = b.get("material")
+        if mat is not None and str(mat).strip().lower() in names:
+            return True
+    return False
+
+
 def run_engine(model_json, case_dir, engine):
     import run_trace
-    rc = run_trace.main([
+    argv = [
         "--model-json", str(model_json),
         "--case-dir", str(case_dir),
         "--rays", str(RAYS),
@@ -63,7 +89,10 @@ def run_engine(model_json, case_dir, engine):
         "--spectral-bins", "8",
         "--engine", engine,
         "--workers", "1",
-    ])
+    ]
+    if _is_uniaxial(model_json):
+        argv.append("--biref-approx")
+    rc = run_trace.main(argv)
     assert rc == 0, "run_trace --engine %s exited %s" % (engine, rc)
     return {
         "case": json.loads((case_dir / "case.json").read_text()),
