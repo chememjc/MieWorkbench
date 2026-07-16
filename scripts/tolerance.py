@@ -463,14 +463,24 @@ def main(argv=None):
         PROJECT_DIR / "var" / "tolerance" / model_stem)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    sequential = args.eval_backend == "sequential"
+    if sequential:
+        mc_ops = optimize.mc_only_operands(args.operand)
+        if mc_ops:
+            parser.error(
+                "operand(s) %s need the Monte-Carlo backend and cannot be "
+                "served by --eval-backend sequential; drop them or use "
+                "--eval-backend worker" % ", ".join(sorted(set(mc_ops))))
+
     needs = optimize.operand_needs(args.operand)
     trace_args = []
     keep_coherent = False
-    if "export_rays" in needs:
-        trace_args.append("--export-rays")
-    if "save_fields" in needs:
-        trace_args.append("--save-fields")
-        keep_coherent = True
+    if not sequential:
+        if "export_rays" in needs:
+            trace_args.append("--export-rays")
+        if "save_fields" in needs:
+            trace_args.append("--save-fields")
+            keep_coherent = True
 
     names = [t["name"] for t in args.tolerance]
     param_names = list(names)

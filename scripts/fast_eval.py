@@ -100,12 +100,21 @@ EXTRACT = SCRIPTS_DIR / "extract_geometry.py"
 RUN_TRACE = SCRIPTS_DIR / "run_trace.py"
 POST_PROCESS = SCRIPTS_DIR / "post_process.py"
 FC_SERVER = SCRIPTS_DIR / "fcserver" / "fc_server.py"
+OPTILAND_EVAL = SCRIPTS_DIR / "raytracer" / "optiland_eval.py"
 
 CASE = "fasteval"          # one case dir per variant, reused across repeats
+
+# optiland_eval.py's "BridgeUnsupported -> fall back to MC" exit code.
+_UNSUPPORTED_EXIT = 3
 
 
 class EvalError(RuntimeError):
     """A merit evaluation failed on every available path."""
+
+
+class SequentialUnsupported(RuntimeError):
+    """The Optiland bridge rejected the scene (out of sequential scope); the
+    sequential backend falls back to the MC path for this evaluation."""
 
 
 # ---------------------------------------------------------------------------
@@ -177,12 +186,21 @@ class Evaluator:
                  spectral_bins=None, seeds=1, seed0=42, unit="mm",
                  strict=False, keep_coherent=False, detectors=None,
                  trace_args=(), post_args=(), workdir=None,
-                 freecad=None, op_timeout=300.0, worker_retries=1):
+                 freecad=None, op_timeout=300.0, worker_retries=1,
+                 gui_python=None, model_stop=True, seq_n_rays=4096,
+                 seq_seed=0, seq_ee_frac=0.8):
         self.model_path = self._resolve_model(model)
         self.backend = backend
-        if backend not in ("worker", "full"):
-            raise ValueError("backend must be 'worker' or 'full' (got %r)"
-                             % (backend,))
+        if backend not in ("worker", "full", "sequential"):
+            raise ValueError("backend must be 'worker', 'full' or "
+                             "'sequential' (got %r)" % (backend,))
+        # sequential backend: the Optiland merit path (env/ interpreter),
+        # driven off the SAME worker-extracted model.json the MC path uses.
+        self.gui_python = str(gui_python or common.GUI_PYTHON)
+        self.model_stop = bool(model_stop)
+        self.seq_n_rays = int(seq_n_rays)
+        self.seq_seed = int(seq_seed)
+        self.seq_ee_frac = float(seq_ee_frac)
         pre = common.PRESETS[preset]
         self.rays = float(rays if rays is not None else pre["rays"])
         self.resolution = int(resolution if resolution is not None
@@ -224,6 +242,8 @@ class Evaluator:
         eval; EvalError only when every path failed."""
         params = self._check_params(params)
         variant = self._variant(params)
+        if self.backend == "sequential":
+            return self._evaluate_sequential(params, variant)
         if self.backend == "full":
             return self._finish(params, variant,
                                 self._prepare_full(params, variant), "full")
@@ -255,6 +275,98 @@ class Evaluator:
                 "the logs under %s."
                 % (params, type(worker_exc).__name__, worker_exc,
                    type(exc).__name__, exc, self.workdir / "logs"))
+
+    # -- sequential (Optiland) backend -----------------------------------------
+    def _model_json_for(self, params, variant):
+        """Produce the variant's model.json the cheapest correct way: the
+        persistent worker (with bounded retries), falling back to a fresh
+        FreeCAD launch. Shared by the sequential backend and the MC fallback."""
+        if self.backend == "full":
+            return self._prepare_full(params, variant)
+        worker_exc = None
+        for _attempt in range(self.worker_retries + 1):
+            try:
+                return self._prepare_worker(params, variant)
+            except (FcDead, FcError, EvalError, OSError) as exc:
+                worker_exc = exc
+                self._teardown_worker()
+        # worker exhausted -> the always-correct full path
+        self.n_fallbacks += 1
+        try:
+            return self._prepare_full(params, variant)
+        except Exception as exc:
+            raise EvalError(
+                "model.json build failed on the worker path (%s: %s) AND the "
+                "full fallback (%s: %s)"
+                % (type(worker_exc).__name__, worker_exc,
+                   type(exc).__name__, exc))
+
+    def _evaluate_sequential(self, params, variant):
+        """One sequential (Optiland) merit evaluation: build model.json, then
+        evaluate operands DIRECTLY in Optiland via the env/ bridge. A scene
+        the bridge rejects (BridgeUnsupported) transparently falls back to the
+        MC path for THIS evaluation, clearly annotated."""
+        model_json = self._model_json_for(params, variant)
+        try:
+            return self._finish_sequential(params, variant, model_json)
+        except SequentialUnsupported as exc:
+            self.n_fallbacks += 1
+            out = self._finish(params, variant, model_json,
+                               "sequential-mc-fallback")
+            out["fallback_reason"] = "BridgeUnsupported: %s" % exc
+            return out
+
+    def _finish_sequential(self, params, variant, model_json):
+        """Shell out to env/bin/python optiland_eval.py (Optiland lives in the
+        GUI venv ONLY). Returns a fast_eval-shaped output dict; raises
+        SequentialUnsupported on the bridge's out-of-scope exit."""
+        cmd = [self.gui_python, str(OPTILAND_EVAL),
+               "--model-json", str(model_json),
+               "--n-rays", str(self.seq_n_rays),
+               "--seed", str(self.seq_seed),
+               "--ee-frac", repr(self.seq_ee_frac)]
+        if self.model_stop:
+            cmd.append("--model-stop")
+        log_path = self._log_path(variant, "optiland")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run([str(c) for c in cmd], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True)
+        with open(log_path, "w") as fh:
+            fh.write("CMD: %s\n\nSTDOUT:\n%s\nSTDERR:\n%s"
+                     % (" ".join(str(c) for c in cmd), proc.stdout,
+                        proc.stderr))
+        if proc.returncode == _UNSUPPORTED_EXIT:
+            reason = proc.stdout.strip()
+            try:
+                reason = json.loads(reason)["bridge_unsupported"]
+            except Exception:
+                reason = reason or proc.stderr[-400:]
+            raise SequentialUnsupported(reason)
+        if proc.returncode != 0:
+            raise EvalError("optiland_eval.py failed (exit %d) — log %s\n%s"
+                            % (proc.returncode, log_path, proc.stderr[-800:]))
+        try:
+            rep = json.loads(proc.stdout.strip().splitlines()[-1])
+        except Exception as exc:
+            raise EvalError("optiland_eval.py returned unparseable output "
+                            "(%s) — log %s" % (exc, log_path))
+        detectors = rep.get("detectors", {})
+        self.n_evals += 1
+        return {
+            "params": dict(params),
+            "variant": variant,
+            "backend_used": "sequential",
+            "model_json": str(model_json),
+            "case_dir": None,
+            "closure_ok": None,
+            "detectors": detectors,
+            "merits": flatten_merits(detectors, only=self.detectors),
+            "sequential": {"paraxial_f2_mm": rep.get("paraxial_f2_mm"),
+                           "epd_mm": rep.get("epd_mm"),
+                           "engine": rep.get("engine"),
+                           "model_stop": rep.get("model_stop")},
+            "cache": self.last_cache,
+        }
 
     def worker_pid(self):
         """PID of the live FreeCAD worker process (fault-injection tests
@@ -552,7 +664,7 @@ def main(argv=None):
         description="Fast merit evaluator (see module docstring).")
     p.add_argument("--model", required=True)
     p.add_argument("--backend", default="worker",
-                   choices=["worker", "full"])
+                   choices=["worker", "full", "sequential"])
     p.add_argument("--eval", action="append", required=True,
                    metavar="k=v,k=v", dest="evals",
                    help="one evaluation per flag (repeatable)")
