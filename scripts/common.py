@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -878,10 +879,43 @@ def load_model(path):
 # Runtime / memory estimation (calibrated like the antenna pipeline)
 # ---------------------------------------------------------------------------
 FALLBACK_TRACE_RAYS_PER_S = 2e5      # primary rays/s through the full loop
-FALLBACK_GATHER_OPS_PER_S = {"torch": 2e10, "numpy": 1e9}
+# Coherent-gather rate law (rewritten p0/quick-wins): the C engine bills
+# `total_pairs += n_sel * Q` per (source, lambda-stratum, pol-stratum) key
+# (cengine/src/gather.c:617) — surviving samples are PARTITIONED across
+# those keys, never multiplied by their count. So the only real cost axis
+# is "pairs" = detector pixels * surviving coherent samples; nlambda,
+# n_pol_strata and n_coherent_sources must NOT multiply it (see estimate()).
+# Fallbacks (pairs/s), each including its own ~1.9s one-time CUDA-context
+# init amortized OUT (see FALLBACK_GATHER_INIT_S):
+#   torch: 1.1e9 — measured from results/example/quick-phase0/case.json
+#          (92.7e9 pairs / (87.10s - 1.9s init) ~= 1.09e9; the stale
+#          2e10 placeholder came from calibrating the OLD spurious-ops
+#          law and predicted 6.5s for a run that actually took 87s).
+#   numpy: 5e7 — UNVALIDATED (no CPU numpy-gather benchmark on record);
+#          a conservative guess at roughly GPU/20, pending real data.
+#   c:     6.7e9 — cengine/BENCHMARKS.md michelson_folded (C gather
+#          713.42s @ 2048^2 px, 2e5 rays, spr~=5.7 solves
+#          1.9 + (2048^2 * 2e5 * 5.7) / 6.71e9 ~= 713s).
+#   c_cuda/c_cpu: the C engine's two gather kernels differ ~15x and MUST
+#          NOT share a calibration key (measured 2026-07-16: doubleslit
+#          2.18e9 pairs — cuda ~5e9 pairs/s, OpenMP 3.3e8 pairs/s).
+FALLBACK_GATHER_PAIRS_PER_S = {"torch": 1.1e9, "numpy": 5e7,
+                               "c_cuda": 6.7e9, "c_cpu": 3.3e8}
+# Init floors are per backend: ~1.9s is the TORCH CUDA-context cost; the
+# C binary's own context init measured ~0.1-0.2s (2026-07-16).
+FALLBACK_GATHER_INIT_S_BY = {"torch": 1.9, "numpy": 0.05,
+                             "c_cuda": 0.2, "c_cpu": 0.05}
+FALLBACK_GATHER_INIT_S = 1.9         # legacy torch value (kept for callers)
+DEFAULT_SPR = 1.0                    # surviving coherent samples / primary
+# C-engine trace fallback: geometric mean of the BENCHMARKS.md spread
+# (4.3e4 rays/s camera_triplet .. 1.8e6 doubleslit) — per-scene writeback
+# ("trace_rps_c:<stem>") supersedes it after the first run of a scene.
+FALLBACK_TRACE_RAYS_PER_S_C = 3e5
 
 def calibrated_rate(kind, fallback):
-    """Median of recorded rates for `kind` in .calibration.json, else fallback."""
+    """Median of the last 5 recorded values for `kind` in .calibration.json
+    (record_calibration caps history per kind at 5 — recency over a long
+    tail of old/contended runs), else fallback."""
     try:
         with open(CALIBRATION_JSON) as fh:
             entries = [e["rate"] for e in json.load(fh)
@@ -894,6 +928,14 @@ def calibrated_rate(kind, fallback):
     return fallback
 
 def record_calibration(kind, rate, meta=None):
+    """Atomically append a (kind, rate) sample to .calibration.json, then
+    prune `kind`'s history to the most recent 5 entries — calibrated_rate
+    reads a median of that capped window, so this keeps the estimator
+    responsive to the current machine/load instead of averaging over a
+    long tail of old runs. Other kinds' entries are left untouched. Also
+    used to record the "spr:<model_stem>" samples-per-ray ratio (same
+    file, same cap/median mechanism — `rate` is just the spr value there,
+    not a per-second rate)."""
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     try:
         with open(CALIBRATION_JSON) as fh:
@@ -901,13 +943,40 @@ def record_calibration(kind, rate, meta=None):
     except (OSError, ValueError):
         entries = []
     entries.append({"kind": kind, "rate": rate, "meta": meta or {}})
+    same_kind = sum(1 for e in entries if e.get("kind") == kind)
+    if same_kind > 5:
+        drop = same_kind - 5
+        pruned = []
+        for e in entries:
+            if e.get("kind") == kind and drop > 0:
+                drop -= 1
+                continue
+            pruned.append(e)
+        entries = pruned
     tmp = str(CALIBRATION_JSON) + ".tmp"
     with open(tmp, "w") as fh:
         json.dump(entries, fh, indent=1)
     os.replace(tmp, CALIBRATION_JSON)
 
+def gpu_free_vram_bytes():
+    """Free VRAM on GPU 0 in bytes via `nvidia-smi`, or None on any failure
+    (no GPU, no driver, nvidia-smi missing, unexpected output, timeout).
+    stdlib-only (subprocess) — safe to call from any pinned interpreter."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=2)
+        if out.returncode != 0:
+            return None
+        first = out.stdout.strip().splitlines()[0].strip()
+        return int(float(first)) * 1024 * 1024   # MiB -> bytes
+    except Exception:
+        return None
+
 def estimate(rays, resolution, nlambda, n_coherent_sources, backend,
-             n_detectors=1, save_fields=False, n_pol_strata=1):
+             n_detectors=1, save_fields=False, n_pol_strata=1,
+             model_stem=None):
     """Return dict of runtime/memory/disk estimates for --dry-run output.
 
     n_pol_strata: 2 when any source is unpolarized (two mutually-incoherent
@@ -919,16 +988,58 @@ def estimate(rays, resolution, nlambda, n_coherent_sources, backend,
     resolves that count and passes it here, e.g. run_trace.py's
     n_field_dets). save_fields: whether --save-fields is set at all;
     fields_h5_GB is exactly 0 when it is not, regardless of n_detectors.
+
+    Gather law (rewritten p0/quick-wins — see FALLBACK_GATHER_PAIRS_PER_S):
+        pairs    = npix * rays * spr
+        gather_s = gather_init_s + pairs / rate_gather   (any coherent
+                   source), else a fixed ~0.05s floor (no CUDA context is
+                   even touched when nothing is coherent).
+    spr ("surviving coherent samples per primary") and nlambda/n_pol_strata/
+    n_coherent_sources do NOT multiply `pairs` — the C/Python gather bills
+    per (source, lambda-stratum, pol-stratum) KEY, and surviving samples
+    are partitioned across those keys, not multiplied by their count.
+    nlambda/n_pol_strata/n_coherent_sources are still accepted (existing
+    callers pass them, and fields_h5_GB below genuinely needs them for the
+    key count) but no longer feed the runtime law.
+
+    model_stem: optional case/model name used to look up a calibrated spr
+    ("spr:<model_stem>" in .calibration.json, written back by run_trace.py
+    after a completed run); falls back to DEFAULT_SPR (1.0) when absent or
+    never recorded.
     """
     npix = resolution * resolution
-    # gather samples ~ surviving rays; assume half the primaries survive
-    nsamples = max(1.0, rays * 0.5)
-    gather_ops = (nsamples * npix * max(1, n_coherent_sources) * nlambda
-                  * max(1, n_pol_strata))
-    backend_key = "torch" if backend in ("auto", "torch") else "numpy"
-    trace_s = rays / calibrated_rate("trace", FALLBACK_TRACE_RAYS_PER_S)
-    gather_s = gather_ops / calibrated_rate(
-        "gather_" + backend_key, FALLBACK_GATHER_OPS_PER_S[backend_key])
+    backend_key = ("c_cuda" if backend == "c"      # default C gather = CUDA
+                   else backend if backend in ("c_cuda", "c_cpu")
+                   else "torch" if backend in ("auto", "torch")
+                   else "numpy")
+    # Trace rate is strongly scene-dependent (30x spread across the
+    # benchmark set: element count, birefringence, bounce depth), so the
+    # lookup chains per-scene -> global -> fallback, mirroring spr:
+    #   "trace_rps_<eng>:<model_stem>"  (written back after every run)
+    #   -> "trace_c" / "trace_rays_per_s_v2" (machine-global)
+    #   -> the static fallback.
+    eng = "c" if backend_key.startswith("c_") else "py"
+    trace_rate = (calibrated_rate("trace_c", FALLBACK_TRACE_RAYS_PER_S_C)
+                  if eng == "c" else
+                  calibrated_rate("trace_rays_per_s_v2",
+                                  FALLBACK_TRACE_RAYS_PER_S))
+    if model_stem:
+        trace_rate = calibrated_rate(
+            "trace_rps_%s:%s" % (eng, model_stem), trace_rate)
+    trace_s = rays / trace_rate
+    spr = (calibrated_rate("spr:" + model_stem, DEFAULT_SPR)
+           if model_stem else DEFAULT_SPR)
+    pairs = npix * rays * spr
+    if n_coherent_sources >= 1:
+        rate_gather = calibrated_rate(
+            "gather_pairs_per_s_" + backend_key,
+            FALLBACK_GATHER_PAIRS_PER_S[backend_key])
+        gather_init_s = calibrated_rate(
+            "gather_init_s_" + backend_key,
+            FALLBACK_GATHER_INIT_S_BY[backend_key])
+        gather_s = gather_init_s + pairs / rate_gather
+    else:
+        gather_s = 0.05
     acc_bytes = (npix * 2 * 8 * max(1, n_coherent_sources) * nlambda
                  * max(1, n_pol_strata))
     # fields_h5_GB formula (accurate to ~2x; a disk-budget aid, not a
@@ -949,7 +1060,8 @@ def estimate(rays, resolution, nlambda, n_coherent_sources, backend,
         "total_s": trace_s + gather_s,
         "accumulator_GB": acc_bytes / 1e9,
         "fields_h5_GB": field_bytes / 1e9,
-        "gather_ops": gather_ops,
+        "gather_pairs": pairs,
+        "spr": spr,
         "backend": backend_key,
     }
 

@@ -380,12 +380,39 @@ def _do_gather(grids, args, scene, sample_area, save_fields_labels=None):
             gather_diags[det.label] = {
                 "/".join(str(x) for x in k): v for k, v in d.items()}
     gather_s = time.time() - t0
-    ops = sum(v["n_samples"] for dd in gather_diags.values()
-              for v in dd.values()) * (args.resolution ** 2)
-    if ops > 0 and gather_s > 0:
+    # "pairs" = surviving coherent samples (summed across every (source,
+    # lambda-stratum, pol-stratum) key — they PARTITION the samples, they
+    # don't multiply them, cengine/src/gather.c:617) * detector pixels.
+    # This is the exact quantity common.estimate()'s new gather law bills
+    # against; see common.py's FALLBACK_GATHER_PAIRS_PER_S comment.
+    total_samples = sum(v["n_samples"] for dd in gather_diags.values()
+                        for v in dd.values())
+    pairs = total_samples * (args.resolution ** 2)
+    if pairs > 0 and gather_s > 0:
         bk = next(iter(next(iter(gather_diags.values())).values()))[
             "backend"] if gather_diags else "numpy"
-        common.record_calibration("gather_" + bk, ops / gather_s)
+        gather_init_s = common.calibrated_rate(
+            "gather_init_s_" + bk,
+            common.FALLBACK_GATHER_INIT_S_BY.get(
+                bk, common.FALLBACK_GATHER_INIT_S))
+        marginal_s = gather_s - gather_init_s
+        # only record when the marginal part dominates — an init-dominated
+        # measurement calibrates the init constant's noise, not the rate
+        if marginal_s > max(0.01, 0.3 * gather_s):
+            common.record_calibration("gather_pairs_per_s_" + bk,
+                                      pairs / marginal_s)
+        # spr is scaled against the bare `rays` value (args.rays, the
+        # per-source --rays count) — the SAME scalar common.estimate()
+        # multiplies pairs by (it has no n_sources parameter and never
+        # multiplies by source count, matching the pre-existing trace_s
+        # law above). A multi-source scene's extra surviving samples are
+        # therefore folded into that scene's own spr, not divided back
+        # out — spr is looked up per model_stem, so this is exactly the
+        # scene-characteristic ratio estimate() needs.
+        if args.rays > 0:
+            model_stem = Path(args.model_json).parent.name
+            common.record_calibration("spr:" + model_stem,
+                                      total_samples / float(args.rays))
     return gather_diags, gather_s
 
 
@@ -546,9 +573,10 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
     t0 = time.time()
     result = tracer.run(batches)
     trace_s = time.time() - t0
-    common.record_calibration("trace",
-                              args.rays * len(scene.sources)
-                              / max(trace_s, 1e-9))
+    rate = args.rays * len(scene.sources) / max(trace_s, 1e-9)
+    common.record_calibration("trace_rays_per_s_v2", rate)
+    common.record_calibration(
+        "trace_rps_py:" + Path(args.model_json).parent.name, rate)
     return result, trace_s
 
 
@@ -577,9 +605,10 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
     with ctx.Pool(processes=n_workers) as pool:
         payloads = pool.starmap(_shard_worker, tasks)
     trace_s = time.time() - t0
-    common.record_calibration("trace",
-                              args.rays * len(scene.sources)
-                              / max(trace_s, 1e-9))
+    rate = args.rays * len(scene.sources) / max(trace_s, 1e-9)
+    common.record_calibration("trace_rays_per_s_v2", rate)
+    common.record_calibration(
+        "trace_rps_py:" + Path(args.model_json).parent.name, rate)
     ledger = PowerLedger(len(scene.sources))
     path_tally = {}
     shg_converted = {}
@@ -890,11 +919,33 @@ def _main_locked(args, case_dir):
               "the fields/ groups will be empty and no Stokes/PSF/MTF "
               "products will render — set coherent=true on a source if "
               "you want field maps", file=sys.stderr)
+    # ---- engine routing decision (hoisted above the estimate so the
+    # estimate bills against the engine that will actually run — the C
+    # gather/trace rates differ from the torch/numpy ones by ~6x/8x) ----
+    from raytracer import cengine
+    engine, engine_reason = cengine.choose_engine(args, scene)
+    if engine == "c" and args.save_fields and save_fields_labels is not None:
+        # the C engine always saves fields for every detector under
+        # --save-fields (no per-detector subset plumbed through its
+        # request/output contract yet) — --engine c is a hard error (never
+        # a silent wrong answer), --engine auto quietly falls back.
+        if (getattr(args, "engine", None) or "auto") == "c":
+            raise SystemExit(
+                "--engine c: --save-fields-detectors is not yet supported "
+                "by the C engine (it saves fields for every detector "
+                "under --save-fields) — use --engine auto/python")
+        engine = "python"
+        engine_reason = ("--save-fields-detectors requires the Python "
+                         "engine (C engine saves fields for every "
+                         "detector)")
+    est_backend = (("c_cpu" if args.backend == "numpy" else "c_cuda")
+                   if engine == "c" else args.backend)
     est = common.estimate(args.rays, args.resolution, args.nlambda,
-                          n_coh, args.backend,
+                          n_coh, est_backend,
                           n_detectors=n_field_dets,
                           save_fields=args.save_fields,
-                          n_pol_strata=n_pol_max)
+                          n_pol_strata=n_pol_max,
+                          model_stem=Path(args.model_json).parent.name)
     case = {
         "options": {k: v for k, v in vars(args).items()},
         "estimates": est,
@@ -940,27 +991,10 @@ def _main_locked(args, case_dir):
         return 0
 
     # ---- engine routing (C engine, cengine/) ----
-    # choose_engine picks the compiled engine only when every feature this
-    # scene uses is ported+verified; the Python engine below remains the
-    # reference. A C-engine runtime failure under --engine auto falls
-    # back to Python with a loud warning (crash isolation: the C engine
-    # is a separate process).
-    from raytracer import cengine
-    engine, engine_reason = cengine.choose_engine(args, scene)
-    if engine == "c" and args.save_fields and save_fields_labels is not None:
-        # the C engine always saves fields for every detector under
-        # --save-fields (no per-detector subset plumbed through its
-        # request/output contract yet) — --engine c is a hard error (never
-        # a silent wrong answer), --engine auto quietly falls back.
-        if (getattr(args, "engine", None) or "auto") == "c":
-            raise SystemExit(
-                "--engine c: --save-fields-detectors is not yet supported "
-                "by the C engine (it saves fields for every detector "
-                "under --save-fields) — use --engine auto/python")
-        engine = "python"
-        engine_reason = ("--save-fields-detectors requires the Python "
-                         "engine (C engine saves fields for every "
-                         "detector)")
+    # the routing DECISION was made above (before the estimate); the Python
+    # engine below remains the reference. A C-engine runtime failure under
+    # --engine auto falls back to Python with a loud warning (crash
+    # isolation: the C engine is a separate process).
     case["engine"] = engine
     case["engine_reason"] = engine_reason
     print("[trace] engine=%s (%s)" % (engine, engine_reason), flush=True)

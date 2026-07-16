@@ -890,9 +890,49 @@ def run_c_case(args, case_dir, scene, lam_range, case):
     common.write_json(case_dir / "case.json", case)
     closure_ok = all(a["closure_ok"] for a in audits)
     if trace_s_total > 0:
+        rate_c = (args.seeds * len(scene.sources) * int(args.rays)
+                  / trace_s_total)
+        common.record_calibration("trace_c", rate_c)
         common.record_calibration(
-            "trace_c", args.seeds * len(scene.sources) * int(args.rays)
-            / trace_s_total)
+            "trace_rps_c:" + Path(args.model_json).parent.name, rate_c)
+    # gather calibration writeback (p0/quick-wins gather-law rewrite): same
+    # "pairs" quantity as the Python engine's _do_gather (surviving
+    # coherent samples, summed across every (source, lambda-stratum,
+    # pol-stratum) key — they partition, not multiply — times detector
+    # pixels; cengine/src/gather.c:617 bills the identical total_pairs).
+    # The binary's cuda and OpenMP gather kernels differ ~15x in rate and
+    # are calibrated under DISTINCT keys (c_cuda / c_cpu), read off the
+    # per-key "backend" field the C engine writes into gather.json.
+    total_samples_c = 0
+    c_backends = set()
+    for gdiags in gather_diags_all.values():
+        for keys in gdiags.values():
+            for entry in keys.values():
+                total_samples_c += entry["n_samples"]
+                c_backends.add(entry.get("backend", "cuda"))
+    if total_samples_c > 0 and gather_s_total > 0:
+        bk_c = "c_cpu" if c_backends == {"cpu"} else "c_cuda"
+        pairs_c = total_samples_c * (args.resolution ** 2)
+        gather_init_s = common.calibrated_rate(
+            "gather_init_s_" + bk_c,
+            common.FALLBACK_GATHER_INIT_S_BY[bk_c])
+        marginal_s = gather_s_total - gather_init_s
+        # only record when the marginal part dominates — an init-dominated
+        # measurement calibrates the init constant's noise, not the rate
+        if marginal_s > max(0.01, 0.3 * gather_s_total):
+            common.record_calibration("gather_pairs_per_s_" + bk_c,
+                                      pairs_c / marginal_s)
+        # spr denominator: bare per-source rays (matching estimate()'s
+        # `pairs = npix * rays * spr`, see run_trace.py._do_gather's
+        # identical comment), scaled by args.seeds since total_samples_c
+        # aggregates every seed's surviving samples (unlike the Python
+        # engine's per-seed _do_gather calls, which each record one
+        # seed's spr individually).
+        total_rays_c = args.seeds * int(args.rays)
+        if total_rays_c > 0:
+            common.record_calibration(
+                "spr:" + Path(args.model_json).parent.name,
+                total_samples_c / total_rays_c)
     print("[trace] done: %d seed(s), closure %s, outputs in %s [C engine]"
           % (args.seeds, "OK" if closure_ok else "FAILED", case_dir),
           flush=True)

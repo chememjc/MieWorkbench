@@ -63,8 +63,8 @@ threads internally with OpenMP (`--threads` / request `params.threads`,
   are therefore **independent of thread count and scheduling** (pinned by
   `test_cengine_parity.py::test_thread_count_invariance`: bit-identical
   detector cubes across 1/7/32 threads). It does NOT reproduce numpy PCG64
-  streams — the agreed parity bar is deterministic (~1e-12) for non-random
-  physics and statistical (3-seed ±max(3σ,1%)) for MC aggregates.
+  streams — the agreed parity bar is deterministic (1e-9) for non-random
+  physics and statistical (2%) for MC aggregates, single-seed; 1e-12 applies to emitted_W only.
 - **D4 — No HDF5 in C.** The engine writes raw `.npy` + JSON into
   `<case>/cengine/seed<k>/`; the Python glue packs the standard `.h5`
   through the same `save_detectors` code path the Python engine uses.
