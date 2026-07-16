@@ -1216,6 +1216,12 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
                 die("%s: bad scatter spec %r: %s"
                     % (obj.Label, scatter_raw, e))
             body_dict["scatter_faces"] = smap
+            # optional explicit importance-scatter targets: comma-separated
+            # detector labels this body's scatter aims at (--importance-scatter
+            # only; absent => every detector). Names only, resolved at trace.
+            targets_raw = str_prop_or_none(obj, "scatter_targets")
+            if targets_raw is not None and targets_raw.strip():
+                body_dict["scatter_targets"] = targets_raw.strip()
 
         # coating (schema v2): per-face map, {'__all__': name} for the
         # legacy "whole body, one coating" form.

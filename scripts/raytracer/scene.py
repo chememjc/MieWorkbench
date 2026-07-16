@@ -138,7 +138,8 @@ def _parse_pulse_source(label, src):
 class Body:
     __slots__ = ("index", "name", "label", "role", "material", "coating",
                  "mirror", "absorbance", "roughness_nm", "roughness_faces",
-                 "diffuser_faces", "scatter_faces", "grating_map", "source",
+                 "diffuser_faces", "scatter_faces", "scatter_targets",
+                 "grating_map", "source",
                  "detector", "closed", "face_ids", "polarizer",
                  "polarizer_axis", "filter", "crystal_axis", "birefringent",
                  "filter_lam_um", "filter_alpha_per_m", "crystal_axis2",
@@ -172,6 +173,11 @@ class Body:
         self.roughness_faces = rec.get("roughness_faces")   # dict or None
         self.diffuser_faces = rec.get("diffuser_faces")     # dict or None
         self.scatter_faces = rec.get("scatter_faces")       # dict or None
+        # optional explicit importance-scatter targets: list of detector
+        # labels this body's scatter faces aim at (None => every detector)
+        st = rec.get("scatter_targets")
+        self.scatter_targets = ([s.strip() for s in st.split(",") if s.strip()]
+                                if isinstance(st, str) else (st or None))
         self.grating_map = rec.get("grating")               # dict or None
         self.polarizer = rec.get("polarizer") or None
         pa = rec.get("polarizer_axis")
@@ -724,6 +730,11 @@ class Scene:
         # OR diffuser is a contract error — they are alternative surface
         # models (the roughness map already holds any diffuser entries).
         self.scatter = {}
+        # {fid: [detector label, ...]} explicit importance-scatter aim
+        # subsets (from the body's scatter_targets); absent => aim at every
+        # detector (Tracer._scatter_target_list). Never affects the physics
+        # unless --importance-scatter is on.
+        self.scatter_targets = {}
         scatter_registry = (self.optprops.scatter
                             if self.optprops is not None else {})
         for body in self.bodies:
@@ -749,6 +760,8 @@ class Scene:
                             "alternative models of one surface, pick one"
                             % (body.label, self.faces[fid].id))
                     self.scatter[fid] = scatter_registry[name]
+                    if body.scatter_targets:
+                        self.scatter_targets[fid] = list(body.scatter_targets)
 
         # per-face coating map: {int fid: coating name}
         self.face_coatings = {}

@@ -147,6 +147,18 @@ def detect_features(args, scene):
             if abs(float(entry["g"]) - 2.0) >= 1e-12:
                 # numeric inverse-CDF sampler: Python engine only
                 feats.add("scatter_g_ne_2")
+            # transmissive scatter (BTDF): the refracted-side scattered lobe
+            # is Python-only this round (the C scatter kernel is reflected-
+            # side ABg). Every scene using it MUST fall back, never silently
+            # skip the transmitted lobes (the P8-comment rule above).
+            if entry.get("btdf") is not None:
+                feats.add("scatter_btdf")
+    # measured-scatter importance sampling (§7.1): detector-aimed cone
+    # children + rejection-sampled remainder are a Python-engine feature this
+    # round. Emit the token so --engine auto routes to Python rather than
+    # running the C full-lobe sampler and losing the variance reduction.
+    if getattr(args, "importance_scatter", False) and scene.scatter:
+        feats.add("scatter_importance")
     if scene.face_coatings:
         feats.add("coating")
         # P2: a phase-carrying table coating (materials.py phase_valid)

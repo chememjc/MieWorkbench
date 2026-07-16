@@ -341,6 +341,18 @@ def _build_pipeline_parser():
                    help="C-engine variance reduction: birth-cull source "
                         "samples that would immediately escape (unbiased; "
                         "see run_trace --help)")
+    g.add_argument("--importance-scatter", action="store_true",
+                   help="aim measured-scatter (ABg) children at the "
+                        "detectors' solid angles instead of the full BSDF "
+                        "lobe (stray-light variance reduction; unbiased in "
+                        "detector power, Python engine). Off by default.")
+    g.add_argument("--importance-limit", type=float, default=1.0,
+                   metavar="FRAC",
+                   help="max scattered-power fraction redirected to target "
+                        "cones per event under --importance-scatter (0<F<=1; "
+                        "the bias/variance knob, default 1.0). A full-sphere "
+                        "remainder always carries the rest so closure is "
+                        "exact.")
     g.add_argument("--rough-fresnel", default=None,
                    choices=["micro", "macro"],
                    help="roughness-lobe Fresnel model (default micro)")
@@ -554,6 +566,16 @@ def _build_trace_parser():
                         "work. Unbiased: every expectation is unchanged; "
                         "only the MC noise on detectors drops. Python "
                         "engine ignores the flag.")
+    p.add_argument("--importance-scatter", action="store_true",
+                   help="aim measured-scatter (ABg) children at the "
+                        "detectors' solid angles instead of the full BSDF "
+                        "lobe (stray-light variance reduction; unbiased in "
+                        "detector power, Python engine). Off by default.")
+    p.add_argument("--importance-limit", type=float, default=1.0,
+                   metavar="FRAC",
+                   help="max scattered-power fraction redirected to target "
+                        "cones per event under --importance-scatter (0<F<=1; "
+                        "the bias/variance knob, default 1.0).")
     p.add_argument("--workers", type=_workers_arg, default="auto",
                    metavar="N",
                    help="parallel trace shards (spawned processes) for the "

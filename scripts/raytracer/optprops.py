@@ -570,9 +570,36 @@ def load_diffusers(csv_path=None):
 SCATTER_MODELS = ("abg",)
 
 
+def _abg_params_or_die(A_raw, B_raw, g_raw, ctx, what):
+    """Parse + energy-validate one ABg triple (A>0, B>0, g>0, TIS<=1 at
+    normal incidence). Shared by the reflected BRDF and the optional BTDF
+    block. Returns (A, B, g)."""
+    from .scatter import abg_tis
+    try:
+        A = float((A_raw or "").strip())
+        B = float((B_raw or "").strip())
+        g = float((g_raw or "").strip())
+    except ValueError:
+        raise MaterialError("%s: %s A, B, g must be numeric" % (ctx, what))
+    if not A > 0.0:
+        raise MaterialError("%s: %s A must be > 0" % (ctx, what))
+    if not B > 0.0:
+        raise MaterialError("%s: %s B must be > 0" % (ctx, what))
+    if not g > 0.0:
+        raise MaterialError("%s: %s g must be > 0" % (ctx, what))
+    tis0 = abg_tis(A, B, g, 1.0)          # normal incidence = widest umax
+    if tis0 > 1.0 + 1e-9:
+        raise MaterialError(
+            "%s: %s total integrated scatter %.4g exceeds 1 (energy) — the "
+            "ABg fit scatters more than the incident power"
+            % (ctx, what, tis0))
+    return A, B, g
+
+
 def load_scatter(csv_path=None):
     """-> {name: {"model": "abg", "A": float, "B": float, "g": float,
-    "tis_cap": float|None, "reference": str, "notes": str}}.
+    "tis_cap": float|None, "btdf": None|{"A","B","g","tis_cap"},
+    "reference": str, "notes": str}}.
 
     ABg BSDF registry for polished optical surfaces (raytracer/scatter.py):
     BSDF(u) = A/(B + u^g), u = |beta - beta0| the direction-cosine offset
@@ -581,8 +608,15 @@ def load_scatter(csv_path=None):
     reflected power that leaves the specular direction) must not exceed 1
     (energy). tis_cap, if given, is an OPTIONAL per-entry ceiling on the TIS
     used by the tracer split (a measured scatter fraction the ABg fit may
-    over-integrate); it must itself be in (0, 1]."""
-    from .scatter import abg_tis
+    over-integrate); it must itself be in (0, 1].
+
+    BTDF (transmitted-side scatter, OPTIONAL, backward compatible): a row may
+    carry a `btdf` flag column plus optional `btdf_A`/`btdf_B`/`btdf_g`/
+    `btdf_tis_cap`. When `btdf` is truthy (1/true/yes/on) the transmitted
+    child is ALSO split into a specular remainder + a scattered lobe about
+    the REFRACTED direction, using the btdf_* ABg triple (each field defaults
+    to the reflected A/B/g when left blank). Rows with no `btdf` column (or a
+    falsey one) behave EXACTLY as before — reflected-side only."""
     csv_path = Path(csv_path) if csv_path is not None \
         else DEFAULT_OPTPROPS_DIR / "scatter" / "bsdf.miebsdf"
     out = {}
@@ -593,29 +627,34 @@ def load_scatter(csv_path=None):
         if model not in SCATTER_MODELS:
             raise MaterialError("%s: model %r must be one of %s"
                                 % (ctx, model, ", ".join(SCATTER_MODELS)))
-        try:
-            A = float((row.get("A") or "").strip())
-            B = float((row.get("B") or "").strip())
-            g = float((row.get("g") or "").strip())
-        except ValueError:
-            raise MaterialError("%s: A, B, g must be numeric" % ctx)
-        if not A > 0.0:
-            raise MaterialError("%s: A must be > 0" % ctx)
-        if not B > 0.0:
-            raise MaterialError("%s: B must be > 0" % ctx)
-        if not g > 0.0:
-            raise MaterialError("%s: g must be > 0" % ctx)
+        A, B, g = _abg_params_or_die(row.get("A"), row.get("B"),
+                                     row.get("g"), ctx, "reflected")
         cap_raw = (row.get("tis_cap") or "").strip()
         tis_cap = float(cap_raw) if cap_raw else None
         if tis_cap is not None and not 0.0 < tis_cap <= 1.0:
             raise MaterialError("%s: tis_cap must be in (0, 1]" % ctx)
-        tis0 = abg_tis(A, B, g, 1.0)      # normal incidence = widest umax
-        if tis0 > 1.0 + 1e-9:
+
+        # ---- optional transmissive-scatter (BTDF) block ----
+        btdf = None
+        btdf_raw = (row.get("btdf") or "").strip().lower()
+        if btdf_raw in ("1", "true", "yes", "on"):
+            # each btdf_* field defaults to the reflected value when blank
+            bA = (row.get("btdf_A") or "").strip() or repr(A)
+            bB = (row.get("btdf_B") or "").strip() or repr(B)
+            bg = (row.get("btdf_g") or "").strip() or repr(g)
+            tA, tB, tg = _abg_params_or_die(bA, bB, bg, ctx, "btdf")
+            bcap_raw = (row.get("btdf_tis_cap") or "").strip()
+            btdf_cap = float(bcap_raw) if bcap_raw else None
+            if btdf_cap is not None and not 0.0 < btdf_cap <= 1.0:
+                raise MaterialError("%s: btdf_tis_cap must be in (0, 1]" % ctx)
+            btdf = {"A": tA, "B": tB, "g": tg, "tis_cap": btdf_cap}
+        elif btdf_raw not in ("", "0", "false", "no", "off"):
             raise MaterialError(
-                "%s: total integrated scatter %.4g exceeds 1 (energy) — the "
-                "ABg fit scatters more than the incident power" % (ctx, tis0))
+                "%s: btdf %r must be a boolean (1/true/yes/on or blank/0)"
+                % (ctx, row.get("btdf")))
+
         out[name] = {"model": model, "A": A, "B": B, "g": g,
-                     "tis_cap": tis_cap,
+                     "tis_cap": tis_cap, "btdf": btdf,
                      "reference": (row.get("reference") or "").strip(),
                      "notes": (row.get("notes") or "").strip()}
     return out
