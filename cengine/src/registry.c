@@ -35,9 +35,9 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
     { "surface:mesh",     "geometry" },
     /* still handled INSIDE the terminal optic-default handler; each gets
      * its own dispatch entry in later core-v3 steps (§3 steps 4-8).
-     * coating (step 4) is now a registered SurfaceEffectDef; polarizer/
-     * roughness/scatter/birefringence follow in steps 5-7. */
-    { "polarizer",     "optic-default" },
+     * coating (step 4) + polarizer (step 5) are now registered
+     * SurfaceEffectDefs; roughness/scatter/birefringence follow in
+     * steps 6-7. */
     { "roughness",     "optic-default" },
     { "scatter",       "optic-default" },
     { "birefringence", "optic-default" },

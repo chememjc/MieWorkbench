@@ -614,13 +614,29 @@ static void biref_children(const SceneC *s, const FaceC *face,
     }
 }
 
+/* composed surface-effect match predicates (REGISTRY.md §3 steps 5-6),
+ * registered in SURFACE_EFFECTS below. Pure scene functions of the face;
+ * the optic terminal calls them to GATE each effect's inline physics so
+ * dispatch is data-driven, not a raw struct-field test. */
+static int m_polarizer(const SceneC *s, int32_t fid) {
+    return s->bodies[s->faces[fid].body].has_polarizer;
+}
+static int m_roughness(const SceneC *s, int32_t fid) {
+    return s->faces[fid].rough >= 0;
+}
+static int m_scatter(const SceneC *s, int32_t fid) {
+    return s->faces[fid].scat >= 0;
+}
+
 /* ----------------------------------------------------- optic children */
-/* Port of Tracer._optic_children (tracer.py:457-896), phase-A subset:
- * bare Fresnel + mirror/absorbance + medium stack + seam guard. Coatings/
- * roughness/scatter/polarizer/birefringence arrive in phases B/E/F —
- * feature routing keeps scenes that use them on the Python engine. */
+/* Port of Tracer._optic_children (tracer.py:457-896): bare Fresnel +
+ * mirror/absorbance + medium stack + seam guard, composing the registered
+ * coating providers (interface_coeffs) and the polarizer/roughness/scatter
+ * surface effects (SURFACE_EFFECTS, gated below). Uniaxial birefringence is
+ * its own terminal InteractionDef (biref_children_apply). */
 static void optic_children(const SceneC *s, const FaceC *face,
                            const BodyC *body, const Ray *r, ThreadCtx *cx) {
+    int32_t fid = (int32_t)(face - s->faces);
     kvec3 n_out = v3_scale(face_normal_canonical(face, r->pos),
                            face->outward_sign);
     double cos_with_out = v3_dot(r->dir, n_out);
@@ -778,8 +794,9 @@ static void optic_children(const SceneC *s, const FaceC *face,
         trans.event_ctr = 0;
         p_trans_pre = ray_power(&trans);
         /* ---- polarizer: dichroic Jones diattenuator on ENTRY
-         * (tracer.py:711-723, _apply_polarizer 899-946) ---- */
-        if (body->has_polarizer && entering) {
+         * (tracer.py:711-723, _apply_polarizer 899-946); gated by the
+         * registered SURFACE_EFFECTS "polarizer" match (step 5) ---- */
+        if (m_polarizer(s, fid) && entering) {
             apply_polarizer(s, body, &trans, r->lam_idx);
             double d_loss = p_trans_pre - ray_power(&trans);
             if (d_loss > 0.0) {
@@ -1286,7 +1303,8 @@ static int m_coating(const SceneC *s, int32_t fid) {
     return s->faces[fid].coating >= 0;
 }
 static const SurfaceEffectDef SURFACE_EFFECTS[] = {
-    { "coating", m_coating },      /* step 4: TMM/table coefficient providers */
+    { "coating",   m_coating },    /* step 4: TMM/table coefficient providers */
+    { "polarizer", m_polarizer },  /* step 5: dichroic Jones diattenuator */
 };
 const SurfaceEffectDef *registry_surface_effects(int *n_out) {
     *n_out = (int)(sizeof SURFACE_EFFECTS / sizeof SURFACE_EFFECTS[0]);
