@@ -490,6 +490,21 @@ def _build_pipeline_parser():
                         "--export-rays) so post ranks multi-bounce ghost "
                         "paths by detected power into "
                         "results/<case>/analysis/")
+    g.add_argument("--pol-transport", action="store_true",
+                   help="P2 parallel-transport polarization analysis: track "
+                        "each ray's Q (geometric parallel-transport frame) "
+                        "and J (cumulative interface-convention Jones "
+                        "matrix) so rays_full.npz (implies --export-rays "
+                        "behavior, seed 0 only) carries Qmat/Jmat and post "
+                        "renders honest per-detector retardance/"
+                        "diattenuation/fast-axis maps (geometric image "
+                        "rotation removed via M = Q^T P) into "
+                        "results/<case>/analysis/ + "
+                        "report.json['detectors'][label]['pol_transport']. "
+                        "Python engine only (birefringent/biaxial o/e or "
+                        "slow/fast channel splits are not yet modeled and "
+                        "drop those rays from the maps, with the dropped "
+                        "fraction reported).")
     g.add_argument("--wavefront-point", default=None,
                    type=parse_wavefront_point, metavar="X_MM,Y_MM",
                    help="override render_wavefront's image (wavefront "
@@ -730,6 +745,15 @@ def _build_trace_parser():
                         "--export-rays does NOT track history). post then "
                         "ranks multi-bounce ghost paths by detected power "
                         "into results/<case>/analysis/")
+    g.add_argument("--pol-transport", action="store_true",
+                   help="P2 parallel-transport polarization analysis "
+                        "(RayBatch.Qmat/Jmat, SEED 0 ONLY) and export them "
+                        "into rays_full.npz (implies --export-rays "
+                        "behavior). post then renders per-detector "
+                        "retardance/diattenuation/fast-axis maps with the "
+                        "geometric image rotation removed. Python engine "
+                        "only; birefringent/biaxial channel splits are not "
+                        "modeled and drop those rays from the maps.")
     return p
 
 

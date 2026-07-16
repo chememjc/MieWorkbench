@@ -265,7 +265,9 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--export-rays"]
     if args.ghost_analysis:
         cmd += ["--ghost-analysis"]
-    if args.export_rays or args.ghost_analysis:
+    if args.pol_transport:
+        cmd += ["--pol-transport"]
+    if args.export_rays or args.ghost_analysis or args.pol_transport:
         cmd += ["--export-rays-max", str(int(args.export_rays_max))]
     if args.strict_analytic:
         cmd += ["--strict-analytic"]

@@ -29,7 +29,7 @@ class RayBatch:
                  "generation", "last_face", "coherent", "birth_power",
                  "viz_flag", "scattered",
                  "dPdx", "dDdx", "dPdy", "dDdy", "birth_pos", "k_dir",
-                 "refl_hist", "gopl", "gdd_acc")
+                 "refl_hist", "gopl", "gdd_acc", "Qmat", "Jmat")
 
     # ray-differential slots (Igehy): allocated ONLY under
     # --ray-differentials (None otherwise — +96 B/ray when on). NaN rows
@@ -68,6 +68,18 @@ class RayBatch:
     # lifecycle as birth_pos (select copies it; a mixed concat -1-fills the
     # batches that lack it). Transmitted children inherit it unchanged, so a
     # detected ray carries the ordered sequence of surfaces it reflected off.
+
+    # Qmat / Jmat: P2 parallel-transport polarization bookkeeping —
+    # allocated ONLY under --pol-transport (TraceConfig.pol_transport; None
+    # otherwise, +80 B/ray when on: (3,3) float64 + (2,2) complex128). See
+    # poltransport.py for the full construction. Qmat is the running
+    # parallel-transported (s,p,k) frame (init'd to the ray's OWN emitted
+    # frame, not identity); Jmat is the running interface-convention
+    # cumulative Jones matrix (init'd to identity). Same optional-slot
+    # lifecycle as birth_pos (select copies both; a mixed concat NaN-fills
+    # the batches that lack them — sites whose amplitude physics is not
+    # modeled here, e.g. birefringent/biaxial channel splits, NaN both
+    # explicitly via poltransport.kill()).
 
     def __init__(self, n):
         self.pos = np.zeros((n, 3), dtype=np.float64)
@@ -126,6 +138,8 @@ class RayBatch:
         self.refl_hist = None
         self.gopl = None
         self.gdd_acc = None
+        self.Qmat = None
+        self.Jmat = None
 
     def alloc_differentials(self):
         for name in self._DIFF_SLOTS:
@@ -240,6 +254,14 @@ class RayBatch:
             out.gopl = np.full(len(out), np.nan)
         if any(b.gdd_acc is not None for b in batches):
             out.gdd_acc = np.full(len(out), np.nan)
+        if any(b.Qmat is not None for b in batches):
+            # mixed batches: rays from a batch without pol-transport
+            # tracking NaN-fill (their Q/J history is undefined, not
+            # identity) — poltransport.polar_decompose drops NaN rays.
+            out.Qmat = np.full((len(out), 3, 3), np.nan)
+        if any(b.Jmat is not None for b in batches):
+            out.Jmat = np.full((len(out), 2, 2), np.nan + 1j * np.nan,
+                               dtype=np.complex128)
         at = 0
         for b in batches:
             n = len(b)

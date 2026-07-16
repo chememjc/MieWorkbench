@@ -479,7 +479,8 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                       importance_scatter=getattr(
                           args, "importance_scatter", False),
                       importance_limit=getattr(
-                          args, "importance_limit", 1.0))
+                          args, "importance_limit", 1.0),
+                      pol_transport=getattr(args, "pol_transport", False))
     particles = None
     part_diag = None
     if args.particles:
@@ -560,7 +561,8 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
                       importance_scatter=getattr(
                           args, "importance_scatter", False),
                       importance_limit=getattr(
-                          args, "importance_limit", 1.0))
+                          args, "importance_limit", 1.0),
+                      pol_transport=getattr(args, "pol_transport", False))
     particles = None
     if args.particles:
         from raytracer.particles import ParticleCloud
@@ -739,6 +741,11 @@ def write_rays_full(case_dir, grids, args, model_name, scene=None):
     "<body>.<FaceN>") so the post ghost renderer maps a path signature to
     surfaces without reconstructing the scene's face ordering.
 
+    Under --pol-transport each detector also gets '<safe_label>/Qmat'
+    (N,3,3) float64, '/Jmat' (N,2,2) complex128, and '/s_hat' (N,3) float64
+    — post_process.render_pol_transport reads these to compute honest
+    per-ray retardance/diattenuation/fast-axis (M = Q^T P).
+
     Per-detector cap args.export_rays_max: above it a uniform-random subset
     drawn with the run seed is kept (a NOTE is logged) so a huge focal spot
     does not blow the file up."""
@@ -762,20 +769,29 @@ def write_rays_full(case_dir, grids, args, model_name, scene=None):
     # phases) — same conditional pattern as refl_hist.
     any_time = any("gopl" in r for det in grids.values()
                    for r in det.ray_records)
+    # Qmat/Jmat/s_hat ride along only under --pol-transport (P2) — same
+    # conditional pattern again.
+    any_pol_transport = any("Qmat" in r for det in grids.values()
+                            for r in det.ray_records)
     for det in grids.values():
         safe = det.label.replace(".", "_")
         recs = det.ray_records
         keys = _EXPORT_KEYS + (("refl_hist",) if any_hist else ()) \
-            + (("gopl", "gdd_acc") if any_time else ())
+            + (("gopl", "gdd_acc") if any_time else ()) \
+            + (("Qmat", "Jmat", "s_hat") if any_pol_transport else ())
         cols = {}
         for k in keys:
             if recs and k in recs[0]:
                 cols[k] = np.concatenate([r[k] for r in recs])
             elif k == "refl_hist":
                 cols[k] = np.zeros((0, HIST_DEPTH), dtype=np.int32)
+            elif k == "Qmat":
+                cols[k] = np.zeros((0, 3, 3))
+            elif k == "Jmat":
+                cols[k] = np.zeros((0, 2, 2), dtype=np.complex128)
             else:
                 cols[k] = np.zeros((0, 3)) if k in ("pos", "dir",
-                                                    "birth_pos") \
+                                                    "birth_pos", "s_hat") \
                     else np.zeros(0)
         n_total = len(cols["pos"])
         kept_fraction = 1.0
@@ -1091,8 +1107,11 @@ def _main_locked(args, case_dir):
 
     # --ghost-analysis implies export-rays behavior (it needs the seed-0 ray
     # records) AND turns on refl_hist tracking; a bare --export-rays does NOT
-    # track history (zero overhead). Both are seed-0 only, like --save-fields.
-    export_on = args.export_rays or args.ghost_analysis
+    # track history (zero overhead). --pol-transport likewise implies
+    # export-rays (it needs the seed-0 ray records to carry Qmat/Jmat). All
+    # three are seed-0 only, like --save-fields.
+    export_on = (args.export_rays or args.ghost_analysis
+                or getattr(args, "pol_transport", False))
 
     # track_time: pulsed-optics time-domain accumulators (gopl/gdd_acc per
     # ray, per-body path tally), driven by the resolved time products

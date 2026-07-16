@@ -136,6 +136,19 @@ def pol_basis(d, n_hat):
     return s, p
 
 
+def basis_rotation_matrix(s_old, p_old, s_new, p_new):
+    """The 2x2 re-expression coefficients (css, csp, cps, cpp) that
+    rotate_jones applies to the field, factored out so P2's cumulative
+    Jones-matrix tracking (poltransport.py) uses EXACTLY this transform
+    and cannot drift from what the field itself undergoes. Both bases
+    must be orthonormal pairs perpendicular to the SAME ray direction."""
+    css = np.sum(s_new * s_old, axis=-1)
+    csp = np.sum(s_new * p_old, axis=-1)
+    cps = np.sum(p_new * s_old, axis=-1)
+    cpp = np.sum(p_new * p_old, axis=-1)
+    return css, csp, cps, cpp
+
+
 def rotate_jones(Es, Ep, s_old, p_old, s_new, p_new):
     """Re-express Jones amplitudes in a new (s,p) basis.
 
@@ -144,10 +157,7 @@ def rotate_jones(Es, Ep, s_old, p_old, s_new, p_new):
       [Es'; Ep'] = [[s_new.s_old, s_new.p_old], [p_new.s_old, p_new.p_old]] .
     Unitary => |Es'|^2+|Ep'|^2 == |Es|^2+|Ep|^2 (tested).
     """
-    css = np.sum(s_new * s_old, axis=-1)
-    csp = np.sum(s_new * p_old, axis=-1)
-    cps = np.sum(p_new * s_old, axis=-1)
-    cpp = np.sum(p_new * p_old, axis=-1)
+    css, csp, cps, cpp = basis_rotation_matrix(s_old, p_old, s_new, p_new)
     Es2 = css * Es + csp * Ep
     Ep2 = cps * Es + cpp * Ep
     return Es2, Ep2
