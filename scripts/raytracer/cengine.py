@@ -145,6 +145,17 @@ def detect_features(args, scene):
             break
     if scene.gratings:
         feats.add("grating")
+        # v2 RCWA tables carry COMPLEX per-order amplitudes interpolated on
+        # (lambda, theta, phi); the C grating kernel only bakes a lambda-only
+        # real [order][lam] efficiency table (no theta/phi axes, no phase), so
+        # a v2 table is not yet ported. Emit its own token -> --engine auto
+        # routes such scenes to Python (honest routing; C port is a later
+        # tranche). NEVER let a v2 grating silently run the C lambda-only path.
+        for gspec in scene.gratings.values():
+            tbl = gspec.get("table")
+            if isinstance(tbl, dict) and tbl.get("schema") == "v2":
+                feats.add("grating_table_v2")
+                break
     if scene.roughness:
         feats.add("roughness")
         if (getattr(args, "rough_fresnel", None) or "micro") == "macro":
@@ -556,6 +567,15 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
             entry["slant_rad"] = float(
                 np.deg2rad(float(p.get("slant_deg", 0.0))))
         else:
+            tbl = gspec.get("table")
+            if isinstance(tbl, dict) and tbl.get("schema") == "v2":
+                # unreachable under normal routing (grating_table_v2 forces
+                # Python); guard so a future dispatch bug can't bake a v2
+                # table's phase/theta/phi structure into a lambda-only table.
+                raise NotImplementedError(
+                    "v2 RCWA grating table is not C-portable (complex "
+                    "amplitude, theta/phi axes); scene must route to Python "
+                    "via the grating_table_v2 feature token")
             # lambda-only models: pre-resolve through the SAME Python
             # code (order_efficiencies) at every stratum wavelength
             from .grating import order_efficiencies

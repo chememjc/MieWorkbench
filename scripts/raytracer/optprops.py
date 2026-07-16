@@ -461,9 +461,25 @@ def load_gratings(csv_path=None):
 
 
 def _load_grating_table(path, ctx):
-    """tables/<name>.csv: wavelength_nm,order,eta_s,eta_p ->
-    {order: {"lam_um", "eta_s", "eta_p"}} with per-order strictly
-    increasing wavelength grids."""
+    """Grating efficiency/amplitude table loader.
+
+    Two on-disk formats are supported, distinguished by a schema marker on
+    the FIRST line:
+
+      * LEGACY (v1) — no marker; header ``wavelength_nm,order,eta_s,eta_p``.
+        REAL per-order power efficiencies interpolated on wavelength only
+        (cos_i / azimuth ignored). Returns
+        ``{order:int -> {"lam_um", "eta_s", "eta_p"}}`` exactly as before —
+        full backward compatibility.
+
+      * v2 (RCWA) — first line ``# mietab grating v2 [side=transmission]``;
+        header ``wavelength_nm,theta_deg,phi_deg,order,amp_s_re,amp_s_im,
+        amp_p_re,amp_p_im``. COMPLEX per-order amplitudes on a regular
+        (lambda, theta, phi) grid, s and p, with |amp|^2 = co-polarized
+        order efficiency and arg(amp) = the diffracted-order phase
+        (Zemax/Lumerical complex-amplitude interpolation, engine3 §7.5).
+        Returns a gridded dict with ``"schema": "v2"``.
+    """
     path = Path(path)
     resolved = resolve_prop_path(path, alt_ext=".mietab")
     if not resolved.exists():
@@ -471,6 +487,90 @@ def _load_grating_table(path, ctx):
         raise MaterialError("%s: grating table not found: %s or %s"
                             % (ctx, path, alt))
     path = resolved
+    with open(path, newline="") as fh:
+        first = fh.readline()
+    if first.lstrip().startswith("#") and "grating v2" in first:
+        return _load_grating_table_v2(path, first, ctx)
+    return _load_grating_table_v1(path, ctx)
+
+
+def _load_grating_table_v2(path, marker_line, ctx):
+    """Parse a v2 (RCWA complex-amplitude) grating table. See
+    _load_grating_table for the format. Returns
+    {"schema":"v2", "side":str, "lam_um":arr, "theta_deg":arr,
+     "phi_deg":arr, "orders":[int], "amp_s":{m:cplx(nl,nt,np)},
+     "amp_p":{m:cplx(nl,nt,np)}}."""
+    # marker key=value options (side=transmission|reflection)
+    side = "transmission"
+    for tok in marker_line.lstrip("#").split():
+        if tok.startswith("side="):
+            side = tok.split("=", 1)[1].strip()
+    if side not in ("transmission", "reflection"):
+        raise MaterialError("%s: grating table %s: side=%r must be "
+                            "'transmission' or 'reflection'"
+                            % (ctx, path, side))
+    need = ["wavelength_nm", "theta_deg", "phi_deg", "order",
+            "amp_s_re", "amp_s_im", "amp_p_re", "amp_p_im"]
+    rows = []
+    with open(path, newline="") as fh:
+        fh.readline()                       # skip marker line
+        reader = csv.DictReader(fh)
+        missing = set(need) - set(reader.fieldnames or [])
+        if missing:
+            raise MaterialError("%s: grating v2 table %s missing column(s) %s"
+                                % (ctx, path, sorted(missing)))
+        for j, r in enumerate(reader):
+            try:
+                rows.append((
+                    float(r["wavelength_nm"]) * 1e-3,   # lam_um
+                    float(r["theta_deg"]), float(r["phi_deg"]),
+                    int(r["order"]),
+                    complex(float(r["amp_s_re"]), float(r["amp_s_im"])),
+                    complex(float(r["amp_p_re"]), float(r["amp_p_im"]))))
+            except (TypeError, ValueError, KeyError):
+                raise MaterialError("%s: grating v2 table %s row %d not "
+                                    "numeric: %r" % (ctx, path, j + 2, r))
+    if not rows:
+        raise MaterialError("%s: grating v2 table %s is empty" % (ctx, path))
+    lam_ax = np.array(sorted({r[0] for r in rows}))
+    th_ax = np.array(sorted({r[1] for r in rows}))
+    ph_ax = np.array(sorted({r[2] for r in rows}))
+    orders = sorted({r[3] for r in rows})
+    nl, nt, nph = lam_ax.size, th_ax.size, ph_ax.size
+    li = {v: i for i, v in enumerate(lam_ax)}
+    ti = {v: i for i, v in enumerate(th_ax)}
+    pj = {v: i for i, v in enumerate(ph_ax)}
+    amp_s = {m: np.full((nl, nt, nph), np.nan, dtype=np.complex128)
+             for m in orders}
+    amp_p = {m: np.full((nl, nt, nph), np.nan, dtype=np.complex128)
+             for m in orders}
+    for lam, th, ph, m, a_s, a_p in rows:
+        amp_s[m][li[lam], ti[th], pj[ph]] = a_s
+        amp_p[m][li[lam], ti[th], pj[ph]] = a_p
+    # every order must fill the FULL regular grid (no holes)
+    for m in orders:
+        if np.isnan(amp_s[m]).any() or np.isnan(amp_p[m]).any():
+            raise MaterialError(
+                "%s: grating v2 table %s order %d is not a complete regular "
+                "(lambda,theta,phi) grid (%d x %d x %d expected)"
+                % (ctx, path, m, nl, nt, nph))
+    # energy sanity: co-polarized sum over orders must not exceed 1
+    for pol, amp in (("s", amp_s), ("p", amp_p)):
+        tot = sum(np.abs(amp[m]) ** 2 for m in orders)
+        if np.any(tot > 1.0 + 1e-6):
+            worst = float(np.max(tot))
+            raise MaterialError(
+                "%s: grating v2 table %s: summed |amp_%s|^2 over orders = "
+                "%.6f > 1 — energy would not close" % (ctx, path, pol, worst))
+    return {"schema": "v2", "side": side, "lam_um": lam_ax,
+            "theta_deg": th_ax, "phi_deg": ph_ax, "orders": orders,
+            "amp_s": amp_s, "amp_p": amp_p}
+
+
+def _load_grating_table_v1(path, ctx):
+    """LEGACY tables/<name>.mietab: wavelength_nm,order,eta_s,eta_p ->
+    {order: {"lam_um", "eta_s", "eta_p"}} with per-order strictly
+    increasing wavelength grids."""
     rows_by_order = {}
     with open(path, newline="") as fh:
         reader = csv.DictReader(fh)
