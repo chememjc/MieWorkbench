@@ -34,8 +34,9 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
     { "surface:asphere",  "geometry" },
     { "surface:mesh",     "geometry" },
     /* still handled INSIDE the terminal optic-default handler; each gets
-     * its own dispatch entry in later core-v3 steps (§3 steps 4-8) */
-    { "coating",       "optic-default" },
+     * its own dispatch entry in later core-v3 steps (§3 steps 4-8).
+     * coating (step 4) is now a registered SurfaceEffectDef; polarizer/
+     * roughness/scatter/birefringence follow in steps 5-7. */
     { "polarizer",     "optic-default" },
     { "roughness",     "optic-default" },
     { "scatter",       "optic-default" },
@@ -70,6 +71,10 @@ int registry_supported_token(const char *token) {
     const PropagatorDef *pp = registry_propagators(&np);
     for (int i = 0; i < np; i++)
         if (strcmp(pp[i].token, token) == 0) return 1;
+    int nse;
+    const SurfaceEffectDef *se = registry_surface_effects(&nse);
+    for (int i = 0; i < nse; i++)
+        if (strcmp(se[i].token, token) == 0) return 1;
     for (int i = 0; i < N_EXTRA; i++)
         if (strcmp(EXTRA_SUPPORTED[i].token, token) == 0) return 1;
     return 0;
@@ -141,6 +146,13 @@ void registry_dump_tokens(FILE *out) {
         if (seen_before(seen, n_seen, pp[i].token)) continue;
         if (n_seen < 256) seen[n_seen++] = pp[i].token;
         fprintf(out, "%s\tpropagator\n", pp[i].token);
+    }
+    int nse;
+    const SurfaceEffectDef *se = registry_surface_effects(&nse);
+    for (int i = 0; i < nse; i++) {
+        if (seen_before(seen, n_seen, se[i].token)) continue;
+        if (n_seen < 256) seen[n_seen++] = se[i].token;
+        fprintf(out, "%s\tinteraction\n", se[i].token);
     }
     for (int i = 0; i < N_EXTRA; i++) {
         if (seen_before(seen, n_seen, EXTRA_SUPPORTED[i].token)) continue;

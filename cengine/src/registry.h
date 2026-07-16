@@ -73,11 +73,26 @@ typedef struct PropagatorDef {
     void (*advance)(const SceneC *s, ThreadCtx *cx, Ray *ray, double t_hit);
 } PropagatorDef;
 
+/* Composed surface effect (REGISTRY.md §3 steps 4-7): coating, polarizer,
+ * roughness, scatter. Unlike an InteractionDef these are NOT standalone
+ * terminals — they compose on ONE interface event inside the optic terminal
+ * handler, each at its exact point (coating supplies the interface
+ * coefficients; polarizer mutates the transmitted Jones; roughness/scatter
+ * split off Beckmann/ABg lobes). Their apply signatures therefore differ and
+ * stay trace-local; the registry carries only the token + the pure-scene
+ * match() so dispatch is data-driven (not an inline branch) and the token is
+ * first-class in --tokens / registry_supported_token. */
+typedef struct SurfaceEffectDef {
+    const char *token;
+    int (*match)(const SceneC *s, int32_t fid);   /* scene-build predicate */
+} SurfaceEffectDef;
+
 /* The static tables live in trace.c, co-located with the physics handlers
  * (they reference trace-local ThreadCtx + static helpers). registry.c
  * reaches them through these accessors. */
 const InteractionDef *registry_interactions(int *n_out);
 const PropagatorDef *registry_propagators(int *n_out);
+const SurfaceEffectDef *registry_surface_effects(int *n_out);
 
 /* Scene-build resolution (REGISTRY.md §2.1): fill each face's ordered
  * handler list from the registry, hard-erroring on a dispatch gap or

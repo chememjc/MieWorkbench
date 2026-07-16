@@ -274,49 +274,105 @@ static void nan_guard(IfcCoef *c) {
     if (!isfinite(c->Tp) || c->Tp < 0.0) c->Tp = 0.0;
 }
 
+/* ---- coating coefficient providers (REGISTRY.md §3 step 4) ------------
+ * The former three-way coating branch of interface_coeffs, split verbatim
+ * into match-gated providers that COMPOSE with the bare-Fresnel default.
+ * Composition semantics preserved exactly:
+ *   - TMM  : re-evaluates the stack at the LOCAL cos_x every call (ignores
+ *            `macro`; microfacet lobes get their own facet-angle TMM).
+ *   - TABLE: a single-AOI measured table; `macro != NULL` (the roughness
+ *            microfacet loop) REUSES the macro-angle coefficients rather
+ *            than re-reading the table, the borrowed-bare-phase + fold-T-
+ *            into-R-past-TIR behaviour (tracer.py:549-578) living in the
+ *            no-macro path.
+ *   - bare : the DEFAULT terminal coefficient (no coating on the face).
+ * These are trace-local (they fill an IfcCoef, not the InteractionDef
+ * signature); the "coating" token is registered in SURFACE_EFFECTS. */
+static void coat_tmm_fill(const SceneC *s, const FaceC *face, const Ray *r,
+                          double cos_x, kcplx n1, kcplx n2,
+                          const IfcCoef *macro, IfcCoef *c) {
+    (void)macro;
+    const CoatC *co = &s->coatings[face->coating];
+    kcplx layer_n[COAT_MAX_LAYERS];
+    for (int j = 0; j < co->n_layers; j++) {
+        size_t at = (size_t)j * s->n_lams + r->lam_idx;
+        layer_n[j] = kc(co->layer_n_re[at], co->layer_n_im[at]);
+    }
+    TmmC T = tmm_eval(r->lam, cos_x, n1, n2, layer_n, co->layer_d,
+                      co->n_layers);
+    c->rs = T.rs; c->rp = T.rp; c->ts = T.ts; c->tp = T.tp;
+    c->Rs = T.Rs; c->Rp = T.Rp; c->Ts = T.Ts; c->Tp = T.Tp;
+}
+static void coat_table_fill(const SceneC *s, const FaceC *face, const Ray *r,
+                            double cos_x, kcplx n1, kcplx n2,
+                            const IfcCoef *macro, IfcCoef *c) {
+    if (macro) { *c = *macro; return; }  /* single-AOI table keeps its macro */
+    /* macro evaluation of a table coating (tracer.py:549-578) */
+    const CoatC *co = &s->coatings[face->coating];
+    FresnelC F = fresnel_eval(cos_x, n1, n2);
+    c->Rs = co->Rs[r->lam_idx];
+    c->Rp = co->Rp[r->lam_idx];
+    c->Ts = co->Ts[r->lam_idx];
+    c->Tp = co->Tp[r->lam_idx];
+    if (fresnel_is_tir(cos_x, n1, n2)) {
+        c->Rs += c->Ts; if (c->Rs > 1.0) c->Rs = 1.0; if (c->Rs < 0.0) c->Rs = 0.0;
+        c->Rp += c->Tp; if (c->Rp > 1.0) c->Rp = 1.0; if (c->Rp < 0.0) c->Rp = 0.0;
+        c->Ts = 0.0;
+        c->Tp = 0.0;
+    }
+    c->rs = kc_scale(kc_cis(kc_arg(F.rs)), sqrt(c->Rs));
+    c->rp = kc_scale(kc_cis(kc_arg(F.rp)), sqrt(c->Rp));
+    c->ts = kc_scale(kc_cis(kc_arg(F.ts)),
+                     sqrt(c->Ts > 0.0 ? c->Ts : 0.0));
+    c->tp = kc_scale(kc_cis(kc_arg(F.tp)),
+                     sqrt(c->Tp > 0.0 ? c->Tp : 0.0));
+}
+static void coat_bare_fill(const SceneC *s, const FaceC *face, const Ray *r,
+                           double cos_x, kcplx n1, kcplx n2,
+                           const IfcCoef *macro, IfcCoef *c) {
+    (void)s; (void)face; (void)r; (void)macro;
+    FresnelC F = fresnel_eval(cos_x, n1, n2);
+    c->rs = F.rs; c->rp = F.rp; c->ts = F.ts; c->tp = F.tp;
+    c->Rs = F.Rs; c->Rp = F.Rp; c->Ts = F.Ts; c->Tp = F.Tp;
+}
+
+/* coating provider table (trace-local): first matching provider wins; the
+ * bare-Fresnel default fills when none matches (no face coating). Match
+ * predicates are pure scene functions (COAT_TMM vs the measured table). */
+static int m_coat_tmm(const SceneC *s, int32_t fid) {
+    const FaceC *f = &s->faces[fid];
+    return f->coating >= 0 && s->coatings[f->coating].kind == COAT_TMM;
+}
+static int m_coat_table(const SceneC *s, int32_t fid) {
+    const FaceC *f = &s->faces[fid];
+    return f->coating >= 0 && s->coatings[f->coating].kind != COAT_TMM;
+}
+typedef struct CoatingDef {
+    int (*match)(const SceneC *s, int32_t fid);
+    void (*fill)(const SceneC *s, const FaceC *face, const Ray *r,
+                 double cos_x, kcplx n1, kcplx n2, const IfcCoef *macro,
+                 IfcCoef *out);
+} CoatingDef;
+static const CoatingDef COATINGS[] = {
+    { m_coat_tmm,   coat_tmm_fill },
+    { m_coat_table, coat_table_fill },
+};
+#define N_COATINGS ((int)(sizeof COATINGS / sizeof COATINGS[0]))
+
 static IfcCoef interface_coeffs(const SceneC *s, const FaceC *face,
                                 const Ray *r, double cos_x, kcplx n1,
                                 kcplx n2, const IfcCoef *macro) {
     IfcCoef c;
-    if (face->coating >= 0
-            && s->coatings[face->coating].kind == COAT_TMM) {
-        const CoatC *co = &s->coatings[face->coating];
-        kcplx layer_n[COAT_MAX_LAYERS];
-        for (int j = 0; j < co->n_layers; j++) {
-            size_t at = (size_t)j * s->n_lams + r->lam_idx;
-            layer_n[j] = kc(co->layer_n_re[at], co->layer_n_im[at]);
+    int32_t fid = (int32_t)(face - s->faces);
+    int filled = 0;
+    for (int i = 0; i < N_COATINGS; i++)
+        if (COATINGS[i].match(s, fid)) {
+            COATINGS[i].fill(s, face, r, cos_x, n1, n2, macro, &c);
+            filled = 1;
+            break;
         }
-        TmmC T = tmm_eval(r->lam, cos_x, n1, n2, layer_n, co->layer_d,
-                          co->n_layers);
-        c.rs = T.rs; c.rp = T.rp; c.ts = T.ts; c.tp = T.tp;
-        c.Rs = T.Rs; c.Rp = T.Rp; c.Ts = T.Ts; c.Tp = T.Tp;
-    } else if (face->coating >= 0 && macro) {
-        c = *macro;     /* single-AOI table keeps its macro values */
-    } else if (face->coating >= 0) {
-        /* macro evaluation of a table coating (tracer.py:549-578) */
-        const CoatC *co = &s->coatings[face->coating];
-        FresnelC F = fresnel_eval(cos_x, n1, n2);
-        c.Rs = co->Rs[r->lam_idx];
-        c.Rp = co->Rp[r->lam_idx];
-        c.Ts = co->Ts[r->lam_idx];
-        c.Tp = co->Tp[r->lam_idx];
-        if (fresnel_is_tir(cos_x, n1, n2)) {
-            c.Rs += c.Ts; if (c.Rs > 1.0) c.Rs = 1.0; if (c.Rs < 0.0) c.Rs = 0.0;
-            c.Rp += c.Tp; if (c.Rp > 1.0) c.Rp = 1.0; if (c.Rp < 0.0) c.Rp = 0.0;
-            c.Ts = 0.0;
-            c.Tp = 0.0;
-        }
-        c.rs = kc_scale(kc_cis(kc_arg(F.rs)), sqrt(c.Rs));
-        c.rp = kc_scale(kc_cis(kc_arg(F.rp)), sqrt(c.Rp));
-        c.ts = kc_scale(kc_cis(kc_arg(F.ts)),
-                        sqrt(c.Ts > 0.0 ? c.Ts : 0.0));
-        c.tp = kc_scale(kc_cis(kc_arg(F.tp)),
-                        sqrt(c.Tp > 0.0 ? c.Tp : 0.0));
-    } else {
-        FresnelC F = fresnel_eval(cos_x, n1, n2);
-        c.rs = F.rs; c.rp = F.rp; c.ts = F.ts; c.tp = F.tp;
-        c.Rs = F.Rs; c.Rp = F.Rp; c.Ts = F.Ts; c.Tp = F.Tp;
-    }
+    if (!filled)                              /* bare Fresnel = the default */
+        coat_bare_fill(s, face, r, cos_x, n1, n2, macro, &c);
     nan_guard(&c);
     return c;
 }
@@ -1221,6 +1277,21 @@ static const InteractionDef INTERACTIONS[] = {
     { "grating",  m_grating,         grating_children_apply },
     { "optic",    m_optic_default,   optic_children_apply },
 };
+
+/* composed surface-effect matches (REGISTRY.md §3 steps 4-7). Each gates a
+ * feature that composes INSIDE the optic terminal at its exact point; the
+ * physics functions are called there. Registering the token+match here makes
+ * the dispatch data-driven and the token first-class in --tokens. */
+static int m_coating(const SceneC *s, int32_t fid) {
+    return s->faces[fid].coating >= 0;
+}
+static const SurfaceEffectDef SURFACE_EFFECTS[] = {
+    { "coating", m_coating },      /* step 4: TMM/table coefficient providers */
+};
+const SurfaceEffectDef *registry_surface_effects(int *n_out) {
+    *n_out = (int)(sizeof SURFACE_EFFECTS / sizeof SURFACE_EFFECTS[0]);
+    return SURFACE_EFFECTS;
+}
 
 /* homogeneous volume propagator — the registered DEFAULT (REGISTRY.md §1.2).
  * Byte-identical to the former inline segment advance: fp64 OPL + bulk
