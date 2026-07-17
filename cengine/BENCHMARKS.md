@@ -47,3 +47,22 @@ wall of 1122.7 s bounds the speedup below at >4.8x. Both scenes clear
 the >=1.5x gate. (michelson routes to Python under `auto` today —
 `extra_detector_faces` is unported — so these rows are `--engine`-forced
 measurements of the same geometry.)
+
+## 2026-07-16 — idle-GPU spot benchmarks (post engine3 P0–P7)
+
+Machine quiet (load 1.8, no co-tenants), GPU 47 C at start, driver 580.159.03.
+Tile-factorized gather (P1) is the default; --gather-exact is the reference.
+
+| measurement | result |
+|---|---|
+| michelson_folded 2e5 rays / 2048^2 / 9 lam, tiled gather | **55.18 s, 9.17e10 pairs/s** (was 713.42 s exact = **12.9x**; 62.0 s under MD co-tenancy) |
+| michelson_folded trace (registry dispatch, P3) | 6.70 s, 2.01e6 rays/s |
+| doubleslit 4e5 / 1024^2 / 5 lam: tiled vs exact | 0.57 s @ 6.27e10 vs 4.36 s @ 8.21e9 pairs/s (7.6x; small-job launch-bound) |
+| camera_triplet / beam_expander trace | 5.15e6 / 5.53e6 interactions-equiv rays/s |
+| estimator (post-calibration, Q*M law) | michelson gather predicted 14 s vs ~13 s scaled actual; trace medians still flushing contended entries |
+
+Notes: exact-kernel rate 8.21e9 pairs/s matches the 6.7e9 calibration fallback
+(that figure included the 1.9 s init in its law fit). The projected `detailed`
+michelson: ~9.6e14 pairs / 9.17e10 = **~2.9 h** (from 39.6 h pre-P1). Worker
+amortization is validated byte-identically at the chunk level (test suite);
+the 1 s wall cases here are below timing granularity.
