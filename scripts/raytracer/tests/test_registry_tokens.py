@@ -58,7 +58,6 @@ PYTHON_ONLY = frozenset({
     "coating_phase",                    # phase-carrying table coating (P2)
     "extra_detector_faces", "curved_detector",
     "particles_explicit",               # explicit realization (continuum ported)
-    "ray_differentials",
     "pol_transport",                    # P2 parallel-transport Q/J bookkeeping
     "time_directional_index",           # crystal e-ray n_g_eff (time+crystal)
 })

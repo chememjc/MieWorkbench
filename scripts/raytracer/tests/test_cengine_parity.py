@@ -236,6 +236,103 @@ def test_coherent_doubleslit_parity(tmp_path):
     assert corr > 0.9, "fringe profile correlation %.3f" % corr
 
 
+def _n_differential_dA(case_dir):
+    """Sum n_differential_dA over every gather.json key the C run wrote (the
+    P1 chunked layout scatters one gather.json per seed's final gather)."""
+    total = 0
+    for gj in Path(case_dir).rglob("gather.json"):
+        d = json.loads(gj.read_text())
+        for det, keys in d.items():
+            if not isinstance(keys, dict):
+                continue
+            for _, v in keys.items():
+                if isinstance(v, dict):
+                    total += int(v.get("n_differential_dA", 0))
+    return total
+
+
+def test_ray_differentials_parity(tmp_path):
+    """P7 ray-differentials port: the C engine seeds/transports the Igehy
+    differentials and sizes the coherent gather's per-sample dA from
+    |dPdx x dPdy|. Two end-to-end checks through the full run_trace path:
+
+      1. COHERENT collimated source -> flat glass plate -> detector, both
+         engines with --ray-differentials. The wavefront stays planar, so the
+         differential dA equals the source footprint area exactly and the two
+         engines' detector cubes must agree tightly (deterministic normal
+         incidence). The C run must run NATIVELY (not fall back) and report
+         n_differential_dA > 0 (every gather sample sized by the differential).
+
+      2. INCOHERENT curved scene (ball lens): --ray-differentials is a gather-
+         only diagnostic, so it must leave the incoherent result byte-identical
+         — this exercises the curved seeding / interface transport / o-e-free
+         kill paths without changing physics."""
+    import run_trace
+    from scenehelpers import source_body, slab_body, detector_body, make_model
+    from cengine_scenes import _sphere_body
+
+    def run(model, sub, engine, diff, rays=40000, res=96):
+        geo = tmp_path / sub / "geometry"
+        geo.mkdir(parents=True, exist_ok=True)
+        (geo / "model.json").write_text(json.dumps(model))
+        case = tmp_path / (sub + "_case")
+        # --backend numpy forces the CPU gather on BOTH engines (Python numpy
+        # / C cpu): deterministic and immune to the co-tenanted GPU's OOM.
+        argv = ["--model-json", str(geo / "model.json"), "--case-dir",
+                str(case), "--rays", str(rays), "--resolution", str(res),
+                "--nlambda", "1", "--spectral-bins", "4", "--engine", engine,
+                "--workers", "1", "--backend", "numpy"]
+        if diff:
+            argv.append("--ray-differentials")
+        rc = run_trace.main(argv)
+        assert rc == 0, "run_trace %s exited %s" % (engine, rc)
+        import h5py
+        with h5py.File(next((case / "detectors").glob("*.h5")), "r") as h:
+            cube = h["spectral_cube_mean"][...]
+        return {"case": json.loads((case / "case.json").read_text()),
+                "cube": cube, "case_dir": case}
+
+    # ---- 1. coherent flat plate: C-vs-Python cube parity + n_diff > 0 ----
+    flat = make_model([
+        source_body("Src", x=-0.02, half=0.004, power_mW=1.0,
+                    lambdac_nm=633.0, coherent=True),
+        slab_body("Plate", "bk7", 0.0, 0.002, half=0.02),
+        detector_body("Det", x=0.03, half=0.02),
+    ])
+    cc = run(flat, "flat_c", "c", diff=True)
+    cc0 = run(flat, "flat_c0", "c", diff=False)
+    assert cc["case"]["engine"] == "c", cc["case"].get("engine_reason")
+    # every gather sample was sized by |dPdx x dPdy| (truthful count),
+    # and the no-differential control reports zero tracked areas.
+    assert _n_differential_dA(cc["case_dir"]) > 0, \
+        "C engine reported no differential-sized gather samples"
+    assert _n_differential_dA(cc0["case_dir"]) == 0
+    # On a COLLIMATED wavefront through a flat plate the differential patch
+    # area equals the source footprint exactly, so the reconstructed cube is
+    # identical to the no-differential run — a torch-free end-to-end check
+    # that the differential dA flows through the gather with the right value.
+    rd, r0 = float(cc["cube"].sum()), float(cc0["cube"].sum())
+    assert r0 > 0
+    rel_close(rd, r0, 1e-9, "flat-plate diff vs no-diff cube integral")
+    # C-vs-Python parity of the differential run (CPU gather both sides).
+    py = run(flat, "flat_py", "python", diff=True)
+    ra = float(py["cube"].sum())
+    assert ra > 0
+    rel_close(ra, rd, 1e-6, "coherent flat-plate cube integral (py vs c)")
+
+    # ---- 2. incoherent curved scene: differentials are diagnostic-only ----
+    ball = make_model([
+        source_body("Src", x=-0.03, half=0.003, power_mW=1.0,
+                    lambdac_nm=633.0),
+        _sphere_body("Ball", "bk7", [0.0, 0.0, 0.0], 0.005),
+        detector_body("Det", x=0.02, half=0.02),
+    ])
+    b0 = run(ball, "ball_nodiff", "c", diff=False)
+    b1 = run(ball, "ball_diff", "c", diff=True)
+    assert np.array_equal(b0["cube"], b1["cube"]), \
+        "--ray-differentials changed an INCOHERENT result (must be diagnostic)"
+
+
 @pytest.mark.parametrize("name", sorted(cengine_scenes.REAL_SCENES))
 def test_real_geometry_parity(name, tmp_path):
     """Side-by-side on REAL extracted geometries (repo geometry/ dirs) —

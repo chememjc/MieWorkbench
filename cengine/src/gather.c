@@ -682,6 +682,7 @@ int64_t gather_run(SceneC *s) {
             GKey *g = &d->gkeys[ki];
             int64_t M = g->n;
             int64_t near_pairs_key = 0;
+            int64_t n_diff_key = 0;   /* samples sized by --ray-differentials */
             float dpmax_key = tiled ? gridtiles.dpmax_max : 0.0f;
             log_progress("trace", 0.96, "gather %s key %d/%d (%lld "
                          "samples, %s)", d->label, ki + 1, d->n_gkeys,
@@ -690,11 +691,18 @@ int64_t gather_run(SceneC *s) {
                  ki + 1, d->n_gkeys, (long long)M, backend_name);
             /* ---- E3 projection + amplitudes (gather.py:485-499) ---- */
             const SourceC *src = &s->sources[g->source_id];
-            double dA = 1.0;
+            double dA_fallback = 1.0;
             if (src->sample_area)
-                dA = src->sample_area[g->lam_stratum * src->n_pol
-                                      + g->pol_stratum];
-            double sqrt_dA = sqrt(dA);
+                dA_fallback = src->sample_area[g->lam_stratum * src->n_pol
+                                               + g->pol_stratum];
+            /* --ray-differentials per-sample area: use |dPdx x dPdy| where all
+             * four differential slots survived (g->dA finite & > 0), else the
+             * source-referenced fallback (gather.py:488-499). If NO sample has
+             * a finite dA (differentials off / all lost) every sample uses the
+             * fallback and n_differential_dA is 0. */
+            int any_finite = 0;
+            for (int64_t i = 0; i < M; i++)
+                if (isfinite(g->dA[i])) { any_finite = 1; break; }
             float *Exs = (float *)malloc((size_t)M * 2 * sizeof(float));
             float *Eys = (float *)malloc((size_t)M * 2 * sizeof(float));
             double *amp = (double *)malloc((size_t)M * sizeof(double));
@@ -707,6 +715,12 @@ int64_t gather_run(SceneC *s) {
                 kvec3 dr = v3(g->dir[i * 3], g->dir[i * 3 + 1],
                               g->dir[i * 3 + 2]);
                 kvec3 ph = v3_cross(dr, sh);
+                double dAi = dA_fallback;
+                if (any_finite && isfinite(g->dA[i]) && g->dA[i] > 0.0) {
+                    dAi = g->dA[i];
+                    n_diff_key++;
+                }
+                double sqrt_dA = sqrt(dAi);
                 /* E3 = (Es s_hat + Ep p_hat) sqrt(dA); project on
                  * xhat/yhat (complex128 -> complex64, gather.py:130-131,
                  * 203-204, 498-499) */
@@ -727,7 +741,7 @@ int64_t gather_run(SceneC *s) {
                 /* |E3|: E3's squared norm equals |Es|^2 + |Ep|^2 (s,p
                  * orthonormal) times dA */
                 amp[i] = sqrt((kc_abs2(g->Es[i]) + kc_abs2(g->Ep[i]))
-                              * dA);
+                              * dAi);
                 group[i] = (uint8_t)(g->ray_key[i] & 3);
             }
             double m_eff = effective_samples(amp, M);
@@ -1154,7 +1168,7 @@ int64_t gather_run(SceneC *s) {
                     "\"phase_step_rad\": %.17g, "
                     "\"detected_geometric_W\": %.17g, "
                     "\"noise_floor_W_per_px\": %.17g, "
-                    "\"n_differential_dA\": 0, "
+                    "\"n_differential_dA\": %lld, "
                     "\"backend\": \"%s\", "
                     "\"gather_mode\": \"%s\", "
                     "\"phase_err_bound_rad\": %.6g, "
@@ -1165,7 +1179,7 @@ int64_t gather_run(SceneC *s) {
                     first_key ? "" : ",", g->source_id, g->lam_stratum,
                     g->pol_stratum, (long long)M, m_eff,
                     g->lam[0] / 1e-9, step, d->det_geom_W[key],
-                    noise_floor, backend_name,
+                    noise_floor, (long long)n_diff_key, backend_name,
                     mode_str, phase_bound,
                     (long long)near_pairs_key, occ_frac, nufft_gate, popdiag);
             first_key = 0;

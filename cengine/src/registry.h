@@ -50,6 +50,10 @@ typedef struct HitInfo {
     double t;                 /* segment distance from start_pos to the hit */
     kvec3 start_pos;          /* segment start (coherent Huygens sample pos) */
     double start_opl;         /* segment-start OPL (Huygens sample phase) */
+    double start_dA;          /* segment-START wavefront patch area from
+                               * --ray-differentials (diff_patch_area on the
+                               * pre-advance slots; tracer.py:579 start_dA);
+                               * NaN when differentials are off / lost. */
 } HitInfo;
 
 /* Surface interaction (REGISTRY.md §1.1). */

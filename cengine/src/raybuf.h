@@ -61,6 +61,14 @@ typedef struct Ray {
      * inherited unchanged by children like the Python optional slots) */
     kvec3 birth_pos;            /* emission point (--export-rays) */
     int32_t refl_hist[HIST_DEPTH];   /* face ids (--ghost-analysis) */
+    /* Igehy ray differentials (--ray-differentials; rays.py _DIFF_SLOTS).
+     * Seeded at emission, transferred over each segment (homogeneous_advance),
+     * transported through specular reflect/refract at interfaces, and set to
+     * NaN ("differential lost") at gratings / scatter lobes / o-e splits —
+     * mirroring tracer._kill_differentials. Only meaningful when the scene
+     * flag ray_differentials is on; children inherit the parent's slots via
+     * the struct copy exactly like birth_pos above. */
+    kvec3 dPdx, dDdx, dPdy, dDdy;
 } Ray;
 
 /* power = |Es|^2 + |Ep|^2 (rays.py:127) */

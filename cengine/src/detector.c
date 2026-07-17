@@ -302,11 +302,12 @@ static GKey *det_gkey(DetC *d, int16_t src, int16_t ls, int16_t ps) {
     g->lam = (double *)malloc((size_t)g->cap * sizeof(double));
     g->opl = (double *)malloc((size_t)g->cap * sizeof(double));
     g->power = (double *)malloc((size_t)g->cap * sizeof(double));
+    g->dA = (double *)malloc((size_t)g->cap * sizeof(double));
     g->scattered = (uint8_t *)malloc((size_t)g->cap);
     g->ray_key = (uint64_t *)malloc((size_t)g->cap * sizeof(uint64_t));
     g->event_ctr = (uint32_t *)malloc((size_t)g->cap * sizeof(uint32_t));
     if (!g->pos || !g->dir || !g->s_hat || !g->Es || !g->Ep || !g->lam
-            || !g->opl || !g->power || !g->scattered || !g->ray_key
+            || !g->opl || !g->power || !g->dA || !g->scattered || !g->ray_key
             || !g->event_ctr)
         die(EXIT_PHYSICS, "detector: gkey sample allocation failed");
     return g;
@@ -323,13 +324,14 @@ static void gkey_grow(GKey *g) {
     g->lam = (double *)realloc(g->lam, (size_t)cap * sizeof(double));
     g->opl = (double *)realloc(g->opl, (size_t)cap * sizeof(double));
     g->power = (double *)realloc(g->power, (size_t)cap * sizeof(double));
+    g->dA = (double *)realloc(g->dA, (size_t)cap * sizeof(double));
     g->scattered = (uint8_t *)realloc(g->scattered, (size_t)cap);
     g->ray_key = (uint64_t *)realloc(g->ray_key,
                                      (size_t)cap * sizeof(uint64_t));
     g->event_ctr = (uint32_t *)realloc(g->event_ctr,
                                        (size_t)cap * sizeof(uint32_t));
     if (!g->pos || !g->dir || !g->s_hat || !g->Es || !g->Ep || !g->lam
-            || !g->opl || !g->power || !g->scattered || !g->ray_key
+            || !g->opl || !g->power || !g->dA || !g->scattered || !g->ray_key
             || !g->event_ctr)
         die(EXIT_PHYSICS, "detector: gather sample growth to %lld failed "
             "— out of memory; reduce --rays", (long long)cap);
@@ -358,6 +360,7 @@ void det_apply_gather_hits(SceneC *s, const GatherHitVec *hits) {
         g->lam[j] = h->lam;
         g->opl[j] = h->opl;
         g->power[j] = h->power;
+        g->dA[j] = h->dA;
         g->scattered[j] = h->scattered;
         g->ray_key[j] = h->ray_key;
         g->event_ctr[j] = h->event_ctr;
@@ -372,7 +375,7 @@ void det_free_gkeys(DetC *d) {
         GKey *g = &d->gkeys[i];
         free(g->pos); free(g->dir); free(g->s_hat);
         free(g->Es); free(g->Ep);
-        free(g->lam); free(g->opl); free(g->power);
+        free(g->lam); free(g->opl); free(g->power); free(g->dA);
         free(g->scattered); free(g->ray_key); free(g->event_ctr);
     }
     free(d->gkeys);
@@ -437,6 +440,12 @@ void det_dump_gkeys(const SceneC *s) {
                      s->out_dir, i, g->source_id, g->lam_stratum,
                      g->pol_stratum);
             npy_write(path, g->power, "<f8", 1, &n);
+            /* --ray-differentials per-sample patch area (NaN where lost); the
+             * Python driver's _SAMPLE_FIELDS carries "dA" through the merge. */
+            snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_dA.npy",
+                     s->out_dir, i, g->source_id, g->lam_stratum,
+                     g->pol_stratum);
+            npy_write(path, g->dA, "<f8", 1, &n);
             snprintf(path, sizeof path, "%s/gk_%d_%d_%d_%d_scat.npy",
                      s->out_dir, i, g->source_id, g->lam_stratum,
                      g->pol_stratum);
@@ -560,6 +569,8 @@ void det_load_gather_state(SceneC *s) {
             memcpy(g->opl, buf, un * sizeof(double)); free(buf);
             buf = load_gk(in, i, src, ls, ps, "power", "<f8", un);
             memcpy(g->power, buf, un * sizeof(double)); free(buf);
+            buf = load_gk(in, i, src, ls, ps, "dA", "<f8", un);
+            memcpy(g->dA, buf, un * sizeof(double)); free(buf);
             buf = load_gk(in, i, src, ls, ps, "scat", "|u1", un);
             memcpy(g->scattered, buf, un); free(buf);
             buf = load_gk(in, i, src, ls, ps, "key", "<u8", un);

@@ -154,6 +154,12 @@ typedef struct {
     double *pos, *dir, *s_hat;      /* n * 3 */
     kcplx *Es, *Ep;                 /* complex128 Jones */
     double *lam, *opl, *power;
+    double *dA;                     /* per-sample wavefront patch area [m^2]
+                                     * from --ray-differentials; NaN where the
+                                     * differential was lost -> gather falls
+                                     * back to the source-referenced area
+                                     * (gather.py:488-499). NULL when the run
+                                     * has no differentials. */
     uint8_t *scattered;
     uint64_t *ray_key;              /* cross-estimator grouping (D2) */
     uint32_t *event_ctr;            /* P1: (ray_key,event_ctr) is the stable
@@ -334,6 +340,10 @@ typedef struct SceneC {
                                  * records. Requires the n_g/gdd tables above.
                                  * (params.time_products) */
     uint8_t importance_aim;     /* --importance-aim (opt-in) */
+    uint8_t ray_differentials;  /* --ray-differentials (P7 differentials port):
+                                 * seed + transport the Igehy ray differentials
+                                 * and size the coherent gather's per-sample dA
+                                 * from |dPdx x dPdy| (params.ray_differentials) */
 
     int max_strata;             /* max n_strata over sources (tally dims) */
     int max_pol;                /* max n_pol over sources */

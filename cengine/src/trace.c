@@ -26,6 +26,7 @@
 #include "kernels/scatterk.h"
 #include "kernels/gratingk.h"
 #include "kernels/birefk.h"
+#include "kernels/diffk.h"
 #include "rng.h"
 
 #include <omp.h>
@@ -100,6 +101,17 @@ typedef struct ThreadCtx {
                          * flag the PropagatorDef.advance signature omits,
                          * needed by the particles propagator (step 8) */
 } ThreadCtx;
+
+/* Mark a child's ray differentials as lost (NaN) — the gather then falls back
+ * per-sample (mirrors tracer._kill_differentials, tracer.py:45-52). No-op when
+ * the run has no differentials (the slots are unread garbage then). Called at
+ * every child whose differential transport is unimplemented: grating orders,
+ * scatter/roughness lobes, o/e splits, screen reflections. */
+static void kill_differentials(const SceneC *s, Ray *r) {
+    if (!s->ray_differentials) return;
+    kvec3 nanv = v3(NAN, NAN, NAN);
+    r->dPdx = nanv; r->dDdx = nanv; r->dPdy = nanv; r->dDdy = nanv;
+}
 
 /* Power floor (tracer.py _apply_floors, 1447-1454): children below
  * power_floor * birth_power are killed into truncated_power. Applied at
@@ -199,6 +211,9 @@ static void screen_children(const SceneC *s, const FaceC *face,
         double sgn = (dt < 0.0) ? 1.0 : ((dt > 0.0) ? -1.0 : 0.0);
         kvec3 n_hat = v3_scale(n_out, sgn);
         Ray rf = *r;
+        kill_differentials(s, &rf);   /* screen reflection: differential lost
+                                       * (tracer.py:807); the transmit child
+                                       * keeps its differentials, pass-through */
         rf.dir = fresnel_reflect_dir(r->dir, n_hat);
         double sq = sqrt(r_m);
         /* -sqrt(r): the idealized mirror's half-wave phase
@@ -449,6 +464,7 @@ static void biref_children(const SceneC *s, const FaceC *face,
         /* reflected child: coherent sum of both channels' reflections
          * (tracer.py:1030-1054) */
         Ray refl = *r;
+        kill_differentials(s, &refl);   /* o/e channel mix: differential lost */
         refl.dir = fresnel_reflect_dir(r->dir, n_hat);
         refl.s_hat = s_new;
         kcplx ars_o = kc_scale(kc_cis(kc_arg(Fo.rs)),
@@ -493,6 +509,7 @@ static void biref_children(const SceneC *s, const FaceC *face,
                                  s_new, v3_cross(bi.k_o, s_new),
                                  eo_o, ee_o, &Eso, &Epo);
             Ray och = *r;
+            kill_differentials(s, &och);   /* ordinary child: differential lost */
             och.dir = bi.k_o;
             och.s_hat = eo_o;
             och.Es = Eso;               /* o mode: D along e_o only */
@@ -525,6 +542,7 @@ static void biref_children(const SceneC *s, const FaceC *face,
                 kc_mul(kc_scale(Ee_i, cs_o), atp_e),
                 s_new, v3_cross(bi.k_e, s_new), eo_e, ee_e, &Ese, &Epe);
             Ray ech = *r;
+            kill_differentials(s, &ech);   /* extraordinary child: differential lost */
             ech.dir = bi.s_e;           /* RAY along the Poynting dir */
             ech.s_hat = eo_e;
             ech.Es = kc(0.0, 0.0);
@@ -571,6 +589,7 @@ static void biref_children(const SceneC *s, const FaceC *face,
          * (tracer.py:1151-1165) */
         if (!tir) {
             Ray tr = *r;
+            kill_differentials(s, &tr);   /* crystal exit: differential lost */
             tr.dir = d_out;
             tr.s_hat = s_new;
             tr.Es = kc_mul(Es_i, kc_scale(kc_cis(kc_arg(F.ts)),
@@ -594,6 +613,7 @@ static void biref_children(const SceneC *s, const FaceC *face,
         /* internal reflection: mode-preserving (tracer.py:1167-1193) */
         kvec3 k_r = fresnel_reflect_dir(k_int, n_hat);
         Ray rf = *r;
+        kill_differentials(s, &rf);   /* internal reflection: differential lost */
         rf.dir = k_r;
         rf.s_hat = s_new;
         rf.Es = kc_mul(Es_i, kc_scale(kc_cis(kc_arg(F.rs)),
@@ -699,6 +719,22 @@ static void optic_children(const SceneC *s, const FaceC *face,
         r = &fixed;
     }
 
+    /* ---- ray differentials at this interface (tracer.py:1247-1266) ----
+     * dt-correct the transferred position derivative onto the surface and
+     * sign-correct the canonical shape operator to d(n_hat)/dp. The specular
+     * reflected/refracted children below carry the transported differential;
+     * every other child (scatter lobes) drops it. A mesh face has no analytic
+     * shape operator (surf_has_shape_op false) -> drop, exactly like Python's
+     * `hasattr(surf, 'normal_derivative')` gate. */
+    int has_diff = s->ray_differentials && surf_has_shape_op(&face->surf);
+    km3 Sdiff = m3_zero();
+    kvec3 dPx_surf = v3(0.0, 0.0, 0.0), dPy_surf = v3(0.0, 0.0, 0.0);
+    if (has_diff) {
+        Sdiff = surf_shape_operator_nhat(&face->surf, r->pos, n_hat);
+        dPx_surf = diff_to_surface(r->dPdx, r->dir, n_hat);
+        dPy_surf = diff_to_surface(r->dPdy, r->dir, n_hat);
+    }
+
     /* media on both sides (tracer.py:512-536): entering -> far side is the
      * body; exiting -> the medium UNDER the top of the stack */
     kcplx n1 = scene_medium_n(s, top, r->lam_idx);
@@ -774,6 +810,14 @@ static void optic_children(const SceneC *s, const FaceC *face,
     refl.ray_key = rng_child_key(r->ray_key, r->event_ctr,
                                  CHILD_SLOT_REFLECT);
     refl.event_ctr = 0;
+    if (has_diff) {                     /* specular reflection differential */
+        refl.dPdx = dPx_surf;
+        refl.dDdx = diff_reflect(dPx_surf, r->dDdx, r->dir, n_hat, Sdiff);
+        refl.dPdy = dPy_surf;
+        refl.dDdy = diff_reflect(dPy_surf, r->dDdy, r->dir, n_hat, Sdiff);
+    } else {
+        kill_differentials(s, &refl);   /* no-op unless differentials are on */
+    }
     double p_refl = ray_power(&refl);
     int can_reflect = r->generation < s->max_reflections;
     if (!can_reflect) {
@@ -809,6 +853,17 @@ static void optic_children(const SceneC *s, const FaceC *face,
         trans.ray_key = rng_child_key(r->ray_key, r->event_ctr,
                                       CHILD_SLOT_TRANSMIT);
         trans.event_ctr = 0;
+        if (has_diff) {                 /* Snell refraction differential */
+            double eta_d = n1.re / n2.re;
+            trans.dPdx = dPx_surf;
+            trans.dDdx = diff_refract(dPx_surf, r->dDdx, r->dir, n_hat, Sdiff,
+                                      eta_d, trans.dir);
+            trans.dPdy = dPy_surf;
+            trans.dDdy = diff_refract(dPy_surf, r->dDdy, r->dir, n_hat, Sdiff,
+                                      eta_d, trans.dir);
+        } else {
+            kill_differentials(s, &trans);
+        }
         p_trans_pre = ray_power(&trans);
         /* ---- polarizer: dichroic Jones diattenuator on ENTRY
          * (tracer.py:711-723, _apply_polarizer 899-946); gated by the
@@ -857,6 +912,7 @@ static void optic_children(const SceneC *s, const FaceC *face,
             double frac = (1.0 - A_spec) / (double)k_lobe;
             /* scattered reflection */
             Ray sc = *r;
+            kill_differentials(s, &sc);   /* Beckmann lobe: differential lost */
             sc.dir = fresnel_reflect_dir(r->dir, n_j);
             sc.s_hat = s_j;
             sc.Es = kc_mul(Es_j, kc_scale(
@@ -890,6 +946,7 @@ static void optic_children(const SceneC *s, const FaceC *face,
             int tir_j = ((lc.Ts + lc.Tp) <= 1e-15) || tir;
             if (!tir) {
                 Ray st = trans;     /* inherits the post-push/pop stack */
+                kill_differentials(s, &st);   /* scattered transmission lobe */
                 st.dir = fresnel_refract_dir(r->dir, n_j, cos_j, n1.re,
                                              n2.re);
                 st.s_hat = s_j;
@@ -928,6 +985,7 @@ static void optic_children(const SceneC *s, const FaceC *face,
         double amp_lobe = sqrt(tis / (double)k_lobe);
         for (int j = 0; j < k_lobe; j++) {
             Ray sc = *r;
+            kill_differentials(s, &sc);   /* ABg lobe: differential lost */
             sc.dir = abg_sample_g2(scat->A, scat->B, d_spec, n_hat,
                                    r->ray_key, r->event_ctr,
                                    (uint32_t)(256 + 2 * j));
@@ -1042,6 +1100,7 @@ static void grating_children(const SceneC *s, const FaceC *face,
         if (!prop || contrib <= 0.0) continue;
 
         Ray child = *r;
+        kill_differentials(s, &child);   /* grating order transport unimplemented */
         child.dir = d_new;
         child.s_hat = s_new;
         child.Es = kc_scale(Es, sqrt(eta_s));
@@ -1103,7 +1162,7 @@ static void record_time_arrival(const SceneC *s, ThreadCtx *cx,
 }
 
 static void detector_event(const SceneC *s, const FaceC *face, const Ray *r,
-                           kvec3 start_pos, double start_opl,
+                           kvec3 start_pos, double start_opl, double start_dA,
                            ThreadCtx *cx) {
     const DetC *d = &s->dets[face->detector];
     if (s->time_products)
@@ -1125,6 +1184,9 @@ static void detector_event(const SceneC *s, const FaceC *face, const Ray *r,
         gh.lam = r->lam;
         gh.opl = start_opl;
         gh.power = ray_power(r);
+        /* --ray-differentials: patch area at the segment start sizes this
+         * sample's coherent dA in the gather; NaN when off / lost. */
+        gh.dA = start_dA;
         gh.scattered = r->scattered;
         gh.ray_key = r->ray_key;
         gh.event_ctr = r->event_ctr;
@@ -1277,7 +1339,7 @@ static void particle_intercept(const SceneC *s, Ray *r, int hit, double t,
 /* -- step 1: detector screens (transparent measurement planes) -- */
 static void detector_event_apply(const SceneC *s, ThreadCtx *cx,
                                  const Ray *r, const HitInfo *h) {
-    detector_event(s, h->face, r, h->start_pos, h->start_opl, cx);
+    detector_event(s, h->face, r, h->start_pos, h->start_opl, h->start_dA, cx);
 }
 static void screen_children_apply(const SceneC *s, ThreadCtx *cx,
                                   const Ray *r, const HitInfo *h) {
@@ -1447,6 +1509,15 @@ static void homogeneous_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
     double n_phase = (r->n_eff > 0.0) ? r->n_eff : n_med.re;
     r->opl += n_phase * seg;
 
+    /* ray differentials: free-flight transfer of the POSITION derivative over
+     * the segment (tracer.py:581-582). Direction derivative is unchanged in
+     * free space; the segment-START patch area (start_dA) was already read in
+     * process_ray BEFORE this advance, exactly like the Python order. */
+    if (s->ray_differentials) {
+        r->dPdx = diff_transfer(r->dPdx, r->dDdx, seg);
+        r->dPdy = diff_transfer(r->dPdy, r->dDdy, seg);
+    }
+
     /* pulsed-optics P7 time-domain accumulators (STRICTLY additive — no
      * opl/Es/Ep/ledger-bucket/RNG side effects, tracer.py:438-471). The
      * per-body power-weighted bulk path uses the SURVIVING power (ray_power
@@ -1533,6 +1604,12 @@ static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
     double seg = hit ? t : 0.0;    /* escaped rays: no traversal loss */
     kvec3 start_pos = r->pos;
     double start_opl = r->opl;
+    /* ray-differential wavefront patch area at the SEGMENT START (= the last
+     * interaction point) — what the coherent gather wavelet needs. Read BEFORE
+     * the advance transfers the position derivative (tracer.py:578-582). */
+    double start_dA = NAN;
+    if (s->ray_differentials)
+        start_dA = diff_patch_area(r->dPdx, r->dPdy, r->dir);
     cx->seg_hit = hit;             /* the particles propagator reads this */
     const PropagatorDef *prop = select_propagator(s, r);
     prop->advance(s, cx, r, seg);
@@ -1568,7 +1645,7 @@ static void process_ray(const SceneC *s, Ray *r, ThreadCtx *cx) {
     r->event_ctr += 1;
     const FaceC *face = &s->faces[fid];
     HitInfo hinfo = { fid, face, &s->bodies[face->body], t, start_pos,
-                      start_opl };
+                      start_opl, start_dA };
     for (int h = 0; h < face->n_handlers; h++)
         face->handlers[h]->apply(s, cx, r, &hinfo);
 }
@@ -1756,6 +1833,31 @@ static void sample_source_c(const SceneC *s, int source_index, RayVec *batch,
         double amp = sqrt(p_ray);
         r.Es = kc_scale(kc_mul(src->jones_s[pol], phase), amp);
         r.Ep = kc_scale(kc_mul(src->jones_p[pol], phase), amp);
+        /* --ray-differentials: seed the Igehy wavefront patch
+         * (sources.py:606-631). Footprint radius h = sqrt(face_area / n_rays);
+         * position derivatives span the pol reference basis (e_ref = r.s_hat,
+         * e_perp = dir x e_ref). A PLANAR emit face is flat (dD = 0); a curved
+         * one adds dD = sign * (S @ dP) with S the RAW canonical shape operator
+         * and sign = sign(dir . n_can) (differentials.init_flat/init_curved). */
+        if (s->ray_differentials) {
+            kvec3 e_ref = r.s_hat;
+            kvec3 e_perp = v3_cross(dir, e_ref);
+            double area = src->emit_face.area_m2;
+            double hfoot = sqrt((area > 0.0 ? area : 1e-6) / (double)n);
+            r.dPdx = v3_scale(e_ref, hfoot);
+            r.dPdy = v3_scale(e_perp, hfoot);
+            if (src->emit_face.surf.kind == SURF_PLANE) {
+                r.dDdx = v3(0.0, 0.0, 0.0);
+                r.dDdy = v3(0.0, 0.0, 0.0);
+            } else {
+                km3 S = surf_normal_derivative(&src->emit_face.surf, pos);
+                kvec3 n_can = surf_normal(&src->emit_face.surf, pos);
+                double dn = v3_dot(dir, n_can);
+                double sg = (dn > 0.0) - (dn < 0.0);
+                r.dDdx = v3_scale(m3_apply(S, r.dPdx), sg);
+                r.dDdy = v3_scale(m3_apply(S, r.dPdy), sg);
+            }
+        }
         /* viz flag: the first viz_cap primaries of this source
          * (VizStore.flag_primaries, tracer.py:93-100) */
         r.viz_flag = (uint8_t)(batch->n < src->viz_cap);

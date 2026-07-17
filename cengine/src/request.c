@@ -477,6 +477,9 @@ SceneC *request_load(const char *path) {
         v = yyjson_obj_get(par, "importance_aim");
         s->importance_aim = (uint8_t)(v && yyjson_is_bool(v)
                                       && yyjson_get_bool(v));
+        v = yyjson_obj_get(par, "ray_differentials");
+        s->ray_differentials = (uint8_t)(v && yyjson_is_bool(v)
+                                         && yyjson_get_bool(v));
     }
     {
         /* coherent-gather parameters (optional block; defaults mirror
