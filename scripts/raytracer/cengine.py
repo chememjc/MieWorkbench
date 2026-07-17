@@ -69,6 +69,16 @@ PORTED = frozenset({
                                 #   records; Python finalize_time bins them
                                 #   UNCHANGED. Crystal scenes emit the unported
                                 #   time_directional_index token instead.
+    "ray_differentials",        # P7 tranche 2: Igehy ray differentials seeded
+                                #   + transported through free flight / specular
+                                #   reflect+refract (kernels/diffk.h, a
+                                #   formula-for-formula port of differentials.py
+                                #   + surfaces.normal_derivative, oracle-pinned
+                                #   at 1e-5 vs finite differences). Sizes the
+                                #   coherent gather's per-sample dA from
+                                #   |dPdx x dPdy|; grating orders / scatter lobes
+                                #   / o-e splits drop the differential (NaN ->
+                                #   source-area fallback), same as Python.
     # NOTE: "surface:qforbes" (raytracer.surfaces.QForbes, the ISO 10110-12
     # Forbes Q-type asphere -- engine3.md Sec 7.6) is DELIBERATELY absent.
     # detect_features()'s per-face loop below emits it automatically
@@ -758,6 +768,10 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
             "export_rays": bool(export_this_seed),
             "importance_aim": bool(getattr(args, "importance_aim",
                                            False)),
+            # P7 ray-differentials port: seed + transport the Igehy ray
+            # differentials and size the coherent gather's per-sample dA.
+            "ray_differentials": bool(getattr(args, "ray_differentials",
+                                              False)),
             "track_history": bool(track_this_seed),
             # pulsed-optics P7: group-delay accumulators + the per-body
             # power-weighted bulk-path tally (the GDD-budget input). Active
@@ -1136,7 +1150,11 @@ def _merge_chunk(grids, det_order, chunk_dir, scale):
                 "opl": np.load(base + "opl.npy"),
                 "power": power,
                 "scattered": np.load(base + "scat.npy").astype(bool),
-                "dA": np.full(int(n), np.nan),
+                # --ray-differentials per-sample wavefront patch area (NaN
+                # where the differential was lost). A GEOMETRIC quantity, so
+                # unscaled by the ray-count weighting; NaN when the run had no
+                # differentials (the C dump wrote all-NaN then).
+                "dA": np.load(base + "dA.npy"),
                 "_ray_key": np.load(base + "key.npy"),
                 "_evt": np.load(base + "evt.npy"),
             }
@@ -1219,6 +1237,10 @@ def _write_merged_dump(scene, args, grids, det_order, dump_dir):
                 rec["opl"], dtype=np.float64))
             np.save(base + "power.npy", np.ascontiguousarray(
                 rec["power"], dtype=np.float64))
+            # --ray-differentials per-sample patch area (NaN where lost); the
+            # gather_only stage (det_load_gather_state) reads gk_..._dA.npy.
+            np.save(base + "dA.npy", np.ascontiguousarray(
+                rec["dA"], dtype=np.float64))
             np.save(base + "scat.npy", np.ascontiguousarray(
                 rec["scattered"], dtype=np.uint8))
             np.save(base + "key.npy", np.ascontiguousarray(

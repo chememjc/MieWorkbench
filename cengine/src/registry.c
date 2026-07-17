@@ -46,6 +46,11 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
     { "export_rays",    "diagnostic" },
     { "ghost_analysis", "diagnostic" },
     { "viz_pattern",    "glue" },
+    /* P7 ray-differentials port: seed/transport the Igehy differentials and
+     * size the coherent gather's per-sample dA from |dPdx x dPdy|. A cross-
+     * cutting ray feature (like export_rays), not a surface interaction — no
+     * dispatch entry; the trace + gather carry it. */
+    { "ray_differentials", "diagnostic" },
     /* pulsed-optics P7 tranche 1: per-body power-weighted bulk-path tally
      * (the GDD-budget input). The trace accumulates ledger.path_tally under
      * track_time; ALL dispersion resolution stays Python-side in

@@ -33,6 +33,9 @@ typedef struct {
     kvec3 pos, dir, s_hat;
     kcplx Es, Ep;
     double lam, opl, power;
+    double dA;                  /* --ray-differentials wavefront patch area at
+                                 * the segment START (diff_patch_area); NaN =
+                                 * differential lost / not tracked. */
     uint8_t scattered;
     uint64_t ray_key;
     uint32_t event_ctr;         /* P1 canonical-sort tiebreaker */

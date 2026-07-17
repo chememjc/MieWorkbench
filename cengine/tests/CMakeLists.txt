@@ -18,6 +18,21 @@ target_compile_options(test_rng PRIVATE ${MIEWB_C_FLAGS})
 target_link_libraries(test_rng PRIVATE m)
 add_test(NAME rng COMMAND test_rng)
 
+# ray-differential shape-operator + Igehy transfer oracles (P7 differentials
+# port, WORK PLAN steps 1-2): each kernel vs central finite differences,
+# mirroring scripts/raytracer/tests/test_ray_differentials.py at 1e-5.
+add_executable(test_diffk_normal_deriv test_diffk_normal_deriv.c)
+target_include_directories(test_diffk_normal_deriv PRIVATE ../src)
+target_compile_options(test_diffk_normal_deriv PRIVATE ${MIEWB_C_FLAGS})
+target_link_libraries(test_diffk_normal_deriv PRIVATE m)
+add_test(NAME diffk_normal_deriv COMMAND test_diffk_normal_deriv)
+
+add_executable(test_diffk_transfer test_diffk_transfer.c)
+target_include_directories(test_diffk_transfer PRIVATE ../src)
+target_compile_options(test_diffk_transfer PRIVATE ${MIEWB_C_FLAGS})
+target_link_libraries(test_diffk_transfer PRIVATE m)
+add_test(NAME diffk_transfer COMMAND test_diffk_transfer)
+
 # P1 NUFFT gather route vs the exact per-pair kernel — only when the binary
 # was built with cuFINUFFT (CUFINUFFT_LIB set by the parent CMakeLists).
 if(CUFINUFFT_LIB AND CUFINUFFT_INCLUDE_DIR)
