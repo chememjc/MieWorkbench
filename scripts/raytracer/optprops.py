@@ -665,6 +665,76 @@ def load_diffusers(csv_path=None):
 
 
 # ---------------------------------------------------------------------------
+# figure/figures.miefig  (Zernike surface-figure-error sets, engine3 Sec 11/P8)
+# ---------------------------------------------------------------------------
+def load_figures(csv_path=None):
+    """-> {name: {"coeffs": {noll_j: rms_metres}, "r_norm_m": float,
+    "r_norm_mm": float, "reference": str, "notes": str}}.
+
+    Surface-figure-error registry: each row names a Zernike coefficient set
+    (Noll indexing) describing the DEViation of a real polished surface from
+    its nominal shape. Applied at scene build time as a raytracer.surfaces.
+    PerturbedSurface sag perturbation over the transverse pupil.
+
+    Columns:
+      name       registry key (referenced by a body's `figure_error` prop)
+      coeffs     ';'-separated  j:rms_nm  terms (SURFACE sag RMS in nm; a
+                 mirror's WAVEFRONT error is 2x this and falls out of the
+                 tracer's OPL). Noll j>=2 (piston j=1 is a meaningless
+                 constant offset -- rejected).
+      r_norm_mm  pupil radius (mm) the coefficients are referenced to
+      reference  citation (required)
+      notes      optional
+    """
+    csv_path = Path(csv_path) if csv_path is not None \
+        else DEFAULT_OPTPROPS_DIR / "figure" / "figures.miefig"
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "coeffs", "r_norm_mm", "reference"}, "figures"):
+        r_norm_mm_raw = (row.get("r_norm_mm") or "").strip()
+        try:
+            r_norm_mm = float(r_norm_mm_raw)
+        except ValueError:
+            raise MaterialError("%s: r_norm_mm %r not numeric"
+                                % (ctx, r_norm_mm_raw))
+        if not r_norm_mm > 0.0:
+            raise MaterialError("%s: r_norm_mm must be > 0" % ctx)
+        coeffs = {}
+        raw = (row.get("coeffs") or "").strip()
+        if not raw:
+            raise MaterialError("%s: coeffs is empty" % ctx)
+        for term in raw.split(";"):
+            term = term.strip()
+            if not term:
+                continue
+            if ":" not in term:
+                raise MaterialError(
+                    "%s: bad coeff term %r (want 'j:rms_nm')" % (ctx, term))
+            j_raw, _, rms_raw = term.partition(":")
+            try:
+                j = int(j_raw)
+                rms_nm = float(rms_raw)
+            except ValueError:
+                raise MaterialError(
+                    "%s: bad coeff term %r (j must be int, rms numeric)"
+                    % (ctx, term))
+            if j < 2:
+                raise MaterialError(
+                    "%s: Noll index %d not allowed (j>=2; piston is a "
+                    "meaningless constant offset)" % (ctx, j))
+            if j in coeffs:
+                raise MaterialError("%s: duplicate Noll index %d" % (ctx, j))
+            coeffs[j] = rms_nm * 1e-9
+        if not coeffs:
+            raise MaterialError("%s: no coefficients parsed" % ctx)
+        out[name] = {"coeffs": coeffs, "r_norm_m": r_norm_mm * 1e-3,
+                     "r_norm_mm": r_norm_mm,
+                     "reference": (row.get("reference") or "").strip(),
+                     "notes": (row.get("notes") or "").strip()}
+    return out
+
+
+# ---------------------------------------------------------------------------
 # scatter/bsdf.miebsdf  (ABg / Harvey-Shack measured-scatter surfaces)
 # ---------------------------------------------------------------------------
 SCATTER_MODELS = ("abg",)
@@ -1218,12 +1288,12 @@ class OpticalProperties:
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
                  "gratings", "uniaxial", "biaxial", "diffusers", "detectors",
-                 "scatter", "emission", "nonlinear", "instruments")
+                 "scatter", "emission", "nonlinear", "instruments", "figures")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
                  uniaxial, diffusers=None, detectors=None, biaxial=None,
                  scatter=None, emission=None, nonlinear=None,
-                 instruments=None):
+                 instruments=None, figures=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -1238,6 +1308,7 @@ class OpticalProperties:
         self.emission = emission if emission is not None else {}
         self.nonlinear = nonlinear if nonlinear is not None else {}
         self.instruments = instruments if instruments is not None else {}
+        self.figures = figures if figures is not None else {}
 
 
 def load_optical_properties(root=None, db=None):
@@ -1285,7 +1356,8 @@ def load_optical_properties(root=None, db=None):
                            root / "nonlinear" / "nonlinear.mienlo",
                            uniaxial=uniaxial, biaxial=biaxial),
         instruments=optional(load_instruments,
-                             root / "instrument" / "instruments.mieinst"))
+                             root / "instrument" / "instruments.mieinst"),
+        figures=optional(load_figures, root / "figure" / "figures.miefig"))
 
 
 # ---------------------------------------------------------------------------
@@ -1311,3 +1383,5 @@ if __name__ == "__main__":
                                       ", ".join(sorted(props.nonlinear))))
     print("  instruments: %d  (%s)" % (len(props.instruments),
                                        ", ".join(sorted(props.instruments))))
+    print("  figures   : %d  (%s)" % (len(props.figures),
+                                      ", ".join(sorted(props.figures))))

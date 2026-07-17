@@ -269,7 +269,9 @@ fields on each `PartDesign::Body`:
 | `scatter` | String, optional | a per-face map (or whole-body) of `opticalproperties/scatter/bsdf.miebsdf` registry names (§5.4.2) — mutually exclusive with `roughness`/`diffuser` on the same face |
 | `surface_override` | String, optional | per-face `'FaceN=asphere:R=..;k=..;A4=..;...;r_max=..'` (§5.7) |
 | `mirror` | Float, optional, [0,1] | achromatic partial-reflector fraction (§5.3 precedence) |
-| `absorbance` | Float, optional, [0,1] | fraction of the physical (non-mirror) remainder absorbed |
+| `absorbance` | Float, optional, [0,1] | fraction of the physical (non-mirror) remainder absorbed (whole-body). Per-face absorbance is set indirectly by `edge_blackened` |
+| `edge_blackened` | Bool, optional | lens/optic stray-light suppression: blacken the CYLINDRICAL barrel/edge (fully absorbing) while the refracting caps stay clear. The extractor turns it into a per-face absorbance on every cylinder face (identified by surface TYPE, so it survives FaceN renumbering). Convenience flag on the simple-lens primitives (pcx/dcx/pcv/dcv/meniscus). Python-engine-routed (per-face absorbance) |
+| `figure_error` | String, optional | Zernike SURFACE figure error (§5.9): a per-face map (or whole-body) of `opticalproperties/figure/figures.miefig` registry names. Applies a Zernike sag perturbation to the analytic surface at scene build (deterministic wavefront error between the ideal surface and statistical roughness). Python-engine-routed |
 | `temperature` | Float, optional | per-body operating temperature in °C; shifts glasses carrying a thermo-optic model (§ materials, Schott TIE-19). Overrides the scene-global `--temperature`. Routes the run to the Python engine. |
 | `roughness` | Float or String, optional | whole-body RMS nm, or a per-face map `'Face1=200:lcorr=5;Face2=50'` (§5.4) |
 | `diffuser` | String, optional | ground glass: `'grit:120'` \| `'slope:0.08'` \| `'@dg_600'`, whole-body or per-face map `'Face2=@dg_600'` (§5.4.1) — mutually exclusive with `roughness` on the same face |
@@ -1022,6 +1024,44 @@ plane, §5.11) — both need a UV parameterization the incoherent/coherent
 paths don't have yet. The `mesh_freeform` test scene (§10, a prolate
 ellipsoid revolved from a BSpline meridian) exercises exactly this
 fallback path end to end.
+
+### 5.8b Surface figure error (`figure_error`) + edge blackening
+
+**Figure error** is the deterministic middle ground between an ideal surface
+and statistical micro-roughness (§5.4): a slowly-varying deviation of the real
+polished surface from its nominal prescription, decomposed into **Zernike**
+terms (Noll indexing, nm-RMS coefficients). It dominates real optical PSFs.
+
+Author it with a `figure_error` body property — a per-face map (or whole-body)
+of names in `opticalproperties/figure/figures.miefig`. Each registry row gives
+`coeffs` (a `';'`-separated list of `j:rms_nm` terms — the SURFACE sag RMS in
+nm at Noll index `j≥2`; a mirror's WAVEFRONT error is 2× this and falls out of
+the tracer's OPL) and `r_norm_mm` (the pupil radius the coefficients are
+referenced to). At scene build the analytic base surface is wrapped in a
+`raytracer.surfaces.PerturbedSurface`, which adds the Zernike sag along the
+base normal (nm displacement — the base hit barely moves, but its phase and
+its normal, tilted by the transverse sag gradient, both change; the normal
+tilt is what refocuses the beam). Validated gates (`test_figure_error.py`): a
+λ/4 PV Z4 defocus shifts the reflected focus by the analytic 1/(4a); balanced
+Z6 astigmatism makes two orthogonal opposite-sign line foci; the Maréchal
+Strehl matches the direct PSF-peak Strehl for small RMS (<λ/14).
+
+**Design decision (binding):** the CAD is the UNPERTURBED shape by design, so
+the extractor's <1 µm asphere/prescription verification checks the base surface
+against the CAD only — it never sees the figure perturbation. The perturbation
+lives entirely in the analytic surface at trace time. Frame derivation is exact
+for a flat surface at normal incidence (the validated case) and Asphere/vertex
+frames; a curved base uses the standard near-normal thin-figure-error
+approximation. `figure_error` routes the run to the **Python engine** (a C port
+is later work — the `PerturbedSurface` class and an explicit `figure_error`
+token are both absent from `cengine.PORTED`).
+
+**Edge blackening** (`edge_blackened` bool, or the flag on the simple-lens
+primitives) blackens a lens's cylindrical barrel for ghost/stray-light
+suppression: the extractor marks every CYLINDER face of the body fully
+absorbing via a per-face absorbance map (identified by surface TYPE, immune to
+the FaceN renumbering a rebuild causes), while the refracting caps stay clear.
+Per-face absorbance is Python-engine-routed.
 
 ### 5.9 Spreadsheet-driven dimensions + permutation
 

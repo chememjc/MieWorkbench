@@ -1,0 +1,5 @@
+name,coeffs,r_norm_mm,reference,notes
+fig_lambda4_defocus_633,4:45.7,12.5,"lambda/4 surface P-V defocus at 633 nm on a 25 mm-clear-aperture optic (Z4 RMS = PV/(2*sqrt(3)) = (633/4 nm)/(2*sqrt(3))); test/demo reference figure",lambda/4 PV power error (Z4 only)
+fig_astig_633,5:100;6:100,12.5,"balanced 0/45 astigmatism, 100 nm RMS each term at 633 nm on a 25 mm-clear-aperture optic; textbook line-focus reference",Z5+Z6 astigmatism
+fig_lambda10_typical,4:20;5:15;6:15;7:10;8:10;11:12,12.5,"representative lambda/10-class commercial polished surface (low-order Zernike residual after power removal; RMS ~ 33 nm ~ lambda/19 surface at 633 nm)",realistic residual figure
+fig_trefoil_633,9:80;10:80,12.5,"3-point-mount trefoil, 80 nm RMS each term at 633 nm on a 25 mm-clear-aperture optic; mount-induced astigmatic-triangular error",Z9+Z10 trefoil

@@ -127,6 +127,13 @@ def detect_features(args, scene):
         surf = getattr(face, "surface", None)
         name = "mesh" if surf is None else type(surf).__name__.lower()
         feats.add("surface:%s" % name)
+        # Zernike surface figure error (engine3 Sec 11 / P8): the
+        # "surface:perturbedsurface" token above already forces Python (it is
+        # deliberately absent from PORTED, exactly like "surface:qforbes"), but
+        # emit an explicit, self-documenting "figure_error" token too -- same
+        # "every feature emits its token" rule the registry exists to enforce.
+        if type(surf).__name__ == "PerturbedSurface":
+            feats.add("figure_error")
     for bidx, src in scene.sources:
         feats.add("surface:%s"
                   % type(scene.emit_faces[bidx].surface).__name__.lower())

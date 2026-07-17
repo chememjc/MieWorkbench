@@ -1150,8 +1150,173 @@ class QForbes:
     periodic_u = False
 
 
+# =============================================================================
+# PerturbedSurface -- an analytic base surface carrying a Zernike SAG
+# PERTURBATION (deterministic surface figure error; engine3.md Sec 11 / P8).
+#
+# Figure error is the deterministic middle ground between an ideal surface and
+# statistical micro-roughness: a slowly-varying deviation of the real polished
+# surface from its nominal prescription, conventionally decomposed into Zernike
+# terms (Noll indexing, nm-RMS coefficients). It dominates real optical PSFs.
+#
+# Model: the surface is the BASE surface displaced by a small sag
+#   delta(u, v) = sum_j c_j Z_j(rho, theta),   rho = hypot(u, v)/r_norm
+# along the base's canonical normal, where (u, v) are the transverse pupil
+# coordinates (projection of p - origin onto the frame (t1, t2), both
+# perpendicular to the pupil axis). The perturbation is nm-scale, so the base
+# hit point moves negligibly in space (a few Newton steps along the ray from
+# the base root suffice) but its PHASE (2*delta on reflection, (n2-n1)*delta on
+# refraction -- both fall out of the tracer's OPL accounting once the hit is
+# displaced) and its NORMAL (tilted by the transverse gradient of delta, which
+# is what refocuses the beam) both matter and are what the gates check.
+#
+# The figure map is defined over the transverse pupil plane and the sag added
+# along the base normal; for a FLAT surface at normal incidence (the validated
+# gate case: lambda/4 defocus focus shift, Z5/Z6 line foci, Marechal Strehl)
+# axis == normal and the two coincide exactly. For a curved base this is the
+# standard near-normal thin-figure-error approximation (documented; the CAD is
+# the UNPERTURBED shape by design, so the extractor's <1 um asphere/prescription
+# gate checks base-vs-CAD only and never sees the perturbation).
+#
+# The feature is Python-only (make_surface names the class PerturbedSurface, so
+# detect_features()'s generic "surface:<class>" token is unported -> --engine
+# auto routes to Python; cengine.detect_features additionally emits an explicit
+# "figure_error" token). to_uv/containment delegate to the base: trim wires are
+# the CAD's unperturbed boundary.
+# =============================================================================
+class PerturbedSurface:
+    def __init__(self, base, coeffs, r_norm, origin=None, axis=None,
+                 t1=None, t2=None):
+        self.base = base
+        self.K = base.K
+        self.periodic_u = base.periodic_u
+        items = coeffs.items() if isinstance(coeffs, dict) else coeffs
+        self.terms = [(int(j), float(c)) for j, c in items if float(c) != 0.0]
+        self.r_norm = float(r_norm)
+        if self.r_norm <= 0.0:
+            raise ValueError("PerturbedSurface: r_norm must be > 0")
+        o, a, u1, u2 = self._frame_from_base(base)
+        self.origin = np.asarray(o if origin is None else origin,
+                                 dtype=np.float64)
+        self.axis = _unit(a if axis is None else axis)
+        self.t1 = _unit(u1 if t1 is None else t1)
+        self.t2 = _unit(u2 if t2 is None else t2)
+
+    @staticmethod
+    def _frame_from_base(base):
+        """(origin, axis, t1, t2) of the transverse pupil frame from the base
+        surface. Exact for Plane (flat mirror/window) and Asphere (vertex
+        frame); near-vertex for Sphere (center as transverse origin)."""
+        if isinstance(base, Plane):
+            return base.origin, base.n, base.t1, base.t2
+        if isinstance(base, Asphere):
+            return base.v, base.a, base.t1, base.t2
+        if isinstance(base, Sphere):
+            return base.c, base.axis, base.t1, base.t2
+        raise ValueError("PerturbedSurface: no pupil frame for base %r "
+                         "(pass origin/axis/t1/t2 explicitly)"
+                         % type(base).__name__)
+
+    # ---- figure sag + transverse gradient (arrays of points) ------------
+    def _sag_and_grad(self, p):
+        """(delta_m (N,), d delta/du (N,), d delta/dv (N,)) at world points p.
+        The gradients are per METRE in the (t1, t2) directions."""
+        from .analysis import zernike, zernike_cart_grad
+        p = np.asarray(p, dtype=np.float64)
+        rel = p - self.origin
+        un = (rel @ self.t1) / self.r_norm      # normalized unit-disc coords
+        vn = (rel @ self.t2) / self.r_norm
+        rho = np.hypot(un, vn)
+        theta = np.arctan2(vn, un)
+        s = np.zeros(rho.shape, dtype=np.float64)
+        gu = np.zeros(rho.shape, dtype=np.float64)
+        gv = np.zeros(rho.shape, dtype=np.float64)
+        for j, c in self.terms:
+            s = s + c * zernike(j, rho, theta)
+            du, dv = zernike_cart_grad(j, un, vn)
+            gu = gu + c * du
+            gv = gv + c * dv
+        # chain rule normalized-coord -> metres: d/d(metre) = (1/r_norm) d/d(norm)
+        return s, gu / self.r_norm, gv / self.r_norm
+
+    def sag(self, p):
+        """Figure-error sag (metres, along the base normal) at world points."""
+        return self._sag_and_grad(p)[0]
+
+    # ---- surface protocol -----------------------------------------------
+    def intersect(self, o, d):
+        o = np.asarray(o, dtype=np.float64)
+        d = np.asarray(d, dtype=np.float64)
+        t, valid = self.base.intersect(o, d)
+        K = t.shape[1]
+        for k in range(K):
+            t0 = t[:, k]
+            fin = valid[:, k] & np.isfinite(t0)
+            if not np.any(fin):
+                continue
+            # Fixed point off the BASE root t0 (NOT accumulating): the ray
+            # reaches the surface displaced by delta along the base normal at
+            #   t = t0 + delta(p)/(d . n0),
+            # p re-evaluated each step (delta and n0 drift only slightly over
+            # the nm displacement, so 3 steps are ample). t0 stays fixed.
+            t0 = np.where(fin, t0, 0.0)
+            tt = t0.copy()
+            for _ in range(3):
+                p = o + tt[:, None] * d
+                s = self.sag(p)
+                n0 = self.base.normal(p)
+                dn = np.sum(d * n0, axis=-1)
+                ok = fin & (np.abs(dn) > 1e-12)
+                tt = np.where(ok, t0 + s / np.where(ok, dn, 1.0), t0)
+            t[:, k] = np.where(fin, tt, t[:, k])
+        return t, valid
+
+    def normal(self, p):
+        p = np.asarray(p, dtype=np.float64)
+        n0 = self.base.normal(p)
+        _, gu, gv = self._sag_and_grad(p)
+        # graph z = delta over the tangent plane (t1, t2, n0): the added
+        # departure tilts the up-normal by (-delta_u, -delta_v) in that frame.
+        npert = (n0 - gu[:, None] * self.t1[None, :]
+                 - gv[:, None] * self.t2[None, :])
+        return npert / np.linalg.norm(npert, axis=-1, keepdims=True)
+
+    def to_uv(self, p):
+        return self.base.to_uv(p)
+
+    def uv_to_xyz(self, u, v):
+        return self.base.uv_to_xyz(u, v)
+
+    def normal_derivative(self, p):
+        # Numerical (central-difference) Jacobian d nhat / d p (N, 3, 3):
+        # the figure term makes an exact closed form heavy and this surface is
+        # Python-only; differentials, when requested, tolerate the FD (the
+        # perturbation's curvature is smooth over the ~mm pupil). J[:, i, ax] =
+        # d nhat_i / d p_ax, matching Sphere/Asphere's layout.
+        p = np.asarray(p, dtype=np.float64)
+        h = 1e-7
+        J = np.zeros((p.shape[0], 3, 3), dtype=np.float64)
+        for ax in range(3):
+            dp = np.zeros(3)
+            dp[ax] = h
+            J[:, :, ax] = (self.normal(p + dp) - self.normal(p - dp)) / (2.0 * h)
+        return J
+
+
 def make_surface(spec):
-    """Build a primitive from a model.json 'surface' dict."""
+    """Build a primitive from a model.json 'surface' dict.
+
+    A 'figure' sub-dict (Zernike figure error, engine3 Sec 11 / P8) wraps the
+    analytic base in a PerturbedSurface: {coeffs: {noll_j: rms_metres},
+    r_norm: metres}."""
+    surf = _make_base_surface(spec)
+    fig = spec.get("figure")
+    if fig:
+        surf = PerturbedSurface(surf, fig["coeffs"], fig["r_norm"])
+    return surf
+
+
+def _make_base_surface(spec):
     t = spec["type"]
     if t == "plane":
         return Plane(spec["origin"], spec["normal"])

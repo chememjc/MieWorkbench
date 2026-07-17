@@ -103,7 +103,10 @@ def test_lens_curvature_and_aperture_params_unchanged():
     # curvature radii are physics and 'aperture' is already diametral --
     # neither should be touched by this rename.
     lens_pcx = pl.PRIMITIVES["lens_pcx"]["params"]
-    assert set(lens_pcx) == {"R_front", "ct", "aperture"}
+    # ('edge_blackened' is a P8 stray-light toggle, default 0 -- see
+    # test_derived_props_excluded_from_rebuild_baseline_for_apertures)
+    assert set(lens_pcx) == {"R_front", "ct", "aperture", "edge_blackened"}
+    assert lens_pcx["edge_blackened"]["default"] == 0
     assert lens_pcx["aperture"]["default"] == 20.0
     assert lens_pcx["R_front"]["default"] == 25.0
     assert "aperture" in pl.PRIMITIVES["lens_dcx"]["params"]
@@ -198,7 +201,7 @@ NEW_PLATE_KINDS = [
 NEW_PRISM_MIRROR_APERTURE_KINDS = [
     "prism_right_angle", "prism_wedge", "prism_dove", "prism_penta",
     "prism_rhomboid", "mirror_concave", "mirror_convex", "mirror_d_shaped",
-    "iris", "pinhole", "slit", "retro_corner_cube",
+    "iris", "iris_bladed", "pinhole", "slit", "retro_corner_cube",
 ]
 BATCH3_KINDS = [
     "bs_cube", "anamorphic_pair", "polarizer_glan_taylor", "mirror_parabolic",
@@ -208,7 +211,7 @@ BATCHC_KINDS = [
 ]
 NEW_KINDS = (NEW_PLATE_KINDS + NEW_PRISM_MIRROR_APERTURE_KINDS
              + BATCH3_KINDS + BATCHC_KINDS)
-APERTURE_KINDS = ("iris", "pinhole", "slit")
+APERTURE_KINDS = ("iris", "iris_bladed", "pinhole", "slit")
 # every non-aperture kind that builds two bodies (vs. the single-body norm)
 TWO_BODY_KINDS = APERTURE_KINDS + (
     "bs_cube", "anamorphic_pair", "polarizer_glan_taylor", "fiber_optic")
@@ -254,8 +257,17 @@ def test_derived_props_excluded_from_rebuild_baseline_for_apertures():
     # freshly built plate -- re-derived every rebuild
     for kind in ("bs_cube", "pbs_cube"):
         assert pl.PRIMITIVES[kind]["derived_props"] == ("coating",), kind
-    exempt = set(APERTURE_KINDS) | {"lens_asphere", "mirror_parabolic",
-                                    "bs_cube", "pbs_cube"}
+    # the simple-lens family's edge_blackened flag (engine3 Sec 11 / P8): a
+    # bool the builder stamps from the sheet, re-derived every rebuild so
+    # toggling it in the sheet actually takes effect (else the generic
+    # prop-preservation restores the stale pre-rebuild value)
+    edge_lenses = ("lens_pcx", "lens_dcx", "lens_pcv", "lens_dcv",
+                   "lens_meniscus")
+    for kind in edge_lenses:
+        assert pl.PRIMITIVES[kind]["derived_props"] == ("edge_blackened",), kind
+        assert "edge_blackened" in pl.PRIMITIVES[kind]["params"]
+    exempt = (set(APERTURE_KINDS) | set(edge_lenses)
+              | {"lens_asphere", "mirror_parabolic", "bs_cube", "pbs_cube"})
     for kind in set(pl.PRIMITIVES) - exempt:
         assert not pl.PRIMITIVES[kind].get("derived_props"), kind
 
@@ -289,6 +301,28 @@ def test_aperture_disc_absorbance_tracks_blackness(fc_probe_result, kind):
     assert after["n_bodies"] == 2
     assert after["plug_material"] == "air"
     assert after["disc_absorbance"] == pytest.approx(0.5)
+
+
+@freecad_only
+def test_bladed_iris_builds_true_polygon_aperture(fc_probe_result):
+    info = fc_probe_result["bladed_iris"]
+    first = info["initial"]
+    # the plug's cross-section is a regular n-gon: n side faces...
+    assert first["n_plug_side_faces"] == first["n_blades"]
+    # ...and its volume matches the analytic regular-polygon area x thickness
+    assert first["plug_vol_mm3"] == pytest.approx(
+        first["plug_vol_analytic_mm3"], rel=1e-4)
+    # a rebuild to 8 blades yields an octagon plug (8 side faces)
+    assert info["after_octagon_rebuild"]["n_plug_side_faces"] == 8
+
+
+@freecad_only
+def test_edge_blackened_flag_rebuilds_and_toggles(fc_probe_result):
+    info = fc_probe_result["edge_blackened"]
+    assert info["after_on"] is True
+    # the toggle must actually take: a rebuild with edge_blackened=0 re-derives
+    # the bool to False (not the stale pre-rebuild True)
+    assert info["after_off"] is False
 
 
 @freecad_only

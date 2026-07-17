@@ -2151,7 +2151,48 @@ def demo_treacy_compressor(d):
             "max_reflections": 8}
 
 
+def demo_bladed_iris_star(d):
+    """N-blade iris diffraction STAR (engine3 Sec 11 / P8): a 633 nm coherent
+    collimated beam floods a 6-blade iris whose true HEXAGONAL opening clips
+    the wavefront with 6 straight edges. The coherent Huygens gather then
+    reconstructs the classic 6-spike diffraction star on a screen 300 mm
+    downstream -- the polygon aperture's signature, in place of a circular
+    stop's Airy rings (compare demo airy_singleslit).
+
+    The iris_bladed primitive carries its own air-filled polygon plug (the
+    aperture contract). Same coherent-gather-needs-rays discipline as
+    airy_singleslit: a small Ø0.30 mm clear aperture flooded by a Ø0.6 mm
+    beam (over-fills ~2x so the hexagon edges do the clipping) keeps enough
+    rays through on the quick preset; blackness 1.0 for a fully opaque stop;
+    nlambda=1 collapses the mono source to a single gather stratum for the
+    cleanest star the quick budget allows. The 6-fold azimuthal symmetry is
+    asserted quantitatively in test_bladed_iris_star.py (m6/AC of the
+    detector image)."""
+    ap = 0.30
+    L = 300.0
+    d.variable("screen_L", L, 200.0, 450.0, 5,
+               comment="iris to screen, mm (star spike scale ~ lambda L / D)")
+    d.add("laser_collimated", "Laser", pos=(-30.0, 0, 0),
+          params={"diameter": 0.6, "length": 8.0},
+          props={"lambdac": 633.0, "coherent": True})
+    d.chain("iris_bladed", "Iris", "Laser", 30.0,
+            params={"n_blades": 6, "aperture_diameter": ap,
+                    "outer_diameter": 12.0, "thickness": 0.2,
+                    "blade_rotation": 0.0, "blackness": 1.0})
+    d.chain("detector_plane", "Screen", "Iris", "screen_L",
+            params={"width": 12.0, "height": 12.0, "round_flag": 0})
+    d.expect("Iris", (0, 0, 0))
+    d.expect("Screen", (L, 0, 0))
+    d.note("bladed_iris_star: 6-blade hexagonal stop -> 6-fold diffraction "
+           "star (even N -> N spikes). iris_bladed provides the air-fill "
+           "polygon plug; Ø0.6 beam over-fills the Ø%.2f mm clear aperture "
+           "so the straight edges clip the coherent wavefront. Quantitative "
+           "6-fold assertion in test_bladed_iris_star.py." % ap)
+    return {"preset": "quick", "save_fields": True, "nlambda": 1}
+
+
 DEMOS = {
+    "bladed_iris_star": demo_bladed_iris_star,
     "sc_spectrogram": demo_sc_spectrogram,
     "erfiber_spm": demo_erfiber_spm,
     "fs_lens_telescope": demo_fs_lens_telescope,

@@ -116,6 +116,76 @@ def zernike_basis(jmax, rho, theta):
                     axis=1)
 
 
+def _radial_prime(n, m_abs, rho):
+    """dR_n^|m|/drho by term-wise differentiation of the factorial sum."""
+    r = np.zeros_like(rho)
+    for k in range((n - m_abs) // 2 + 1):
+        p = n - 2 * k
+        if p == 0:
+            continue
+        c = ((-1.0) ** k * math.factorial(n - k)
+             / (math.factorial(k)
+                * math.factorial((n + m_abs) // 2 - k)
+                * math.factorial((n - m_abs) // 2 - k)))
+        r += c * p * rho ** (p - 1)
+    return r
+
+
+def zernike_cart_grad(j, u, v):
+    """Cartesian gradient (dZ_j/du, dZ_j/dv) of the Noll-normalized Zernike
+    Z_j at UNIT-DISC coordinates (u, v) (rho = hypot(u,v), theta = atan2(v,u)).
+
+    Analytic — the polar chain rule with the seam handled at the origin
+    (rho -> 0): only tilt (n=1) has a finite gradient there; every higher
+    term's Cartesian gradient -> 0 as rho -> 0, so a zero fill is exact in
+    the limit. Vectorized over samples; returns (gu, gv) float64 arrays.
+    Validated against finite differences in test_figure_error.py."""
+    n, m = noll_to_nm(j)
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    rho = np.hypot(u, v)
+    theta = np.arctan2(v, u)
+    safe = rho > 1e-12
+    rho_s = np.where(safe, rho, 1.0)
+    ma = abs(m)
+    rad = _radial(n, ma, rho)
+    radp = _radial_prime(n, ma, rho)
+    # drho/du = u/rho, drho/dv = v/rho ; dtheta/du = -v/rho^2, dtheta/dv = u/rho^2
+    drho_du = np.where(safe, u / rho_s, 0.0)
+    drho_dv = np.where(safe, v / rho_s, 0.0)
+    dth_du = np.where(safe, -v / (rho_s * rho_s), 0.0)
+    dth_dv = np.where(safe, u / (rho_s * rho_s), 0.0)
+    if m == 0:
+        c = math.sqrt(n + 1.0)
+        dZ_drho = c * radp
+        gu = dZ_drho * drho_du
+        gv = dZ_drho * drho_dv
+    else:
+        norm = math.sqrt(2.0 * (n + 1.0))
+        if m > 0:
+            ang = np.cos(m * theta)
+            dang = -m * np.sin(m * theta)
+        else:
+            ang = np.sin(ma * theta)
+            dang = ma * np.cos(ma * theta)
+        dZ_drho = norm * radp * ang
+        dZ_dth = norm * rad * dang
+        gu = dZ_drho * drho_du + dZ_dth * dth_du
+        gv = dZ_drho * drho_dv + dZ_dth * dth_dv
+    # tilt (n=1) is the only term with a nonzero gradient at the origin;
+    # its radial part is linear so radp is constant and the zero-fill above
+    # would wrongly kill it -> restore the exact constant-slope value.
+    if n == 1:
+        norm = math.sqrt(2.0 * (n + 1.0))
+        if m > 0:      # Z2 = 2 u  -> (2, 0)
+            gu = np.where(safe, gu, norm)
+            gv = np.where(safe, gv, 0.0)
+        else:          # Z3 = 2 v  -> (0, 2)
+            gu = np.where(safe, gu, 0.0)
+            gv = np.where(safe, gv, norm)
+    return gu, gv
+
+
 def fit_zernike(rho, theta, opd, jmax=15, weights=None):
     """Weighted least-squares Zernike fit of an OPD sample set.
 

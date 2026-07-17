@@ -46,6 +46,21 @@ def test_elements_tab_lists_at_least_20_primitives_grouped(qtbot):
     assert "Lenses" in categories
 
 
+def test_bladed_iris_primitive_listed_under_apertures(qtbot):
+    # engine3 Sec 11 / P8: the N-blade iris ships as a catalog primitive
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = LibraryPane(mgr)
+    qtbot.addWidget(pane)
+    item = next((i for i in pane._primitives if i["kind"] == "iris_bladed"),
+                None)
+    assert item is not None, "iris_bladed missing from the element catalog"
+    assert item["category"] == "Apertures"
+    assert "n_blades" in item["params"]
+    categories = {pane.tree.topLevelItem(i).text(0)
+                  for i in range(pane.tree.topLevelItemCount())}
+    assert "Apertures" in categories
+
+
 def test_tabs_present(qtbot):
     mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
     pane = LibraryPane(mgr)

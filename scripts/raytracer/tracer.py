@@ -783,7 +783,7 @@ class Tracer:
         body = self.scene.body_of_face(fid)
         self.ledger.flux_in(body.label, float(np.sum(grp.power)))
         r_m = body.mirror
-        a = body.absorbance
+        a = self.scene.face_absorbance.get(fid, body.absorbance)
         face = self.scene.faces[fid]
         out = []
         # transmitted continuation
@@ -1238,7 +1238,7 @@ class Tracer:
                                  s_new, p_new)
 
         r_m = body.mirror
-        a = body.absorbance
+        a = self.scene.face_absorbance.get(fid, body.absorbance)
         phys = (1.0 - r_m) * (1.0 - a)
 
         p_in = np.abs(Es) ** 2 + np.abs(Ep) ** 2
@@ -1717,7 +1717,7 @@ class Tracer:
         n_o, n_e = scene.uniaxial_indices(body, grp.lam)
         c_axis = body.crystal_axis
         r_m = body.mirror
-        a = body.absorbance
+        a = self.scene.face_absorbance.get(fid, body.absorbance)
         phys = (1.0 - r_m) * (1.0 - a)
         p_in = grp.power
         p_accounted = np.zeros(m)
@@ -2092,7 +2092,7 @@ class Tracer:
         frame = body.crystal_frame
         eps = scene.biaxial_eps(body, grp.lam)         # (m,3)
         r_m = body.mirror
-        a = body.absorbance
+        a = self.scene.face_absorbance.get(fid, body.absorbance)
         phys = (1.0 - r_m) * (1.0 - a)
         p_in = grp.power
         p_accounted = np.zeros(m)
