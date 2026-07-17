@@ -2076,6 +2076,7 @@ class Tracer:
         their reflected share into absorbed_surface.
         Coating/roughness on biaxial faces are not modeled (warned)."""
         from . import birefringence as bir
+        from . import berreman as bz
         scene = self.scene
         body = scene.body_of_face(fid)
         face = scene.faces[fid]
@@ -2117,40 +2118,95 @@ class Tracer:
             p_old = np.cross(sub.dir, sub.s_hat)
             Es_i, Ep_i = fr.rotate_jones(sub.Es, sub.Ep, sub.s_hat, p_old,
                                          s_new, p_new)
-            # unitary slow/fast channel decomposition at the incident k
-            # (same closure-preserving pattern as the uniaxial o/e split:
-            # each channel gets its own sheet-index Fresnel)
-            in_modes = bir.biaxial_modes_for_k(sub.dir, frame, eps[ent])
-            d_sl_i, d_fa_i = in_modes["D_slow"], in_modes["D_fast"]
-            E1_i, E2_i = fr.rotate_jones(Es_i, Ep_i, s_new, p_new,
-                                         d_sl_i, d_fa_i)
-            cs = np.sum(d_sl_i * s_new, axis=-1)
-            sn = np.sum(d_sl_i * p_new, axis=-1)
+            # ---- interface amplitudes: EXACT Berreman 4x4 (P9 default) OR
+            # the legacy effective-index approximation (--biref-approx). Both
+            # produce a reflected s/p Jones field (refl_Es, refl_Ep) and a
+            # single complex transmitted field amplitude per sheet
+            # (sheet_field[name], |.|^2 = transmitted power), which the SHARED
+            # child construction below consumes; the exact power difference
+            # (dropped cross terms in the approx path; flux round-off in the
+            # exact path) lands in absorbed_surface so closure holds either
+            # way. ----
+            approx = getattr(self.cfg, "biref_approx", False)
+            sheet_field = {}
+            if approx:
+                # unitary slow/fast channel decomposition + per-sheet
+                # effective-index Fresnel (each channel's n_phase). The
+                # s<->p / slow<->fast cross terms are dropped.
+                in_modes = bir.biaxial_modes_for_k(sub.dir, frame, eps[ent])
+                d_sl_i, d_fa_i = in_modes["D_slow"], in_modes["D_fast"]
+                E1_i, E2_i = fr.rotate_jones(Es_i, Ep_i, s_new, p_new,
+                                             d_sl_i, d_fa_i)
+                cs = np.sum(d_sl_i * s_new, axis=-1)
+                sn = np.sum(d_sl_i * p_new, axis=-1)
+                coeffs = {}
+                for name in ("slow", "fast"):
+                    n2eff = res["n_phase_%s" % name].astype(np.complex128)
+                    rs, rp, ts, tp, ct = fr.fresnel_coeffs(ci, n1, n2eff)
+                    _, _, Ts, Tp = fr.power_coeffs(rs, rp, ts, tp, ci, ct,
+                                                   n1, n2eff)
+                    coeffs[name] = (rs, rp, ts, tp, np.clip(Ts, 0.0, None),
+                                    np.clip(Tp, 0.0, None))
+                rs1, rp1 = coeffs["slow"][0], coeffs["slow"][1]
+                rs2, rp2 = coeffs["fast"][0], coeffs["fast"][1]
+                amp = {}
+                for tag, r in (("s1", rs1), ("p1", rp1), ("s2", rs2),
+                               ("p2", rp2)):
+                    amp[tag] = np.sqrt(r_m + phys * np.abs(r) ** 2) \
+                        * np.exp(1j * np.angle(r))
+                refl_Es = E1_i * cs * amp["s1"] - E2_i * sn * amp["s2"]
+                refl_Ep = E1_i * sn * amp["p1"] + E2_i * cs * amp["p2"]
+                for name, E_ch, ch_s, ch_p in (("slow", E1_i, cs, sn),
+                                               ("fast", E2_i, -sn, cs)):
+                    _, _, ts, tp, Ts, Tp = coeffs[name]
+                    amp_ts = np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts))
+                    amp_tp = np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp))
+                    Ech_s = E_ch * ch_s * amp_ts
+                    Ech_p = E_ch * ch_p * amp_tp
+                    mag = np.sqrt(np.abs(Ech_s) ** 2 + np.abs(Ech_p) ** 2)
+                    phase = np.exp(1j * np.angle(
+                        np.where(np.abs(Ech_p) >= np.abs(Ech_s), Ech_p,
+                                 Ech_s)))
+                    sheet_field[name] = mag * phase
+            else:
+                # EXACT Berreman 4x4: full reflected Jones (incl. cross terms
+                # rsp/rps) + per-sheet transmission amplitude, flux-normalized
+                # so |amp|^2 is the true power fraction (berreman.py header).
+                epsG_ent = bz.eps_tensor(eps[ent].astype(np.complex128), frame)
+                bza = bz.anis_interface_in(sub.dir, nh, epsG_ent, np.real(n1))
+                Rvec_s = bza["rss"] * Es_i + bza["rsp"] * Ep_i
+                Rvec_p = bza["rps"] * Es_i + bza["rpp"] * Ep_i
+                R_pow = np.abs(Rvec_s) ** 2 + np.abs(Rvec_p) ** 2
+                target = r_m * sub.power + phys * R_pow
+                safe = R_pow > 1e-300
+                scale = np.where(safe, np.sqrt(
+                    target / np.where(safe, R_pow, 1.0)), 0.0)
+                refl_Es = Rvec_s * scale
+                refl_Ep = Rvec_p * scale
+                # match the two Berreman forward modes to the geometry solver's
+                # slow/fast sheets by NORMAL index q_z (both solve the same
+                # normal surface at the same tangential wavevector, so q_z
+                # coincide; robust away from the conical-point degeneracy).
+                zc = -nh
+                qzt = np.real(bza["qz_t"])                    # (m,2)
+                idx = np.arange(len(ent))
+                for name in ("slow", "fast"):
+                    qz_res = res["n_phase_%s" % name] * np.sum(
+                        res["k_%s" % name] * zc, axis=-1)
+                    j = np.argmin(np.abs(qzt - qz_res[:, None]), axis=1)
+                    tj = bza["t"][idx, j, :]                  # (m,2) s/p input
+                    A = tj[:, 0] * Es_i + tj[:, 1] * Ep_i
+                    sheet_field[name] = np.sqrt(phys) * A
 
-            coeffs = {}
-            for name in ("slow", "fast"):
-                n2eff = res["n_phase_%s" % name].astype(np.complex128)
-                rs, rp, ts, tp, ct = fr.fresnel_coeffs(ci, n1, n2eff)
-                _, _, Ts, Tp = fr.power_coeffs(rs, rp, ts, tp, ci, ct,
-                                               n1, n2eff)
-                coeffs[name] = (rs, rp, ts, tp, np.clip(Ts, 0.0, None),
-                                np.clip(Tp, 0.0, None))
-
-            # reflected child: coherent sum of both channels' reflections
-            rs1, rp1 = coeffs["slow"][0], coeffs["slow"][1]
-            rs2, rp2 = coeffs["fast"][0], coeffs["fast"][1]
+            # reflected child (shared): field already in the (s_new,p_new)
+            # basis, reflected s_hat = s_new
             refl = sub.select(np.ones(len(ent), dtype=bool))
             _kill_differentials(refl)
             pt.kill(refl)   # o/e (or slow/fast) channel mix: not modeled
             refl.dir = fr.reflect_dir(sub.dir, nh)
             refl.s_hat = s_new
-            amp = {}
-            for tag, r in (("s1", rs1), ("p1", rp1), ("s2", rs2),
-                           ("p2", rp2)):
-                amp[tag] = np.sqrt(r_m + phys * np.abs(r) ** 2) \
-                    * np.exp(1j * np.angle(r))
-            refl.Es = E1_i * cs * amp["s1"] - E2_i * sn * amp["s2"]
-            refl.Ep = E1_i * sn * amp["p1"] + E2_i * cs * amp["p2"]
+            refl.Es = refl_Es
+            refl.Ep = refl_Ep
             self._record_reflection(refl, fid)
             refl.generation += 1
             cr = can_reflect[ent]
@@ -2163,15 +2219,10 @@ class Tracer:
             p_accounted[ent] += refl.power
 
             # transmitted sheet children (slow: pol_mode 2, fast: 3)
-            for name, mode_val, E_ch, ch_s, ch_p in (
-                    ("slow", 2, E1_i, cs, sn),
-                    ("fast", 3, E2_i, -sn, cs)):
-                rs, rp, ts, tp, Ts, Tp = coeffs[name]
+            for name, mode_val in (("slow", 2), ("fast", 3)):
                 k_hat = res["k_%s" % name]
                 s_ray = res["s_%s" % name]
                 D = res["D_%s" % name]
-                amp_ts = np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts))
-                amp_tp = np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp))
                 ch = sub.select(np.ones(len(ent), dtype=bool))
                 _kill_differentials(ch)
                 pt.kill(ch)   # slow/fast channel mix: not modeled
@@ -2187,16 +2238,9 @@ class Tracer:
                 sh = np.where(bad[:, None], s_new, sh / np.maximum(
                     nrm, 1e-300))
                 ch.s_hat = sh
-                # channel field through its own Fresnel, magnitude only
-                # (the child is a single pure mode)
-                Ech_s = E_ch * ch_s * amp_ts
-                Ech_p = E_ch * ch_p * amp_tp
-                mag = np.sqrt(np.abs(Ech_s) ** 2 + np.abs(Ech_p) ** 2)
-                phase = np.exp(1j * np.angle(
-                    np.where(np.abs(Ech_p) >= np.abs(Ech_s), Ech_p,
-                             Ech_s)))
-                ch.Es = np.zeros_like(Ech_s)
-                ch.Ep = mag * phase
+                fld = sheet_field[name]     # single-mode complex amplitude
+                ch.Es = np.zeros_like(fld)
+                ch.Ep = fld
                 ch.pol_mode[:] = mode_val
                 ch.n_eff[:] = res["n_ray_%s" % name]
                 if self.cfg.track_time:

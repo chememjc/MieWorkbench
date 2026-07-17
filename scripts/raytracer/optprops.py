@@ -206,9 +206,30 @@ def load_uniaxial(csv_path=None, db=None):
             raise MaterialError(
                 "%s: crystal name collides with unrelated materials.csv "
                 "row %r" % (ctx, name))
-        out[name] = {"o": db.get(o_name), "e": db.get(e_name),
-                     "reference": (row.get("reference") or "").strip(),
-                     "notes": (row.get("notes") or "").strip()}
+        entry = {"o": db.get(o_name), "e": db.get(e_name),
+                 "reference": (row.get("reference") or "").strip(),
+                 "notes": (row.get("notes") or "").strip()}
+        # OPTIONAL gyration (P9 natural optical activity): the measured
+        # rotatory power (deg/mm) at a reference wavelength (nm).  Absent =>
+        # non-gyrotropic (backward compatible; DictReader yields None).  The
+        # Berreman gyration scalar is derived per-ray from this datum.
+        gyr = (row.get("gyration_deg_per_mm") or "").strip()
+        if gyr:
+            try:
+                entry["gyration_deg_per_mm"] = float(gyr)
+                entry["gyration_ref_nm"] = float(
+                    (row.get("gyration_ref_nm") or "").strip())
+            except ValueError:
+                raise MaterialError(
+                    "%s: gyration_deg_per_mm / gyration_ref_nm not numeric"
+                    % ctx)
+            gref = (row.get("gyration_reference") or "").strip()
+            if not gref:
+                raise MaterialError(
+                    "%s: gyration data requires a gyration_reference citation"
+                    % ctx)
+            entry["gyration_reference"] = gref
+        out[name] = entry
     return out
 
 
@@ -238,9 +259,27 @@ def load_biaxial(csv_path=None, db=None):
             raise MaterialError(
                 "%s: crystal name collides with unrelated materials.csv "
                 "row %r" % (ctx, name))
-        out[name] = {ax: db.get(mn) for ax, mn in axes.items()}
-        out[name]["reference"] = (row.get("reference") or "").strip()
-        out[name]["notes"] = (row.get("notes") or "").strip()
+        entry = {ax: db.get(mn) for ax, mn in axes.items()}
+        entry["reference"] = (row.get("reference") or "").strip()
+        entry["notes"] = (row.get("notes") or "").strip()
+        # OPTIONAL absorbing extinction (P9 dichroic biaxial): a constant
+        # per-principal-axis k added to the (real) principal index, k_i ->
+        # n_i + i*k_i, feeding the Berreman complex eps.  Absent columns =>
+        # non-absorbing (backward compatible).  For wavelength-dependent
+        # absorption, reference an nk material row instead (its n_complex
+        # already carries k); these columns are the simple constant-k seam.
+        kcols = {}
+        for ax in ("x", "y", "z"):
+            raw = (row.get("k_%s" % ax) or "").strip()
+            if raw:
+                try:
+                    kcols[ax] = float(raw)
+                except ValueError:
+                    raise MaterialError(
+                        "%s: k_%s is not numeric (%r)" % (ctx, ax, raw))
+        if kcols:
+            entry["k"] = {ax: kcols.get(ax, 0.0) for ax in ("x", "y", "z")}
+        out[name] = entry
     return out
 
 

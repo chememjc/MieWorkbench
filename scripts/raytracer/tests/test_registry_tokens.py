@@ -50,6 +50,10 @@ pytestmark = pytest.mark.skipif(
 PYTHON_ONLY = frozenset({
     "beam", "apodization",              # source models (sources.py)
     "biaxial",                          # biaxial crystals (uniaxial is ported)
+    "berreman",                         # P9 full-anisotropy 4x4 (biaxial exact
+                                        #   / gyrotropic / absorbing-aniso);
+                                        #   C-registry seam STUB, dump skips it
+                                        #   -> classified Python-only here.
     "nonlinear",                        # P8 NLO: chi2 SHG child + Pockels (SHG
                                         #   harmonic strata unported; Pockels
                                         #   rides the biref tables — split is a
