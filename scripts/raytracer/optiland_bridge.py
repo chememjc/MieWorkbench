@@ -612,6 +612,82 @@ def trace_pupil_world(opt, pupil_y_m, pupil_z_m, epd_mm, wavelength_um,
     return pos, dirn
 
 
+def trace_pupil_world_path(opt, pupil_y_m, pupil_z_m, epd_mm, wavelength_um,
+                           source_pos_m):
+    """P4b preview-unification (engine3.md Sec.5/Sec.15 P4b: "preview
+    unified"): like trace_pupil_world, but returns the FULL per-surface
+    world-frame polyline each ray follows -- source plane -> every optical
+    surface intercept (sag-corrected, not the paraxial vertex) -> the image
+    plane -- for the GUI's ray-overlay visualization, not just the final
+    landing point.
+
+    source_pos_m: (N,3) world-frame ray origins (the real emit-face points,
+    e.g. from raytracer.sources.sample_viz_pattern) -- used verbatim as each
+    path's first vertex. Valid because the object bundle is COLLIMATED and
+    on-axis (the caller's job to verify): a straight line in a homogeneous
+    medium has the SAME transverse (y, z) position at the source plane, the
+    entrance pupil, and any other plane before the first optical surface,
+    so pupil_y_m/pupil_z_m (used to build the normalized Optiland Px/Py,
+    exactly trace_pupil_world's convention) may be taken directly from
+    source_pos_m's own y/z columns.
+
+    Returns (n_rays, n_surfaces+1, 3) world-frame points (n_surfaces = the
+    system's optical surfaces, +1 for the image plane; the source point is
+    prepended, giving n_surfaces+2 vertices total -- n_surfaces+1 SEGMENTS
+    per ray) and a boolean (n_rays,) validity mask: False for any ray whose
+    path contains a non-finite vertex (TIR'd/vignetted/missed a surface --
+    the physical stop's RadialAperture clips these exactly as the real
+    iris would).
+
+    Frame map is trace_pupil_world's (verified there): Optiland
+    (x_o, y_o, z_o=axis) <-> world (y, z, x=axial). Unlike trace_pupil_world
+    (which only reads the LAST surface, index -1), this reads sg.x/y/z's
+    full per-surface stack and skips index 0 (Optiland's object surface --
+    a bookkeeping placeholder at infinity, never a real vertex).
+
+    Rays whose normalized pupil coordinate falls OUTSIDE the unit disc
+    (beyond the entrance pupil this `opt` was built with -- e.g. a fan
+    sampled over the source body's full clear aperture when a downstream
+    iris models a materially smaller stop) are never handed to
+    `trace_generic` (which hard-rejects |P|>1 with a ValueError): they are
+    real vignetting, reported as `valid=False` exactly like a ray that
+    TIR'd or missed a surface -- a physical clip, not an error."""
+    src = np.asarray(source_pos_m, float)
+    n_rays = src.shape[0]
+    half = epd_mm / 2.0
+    Px_full = np.asarray(pupil_y_m, float) * MM_PER_M / half
+    Py_full = np.asarray(pupil_z_m, float) * MM_PER_M / half
+    in_pupil = (Px_full * Px_full + Py_full * Py_full) <= 1.0
+    idx = np.where(in_pupil)[0]
+    valid = np.zeros(n_rays, dtype=bool)
+    if idx.size == 0:
+        # every ray fell outside this system's entrance pupil -- nothing to
+        # trace; shape (n_rays, 1, 3) is a degenerate (single source-point,
+        # no segments) path so callers' shape expectations still hold.
+        return src[:, None, :], valid
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        Px, Py = Px_full[idx], Py_full[idx]
+        opt.trace_generic(Hx=0.0, Hy=0.0, Px=Px, Py=Py, wavelength=wavelength_um)
+        sg = opt.surface_group
+        # sg.x/y/z stack every RECORDED surface (object..image); the object
+        # surface (index 0) carries no physical vertex -- drop it.
+        world_y = np.asarray(sg.x[1:], float) / MM_PER_M     # (n_surf, n_in)
+        world_z = np.asarray(sg.y[1:], float) / MM_PER_M
+        world_x = np.asarray(sg.z[1:], float) / MM_PER_M
+
+    n_surf = world_x.shape[0]
+    traced = np.stack([world_x, world_y, world_z], axis=-1)  # (n_surf,n_in,3)
+    traced = np.transpose(traced, (1, 0, 2))                 # (n_in,n_surf,3)
+
+    out = np.full((n_rays, n_surf + 1, 3), np.nan)
+    out[:, 0, :] = src
+    out[idx, 1:, :] = traced
+    valid[idx] = np.all(np.isfinite(traced.reshape(idx.size, -1)), axis=1)
+    return out, valid
+
+
 def best_focus_shift_mm(r_mm, slope_per_z):
     """Axial shift s (mm, +downstream) from a reference plane MINIMIZING the
     transverse RMS of a rotationally symmetric bundle. r(s) = r + s*slope;

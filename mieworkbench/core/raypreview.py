@@ -10,17 +10,27 @@ Pipeline (mirrors CLAUDE.md's pinned-interpreter contract for this repo):
      mode, `--` before its own args, stdin explicitly closed — see
      CLAUDE.md's "FreeCAD `-c`" trap) -> <workspace>/preview/geometry/
      model/model.json.
-  3. scripts/preview_rays.py under the optics-env python -> rays.vtp.
+  3. TRACE, fast path first (engine3.md Sec.15 P4b "preview unified"): once
+     geometry.model.json exists, try core/sequential_preview.py IN-PROCESS
+     (Optiland, ms-scale — see that module's docstring for the process-
+     boundary rationale). BridgeUnsupported / any failure there (a scene
+     outside the bridge's on-axis sequential scope — tilts, mirrors needing
+     a fold, crystals, gratings, a divergent source, ...) falls back to the
+     ORIGINAL stage 3: scripts/preview_rays.py under the optics-env python
+     -> rays.vtp. Both stages write the SAME rays.vtp path and satisfy the
+     SAME output contract; `finished` reports which one produced it.
 
 Deliberately mirrors core/runner.py's QProcess plumbing (env constructed
-the same way, MergedChannels, errorOccurred handling) but chains two
-short-lived one-shot processes instead of one long pipeline run, and has
-no journal/replay machinery (this is a read-only, throwaway preview - if a
-stage dies the caller just retries `start()`).
+the same way, MergedChannels, errorOccurred handling) but chains one-shot
+processes instead of one long pipeline run, and has no journal/replay
+machinery (this is a read-only, throwaway preview - if a stage dies the
+caller just retries `start()`).
 
-This module is Qt-only (QObject + QProcess + signals), like runner.py: it
-never imports anything from scripts/raytracer/* — only scripts/common.py
-(stdlib-only) for path defaults and progress-line parsing.
+This module is otherwise Qt-only (QObject + QProcess + signals), like
+runner.py: it never imports scripts/raytracer/* itself — only
+scripts/common.py (stdlib-only) for path defaults/progress parsing, and
+(lazily, from inside a try/except) core/sequential_preview.py for the fast
+path, which is the one place scripts/raytracer/* enters this process.
 """
 
 import os
@@ -39,6 +49,14 @@ PREVIEW_SCRIPT = REPO_DIR / "scripts" / "preview_rays.py"
 
 STOP_GRACE_MS = 5000
 
+# Status-hint label for the fallback (general Python-engine) trace stage.
+# Kept as a local constant (rather than importing core/sequential_preview
+# just for its ENGINE_SEQUENTIAL/ENGINE_FALLBACK strings) so this module's
+# only dependency on that one stays inside default_sequential_build()'s
+# try/except — an Optiland-less interpreter must still be able to import
+# raypreview.py and run the fallback-only chain.
+ENGINE_FALLBACK = "engine fan"
+
 
 def default_freecad_appimage():
     return os.environ.get("MIEWB_FREECAD", common.FREECAD_APPIMAGE)
@@ -48,11 +66,28 @@ def default_optics_python():
     return os.environ.get("MIEWB_OPTICS_PYTHON", common.OPTICS_PYTHON)
 
 
-class RayPreviewController(QObject):
-    """Owns at most one preview QProcess (of the two one-shot stages that
-    make up a single run) at a time."""
+def default_sequential_build():
+    """Returns the sequential-fast-path entry point (core/sequential_
+    preview.py's build()), or None if it can't be imported (e.g. Optiland
+    absent from this interpreter) — a missing fast path is just another
+    "fall back to the general chain" condition, never an error. A separate
+    function (like default_freecad_appimage/default_optics_python above)
+    so tests can monkeypatch it — e.g. to force the fast path off, or to
+    stub its return value, without needing a real geometry cache."""
+    try:
+        from . import sequential_preview
+    except Exception:
+        return None
+    return sequential_preview.build
 
-    finished = Signal(str)      # path to rays.vtp
+
+class RayPreviewController(QObject):
+    """Owns at most one preview QProcess (of the two one-shot subprocess
+    stages that make up a single run) at a time. The trace stage tries an
+    in-process fast path FIRST (no QProcess at all — see the module
+    docstring); only the fallback trace uses a second subprocess."""
+
+    finished = Signal(str, str)   # path to rays.vtp, engine label
     failed = Signal(str)
     progress = Signal(str)
 
@@ -159,9 +194,33 @@ class RayPreviewController(QObject):
             self.failed.emit("geometry extract failed (exit %d): %s"
                              % (exit_code, self._tail()))
             return
-        self._start_preview()
+        self._start_trace()
 
-    # -- stage 2: preview_rays.py under the optics env --------------------------
+    # -- stage 2 (trace), fast path: in-process Optiland sequential trace -------
+    def _start_trace(self):
+        """Geometry is fresh (extract just completed successfully, right
+        above). Try the sequential fast path IN-PROCESS first — no
+        subprocess, no QProcess bookkeeping; engine3.md Sec.15 P4b "preview
+        unified". Any failure (BridgeUnsupported for an out-of-scope scene,
+        or any unexpected error — sequential_preview.build() never raises)
+        falls straight through to the original preview_rays.py subprocess
+        stage, so this method NEVER re-runs the FreeCAD extract above."""
+        self._stage = "trace"
+        build_fn = default_sequential_build()
+        if build_fn is not None:
+            self.progress.emit("tracing preview rays (sequential)")
+            ok, info = build_fn(
+                self._geometry_dir, self._rays_path, pattern=self._pattern,
+                only_bodies=self._only_bodies,
+                optical_properties=self._optical_properties)
+            if ok:
+                self.finished.emit(self._rays_path, info)
+                return True
+            self.progress.emit("sequential preview unavailable (%s); "
+                               "falling back" % info)
+        return self._start_preview()
+
+    # -- stage 2 (trace), fallback: preview_rays.py under the optics env --------
     def _start_preview(self):
         self._stage = "preview"
         self.progress.emit("tracing preview rays")
@@ -184,7 +243,7 @@ class RayPreviewController(QObject):
             self.failed.emit("preview_rays.py failed (exit %d): %s"
                              % (exit_code, self._tail()))
             return
-        self.finished.emit(self._rays_path)
+        self.finished.emit(self._rays_path, ENGINE_FALLBACK)
 
     # -- shared QProcess plumbing -------------------------------------------------
     def _make_process(self, argv):
