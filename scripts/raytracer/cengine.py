@@ -760,11 +760,22 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
         entry = {
             "label": body.label,
             "body_index": int(bidx),
-            "power_W": float(src["power_mW"]) * 1e-3,
+            # power_mW None/0.0 is the extractor's "unset" sentinel for
+            # pulse_energy-XOR-power sources (CLAUDE.md P3/P6): the C
+            # engine bills the derived AVERAGE power exactly like the
+            # Python engine. Exposed when tranche 1 flipped time-product
+            # scenes to C routing (pre-existing hole in build_request).
+            "power_W": (float(src["power_mW"]) * 1e-3
+                        if src.get("power_mW") not in (None, 0.0)
+                        else float((src.get("pulse") or {})
+                                   .get("avg_power_W") or 0.0)),
             # pulsed-optics P7 tranche 2: pulse peak/avg power ratio (kappa)
             # multiplies every per-ray local intensity (nlo.ray_intensity);
             # 1.0 for CW / non-pulsed sources.
-            "kappa_pulse": float((src.get("pulse") or {}).get("kappa", 1.0)),
+            # .get default doesn't cover an explicit kappa=None (pulse dict
+            # present, duration unset -> no peak/avg ratio derivable): CW law
+            "kappa_pulse": float((src.get("pulse") or {}).get("kappa")
+                                 or 1.0),
             "coherent": bool(src.get("coherent", False)),
             "lam_offset": int(lam_off),
             "n_strata": int(n_strata),

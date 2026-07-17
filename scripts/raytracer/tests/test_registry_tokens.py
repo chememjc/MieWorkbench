@@ -50,6 +50,8 @@ pytestmark = pytest.mark.skipif(
 PYTHON_ONLY = frozenset({
     "beam", "apodization",              # source models (sources.py)
     "biaxial",                          # biaxial crystals (uniaxial is ported)
+    "figure_error",                     # P8 Zernike surface figure error
+                                        #   (PerturbedSurface, surfaces.py)
     "berreman",                         # P9 full-anisotropy 4x4 (biaxial exact
                                         #   / gyrotropic / absorbing-aniso);
                                         #   C-registry seam STUB, dump skips it

@@ -178,9 +178,12 @@ def test_flag_on_cw_scene_budget_only(tmp_path):
     cj = _case_json(case)
     assert "gdd_budget" in cj
     assert "time_products" not in cj
-    assert cj["engine"] == "python"
+    # P7 tranche 1 ported gdd_budget: a CW budget-only scene now routes to
+    # the C engine when the binary exists (was a Python-only assertion)
     if cengine.binary_path() is not None:
-        assert "gdd_budget" in cj["engine_reason"]
+        assert cj["engine"] == "c"
+    else:
+        assert cj["engine"] == "python"
     with h5py.File(case / "detectors" / "Det_Pad_Face1.h5") as h:
         assert not any(k.startswith("time_") for k in h.keys())
     # and without the flag the CW scene emits no budget at all
