@@ -1745,6 +1745,25 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
             body_dict["absorbance"] = capped01(
                 "absorbance", obj.absorbance, obj.Label, warnings)
 
+        # edge_blackened (engine3 Sec 11 / P8): a blackened lens EDGE/barrel
+        # for ghost & stray-light suppression. When the bool prop is set on an
+        # optic, every CYLINDRICAL face (the lens/rod barrel -- identified by
+        # analytic surface TYPE, so it is immune to the FaceN renumbering that
+        # a rebuild causes) is marked fully absorbing via a per-face absorbance
+        # map. The refracting surfaces (sphere/asphere/plane caps) stay clear.
+        if getattr(obj, "edge_blackened", False):
+            if role != "optic":
+                warn("%s: edge_blackened is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                edge_map = {f["id"]: 1.0 for f in faces
+                            if f["surface"]["type"] == "cylinder"}
+                if edge_map:
+                    body_dict["absorbance_faces"] = edge_map
+                else:
+                    warn("%s: edge_blackened set but no cylindrical edge/barrel "
+                         "face found; nothing blackened" % obj.Label, warnings)
+
         # optional per-body operating temperature (deg C); shifts glasses
         # carrying a thermo-optic model. Blank/none -> scene-global temp.
         if hasattr(obj, "temperature"):
@@ -1821,6 +1840,24 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
             except ValueError as e:
                 die("%s: bad coating spec %r: %s"
                     % (obj.Label, coating_raw, e))
+
+        # figure_error (Zernike surface figure error, engine3 Sec 11 / P8):
+        # per-face map of figures-registry names ('name' | 'FaceN=name;...'),
+        # resolved to a PerturbedSurface at scene build. Names only, no value
+        # grammar (like coating/scatter). Geometry-only here: the CAD is the
+        # UNPERTURBED shape by design, so no <1 um surface-verify gate applies.
+        figure_raw = str_prop_or_none(obj, "figure_error")
+        if figure_raw is not None:
+            if role != "optic":
+                warn("%s: figure_error is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                try:
+                    body_dict["figure_error"] = parse_facemap_value_safe(
+                        figure_raw, obj.Name, tip_name)
+                except ValueError as e:
+                    die("%s: bad figure_error spec %r: %s"
+                        % (obj.Label, figure_raw, e))
 
         # ---- schema v2 optics-only properties ----
         polarizer_raw = str_prop_or_none(obj, "polarizer")

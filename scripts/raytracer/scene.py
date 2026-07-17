@@ -137,9 +137,10 @@ def _parse_pulse_source(label, src):
 
 class Body:
     __slots__ = ("index", "name", "label", "role", "material", "coating",
-                 "mirror", "absorbance", "roughness_nm", "roughness_faces",
+                 "mirror", "absorbance", "absorbance_faces",
+                 "roughness_nm", "roughness_faces",
                  "diffuser_faces", "scatter_faces", "scatter_targets",
-                 "grating_map", "source",
+                 "grating_map", "figure_map", "source",
                  "detector", "closed", "face_ids", "polarizer",
                  "polarizer_axis", "filter", "crystal_axis", "birefringent",
                  "filter_lam_um", "filter_alpha_per_m", "crystal_axis2",
@@ -167,6 +168,11 @@ class Body:
             self.coating = dict(coat)
         self.mirror = float(rec.get("mirror") or 0.0)
         self.absorbance = float(rec.get("absorbance") or 0.0)
+        # per-face absorbance (edge blackening, engine3 Sec 11 / P8): {face_id:
+        # frac} -- overrides the whole-body absorbance on those faces only (a
+        # blackened lens EDGE that swallows ghost/stray light while the optical
+        # surfaces stay clear). dict or None.
+        self.absorbance_faces = rec.get("absorbance_faces")
         # NOTE the contract key is roughness_nm ('roughness' was a latent
         # mismatch — body-tagged roughness silently never reached the trace)
         self.roughness_nm = float(rec.get("roughness_nm") or 0.0)
@@ -179,6 +185,16 @@ class Body:
         self.scatter_targets = ([s.strip() for s in st.split(",") if s.strip()]
                                 if isinstance(st, str) else (st or None))
         self.grating_map = rec.get("grating")               # dict or None
+        # figure error (Zernike surface figure, engine3 Sec 11 / P8): per-face
+        # map {face_id_or_FACEMAP_ALL: registry_name}, resolved to a
+        # PerturbedSurface wrapper in the face-build loop.
+        fig = rec.get("figure_error")
+        if fig in (None, "", "none"):
+            self.figure_map = None
+        elif isinstance(fig, str):
+            self.figure_map = {FACEMAP_ALL: fig}
+        else:
+            self.figure_map = dict(fig)
         self.polarizer = rec.get("polarizer") or None
         pa = rec.get("polarizer_axis")
         self.polarizer_axis = np.asarray(pa, dtype=np.float64) \
@@ -586,8 +602,24 @@ class Scene:
                     face = MeshFace(f, path,
                                     flat_normals=mesh_flat_normals)
                 else:
+                    surf = make_surface(f["surface"])
+                    fig_name = self._face_figure_name(body, f["id"])
+                    if fig_name is not None:
+                        from .surfaces import PerturbedSurface
+                        reg = (self.optprops.figures
+                               if self.optprops is not None else {})
+                        if fig_name not in reg:
+                            raise ValueError(
+                                "body %s face %s: unknown figure_error %r "
+                                "(figures registry has: %s)"
+                                % (body.label, f["id"], fig_name,
+                                   ", ".join(sorted(reg))
+                                   or "<none loaded — pass optprops>"))
+                        fspec = reg[fig_name]
+                        surf = PerturbedSurface(
+                            surf, fspec["coeffs"], fspec["r_norm_m"])
                     face = AnalyticFace(
-                        f["id"], make_surface(f["surface"]),
+                        f["id"], surf,
                         f["trim_polylines_xyz"], f["orientation_outward"],
                         body.index, len(self.faces), area_m2=f["area_m2"])
                 fid = len(self.faces)
@@ -778,7 +810,27 @@ class Scene:
                 self.face_coatings[self._face_id_or_die(
                     face_name, "coating")] = cname
 
+        # per-face absorbance map: {int fid: absorbance frac} (edge blackening)
+        self.face_absorbance = {}
+        for body in self.bodies:
+            if not body.absorbance_faces:
+                continue
+            for face_name, frac in body.absorbance_faces.items():
+                self.face_absorbance[self._face_id_or_die(
+                    face_name, "absorbance")] = float(frac)
+
         self.face_body = np.asarray(self.face_body, dtype=np.int32)
+
+    @staticmethod
+    def _face_figure_name(body, face_id):
+        """Figure-error registry name for one face of `body`, or None:
+        an exact per-face key wins over the FACEMAP_ALL whole-body default."""
+        fm = body.figure_map
+        if not fm:
+            return None
+        if face_id in fm:
+            return fm[face_id]
+        return fm.get(FACEMAP_ALL)
 
     def _face_id_or_die(self, face_name, kind):
         if face_name not in self.face_by_name:

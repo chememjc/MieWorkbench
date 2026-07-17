@@ -23,8 +23,10 @@ Layout: `scripts/` engine + pipeline + tools · `scripts/fcserver/` headless
 FreeCAD worker · `mieworkbench/` the GUI package (`core/` logic, `panes/`
 dock widgets, `widgets/` VTK, `tests/`) · `opticalproperties/` property
 library · `primitives/` parametric element library · `basemodels/` test
-scenes · `demos/` 34 classic-system `.MieWB` galleries — benchmark set is
-11 scenes, 15 designs have committed baselines — (built by
+scenes · `demos/` 35 classic-system `.MieWB` galleries — benchmark set is
+11 scenes, 15 designs have committed baselines (coherent-diffraction
+characterization demos like `airy_singleslit`/`bladed_iris_star` are gated
+by their pattern tests, not the placement/power oracle) — (built by
 `scripts/make_demos.py` through the Project/chain op path; `demos/README.md`
 has prescriptions+citations, `demos/UXNOTES.md` + `demos/UXNOTES_ROUND2.md`
 the shakedown logs; `demos/baselines/` committed placement+power oracles
@@ -143,13 +145,15 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   `run_trace` REFUSES a locked case (exit 4). The GUI opens live cases
   read-only in monitor mode (polls `progress.json`).
 - **Primitives** (`scripts/primitivelib.py` + `primitives/*.FCStd` +
-  `.meta.json`): 69 catalog elements (sources incl. 6 pulsed/SC
+  `.meta.json`): 70 catalog elements (sources incl. 6 pulsed/SC
   lasers (P12: maitai_800/erfiber_1560/ndyag_1064/sc_superk/laser_pulsed/
   fiber_nonlinear_output)/detectors/fiber optics/
   lenses/beamsplitters/filters/polarization/prisms & mirrors/apertures/
   diffusers — incl. 8 LED monochromatic sources, `fiber_optic` core+cladding
-  analytic cylinders, NA 0.22 via the `fiber_core_na22` material row, and
-  `mirror_annular` perforated SCT-style primary); geometry params live in a
+  analytic cylinders, NA 0.22 via the `fiber_core_na22` material row,
+  `mirror_annular` perforated SCT-style primary, and `iris_bladed` (P8:
+  N-blade true-polygon aperture stop -> N-fold coherent diffraction star);
+  geometry params live in a
   `dim` spreadsheet; edits go through **rebuild-on-edit** (`rebuild_primitive`
   op re-runs the builder — constraint expressions can't change topology).
   Hand-authored primitives with real cell expressions use the normal
@@ -204,7 +208,12 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   `surface_override` (asphere, verified <1 µm; the verifier needs the
   vertex inside the retained face — off-axis parabola segments are
   structurally unverifiable, use `mirror_parabolic` on-axis),
-  `mirror`, `absorbance`
+  `figure_error` (P8: per-face Zernike SURFACE figure error, `figure/
+  figures.miefig` names -> a surfaces.PerturbedSurface sag perturbation at
+  scene build; the CAD is the UNPERTURBED shape by design so the <1 µm gate
+  checks base-vs-CAD only; Python-routed), `edge_blackened` (P8 bool: blacken
+  the lens CYLINDER barrel = per-face absorbance on cylinder faces, immune to
+  FaceN renumbering; Python-routed), `mirror`, `absorbance`
 - NLO extras (pulsed round): `nonlinear` = nonlinear.mienlo row
   (chi2_process → per-segment SHG transfer: incoherent λ/2 child,
   stratum id n_λ+parent, η clamped 0.5; pockels rows + `pockels_voltage`/
@@ -294,7 +303,10 @@ symmetric element's own axis allowed+reported) and 3-seed power
 `grating/gratings.miegrat` (8), `birefringence/uniaxial.miebrf` (13 uniaxial
 crystals), `detector/detectors.miedet` (detector QE curves, 1 entry: hamamatsu_s1223),
 `emission/emitters.miesrc` (tabulated source emission spectra, 2 entries:
-led_white_2733k + sc_superk supercontinuum SPD; continuous kind only), per-item tables `*/tables/*.mietab`. Loaders prefer the new names and **fall back to
+led_white_2733k + sc_superk supercontinuum SPD; continuous kind only),
+`figure/figures.miefig` (P8: Zernike SURFACE figure-error sets — Noll
+`j:rms_nm` coeffs + `r_norm_mm`, 4 entries: defocus/astig/trefoil/lambda10),
+per-item tables `*/tables/*.mietab`. Loaders prefer the new names and **fall back to
 legacy `.csv`** (external all-.csv libraries keep working). `reference`
 (citation) column is REQUIRED everywhere; loaders hard-validate
 (`raytracer/optprops.py`). Override root: `--optical-properties DIR`.

@@ -110,6 +110,14 @@ When a body carries a matching prescription entry, `extract_geometry`:
 
 Bodies **without** a prescription extract exactly as today.
 
+**Figure error is orthogonal to this gate (P8, engine3 §11).** A `figure_error`
+body property (§5.8b of `RAYTRACER.md`) adds a Zernike SAG perturbation to the
+analytic surface *at scene build*, wrapping it in a `surfaces.PerturbedSurface`.
+By design the CAD (and any prescription) is the **UNPERTURBED** shape, so this
+1 µm cross-check verifies the base surface against the CAD **only** and never
+sees the perturbation — the figure map is a trace-time overlay, not a geometry
+edit, and carries no verification of its own.
+
 ---
 
 ## 4. Emission from the builders (the single authoring path)

@@ -843,6 +843,37 @@ PRIMITIVES = {
                        # both set by the builder
         "derived_props": ("absorbance",),
     },
+    "iris_bladed": {
+        "category": "Apertures", "label": "Iris (N-blade polygon stop)",
+        "tooltip": "Blackened N-blade iris diaphragm: an opaque disc with a "
+                   "true REGULAR-POLYGON opening (the straight blade edges) "
+                   "plus a thin material=air plug filling the polygon (the "
+                   "aperture contract, docs/RAYTRACER.md S5.10). The polygon "
+                   "-- not a circle -- is the whole point: a coherent beam "
+                   "clipped by N straight edges diffracts into the classic "
+                   "N-fold diffraction STAR (N spikes for even N, 2N for odd) "
+                   "instead of the circular Airy rings. 'aperture_diameter' is "
+                   "the INSCRIBED-circle (flat-to-flat) clear aperture; "
+                   "'blade_rotation' spins the polygon; 'blackness' drives the "
+                   "disc absorbance directly (re-derived every rebuild, like "
+                   "the circular iris).",
+        "params": {"n_blades": P(6, "", "number of straight blades = polygon "
+                                        "sides (>=3; 6 = classic 6-spike "
+                                        "hexagonal star)"),
+                   "outer_diameter": P(25.0, "mm", "disc outer diameter"),
+                   "aperture_diameter": P(6.0, "mm", "clear aperture = "
+                                          "inscribed-circle (flat-to-flat) "
+                                          "diameter of the polygon"),
+                   "thickness": P(1.0, "mm", "disc thickness"),
+                   "blade_rotation": P(0.0, "deg", "azimuthal rotation of the "
+                                       "blade polygon about the beam axis"),
+                   "blackness": P(0.98, "", "fraction of incident power "
+                                           "absorbed by the disc "
+                                           "(0.95-1.0 typical)")},
+        "props": {},   # disc: material/absorbance; plug: material=air --
+                       # both set by the builder
+        "derived_props": ("absorbance",),
+    },
     "pinhole": {
         "category": "Apertures", "label": "Pinhole (rectangular mount)",
         "tooltip": "Small circular pinhole in a rectangular blackened "
@@ -1041,6 +1072,24 @@ PRIMITIVES = {
 
 
 # ---------------------------------------------------------------------------
+# Edge blackening (engine3 Sec 11 / P8): a toggleable 'edge_blackened' flag on
+# the simple-lens family (0 = ideal transmitting rim, the default; 1 = the
+# lens barrel absorbs -- ghost/stray-light suppression). The builder sets a
+# bool body property the extractor turns into per-face absorbance on the
+# cylindrical edge; it is a derived_prop so a rebuild after toggling the sheet
+# re-derives it (the same reason iris blackness is one -- the generic prop-
+# preservation would otherwise restore the stale pre-rebuild value).
+# ---------------------------------------------------------------------------
+_EDGE_BLACKENABLE_LENSES = ("lens_pcx", "lens_dcx", "lens_pcv", "lens_dcv",
+                            "lens_meniscus")
+for _lk in _EDGE_BLACKENABLE_LENSES:
+    PRIMITIVES[_lk]["params"]["edge_blackened"] = P(
+        0, "", "1 = blacken the lens edge/barrel (absorbs stray/ghost light); "
+               "0 = ideal transmitting rim")
+    PRIMITIVES[_lk]["derived_props"] = ("edge_blackened",)
+
+
+# ---------------------------------------------------------------------------
 # Legacy alias migration (v2-feature-round rename): old saved elements'
 # spreadsheets carry the pre-rename aliases below. read_params() falls back
 # to <legacy alias> * <scale> when the CURRENT spec alias is missing from
@@ -1196,7 +1245,7 @@ def port_frames(kind, params):
         return _port_result(0.0, 0.0)
 
     # -- thin sensing/aperture planes: entry == exit at the plane center -----
-    if kind in ("detector_plane", "iris", "slit", "pinhole"):
+    if kind in ("detector_plane", "iris", "iris_bladed", "slit", "pinhole"):
         return _port_result(0.0, 0.0)
 
     # -- center-thickness lenses --------------------------------------------
@@ -1277,7 +1326,12 @@ def _tag(bodies, kind, group):
 def _simple_lens(doc, group, p, meridian):
     R1, R2 = meridian
     edges, _ = mts.lens_meridian(R1, R2, p["ct"], p["aperture"] / 2.0, 0.0)
-    return [mts.revolve_body(doc, group, edges)]
+    body = mts.revolve_body(doc, group, edges)
+    # edge blackening flag (derived body property; extractor turns it into
+    # per-face absorbance on the cylindrical barrel). Always stamped so a
+    # rebuild after toggling the sheet re-derives it either way.
+    mts.set_props(body, {"edge_blackened": bool(p.get("edge_blackened", 0))})
+    return [body]
 
 
 def _build_laser_collimated(doc, group, p):
@@ -1880,6 +1934,41 @@ def _build_iris(doc, group, p):
     return [disk, plug]
 
 
+def _polygon_yz_edges(n, r_circ, rot_rad):
+    """N Part.LineSegment edges of a regular n-gon (circumradius r_circ,
+    azimuth offset rot_rad) in the YZ sketch-local (u=y, v=z) plane. A fresh
+    list each call -- FreeCAD consumes a geometry when it is added to a sketch,
+    so the disc and the plug each need their own."""
+    verts = [(r_circ * math.cos(rot_rad + 2.0 * math.pi * k / n),
+              r_circ * math.sin(rot_rad + 2.0 * math.pi * k / n))
+             for k in range(n)]
+    return [Part.LineSegment(App.Vector(verts[k][0], verts[k][1], 0.0),
+                             App.Vector(verts[(k + 1) % n][0],
+                                        verts[(k + 1) % n][1], 0.0))
+            for k in range(n)]
+
+
+def _build_iris_bladed(doc, group, p):
+    n = int(round(p["n_blades"]))
+    if n < 3:
+        n = 3
+    r_out = p["outer_diameter"] / 2.0
+    r_in = p["aperture_diameter"] / 2.0        # inscribed-circle radius
+    r_circ = r_in / math.cos(math.pi / n)      # polygon circumradius
+    rot = math.radians(p["blade_rotation"])
+    outer = Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), r_out)
+    disk = mts.pad_body(doc, group,
+                        [outer] + _polygon_yz_edges(n, r_circ, rot),
+                        plane="YZ", offset=0.0, length=p["thickness"],
+                        props={"material": "aluminum",
+                               "absorbance": p["blackness"]})
+    plug = mts.pad_body(doc, group + "_plug",
+                        _polygon_yz_edges(n, r_circ, rot),
+                        plane="YZ", offset=0.0, length=p["thickness"],
+                        props={"material": "air"})
+    return [disk, plug]
+
+
 def _build_pinhole(doc, group, p):
     hw, hh = p["width"] / 2.0, p["height"] / 2.0
     r_hole = p["hole_diameter"] / 2.0
@@ -2295,6 +2384,7 @@ def builders():
             "mirror_convex": _build_mirror_convex,
             "mirror_d_shaped": _build_mirror_d_shaped,
             "iris": _build_iris,
+            "iris_bladed": _build_iris_bladed,
             "pinhole": _build_pinhole,
             "slit": _build_slit,
             "retro_corner_cube": _build_retro_corner_cube,

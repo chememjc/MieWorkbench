@@ -119,7 +119,7 @@ NEW_KINDS = [
     "filter_notch", "window_wedged", "diffuser_plate",
     "prism_right_angle", "prism_wedge", "prism_dove", "prism_penta",
     "prism_rhomboid", "mirror_concave", "mirror_convex", "mirror_d_shaped",
-    "iris", "pinhole", "slit", "retro_corner_cube",
+    "iris", "iris_bladed", "pinhole", "slit", "retro_corner_cube",
 ] + BATCH3_KINDS + BATCHC_KINDS
 
 
@@ -161,7 +161,7 @@ def probe_apertures():
     derived_props mechanism must re-derive absorbance from the sheet every
     time, not preserve the stale pre-rebuild value)."""
     out = {}
-    for kind in ("iris", "pinhole", "slit"):
+    for kind in ("iris", "iris_bladed", "pinhole", "slit"):
         doc = App.newDocument("probe_ap_" + kind)
         try:
             sheet = pl.make_sheet(doc, kind, label="dim")
@@ -190,6 +190,65 @@ def probe_apertures():
         finally:
             App.closeDocument(doc.Name)
     return out
+
+
+def probe_bladed_iris_polygon():
+    """iris_bladed: the air plug is a REGULAR-POLYGON prism (n_blades sides),
+    its cross-section area matches the analytic regular-n-gon area for the
+    inscribed clear aperture, and a rebuild with a changed n_blades actually
+    changes the polygon (face count follows n)."""
+    import math as _m
+    kind = "iris_bladed"
+    doc = App.newDocument("probe_bladed")
+    try:
+        sheet = pl.make_sheet(doc, kind, label="dim")
+        bodies = pl.build_primitive(doc, kind, group=kind)
+        plug = [b for b in bodies if b.Name.endswith("_plug")][0]
+        p = pl.PRIMITIVES[kind]["params"]
+        n = int(round(p["n_blades"]["default"]))
+        r_in = p["aperture_diameter"]["default"] / 2.0
+        th = p["thickness"]["default"]
+        # regular n-gon inscribed-circle-radius r_in: area = n r_in^2 tan(pi/n)
+        area_analytic = n * r_in * r_in * _m.tan(_m.pi / n)
+        first = {
+            "n_plug_side_faces": len(plug.Shape.Faces) - 2,   # minus 2 caps
+            "n_blades": n,
+            "plug_vol_mm3": plug.Shape.Volume,
+            "plug_vol_analytic_mm3": area_analytic * th,
+        }
+        # rebuild with n_blades = 8
+        sheet.set(sheet.getCellFromAlias("n_blades"), "8")
+        doc.recompute()
+        new_bodies = pl.rebuild_element(doc, sheet, kind, kind)
+        plug2 = [b for b in new_bodies if b.Name.endswith("_plug")][0]
+        second = {"n_plug_side_faces": len(plug2.Shape.Faces) - 2}
+        return {"initial": first, "after_octagon_rebuild": second}
+    finally:
+        App.closeDocument(doc.Name)
+
+
+def probe_edge_blackened_lens():
+    """lens_pcx edge_blackened: the flag lands as a bool body property, and a
+    rebuild after toggling the sheet param RE-DERIVES it (True->False), not
+    restoring the stale pre-rebuild value (the derived_props mechanism)."""
+    kind = "lens_pcx"
+    doc = App.newDocument("probe_edge_black")
+    try:
+        sheet = pl.make_sheet(doc, kind, label="dim")
+        pl.build_primitive(doc, kind, group=kind)
+        # edit the sheet ON, then rebuild so the flag reflects the edited sheet
+        sheet.set(sheet.getCellFromAlias("edge_blackened"), "1")
+        doc.recompute()
+        bodies = pl.rebuild_element(doc, sheet, kind, kind)
+        on = bool(getattr(bodies[0], "edge_blackened", None))
+        # toggle OFF and rebuild
+        sheet.set(sheet.getCellFromAlias("edge_blackened"), "0")
+        doc.recompute()
+        bodies2 = pl.rebuild_element(doc, sheet, kind, kind)
+        off = bool(getattr(bodies2[0], "edge_blackened", None))
+        return {"after_on": on, "after_off": off}
+    finally:
+        App.closeDocument(doc.Name)
 
 
 def probe_corner_cube():
@@ -327,6 +386,8 @@ def main():
         "rebuild_roundtrip": probe_rebuild_round_flag_roundtrip(),
         "new_kinds_build_rebuild": probe_new_kinds_build_rebuild(),
         "apertures": probe_apertures(),
+        "bladed_iris": probe_bladed_iris_polygon(),
+        "edge_blackened": probe_edge_blackened_lens(),
         "corner_cube": probe_corner_cube(),
         "batch3_geometry": probe_batch3_geometry(),
         "mirror_parabolic_scene": probe_build_mirror_parabolic_scene(
