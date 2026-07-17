@@ -400,6 +400,16 @@ class MaterialDB:
         entry = self._uniaxial[name.strip().lower()]
         return entry["o"], entry["e"]
 
+    def gyration(self, name):
+        """(rotatory_power_deg_per_mm, reference_lam_nm) for a gyrotropic
+        (optically active) uniaxial crystal, or None if the crystal carries no
+        gyration datum (P9 natural optical activity; berreman.py derives the
+        gyration scalar G from this).  KeyError if not a uniaxial crystal."""
+        entry = self._uniaxial[name.strip().lower()]
+        if "gyration_deg_per_mm" not in entry:
+            return None
+        return entry["gyration_deg_per_mm"], entry["gyration_ref_nm"]
+
     # -- biaxial birefringence ---------------------------------------------
     def attach_biaxial(self, mapping):
         """mapping: {crystal_name: {"x","y","z": Material, ...}}."""

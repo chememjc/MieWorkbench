@@ -149,6 +149,18 @@ def detect_features(args, scene):
             feats.add("birefringence" if biref_approx else "biref_exact")
         if body.biaxial:
             feats.add("biaxial")
+            # P9: exact biaxial interface amplitudes ride the Berreman 4x4
+            # (berreman.py). Under --biref-approx the legacy effective-index
+            # Fresnel is used and both engines agree on that approximation, so
+            # only the plain "biaxial" (Python-only) token is emitted. The
+            # `berreman` token is a C-registry seam STUB (trace.c INTERACTIONS,
+            # match=m_never): it is NOT in registry_supported_token, so a
+            # forced --engine c hard-errors naming it and --engine auto routes
+            # Python (verified: registry_dump_tokens skips stub tokens, so it
+            # never appears in --tokens). Emit it whenever the new-physics path
+            # is actually taken so the stub's hard-error contract stays honest.
+            if not biref_approx:
+                feats.add("berreman")
         if body.polarizer:
             feats.add("polarizer")
         if body.filter:
