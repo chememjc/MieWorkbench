@@ -153,12 +153,25 @@ def detect_features(args, scene):
             feats.add("polarizer")
         if body.filter:
             feats.add("filter")
-        # pulsed-optics NLO elements (P8 Pockels/saturable/TPA/Kerr, P7b
-        # chi2 SHG): none exist in the C engine — each forces Python.
-        # These were MISSING for P8's elements at first: a kerr_n2 body
-        # whose other features were all ported routed to C and silently
-        # skipped the physics ("every feature emits its token" is the
-        # round's own locked rule).
+        # pulsed-optics NLO elements. The `nonlinear` body property (chi2 SHG
+        # or a Pockels cell) still forces Python:
+        #   * chi2 SHG: the harmonic child is born at lam/2 in a NEW wavelength
+        #     stratum (n_lambda + parent) with its own detector-array slot;
+        #     that lambda-union / stratum plumbing is a later tranche.
+        #   * Pockels: the transverse EO cell IS a birefringent body whose
+        #     n_o/n_e ride the ported uniaxial kernel (the index shift is
+        #     pre-baked into the tables the glue serializes) — BUT the Python
+        #     reference engine cannot currently trace a Pockels body end-to-end
+        #     (scene.medium_index passes T= to the _ShiftedIndex proxy, which
+        #     nlo.pockels_shifted_materials builds WITHOUT a temperature kwarg;
+        #     masked only because the sole e2e Pockels test is @slow + xfail).
+        #     With no working reference there is nothing to gate C parity
+        #     against, so the token stays Python-only until that reference bug
+        #     is fixed (Python NLO physics is out of this tranche's scope).
+        # saturable/tpa/kerr are ported bulk effects (P7 tranche 2). The
+        # "every feature emits its token" rule is why each still emits: a
+        # kerr body whose OTHER features were all ported once silently routed
+        # to C and skipped the physics.
         if body.nonlinear:
             feats.add("nonlinear")
         if body.saturable_raw:
