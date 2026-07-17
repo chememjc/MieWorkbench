@@ -831,7 +831,7 @@ class MainWindow(QMainWindow):
             only = [body]
         self._on_ray_preview(only_bodies=only, target="inspector")
 
-    def _on_preview_finished(self, vtp_path):
+    def _on_preview_finished(self, vtp_path, engine="engine fan"):
         if self._preview_target == "inspector":
             self.inspector.load_rays_vtp(vtp_path)
         else:
@@ -842,7 +842,11 @@ class MainWindow(QMainWindow):
             # greyed-out stale
             if self.inspector.rays_button.isChecked():
                 self.inspector.load_rays_vtp(vtp_path)
-        self.statusBar().showMessage("Ray preview ready", 5000)
+        # engine hint (P4b preview unification): which trace engine produced
+        # this overlay -- "sequential (exact)" (Optiland, deterministic, no
+        # MC noise) vs "engine fan" (the general Python-engine viz trace,
+        # the fallback for scenes outside the sequential bridge's scope).
+        self.statusBar().showMessage("Ray preview ready — %s" % engine, 5000)
         self._warn_if_dim_data_missing()
 
     def _on_preview_failed(self, message):
