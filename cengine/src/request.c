@@ -607,6 +607,23 @@ SceneC *request_load(const char *path) {
             b->pol_T_perp = need_dbl_array(pol, "T_perp", ctx,
                                            (size_t)s->n_lams);
         }
+        /* pulsed-optics NLO bulk effects (P7 tranche 2): saturable / TPA /
+         * Kerr. Absent on a plain body — all fields default to 0. The glue
+         * pre-resolves saturable to SI (alpha0_per_m, I_sat_W_m2) through
+         * nlo.saturable_alpha0_per_m so the C side only evaluates the
+         * intensity-dependent law. */
+        yyjson_val *sat = yyjson_obj_get(bobj, "saturable");
+        if (sat && !yyjson_is_null(sat)) {
+            b->has_saturable = 1;
+            b->sat_alpha0_per_m = need_num(sat, "alpha0_per_m", ctx);
+            b->sat_I_sat_W_m2 = need_num(sat, "I_sat_W_m2", ctx);
+        }
+        yyjson_val *tpa = yyjson_obj_get(bobj, "tpa_beta_si");
+        b->tpa_beta_si = (tpa && !yyjson_is_null(tpa))
+            ? yyjson_get_num(tpa) : 0.0;
+        yyjson_val *kn2 = yyjson_obj_get(bobj, "kerr_n2");
+        b->kerr_n2 = (kn2 && !yyjson_is_null(kn2))
+            ? yyjson_get_num(kn2) : 0.0;
     }
 
     /* coatings (optional array; faces reference by index) */
@@ -778,6 +795,11 @@ SceneC *request_load(const char *path) {
         snprintf(ctx, sizeof ctx, "source '%s'", src->label);
         src->body_index = (int32_t)need_int(sobj, "body_index", ctx);
         src->power_W = need_num(sobj, "power_W", ctx);
+        /* pulsed-optics P7 tranche 2: pulse peak/avg ratio (src.pulse.kappa);
+         * absent/CW => 1.0. Multiplies every per-ray local intensity. */
+        yyjson_val *kp = yyjson_obj_get(sobj, "kappa_pulse");
+        src->kappa_pulse = (kp && !yyjson_is_null(kp))
+            ? yyjson_get_num(kp) : 1.0;
         src->coherent = (uint8_t)need_bool(sobj, "coherent", ctx);
         char pol[24];
         need_str_into(sobj, "emit_policy", ctx, pol, sizeof pol);

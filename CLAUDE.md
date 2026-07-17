@@ -71,8 +71,12 @@ python3 scripts/run_pipeline.py --models example.FCStd --preset quick
 #   and gdd_budget are PORTED to the C engine (P7 tranche 1: gopl/gdd
 #   accumulators + arrival records + the bulk-path tally; dispersion resolved
 #   Python-side, finalize_time/build_gdd_budget untouched — a crystal+time
-#   scene still Python-routes via time_directional_index). The NLO features
-#   (nonlinear/saturable/tpa/kerr) + ray_differentials still Python-route.
+#   scene still Python-routes via time_directional_index). ray_differentials +
+#   the NLO bulk effects saturable/tpa/kerr are PORTED (P7 tranche 2:
+#   intensity-dependent bulk alpha + Kerr opl phase; per-ray intensity
+#   (p/dA)·κ from the ported differentials dA, else the source flat-top area).
+#   Only the chi2 `nonlinear` token still Python-routes — SHG harmonic-child
+#   strata + the Pockels index-shift split are a later tranche.
 
 # GUI
 env/bin/python -m mieworkbench [model.FCStd|X.MieWB|X.MieSim]   # or bin/mieworkbench

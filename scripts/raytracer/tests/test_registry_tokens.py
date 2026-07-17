@@ -50,7 +50,11 @@ pytestmark = pytest.mark.skipif(
 PYTHON_ONLY = frozenset({
     "beam", "apodization",              # source models (sources.py)
     "biaxial",                          # biaxial crystals (uniaxial is ported)
-    "nonlinear", "saturable", "tpa", "kerr",   # P8 NLO
+    "nonlinear",                        # P8 NLO: chi2 SHG child + Pockels (SHG
+                                        #   harmonic strata unported; Pockels
+                                        #   rides the biref tables — split is a
+                                        #   later tranche). saturable/tpa/kerr
+                                        #   are ported (P7 tranche 2).
     "temperature",                      # thermo-optic dn/dT
     "rough_fresnel_macro",              # legacy nominal-angle rough model
     "scatter_g_ne_2", "scatter_btdf", "scatter_importance",

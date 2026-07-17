@@ -197,8 +197,40 @@ def scene_c_rough_plate():
     ])
 
 
+def scene_c_saturable():
+    """Saturable-absorber slab at normal incidence (P7 tranche 2 NLO). The
+    intensity-dependent bulk absorption alpha0/(1+I/I_sat) rides the same
+    Beer-Lambert alpha_add hook as a filter; I is the flat-top source-area
+    estimate (no --ray-differentials), the SAME scalar for every ray, so the
+    scene stays deterministic. I_sat is tuned so I/I_sat ~ O(1) — the run
+    exercises the saturation term, not just alpha0. Deterministic."""
+    return make_model([
+        source_body("Src", x=-0.02, half=0.004, power_mW=1.0,
+                    lambdac_nm=633.0),
+        slab_body("SatAbs", "bk7", 0.0, 0.002, half=0.02,
+                  saturable="sat:I_sat=1e-3:T0=0.5"),
+        detector_body("Det", x=0.03, half=0.025),
+    ])
+
+
+def scene_c_tpa():
+    """Two-photon-absorption slab at normal incidence (P7 tranche 2 NLO).
+    alpha_TPA(I) = beta_SI * I on the same Beer-Lambert hook; flat-top
+    intensity, deterministic. beta is a synthetic value chosen for a
+    measurable (~sub-percent) absorbed fraction."""
+    return make_model([
+        source_body("Src", x=-0.02, half=0.004, power_mW=1.0,
+                    lambdac_nm=633.0),
+        slab_body("TpaSlab", "bk7", 0.0, 0.002, half=0.02,
+                  tpa_beta=5.0e9),
+        detector_body("Det", x=0.03, half=0.025),
+    ])
+
+
 # name -> (builder, comparison class)
 SCENES = {
+    "c_saturable": (scene_c_saturable, "deterministic"),      # P7 tranche 2
+    "c_tpa": (scene_c_tpa, "deterministic"),                  # P7 tranche 2
     "c_plate": (scene_c_plate, "deterministic"),
     "c_mirror_screen": (scene_c_mirror_screen, "deterministic"),
     "c_filter": (scene_c_filter, "deterministic"),

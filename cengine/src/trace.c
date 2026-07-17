@@ -1487,12 +1487,69 @@ static int m_homogeneous(const SceneC *s, const Ray *r) {
     (void)s; (void)r;
     return 1;
 }
+
+/* pulsed-optics P7 tranche 2: per-ray local intensity estimate [W/m^2] — a
+ * formula-for-formula port of nlo.ray_intensity. Preference order:
+ *   1. ray differentials: dA = |dPdx x dPdy| (diff_patch_area);
+ *      I = ray_power / dA * kappa (accurate transverse profile).
+ *   2. flat-top fallback: the SOURCE's whole emit-face area + TOTAL emitted
+ *      power, the SAME scalar for every ray from that source
+ *      (nlo.ray_intensity's "missing" branch); I = P_src / area * kappa.
+ *   3. neither -> NaN (the caller treats NaN as I=0 and warns once).
+ * kappa_pulse (src.pulse.kappa; 1.0 CW) multiplies every estimate.
+ * Returns NaN when no estimate was possible (isfinite() false at the call
+ * site drives the warn-once + zero-intensity fallback, exactly like Python). */
+static double ray_local_intensity(const SceneC *s, const Ray *r) {
+    const SourceC *src = &s->sources[r->source_id];
+    double kappa = src->kappa_pulse;
+    if (s->ray_differentials) {
+        double dA = diff_patch_area(r->dPdx, r->dPdy, r->dir);
+        if (isfinite(dA) && dA > 0.0)
+            return ray_power(r) / dA * kappa;
+    }
+    double area = src->emit_face.area_m2;
+    if (area > 0.0)
+        return src->power_W / area * kappa;
+    return NAN;
+}
+
 static void homogeneous_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
                                 double seg) {
     int med = ray_current_medium(r);
     kcplx n_med = scene_medium_n(s, med, r->lam_idx);
     double alpha = 4.0 * K_PI * n_med.im / r->lam
                    + scene_filter_alpha(s, med, r->lam_idx);
+    /* pulsed-optics P7 tranche 2: intensity-dependent bulk absorption
+     * (saturable absorber + two-photon absorption). Both slot into the SAME
+     * Beer-Lambert alpha_add hook as the spectral filter above, so the energy
+     * they remove lands in absorbed_bulk with no separate ledger bucket
+     * (tracer.py:340-367). alpha_sat(I) = alpha0/(1+I/I_sat) [nlo
+     * saturable_alpha_per_m]; alpha_TPA(I) = beta_SI * I [nlo tpa_alpha_per_m,
+     * the dI/dz=-beta I^2 law rewritten as Beer-Lambert]. Intensity uses the
+     * SEGMENT-START differentials (dPdx unchanged until the transfer below),
+     * matching Python's read order. NaN intensity (no estimate) -> I=0:
+     * saturable falls back to the UNSATURATED alpha0, TPA contributes zero. */
+    if (med >= 0) {
+        const BodyC *bm = &s->bodies[med];
+        if (bm->has_saturable || bm->tpa_beta_si != 0.0) {
+            double I = ray_local_intensity(s, r);
+            double Isafe = isfinite(I) ? I : 0.0;
+            if (!isfinite(I)) {
+                static int warned = 0;
+                if (!warned) { warned = 1;
+                    LOGW("body %s: saturable/TPA bulk effect needs a per-ray "
+                         "intensity estimate (no ray differentials and no "
+                         "resolvable source emit-face area) -- those rays use "
+                         "the UNSATURATED alpha0 (saturable) / ZERO (TPA) limit",
+                         bm->label); }
+            }
+            if (bm->has_saturable)
+                alpha += bm->sat_alpha0_per_m
+                         / (1.0 + Isafe / bm->sat_I_sat_W_m2);
+            if (bm->tpa_beta_si != 0.0)
+                alpha += bm->tpa_beta_si * Isafe;
+        }
+    }
     double x = alpha * seg;
     if (x < 0.0) x = 0.0;
     if (x > 700.0) x = 700.0;
@@ -1508,6 +1565,37 @@ static void homogeneous_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
     }
     double n_phase = (r->n_eff > 0.0) ? r->n_eff : n_med.re;
     r->opl += n_phase * seg;
+
+    /* pulsed-optics P7 tranche 2: Kerr thin-element bulk phase (tracer.py:
+     * 394-436). Delta_opl = n2 * I(r) * L added directly to opl (L = this
+     * ray's OWN segment length), flowing straight into the coherent gather's
+     * k*opl phase — a collimated beam picks up the parabolic self-focusing
+     * phase with no further plumbing. COHERENT rays only (phase-only; no
+     * effect on an incoherent direct-power deposit) and I(r) needs a genuine
+     * transverse profile (ray differentials) to be physical. Intensity reads
+     * the SEGMENT-START differentials (before the transfer below), like
+     * Python; NaN -> no Kerr phase this segment. */
+    if (med >= 0 && s->bodies[med].kerr_n2 != 0.0) {
+        if (!r->coherent) {
+            static int warned_incoh = 0;
+            if (!warned_incoh) { warned_incoh = 1;
+                LOGW("body %s: kerr_n2 has no effect on INCOHERENT rays (the "
+                     "Kerr term is a phase-only addition to opl, consumed by "
+                     "the coherent gather) -- skipped", s->bodies[med].label); }
+        } else {
+            double I = ray_local_intensity(s, r);
+            if (!isfinite(I)) {
+                static int warned_int = 0;
+                if (!warned_int) { warned_int = 1;
+                    LOGW("body %s: Kerr bulk phase needs a per-ray intensity "
+                         "estimate -- those rays get NO Kerr phase this segment "
+                         "(run with --ray-differentials for a physical "
+                         "transverse profile)", s->bodies[med].label); }
+            }
+            double Isafe = isfinite(I) ? I : 0.0;
+            r->opl += s->bodies[med].kerr_n2 * Isafe * seg;
+        }
+    }
 
     /* ray differentials: free-flight transfer of the POSITION derivative over
      * the segment (tracer.py:581-582). Direction derivative is unchanged in
