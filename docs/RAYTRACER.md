@@ -873,7 +873,14 @@ when the optic axis lies in the interface plane).
 Honest limits: absorbing crystals are out of scope (`Im(n_o)`/`Im(n_e)`
 are ignored; geometry uses real indices only, and the o-ray's index is
 used for bulk absorption of both modes — a documented approximation);
-optical activity and gyrotropy are not modeled (biaxial crystals **are**
+optical activity and gyrotropy are not modeled ON THE UNIAXIAL LEKNER PATH,
+but the **Berreman 4×4** (§5.6b, `berreman.py`) DOES model natural optical
+activity (reciprocal gyrotropy, McClain-1993 frozen `g = G·k̂`; α-quartz
+carries a cited rotatory-power datum in `uniaxial.miebrf`, reproduced at
+21.77 deg/mm @589.3 nm) and absorbing/dichroic anisotropic media (complex
+principal permittivities; the `.mibiax` registry accepts optional `k_x/k_y/k_z`
+extinction columns) — these route through the Berreman tier, not the Lekner
+uniaxial path; biaxial crystals **are**
 now modeled — §5.6b); an e-mode ray that hits a **non-birefringent** face
 (e.g. a body nested inside a crystal) is silently downgraded to ordinary-index propagation
 with a one-time warning ("documented approximation"); ray differentials
@@ -926,18 +933,33 @@ medium) rather than reconstructing it from the ray direction.
 Rays carry `pol_mode` 2 (slow) / 3 (fast) inside a biaxial body (0/1 stay
 reserved for isotropic/uniaxial-extraordinary); as with uniaxial e-mode
 rays, `n_eff`/OPL bookkeeping is ordinary from the gather's point of view
-— there is no dedicated biaxial code in `gather.py`. Interface Fresnel
-amplitudes use the **effective-index approximation** (each sheet's own
-`n_phase` fed into isotropic Fresnel formulas per channel) — the same tier
-the uniaxial path uses under `--biref-approx`; no exact Lekner-style
-boundary solve is done for the two-sheet biaxial case yet. The cross-terms
-this drops are absorbed into `absorbed_surface`
-via the exact power difference, so energy closure holds by construction
-even though per-channel phase/amplitude near a principal plane is not
-claimed exact. **KTP @ 1064 nm** (Kato & Takaoka 2002) is the validation
-oracle: the quartic normal-surface residual, D-eigenvector orthonormality,
-and the uniaxial/isotropic degenerate limits are all pinned to <1e-9
-relative (`test_biaxial.py`, 15 tests).
+— there is no dedicated biaxial code in `gather.py`. The **entry** interface
+(outside → crystal) amplitudes are the **exact Berreman 4×4** boundary-value
+solution by default (`berreman.py`, §7.4-2): the full reflected Jones
+including the `r_sp`/`r_ps` cross terms plus the two transmitted-sheet
+couplings, flux-normalized so `|amp|²` is the true power fraction. Under
+**`--biref-approx`** the legacy **effective-index approximation** is used
+instead (each sheet's own `n_phase` fed into isotropic Fresnel formulas per
+channel — the same tier the uniaxial path uses under that flag). The **exit**
+interface (crystal → outside) still uses the effective-index Fresnel (a
+documented follow-on to the entry Berreman-ization). Whatever cross-term or
+flux difference either path drops is absorbed into `absorbed_surface` via the
+exact power difference, so **energy closure holds by construction on both
+paths** (`test_berreman.test_biaxial_e2e_energy_closure_both_paths`, <1e-3).
+The finding — the reflected-Jones change vs effective-index — is exact
+(machine-zero) at principal alignment / near-normal and grows to O(1%) at
+steep oblique off-principal incidence (`test_berreman.
+test_biaxial_effective_index_finding`), the biaxial analogue of the uniaxial
+azimuth finding. **Routing:** the exact biaxial path emits the `berreman`
+feature token (a C-registry seam stub — hard-errors under forced `--engine c`,
+routes to Python under `auto`), alongside the always-Python `biaxial` token.
+**KTP @ 1064 nm** (Kato & Takaoka 2002) is the validation oracle: the quartic
+normal-surface residual, D-eigenvector orthonormality, and the
+uniaxial/isotropic degenerate limits are all pinned to <1e-9 relative
+(`test_biaxial.py`, 15 tests); the Berreman 4×4 itself reduces to the P6
+Lekner uniaxial amplitudes and to isotropic Fresnel to ~1e-15, closes
+Poynting flux to 1e-13, and reproduces α-quartz optical activity 21.77 deg/mm
+@589.3 nm and 4H-SiC reststrahlen reflectivity (`test_berreman.py`).
 
 Honest limits (mirror the uniaxial ones, plus two biaxial-specific ones):
 - **Conical refraction is not modeled.** Near an optic axis the two

@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from raytracer import fresnel as fr             # noqa: E402
 from raytracer import birefringence as bi       # noqa: E402
 from raytracer import berreman as bz            # noqa: E402
+from . import scenehelpers as sh                # noqa: E402
 
 CAL_NO, CAL_NE = 1.658, 1.486          # calcite (negative uniaxial)
 QTZ_NO, QTZ_NE = 1.5443, 1.5534        # quartz  (positive uniaxial)
@@ -271,6 +272,113 @@ def test_absorbing_uniaxial_c_perp_poi_decouples():
 # ===========================================================================
 # eps-tensor construction sanity
 # ===========================================================================
+# ===========================================================================
+# ORACLE 5 — biaxial e2e (tracer routes the biaxial interface through Berreman
+# by default; effective-index under --biref-approx).  Energy closure < 1e-3 on
+# BOTH paths, and the amplitude CHANGE vs effective-index is reported (the
+# finding table, engine3 Sec 7.4 prediction: exact at principal alignment /
+# near-normal, O(1%) at steep oblique off-principal incidence).
+# ===========================================================================
+def _ktp_slab_scene(biref_approx, rays=40000, seed=3):
+    import common
+    from raytracer.scene import Scene
+    from raytracer.sources import sample_source
+    from raytracer.tracer import Tracer, TraceConfig
+    from raytracer.detector import DetectorGrid
+    from raytracer.optprops import load_optical_properties
+    c = np.sqrt(0.5)
+    bodies = [
+        sh.source_body("Src", x=-0.02, half=0.002, power_mW=1.0,
+                       lambdac_nm=633.0,
+                       polarization={"kind": "linear", "angle_deg": 45.0}),
+        sh.slab_body("Ktp", "ktp", 0.0, 0.004, half=0.01,
+                     crystal_axis=[c, 0.0, c], crystal_axis2=[0.0, 1.0, 0.0]),
+        sh.detector_body("Det", x=0.03, half=0.02),
+    ]
+    model = sh.make_model(bodies)
+    common.validate_model(model)
+    op = load_optical_properties()
+    scene = Scene(model, op.matdb, op.coatings, optprops=op)
+    grids = {fid: DetectorGrid(scene.faces[fid], 128, 8, (500e-9, 760e-9),
+                               label=scene.faces[fid].id)
+             for fid in scene.detector_faces}
+    cfg = TraceConfig(rays=rays, n_lambda=1, seed=seed, power_floor=1e-12,
+                      max_reflections=6, biref_approx=biref_approx)
+    tracer = Tracer(scene, cfg, grids)
+    rng = np.random.default_rng(seed)
+    batches = [sample_source(scene, scene.bodies[b], s, i, cfg.rays,
+                             cfg.n_lambda, rng, ledger=tracer.ledger)
+               for i, (b, s) in enumerate(scene.sources)]
+    result = tracer.run(batches)
+    rep = result.ledger.report(result.source_names)
+    return max(s["closure_error"] for s in rep["sources"].values())
+
+
+def test_biaxial_e2e_energy_closure_both_paths():
+    """A KTP slab traced end-to-end closes to < 1e-3 with the Berreman path
+    (default) AND with --biref-approx: the exact power difference lands in
+    absorbed_surface, so closure holds either way (the tracer integration
+    contract)."""
+    assert _ktp_slab_scene(False) < 1e-3      # Berreman (default)
+    assert _ktp_slab_scene(True) < 1e-3       # effective-index
+
+
+def test_biaxial_effective_index_finding():
+    """FINDING (engine3 Sec 7.4, not a hard gate): the reflected-Jones error
+    |exact Berreman - effective-index| for KTP with the X principal axis at
+    polar alpha in the x-z plane, s-input, over theta.  Representative table
+    (L2 error of the reflected (rss, rps)):
+
+        alpha  th=5     20       40       60       75
+        0.0    ~1e-16   ~1e-15   ~1e-16   ~1e-16   1.1e-2
+        22.5   ~1e-16   ~1e-16   ~1e-15   7.2e-3   4.2e-3
+        45.0   ~1e-16   ~1e-15   1.8e-3   ~1e-14   9.2e-4
+
+    Exact (== effective-index) at principal alignment + near-normal; grows to
+    O(1%) at steep oblique off-principal incidence (the biaxial analogue of
+    P6's uniaxial azimuth finding)."""
+    eps = KTP.astype(complex)
+    errs = {}
+    for alpha in (0.0, 22.5, 45.0):
+        al = np.deg2rad(alpha)
+        xax = np.array([np.sin(al), 0.0, np.cos(al)])
+        frame = np.stack([xax, [0.0, 1.0, 0.0], np.cross(xax, [0, 1.0, 0])])
+        row = []
+        for theta in (5, 20, 40, 60, 75):
+            th = np.deg2rad(theta)
+            d = np.array([[np.sin(th), 0.0, -np.cos(th)]])
+            nh = np.array([[0.0, 0.0, 1.0]])
+            s_new, p_new = fr.pol_basis(d, nh)
+            ci = -np.sum(d * nh, axis=1)
+            # exact Berreman reflected (rss, rps) for s-input
+            a = bz.anis_interface_in(d, nh, bz.eps_tensor(eps[None], frame),
+                                     np.array([1.0]))
+            # effective-index reflected (mirror the --biref-approx tracer path)
+            fr3 = np.broadcast_to(frame, (1, 3, 3))
+            res = bi.refract_in_biaxial(d, nh, fr3, 1.0, KTP[None])
+            im = bi.biaxial_modes_for_k(d, fr3, KTP[None])
+            E1, E2 = fr.rotate_jones(np.ones(1, complex), np.zeros(1, complex),
+                                     s_new, p_new, im["D_slow"], im["D_fast"])
+            cs = np.sum(im["D_slow"] * s_new, 1)
+            sn = np.sum(im["D_slow"] * p_new, 1)
+            n1c = np.array([1.0], complex)
+            rs1, rp1, _, _, _ = fr.fresnel_coeffs(
+                ci, n1c, res["n_phase_slow"].astype(complex))
+            rs2, rp2, _, _, _ = fr.fresnel_coeffs(
+                ci, n1c, res["n_phase_fast"].astype(complex))
+            rEs = E1 * cs * rs1 - E2 * sn * rs2
+            rEp = E1 * sn * rp1 + E2 * cs * rp2
+            row.append(float(np.hypot(abs(a["rss"][0] - rEs[0]),
+                                      abs(a["rps"][0] - rEp[0]))))
+        errs[alpha] = np.array(row)
+    # SHAPE assertions (engine3 Sec 7.4 prediction)
+    #  - principal-aligned + near-normal is exact
+    assert np.max(errs[0.0][:3]) < 1e-9
+    #  - the overall discrepancy is O(1%), reached at steep oblique incidence
+    allmax = max(np.max(v) for v in errs.values())
+    assert 1e-3 < allmax < 5e-2, allmax
+
+
 def test_eps_tensor_isotropic_and_hermitian_gyration():
     epsG = bz.eps_tensor(np.array([[2.25, 2.25, 2.25]], complex),
                          np.eye(3)[None])
