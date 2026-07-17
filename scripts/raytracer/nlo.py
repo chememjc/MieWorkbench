@@ -331,8 +331,13 @@ class _ShiftedIndex:
         self._base = base
         self._delta_fn = delta_fn
 
-    def n_complex(self, lam_m):
-        return self._base.n_complex(lam_m) + self._delta_fn(lam_m)
+    def n_complex(self, lam_m, T=None):
+        # base Material.n_complex takes the thermo-optic T kwarg
+        # (materials.py:230) and scene.medium_index passes it — the proxy
+        # must mirror the signature or every Pockels body CRASHES the
+        # trace (found during the P7 C-port attempt; was masked by the
+        # slow+xfail e2e test). The EO Delta_n itself is T-independent.
+        return self._base.n_complex(lam_m, T=T) + self._delta_fn(lam_m)
 
     def n_group(self, lam_m):
         return self._base.n_group(lam_m) + self._delta_fn(lam_m)
