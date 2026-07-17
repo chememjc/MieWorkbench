@@ -79,6 +79,20 @@ PORTED = frozenset({
                                 #   |dPdx x dPdy|; grating orders / scatter lobes
                                 #   / o-e splits drop the differential (NaN ->
                                 #   source-area fallback), same as Python.
+    "saturable",                # P7 tranche 2: intensity-dependent saturable
+                                #   absorption alpha0/(1+I/I_sat) on the
+                                #   homogeneous-propagator alpha_add hook
+                                #   (nlo.saturable_alpha_per_m; glue pre-resolves
+                                #   alpha0_per_m + I_sat to SI). Energy lands in
+                                #   absorbed_bulk.
+    "tpa",                      # P7 tranche 2: two-photon absorption
+                                #   alpha_TPA(I)=beta_SI*I on the SAME alpha_add
+                                #   hook (nlo.tpa_alpha_per_m).
+    "kerr",                     # P7 tranche 2: Kerr thin-element bulk phase
+                                #   Delta_opl = n2*I*L added to opl for COHERENT
+                                #   rays (tracer.py:394-436). Per-ray intensity
+                                #   (p/dA)*kappa from the ported ray_differentials
+                                #   dA, else the source flat-top area + warning.
     # NOTE: "surface:qforbes" (raytracer.surfaces.QForbes, the ISO 10110-12
     # Forbes Q-type asphere -- engine3.md Sec 7.6) is DELIBERATELY absent.
     # detect_features()'s per-face loop below emits it automatically
@@ -139,12 +153,25 @@ def detect_features(args, scene):
             feats.add("polarizer")
         if body.filter:
             feats.add("filter")
-        # pulsed-optics NLO elements (P8 Pockels/saturable/TPA/Kerr, P7b
-        # chi2 SHG): none exist in the C engine — each forces Python.
-        # These were MISSING for P8's elements at first: a kerr_n2 body
-        # whose other features were all ported routed to C and silently
-        # skipped the physics ("every feature emits its token" is the
-        # round's own locked rule).
+        # pulsed-optics NLO elements. The `nonlinear` body property (chi2 SHG
+        # or a Pockels cell) still forces Python:
+        #   * chi2 SHG: the harmonic child is born at lam/2 in a NEW wavelength
+        #     stratum (n_lambda + parent) with its own detector-array slot;
+        #     that lambda-union / stratum plumbing is a later tranche.
+        #   * Pockels: the transverse EO cell IS a birefringent body whose
+        #     n_o/n_e ride the ported uniaxial kernel (the index shift is
+        #     pre-baked into the tables the glue serializes) — BUT the Python
+        #     reference engine cannot currently trace a Pockels body end-to-end
+        #     (scene.medium_index passes T= to the _ShiftedIndex proxy, which
+        #     nlo.pockels_shifted_materials builds WITHOUT a temperature kwarg;
+        #     masked only because the sole e2e Pockels test is @slow + xfail).
+        #     With no working reference there is nothing to gate C parity
+        #     against, so the token stays Python-only until that reference bug
+        #     is fixed (Python NLO physics is out of this tranche's scope).
+        # saturable/tpa/kerr are ported bulk effects (P7 tranche 2). The
+        # "every feature emits its token" rule is why each still emits: a
+        # kerr body whose OTHER features were all ported once silently routed
+        # to C and skipped the physics.
         if body.nonlinear:
             feats.add("nonlinear")
         if body.saturable_raw:
@@ -579,6 +606,25 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
                 "T_perp": [float(x) for x in interp_hard(
                     lam_um, pol["lam_um"], pol["T_perp"], ctx)],
             }
+        # pulsed-optics P7 tranche 2 NLO bulk effects (saturable / TPA / Kerr).
+        # Absent on a plain body. saturable is pre-resolved to SI here through
+        # nlo.saturable_alpha0_per_m (the SAME function the Python tracer uses),
+        # so the C side only evaluates the intensity-dependent law. SHG
+        # (body.shg_spec) and Pockels are NOT serialized: an SHG body emits the
+        # unported "nonlinear_shg" token (harmonic-child strata are a later
+        # tranche) and a Pockels cell's index shift already rides the
+        # pre-resolved birefringence n_o/n_e tables (scene.uniaxial_indices).
+        if getattr(body, "saturable_spec", None) is not None:
+            from . import nlo as _nlo
+            spec = body.saturable_spec
+            entry["saturable"] = {
+                "alpha0_per_m": float(_nlo.saturable_alpha0_per_m(spec)),
+                "I_sat_W_m2": float(spec["I_sat_W_cm2"]) * 1e4,
+            }
+        if getattr(body, "tpa_beta", 0.0):
+            entry["tpa_beta_si"] = float(body.tpa_beta) * 1e-11
+        if getattr(body, "kerr_n2_value", None):
+            entry["kerr_n2"] = float(body.kerr_n2_value)
         bodies.append(entry)
 
     # ---- per-face roughness / ABg scatter / grating tables (phase E) ----
@@ -696,6 +742,10 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
             "label": body.label,
             "body_index": int(bidx),
             "power_W": float(src["power_mW"]) * 1e-3,
+            # pulsed-optics P7 tranche 2: pulse peak/avg power ratio (kappa)
+            # multiplies every per-ray local intensity (nlo.ray_intensity);
+            # 1.0 for CW / non-pulsed sources.
+            "kappa_pulse": float((src.get("pulse") or {}).get("kappa", 1.0)),
             "coherent": bool(src.get("coherent", False)),
             "lam_offset": int(lam_off),
             "n_strata": int(n_strata),

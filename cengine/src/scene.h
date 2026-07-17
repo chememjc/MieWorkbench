@@ -67,6 +67,19 @@ typedef struct BodyC {
     double retardance_waves;
     kvec3 pol_axis;             /* unit transmission axis (global) */
     double *pol_T_par, *pol_T_perp;    /* per-lam, pre-resolved (D1) */
+    /* pulsed-optics NLO bulk effects (P7 tranche 2; scene.py Body specs,
+     * nlo.py math). All zero/absent on a plain body. Intensity-dependent
+     * bulk absorption (saturable, tpa) rides the SAME Beer-Lambert alpha_add
+     * hook as the spectral filter (tracer.py:340-367); kerr adds an
+     * intensity-dependent phase to opl (tracer.py:394-436). The per-ray local
+     * intensity comes from ray_local_intensity (differentials dA, else the
+     * source flat-top area) — a formula-for-formula port of nlo.ray_intensity
+     * + nlo.saturable_alpha_per_m / tpa_alpha_per_m. */
+    uint8_t has_saturable;      /* saturable_spec present */
+    double sat_alpha0_per_m;    /* nlo.saturable_alpha0_per_m (SI, glue-resolved) */
+    double sat_I_sat_W_m2;      /* I_sat_W_cm2 * 1e4 */
+    double tpa_beta_si;         /* beta_cm_GW * 1e-11 [m/W]; 0.0 = none */
+    double kerr_n2;             /* n2 [m^2/W]; 0.0 = none */
 } BodyC;
 
 /* coating kinds (scene.py face_coatings + tracer.py:541-578) */
@@ -214,6 +227,10 @@ typedef struct {
     char label[MIEWB_MAX_NAME];
     int32_t body_index;         /* ledger row = position in sources array */
     double power_W;
+    /* pulsed-optics P7 tranche 2: pulse peak/avg power ratio (src.pulse.kappa,
+     * scene._parse_pulse_source); 1.0 for CW. Multiplies every per-ray local
+     * intensity (nlo.local_intensity / ray_intensity's kappa_pulse). */
+    double kappa_pulse;
     uint8_t coherent;
     uint8_t emit_policy;
     uint8_t flip_all;           /* EMIT_CURVED: whole face emits -normal */

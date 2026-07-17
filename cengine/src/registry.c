@@ -39,6 +39,15 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
     /* filter = additive bulk alpha the homogeneous propagator carries.
      * (particles is now a registered PropagatorDef — step 8 — not here.) */
     { "filter",    "volume" },
+    /* pulsed-optics P7 tranche 2 NLO bulk effects (nlo.py). saturable / tpa
+     * ride the SAME homogeneous-propagator alpha_add hook as filter (their
+     * intensity-dependent absorption lands in absorbed_bulk); kerr adds an
+     * intensity-dependent phase to opl there. The per-ray intensity comes
+     * from ray_local_intensity (differentials dA, else the source flat-top
+     * area). Volume features — no surface dispatch entry. */
+    { "saturable", "volume" },
+    { "tpa",       "volume" },
+    { "kerr",      "volume" },
     /* coherent recombination + glue-level diagnostics — not surface
      * interactions (the gather and the Python-side viz overlay own these) */
     { "coherent",       "gather" },

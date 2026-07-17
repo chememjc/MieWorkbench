@@ -234,14 +234,32 @@ def test_harmonic_lands_at_half_wavelength_and_rides_pump_delay(tmp_path):
         "harmonic arrival %.3g vs pump %.3g" % (t_harm, t_pump)
 
 
-def test_nlo_bodies_route_python(tmp_path):
-    # chi2 (P7b) AND the P8 elements (previously emitted NO cengine
-    # token: a kerr body with otherwise-ported features silently routed
-    # to C and skipped the physics)
-    for prop, val, token in (("nonlinear", ROW, "nonlinear"),
-                             ("kerr_n2", "@n2_fused_silica", "kerr"),
-                             ("saturable", "@sam_1550_16_2ps",
-                              "saturable"),
+def test_nlo_chi2_body_routes_python(tmp_path):
+    # chi2 SHG (P7b) still forces Python — the harmonic-child strata are not
+    # ported to C (P7 tranche 2 ported saturable/tpa/kerr only; a chi2 body
+    # emits the unported "nonlinear" token).
+    bodies = [sh.source_body(power_mW=1.0, lambdac_nm=LAM_D, coherent=False),
+              sh.slab_body("Xtal", "fused_silica", 0.0, 0.002,
+                           half=0.01, nonlinear=ROW),
+              sh.detector_body(x=0.03, half=0.02)]
+    case = _run(tmp_path, bodies, [], name="route_nonlinear",
+                rays=200, nlambda=1)
+    cj = json.loads((case / "case.json").read_text())
+    assert cj["engine"] == "python"
+    if cengine.binary_path() is not None:
+        assert "nonlinear" in cj["engine_reason"], \
+            "chi2 SHG should force Python routing"
+
+
+@pytest.mark.skipif(cengine.binary_path() is None,
+                    reason="miewb-trace not built")
+def test_nlo_bulk_bodies_route_c(tmp_path):
+    # P7 tranche 2: saturable / TPA / Kerr are ported — their bodies route to
+    # the C engine under auto (previously all NLO forced Python). Kerr on an
+    # incoherent source warns+skips but still routes to C (the token is
+    # ported; the physics is a coherent-gather phase term).
+    for prop, val, token in (("kerr_n2", "@n2_fused_silica", "kerr"),
+                             ("saturable", "@sam_1550_16_2ps", "saturable"),
                              ("tpa_beta", 2.0, "tpa")):
         bodies = [sh.source_body(power_mW=1.0, lambdac_nm=LAM_D,
                                  coherent=False),
@@ -251,7 +269,6 @@ def test_nlo_bodies_route_python(tmp_path):
         case = _run(tmp_path, bodies, [], name="route_%s" % token,
                     rays=200, nlambda=1)
         cj = json.loads((case / "case.json").read_text())
-        assert cj["engine"] == "python"
-        if cengine.binary_path() is not None:
-            assert token in cj["engine_reason"], \
-                "%s should force Python routing" % prop
+        assert cj["engine"] == "c", \
+            "%s should route to C (reason: %s)" % (
+                prop, cj.get("engine_reason"))

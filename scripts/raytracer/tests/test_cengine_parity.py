@@ -333,6 +333,73 @@ def test_ray_differentials_parity(tmp_path):
         "--ray-differentials changed an INCOHERENT result (must be diagnostic)"
 
 
+def test_kerr_opl_parity(tmp_path):
+    """P7 tranche 2 Kerr port: the C engine adds the Kerr thin-element bulk
+    phase Delta_opl = n2*I(r)*L to a COHERENT ray's optical path
+    (tracer.py:394-436). Checked deterministically on the accumulated OPL of
+    the direct-transmission rays (--export-rays' per-ray opl), which is far
+    cheaper and tighter than a coherent-gather cube:
+
+      collimated coherent source -> flat Kerr plate -> detector, a planar
+      wavefront so the per-ray intensity is a single scalar and every
+      direct ray carries the SAME opl. The Kerr term shifts that opl by
+      exactly n2*I*L. Three runs isolate the physics:
+        1. Python + kerr vs Python + no-kerr  -> the opl shift is > 0
+           (the Kerr term is ACTIVE in the reference engine).
+        2. C + kerr must reproduce the Python + kerr opl bit-for-bit
+           (deterministic normal incidence; the whole n2*I*L computation,
+           intensity estimator included, matches).
+    Run twice: WITH --ray-differentials (the physical transverse-profile
+    intensity, the contract's preferred path) and WITHOUT (the flat-top
+    source-area fallback + its one-time warning)."""
+    import run_trace
+    from scenehelpers import source_body, slab_body, detector_body, make_model
+
+    def scene(n2):
+        kw = {"kerr_n2": "n2:%g" % n2} if n2 else {}
+        return make_model([
+            source_body("Src", x=-0.02, half=0.004, power_mW=1.0,
+                        lambdac_nm=633.0, coherent=True),
+            slab_body("Kerr", "bk7", 0.0, 0.003, half=0.02, **kw),
+            detector_body("Det", x=0.03, half=0.025),
+        ])
+
+    def run(model, sub, engine, diff):
+        geo = tmp_path / sub / "geometry"
+        geo.mkdir(parents=True, exist_ok=True)
+        (geo / "model.json").write_text(json.dumps(model))
+        case = tmp_path / (sub + "_case")
+        argv = ["--model-json", str(geo / "model.json"), "--case-dir",
+                str(case), "--rays", "4000", "--resolution", "16",
+                "--nlambda", "1", "--spectral-bins", "4", "--engine", engine,
+                "--workers", "1", "--backend", "numpy", "--export-rays"]
+        if diff:
+            argv.append("--ray-differentials")
+        rc = run_trace.main(argv)
+        assert rc == 0, "run_trace %s exited %s" % (engine, rc)
+        d = np.load(case / "rays_full.npz", allow_pickle=True)
+        opl = d["Det_Pad_Face1/opl"]
+        gen = d["Det_Pad_Face1/generation"]
+        m = gen == 0                       # direct-transmission rays only
+        assert m.sum() > 0
+        return {"opl": float(opl[m].mean()),
+                "engine": json.loads((case / "case.json").read_text())["engine"]}
+
+    N2 = 1e-4
+    for diff, tag in ((True, "diff"), (False, "flat")):
+        pk = run(scene(N2), "pk_" + tag, "python", diff)
+        p0 = run(scene(0.0), "p0_" + tag, "python", diff)
+        ck = run(scene(N2), "ck_" + tag, "c", diff)
+        assert ck["engine"] == "c", "Kerr scene did not run natively on C (%s)" % tag
+        # 1. Kerr is ACTIVE in the reference engine (opl shifted by n2*I*L).
+        shift = pk["opl"] - p0["opl"]
+        assert abs(shift) > 1e-9, \
+            "%s: Kerr left the OPL unchanged (shift=%.3e) — not exercised" % (
+                tag, shift)
+        # 2. C reproduces the Python Kerr OPL bit-for-bit (deterministic).
+        rel_close(ck["opl"], pk["opl"], 1e-12, "kerr opl (%s) c vs py" % tag)
+
+
 @pytest.mark.parametrize("name", sorted(cengine_scenes.REAL_SCENES))
 def test_real_geometry_parity(name, tmp_path):
     """Side-by-side on REAL extracted geometries (repo geometry/ dirs) —
