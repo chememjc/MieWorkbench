@@ -10,14 +10,17 @@ import shutil
 import sys
 
 import pytest
+from PySide6.QtCore import Qt
 
 sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from mieworkbench.core import libschema                        # noqa: E402
 from mieworkbench.core.librarymgr import LibraryManager       # noqa: E402
 from mieworkbench.core.proplib import LibraryWriteError        # noqa: E402
 from mieworkbench.panes.prop_editor import (                   # noqa: E402
-    PropEditorError, PropEditorPane, apply_column_mapping,
+    INVALID_CELL_COLOR, MISSING_REFERENCE_COLOR, PropEditorError,
+    PropEditorPane, apply_column_mapping,
 )
 
 REPO_ROOT = os.path.normpath(
@@ -363,3 +366,181 @@ def test_promote_row_conflict_returns_dict(qtbot, tmp_path):
     result = editor.promote_row("aluminum")
     assert isinstance(result, dict)
     assert "system_row" in result and "project_row" in result
+
+
+# ---------------------------------------------------------------------------
+# libschema wiring: header tooltips, status line, advisory cell validation
+# ---------------------------------------------------------------------------
+def test_header_tooltips_set_and_nonempty(qtbot):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor("materials")
+
+    assert editor.table.columnCount() == len(editor._fieldnames)
+    for c, col in enumerate(editor._fieldnames):
+        header_item = editor.table.horizontalHeaderItem(c)
+        assert header_item is not None, col
+        tooltip = header_item.toolTip()
+        assert tooltip.strip(), "no tooltip set for column %r" % col
+        # every materials.miemat column is documented -- the tooltip must
+        # come from the real schema, not the "no schema entry" fallback
+        assert "no schema entry" not in tooltip, col
+
+
+def test_header_tooltip_degrades_gracefully_for_unknown_column(qtbot):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor("materials")
+
+    assert libschema.tooltip_text("materials", "not_a_real_column") \
+        == "not_a_real_column -- no schema entry (undocumented / " \
+           "registry-added column)"
+
+
+def test_status_label_updates_on_current_cell_changed(qtbot):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    pane.show_category("materials", "system")
+    editor = pane.editor("materials")
+
+    assert pane.status_label.text() == ""
+    col = editor._fieldnames.index("density_kg_m3")
+    editor.table.setCurrentCell(0, col)
+    assert pane.status_label.text().startswith("density_kg_m3")
+    assert "kg/m^3" in pane.status_label.text()
+
+
+def test_status_label_ignores_background_tab_cell_changes(qtbot):
+    """Selecting a cell on a tab that ISN'T currently shown must not
+    stomp the status label -- the pane only reflects the visible tab's
+    editor (guarded via QTabWidget.currentWidget() in
+    PropEditorPane._on_column_status_changed)."""
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    pane.show_category("materials", "system")
+
+    background = pane.editor("coatings")
+    col = background._fieldnames.index("aoi_deg")
+    background.table.setCurrentCell(0, col)
+
+    assert pane.status_label.text() == ""
+
+
+def test_status_label_clears_on_tab_switch(qtbot):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    pane.show_category("materials", "system")
+    editor = pane.editor("materials")
+    editor.table.setCurrentCell(0, editor._fieldnames.index("density_kg_m3"))
+    assert pane.status_label.text() != ""
+
+    pane.show_category("coatings", "system")
+    assert pane.status_label.text() == ""
+
+
+def test_column_status_helper_reports_no_schema_entry_for_unknown_column(qtbot):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor("materials")
+    assert editor._column_status(None) == ""
+    assert editor._column_status(-1) == ""
+    assert editor._column_status(len(editor._fieldnames) + 5) == ""
+
+
+def test_validation_marks_bad_numeric_cell_and_clears_on_fix(qtbot, tmp_path):
+    mgr = _tmp_system_manager(tmp_path)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor("materials")
+    editor.set_edit_mode(True)
+
+    rows = editor.rows_from_table()
+    idx = next(i for i, r in enumerate(rows) if r["name"] == "bk7")
+    col = editor._fieldnames.index("density_kg_m3")
+    item = editor.table.item(idx, col)
+
+    item.setText("-500")
+    assert item.background().color() == INVALID_CELL_COLOR
+    assert item.toolTip()
+
+    item.setText("2500")
+    assert item.background().color() != INVALID_CELL_COLOR
+
+
+def test_validation_flags_bad_enum_cell(qtbot, tmp_path):
+    mgr = _tmp_system_manager(tmp_path)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor("materials")
+    editor.set_edit_mode(True)
+
+    rows = editor.rows_from_table()
+    idx = next(i for i, r in enumerate(rows) if r["name"] == "bk7")
+    col = editor._fieldnames.index("class")
+    item = editor.table.item(idx, col)
+
+    item.setText("not_a_real_class")
+    assert item.background().color() == INVALID_CELL_COLOR
+
+    item.setText("glass")
+    assert item.background().color() != INVALID_CELL_COLOR
+
+
+def test_validation_never_touches_reference_column_styling(qtbot, tmp_path):
+    """The pre-existing blank-reference rule owns the reference column
+    (applied at populate/reload time, checked here); the new advisory
+    validator has no entry for `reference` and _on_item_changed explicitly
+    skips the column, so a live edit must never paint it
+    INVALID_CELL_COLOR (that would fight/shadow the existing rule)."""
+    mgr = _tmp_system_manager(tmp_path)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor("materials")
+    editor.set_edit_mode(True)
+
+    rows = editor.rows_from_table()
+    idx = next(i for i, r in enumerate(rows) if r["name"] == "bk7")
+    col = editor._fieldnames.index("reference")
+    item = editor.table.item(idx, col)
+
+    item.setText("")
+    assert item.background().color() != INVALID_CELL_COLOR
+
+    item.setText("some citation")
+    assert item.background().color() != INVALID_CELL_COLOR
+
+    # reload (populate-time path) still applies the pre-existing rule
+    rows[idx]["reference"] = ""
+    editor._populate_table(rows)
+    reloaded_item = editor.table.item(idx, col)
+    assert reloaded_item.background().color() == MISSING_REFERENCE_COLOR
+
+
+def test_validation_advisory_never_blocks_editing_or_row_gather(qtbot, tmp_path):
+    """A cell flagged invalid by the advisory validator must remain
+    editable and its (bad) text must still flow through
+    rows_from_table() unchanged -- the GUI layer never rejects/strips it.
+    The one real gate is the optprops loader, exercised separately by
+    test_commit_rolls_back_on_loader_rejection."""
+    mgr = _tmp_system_manager(tmp_path)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor("materials")
+    editor.set_edit_mode(True)
+
+    rows = editor.rows_from_table()
+    idx = next(i for i, r in enumerate(rows) if r["name"] == "bk7")
+    col = editor._fieldnames.index("density_kg_m3")
+    item = editor.table.item(idx, col)
+
+    item.setText("-500")
+    assert item.background().color() == INVALID_CELL_COLOR
+    assert item.flags() & Qt.ItemFlag.ItemIsEditable   # still editable
+    gathered = editor.rows_from_table()
+    assert gathered[idx]["density_kg_m3"] == "-500"    # not blocked/stripped
