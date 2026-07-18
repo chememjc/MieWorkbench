@@ -571,6 +571,22 @@ def variant_name(stem, var, value):
     sval = ("%g" % value).replace(".", "p").replace("-", "m")
     return "%s-%s%s" % (stem, str(var).replace(".", "_"), sval)
 
+VARIANT_NAME_LIMIT = 140
+
+def shorten_variant(name, limit=VARIANT_NAME_LIMIT):
+    """Make a chained variant stem safe as a single path component.
+    Short names pass through unchanged; past `limit` chars the tail is
+    replaced by a sha1-16 of the FULL descriptive name, so a many-parameter
+    tolerance/optimize variant (each parameter appends to the stem via
+    variant_name) can never overrun the filesystem's 255-char component
+    limit once stage suffixes are appended — while identical parameter
+    vectors still map to the identical (cacheable) name."""
+    if len(name) <= limit:
+        return name
+    import hashlib
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:16]
+    return "%s-h%s" % (name[:limit - 18].rstrip("-_"), digest)
+
 def sweep_combos(value_lists, mode="product"):
     """Combinations for a multi-variable sweep — the ONE place combination
     order is defined (permute_model.py and run_pipeline.py's
@@ -1425,6 +1441,11 @@ def _selfcheck():
     check("sweep n=1", sweep_values(1, 5, 1) == [1, 5])
     check("sweep n=4", sweep_values(0, 4, 4) == [0, 1, 2, 3, 4])
     check("variant name", variant_name("m", "x", -2.5) == "m-xm2p5")
+    _long = "m" + "-p1v2p5" * 40
+    check("shorten variant", shorten_variant("short") == "short"
+          and len(shorten_variant(_long)) <= VARIANT_NAME_LIMIT
+          and shorten_variant(_long) == shorten_variant(_long)
+          and shorten_variant(_long) != shorten_variant(_long + "-x"))
     f = parse_face_spec("Body001.Pad.Face2")
     check("face spec", f["body"] == "Body001" and f["face_index"] == 2)
     g = parse_grating_spec("Body.Obj.Face3:600:v:orders=-1..1:eff=0.1,0.8,0.1")

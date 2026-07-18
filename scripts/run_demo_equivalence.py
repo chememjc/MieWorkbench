@@ -80,11 +80,12 @@ SHOWCASE = ["camera_triplet", "schmidt_cassegrain", "double_gauss",
 TRAIN_FIELDS = ("distance", "decenter_x", "decenter_y", "tilt_rx", "tilt_ry",
                 "tilt_rz", "fold_deviation", "fold_azimuth")
 
-# per-showcase SMOKE tolerance subsets: a handful of the shipped rows kept
-# short (the fast_eval variant directory name encodes every parameter, so a
-# 30-row study exceeds NAME_MAX — see the notes in this file's report). The
-# subset is enough to prove finite, non-zero, element-resolved sensitivities
-# (and, for camera_triplet, the middle-vs-outer decenter comparison).
+# per-showcase SMOKE tolerance subsets: a handful of the shipped rows, kept
+# short purely for GATE SPEED (full studies run fine — fast_eval variant
+# names hash past common.VARIANT_NAME_LIMIT so many-row studies can't
+# overrun NAME_MAX). The subset is enough to prove finite, non-zero,
+# element-resolved sensitivities (and, for camera_triplet, the
+# middle-vs-outer decenter comparison).
 SMOKE_TOL_ROWS = {
     "camera_triplet": ["train.L1.decenter_x", "train.L2.decenter_x",
                        "train.L3.decenter_x"],

@@ -82,17 +82,11 @@ persist as JSON on the `miewb_vars` sheet):
   against the coupled `detected_power`; the story is that a lateral
   decenter of the doublet kills coupling far faster than the same despace.
 
-> **Known limitation (engine-side, out of this round's scope).** A
-> tolerance study with *many* parameters (a full auto-generated table is
-> ~15–30 rows) currently fails to *run* end-to-end: `fast_eval` encodes
-> every parameter value into a single scratch-directory name, which
-> overruns the filesystem's 255-char component limit
-> (`OSError: [Errno 36] File name too long`). The shipped configs all
-> **resolve** (every address is valid — gated below), and studies over a
-> handful of parameters run fine; the fix belongs in
-> `fast_eval._variant` / `common.variant_name` (hash the encoded name when
-> it grows too long). The gate's showcase smoke runs therefore exercise a
-> trimmed row subset.
+> Note: variant scratch-directory names for many-parameter studies are
+> hash-shortened past 140 chars (`common.shorten_variant`), so a full
+> auto-generated tolerance table (~15–30 rows) runs end-to-end without
+> hitting the filesystem's 255-char name limit. The gate's showcase smoke
+> runs use trimmed row subsets purely to keep the gate fast.
 
 | Demo | System | What it shows | Detected (of 5 mW, quick preset) |
 |---|---|---|---|
