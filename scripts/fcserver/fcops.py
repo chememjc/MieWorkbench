@@ -80,33 +80,62 @@ def _sheet(doc, name):
     raise OpError("no spreadsheet %r in document %r" % (name, doc.Name))
 
 
+_TAGGABLE_TYPES = ("PartDesign::Body", "Spreadsheet::Sheet")
+
+
+def _taggable_object(doc, name):
+    """Resolve an object for property get/set/remove: a PartDesign::Body
+    (the common case: material/coating/... tags) or a Spreadsheet::Sheet
+    (persisted pane-config JSON stashed on miewb_vars — see
+    Project.set_optimize_config/set_tolerance_config). Same
+    internal-name-then-unique-Label lookup as _body/_sheet."""
+    obj = doc.getObject(str(name))
+    if obj is None:
+        matches = [o for o in doc.Objects
+                   if o.TypeId in _TAGGABLE_TYPES and o.Label == str(name)]
+        if len(matches) == 1:
+            return matches[0]
+        raise OpError("no body/sheet %r in document %r" % (name, doc.Name))
+    if obj.TypeId not in _TAGGABLE_TYPES:
+        raise OpError("object %r is %s, not a PartDesign::Body or "
+                      "Spreadsheet::Sheet" % (name, obj.TypeId))
+    return obj
+
+
 def _vec3(v):
     return [float(v.x), float(v.y), float(v.z)]
 
 
-_BASELINE_BODY_PROPS = None
+_BASELINE_PROPS_CACHE = {}
+
+
+def _baseline_props_for(type_id):
+    """PropertiesList of a factory-fresh object of `type_id`, cached per
+    type.
+
+    Anything a real object carries beyond this set is user/tagging state
+    (material, power, coating, ... on a body; a stashed JSON pane config
+    on a Spreadsheet). Robust against FreeCAD adding built-ins with group
+    "Base" (Label itself reports group "Base").
+    """
+    if type_id not in _BASELINE_PROPS_CACHE:
+        scratch = FreeCAD.newDocument("_fcops_baseline_probe")
+        try:
+            obj = scratch.addObject(type_id, "Probe")
+            _BASELINE_PROPS_CACHE[type_id] = set(obj.PropertiesList)
+        finally:
+            FreeCAD.closeDocument(scratch.Name)
+    return _BASELINE_PROPS_CACHE[type_id]
 
 
 def _baseline_body_props():
-    """PropertiesList of a factory-fresh PartDesign::Body, cached.
-
-    Anything a real body carries beyond this set is a user/tagging property
-    (material, power, coating, ...). Robust against FreeCAD adding built-ins
-    with group "Base" (Label itself reports group "Base").
-    """
-    global _BASELINE_BODY_PROPS
-    if _BASELINE_BODY_PROPS is None:
-        scratch = FreeCAD.newDocument("_fcops_baseline_probe")
-        try:
-            body = scratch.addObject("PartDesign::Body", "Body")
-            _BASELINE_BODY_PROPS = set(body.PropertiesList)
-        finally:
-            FreeCAD.closeDocument(scratch.Name)
-    return _BASELINE_BODY_PROPS
+    """PartDesign::Body baseline (back-compat wrapper around
+    _baseline_props_for)."""
+    return _baseline_props_for("PartDesign::Body")
 
 
 def _custom_props(obj):
-    base = _baseline_body_props()
+    base = _baseline_props_for(obj.TypeId)
     out = {}
     for pname in obj.PropertiesList:
         if pname in base:
@@ -220,7 +249,8 @@ def _sheet_dict(sheet):
             value, unit = None, None
         aliases[alias] = {"cell": cell, "raw": raw,
                           "value": value, "unit": unit}
-    return {"name": sheet.Name, "label": sheet.Label, "aliases": aliases}
+    return {"name": sheet.Name, "label": sheet.Label, "aliases": aliases,
+            "properties": _custom_props(sheet)}
 
 
 def _structure(doc):
@@ -400,7 +430,8 @@ def op_set_property(params):
     """Set (creating if absent) a dynamic property, in group 'Base' unless
     `group` is given.
 
-    params: doc, body, name, value, ptype optional
+    params: doc, body (a PartDesign::Body OR a Spreadsheet::Sheet — see
+            _taggable_object), name, value, ptype optional
             ("string"|"float"|"bool" -> App::Property*; default from value),
             group optional (default "Base").
 
@@ -410,7 +441,7 @@ def op_set_property(params):
     call, which FreeCAD would silently ignore.
     """
     doc = _doc(params["doc"])
-    body = _body(doc, params["body"])
+    body = _taggable_object(doc, params["body"])
     name = str(params["name"])
     value = params["value"]
     group = str(params.get("group") or "Base")
@@ -441,9 +472,9 @@ def op_set_property(params):
 
 def op_remove_property(params):
     doc = _doc(params["doc"])
-    body = _body(doc, params["body"])
+    body = _taggable_object(doc, params["body"])
     name = str(params["name"])
-    if name in _baseline_body_props():
+    if name in _baseline_props_for(body.TypeId):
         raise OpError("refusing to remove built-in property %r" % name)
     if name not in body.PropertiesList:
         raise OpError("body %s has no property %r" % (body.Name, name))

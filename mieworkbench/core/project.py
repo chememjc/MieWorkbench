@@ -18,6 +18,7 @@ property/placement ops; tessellation of changed bodies is the only
 seconds-scale call and only runs for reshaped bodies).
 """
 
+import json
 import os
 
 from PySide6.QtCore import QObject, Signal
@@ -809,6 +810,120 @@ class Project(QObject):
             raise
         self.end_macro()
         self.opticsChanged.emit()
+
+    # -- optimize/tolerance pane persistence (miewb_vars sheet) ------------------
+    # Storage: JSON strings in two dynamic document properties on the
+    # miewb_vars Spreadsheet object (created on first save, same as the
+    # variables themselves) -- {"version": 1, "optimize"/"tolerance": cfg}
+    # where cfg is exactly what OptimizePane.config()/TolerancePane.config()
+    # produce (sheet-qualified var/tolerance/compensator specs). Travels
+    # with the .FCStd automatically (miewb_tool packs it verbatim), so a
+    # reopened scene's panes can be pre-populated via apply_config().
+    _CONFIG_VERSION = 1
+    OPTIMIZE_CONFIG_PROP = "miewb_optimize_config"
+    TOLERANCE_CONFIG_PROP = "miewb_tolerance_config"
+
+    def _config_raw(self, prop_name):
+        """The raw JSON string currently stashed in `prop_name` on the
+        miewb_vars sheet, or None (no sheet, or the sheet carries no such
+        property yet)."""
+        sheet = self.variables_sheet()
+        if sheet is None:
+            return None
+        entry = (sheet.get("properties") or {}).get(prop_name)
+        return None if entry is None else entry.get("value")
+
+    def _get_config(self, prop_name, key):
+        """{key: <pane config dict>} from the stashed JSON, or None (no
+        sheet / no property / unparseable / version mismatch all degrade
+        to "nothing stored" -- a fresh scene or a hand-edited document
+        must never raise here)."""
+        raw = self._config_raw(prop_name)
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict) \
+                or payload.get("version") != self._CONFIG_VERSION:
+            return None
+        return payload.get(key)
+
+    def get_optimize_config(self):
+        """The last-saved OptimizePane.config() dict, or None."""
+        return self._get_config(self.OPTIMIZE_CONFIG_PROP, "optimize")
+
+    def get_tolerance_config(self):
+        """The last-saved TolerancePane.config() dict, or None."""
+        return self._get_config(self.TOLERANCE_CONFIG_PROP, "tolerance")
+
+    def _do_set_sheet_property(self, sheet_name, name, raw):
+        return self._route_mutation(
+            self.fc.request("set_property",
+                            {"doc": self.doc, "body": sheet_name,
+                             "name": name, "value": raw, "ptype": "string",
+                             "group": "Base"}),
+            sheet_name)
+
+    def _do_remove_sheet_property(self, sheet_name, name):
+        return self._route_mutation(
+            self.fc.request("remove_property",
+                            {"doc": self.doc, "body": sheet_name,
+                             "name": name}),
+            sheet_name)
+
+    def _set_config(self, prop_name, key, cfg, text):
+        """Stash (cfg is not None) or clear (cfg is None) {"version": 1,
+        key: cfg} in `prop_name` on the miewb_vars sheet -- one undoable
+        Command with pre-image capture, no-op when the serialized config
+        is unchanged. The sheet is created on first use (matching
+        apply_variable_cells: the create itself is not tracked, only the
+        property write is)."""
+        old_raw = self._config_raw(prop_name)
+        new_raw = (None if cfg is None else
+                  json.dumps({"version": self._CONFIG_VERSION, key: cfg},
+                            sort_keys=True))
+        if new_raw == old_raw:
+            return
+        if new_raw is None:
+            sheet = self.variables_sheet()
+            if sheet is None:
+                return
+            sheet_name = sheet["name"]
+            self.undo_stack.push_and_do(Command(
+                text,
+                lambda: self._do_remove_sheet_property(sheet_name, prop_name),
+                lambda: self._do_set_sheet_property(sheet_name, prop_name,
+                                                    old_raw)))
+            return
+        sheet = self.ensure_variables_sheet()
+        sheet_name = sheet["name"]
+        if old_raw is None:
+            undo = lambda: self._do_remove_sheet_property(sheet_name,
+                                                           prop_name)
+        else:
+            undo = lambda: self._do_set_sheet_property(sheet_name, prop_name,
+                                                        old_raw)
+        self.undo_stack.push_and_do(Command(
+            text,
+            lambda: self._do_set_sheet_property(sheet_name, prop_name,
+                                                new_raw),
+            undo))
+
+    def set_optimize_config(self, cfg):
+        """Persist (cfg dict) or clear (cfg=None) the OptimizePane's
+        current config() on the miewb_vars sheet. Undoable; no-op when
+        unchanged."""
+        self._set_config(self.OPTIMIZE_CONFIG_PROP, "optimize", cfg,
+                         "Save optimize configuration")
+
+    def set_tolerance_config(self, cfg):
+        """Persist (cfg dict) or clear (cfg=None) the TolerancePane's
+        current config() on the miewb_vars sheet. Undoable; no-op when
+        unchanged."""
+        self._set_config(self.TOLERANCE_CONFIG_PROP, "tolerance", cfg,
+                         "Save tolerance configuration")
 
     # -- folds -------------------------------------------------------------------
     def _fold_record(self, element):

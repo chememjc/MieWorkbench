@@ -125,6 +125,99 @@ def test_pane_config_skips_blank_rows_and_defaults(qtbot):
 
 
 # ---------------------------------------------------------------------------
+# pane: config() -> apply_config() -> config() persistence round-trip
+# ---------------------------------------------------------------------------
+def test_apply_config_round_trips(qtbot):
+    """A rich config (multiple tolerances incl. a sheet-qualified global,
+    a 'sheet.alias' form, and a bare dim-sheet alias; a non-default
+    operand; an enabled compensator; every scalar setting away from its
+    default) survives a fresh pane's config() -> apply_config() ->
+    config() cycle unchanged -- the persistence contract
+    Project.set/get_tolerance_config relies on."""
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.set_variables(_varrows())
+    pane.add_tolerance("lenspos", 0.0, "normal", 1.0)     # miewb_vars global
+    pane.add_tolerance("dim.lensdy", 0.0, "uniform", 4.0)  # sheet.alias
+    pane.add_tolerance("barealias", 0.0, "normal", 2.0)    # bare, not global
+    pane.add_operand("detected_power", "Body.Pad.Face5", 0.0, 2.0)
+    pane.draws_spin.setValue(12)
+    pane.seed_spin.setValue(7)
+    pane.threshold_check.setChecked(True)
+    pane.threshold_spin.setValue(110000.0)
+    pane.comp_group.setChecked(True)
+    pane.comp_var_edit.setText("detpos")
+    pane.comp_start_spin.setValue(50.236)
+    pane.comp_lo_spin.setValue(40.0)
+    pane.comp_hi_spin.setValue(62.0)
+    pane.comp_budget_spin.setValue(8)
+    pane.skip_sens_check.setChecked(True)
+    pane.hist_bins_spin.setValue(30)
+    pane.preset_combo.setCurrentText("detailed")
+    pane.backend_combo.setCurrentText("full")
+    pane.rays_spin.setValue(5000)
+    cfg1 = pane.config()
+
+    fresh = TolerancePane()
+    qtbot.addWidget(fresh)
+    fresh.apply_config(cfg1)
+    cfg2 = fresh.config()
+    assert cfg2 == cfg1
+
+
+def test_apply_config_default_state_round_trips(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    cfg1 = pane.config()
+
+    fresh = TolerancePane()
+    qtbot.addWidget(fresh)
+    fresh.apply_config(cfg1)
+    assert fresh.config() == cfg1
+
+
+def test_apply_config_disabled_compensator_round_trips(qtbot):
+    """A compensator that was enabled then disabled leaves no
+    'compensator' key -- applying that config must not spuriously
+    re-enable the group."""
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.comp_group.setChecked(True)
+    pane.comp_var_edit.setText("detpos")
+    pane.comp_group.setChecked(False)
+    cfg1 = pane.config()
+    assert "compensator" not in cfg1
+
+    fresh = TolerancePane()
+    qtbot.addWidget(fresh)
+    fresh.apply_config(cfg1)
+    assert not fresh.comp_group.isChecked()
+    assert fresh.config() == cfg1
+
+
+def test_apply_config_none_and_empty_are_noop(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.add_tolerance("lenspos", 0.0, "normal", 1.0)
+    before = pane.config()
+    pane.apply_config(None)
+    pane.apply_config({})
+    assert pane.config() == before
+
+
+def test_apply_config_skips_unparseable_specs(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.apply_config({"tolerance": ["not:a:valid"],
+                       "operand": ["also bad"],
+                       "compensator": "nonsense"})
+    cfg = pane.config()
+    assert cfg["tolerance"] == []
+    assert cfg["operand"] == []
+    assert "compensator" not in cfg
+
+
+# ---------------------------------------------------------------------------
 # pane: miewb_vars name dropdowns + auto-fill
 # ---------------------------------------------------------------------------
 def test_set_variables_populates_name_combos(qtbot):

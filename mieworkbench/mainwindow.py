@@ -978,6 +978,10 @@ class MainWindow(QMainWindow):
             speed_mm_s=self._anim_setting("anim_speed_mm_s", 2.0),
             fps=int(self._anim_setting("anim_fps", 15)),
             ray_cap=int(self._anim_setting("anim_ray_cap", 300)),
+            bead_opacity_mode=self.settings.get("anim_bead_opacity_mode",
+                                                "off"),
+            bead_opacity_range_db=self._anim_setting("anim_bead_opacity_db",
+                                                     30.0),
             enabled=self.settings.get_bool("anim_enabled", False))
         view.overlayChanged.connect(self._on_scene_overlay_changed)
         self.anim_controller.frameAdvanced.connect(self._on_anim_frame)
@@ -1051,6 +1055,35 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.anim_fps_combo)
 
         tb.addSeparator()
+        tb.addWidget(QLabel(" Bead opacity "))
+        self.anim_opacity_combo = QComboBox()
+        self.anim_opacity_combo.addItem("Opaque", "off")
+        self.anim_opacity_combo.addItem("By power", "power")
+        cur_mode = self.anim_controller.bead_opacity_mode
+        self.anim_opacity_combo.setCurrentIndex(1 if cur_mode == "power"
+                                                else 0)
+        self.anim_opacity_combo.setToolTip(
+            "Bead opacity: Opaque (default) or fade beads by their optical "
+            "power over a log-dB range, leading-wavefront beads stay solid")
+        self.anim_opacity_combo.currentIndexChanged.connect(
+            self._on_anim_opacity_mode)
+        tb.addWidget(self.anim_opacity_combo)
+
+        self.anim_opacity_db_spin = QDoubleSpinBox()
+        self.anim_opacity_db_spin.setRange(10.0, 60.0)
+        self.anim_opacity_db_spin.setDecimals(0)
+        self.anim_opacity_db_spin.setSingleStep(5.0)
+        self.anim_opacity_db_spin.setSuffix(" dB")
+        self.anim_opacity_db_spin.setValue(
+            self.anim_controller.bead_opacity_range_db)
+        self.anim_opacity_db_spin.setToolTip(
+            "Dynamic range of the power-to-opacity map: a bead at "
+            "Pmax/10^(dB/10) fades to the faint floor")
+        self.anim_opacity_db_spin.setEnabled(cur_mode == "power")
+        self.anim_opacity_db_spin.valueChanged.connect(self._on_anim_opacity_db)
+        tb.addWidget(self.anim_opacity_db_spin)
+
+        tb.addSeparator()
         self.anim_readout = QLabel("")
         self.anim_readout.setToolTip(
             "Simulation clock (auto unit) and the vacuum-equivalent "
@@ -1080,6 +1113,21 @@ class MainWindow(QMainWindow):
             self.settings.set("anim_fps", text)
         except ValueError:
             pass
+
+    def _on_anim_opacity_mode(self, _index):
+        mode = self.anim_opacity_combo.currentData() or "off"
+        self.anim_controller.apply_settings(bead_opacity_mode=mode)
+        self.settings.set("anim_bead_opacity_mode", mode)
+        self.anim_opacity_db_spin.setEnabled(mode == "power")
+        if (mode == "power" and self.anim_controller.has_segments()
+                and not self.anim_controller.power_available()):
+            self.statusBar().showMessage(
+                "Loaded rays predate per-segment power — beads stay opaque "
+                "until you re-run or re-preview.", 6000)
+
+    def _on_anim_opacity_db(self, value):
+        self.anim_controller.apply_settings(bead_opacity_range_db=value)
+        self.settings.set("anim_bead_opacity_db", str(value))
 
     def _on_anim_frame(self, clock_s, path_mm):
         readout = getattr(self, "anim_readout", None)
@@ -1219,6 +1267,12 @@ class MainWindow(QMainWindow):
         self.project.sceneLoaded.connect(self._refresh_pane_variables)
         self.project.propertiesChanged.connect(
             self._refresh_pane_variables)
+        # Pre-populate the panes from any config stashed on the scene --
+        # scene-open ONLY (not propertiesChanged: that fires on every
+        # unrelated property write, which would stomp in-progress
+        # unsaved pane edits). Runs after _refresh_pane_variables so the
+        # name combos are already seeded when apply_config rebuilds rows.
+        self.project.sceneLoaded.connect(self._load_pane_configs)
 
         # a finished sweep hands its manifest to the Compare pane
         self.runner.finished.connect(self._maybe_run_compare)
@@ -1256,6 +1310,34 @@ class MainWindow(QMainWindow):
             varrows = {}
         self.optimize_pane.set_variables(varrows)
         self.tolerance_pane.set_variables(varrows)
+
+    def _load_pane_configs(self, *_args):
+        """Pre-populate the Optimize/Tolerance panes from any config
+        stashed on the miewb_vars sheet (Project.set_optimize_config/
+        set_tolerance_config) -- so a saved scene reopens with the panes
+        already configured, even though the run itself was not repeated.
+        Best-effort: a missing/stale/unparseable config must never block
+        opening the scene."""
+        if not self.project.is_open():
+            return
+        try:
+            opt_cfg = self.project.get_optimize_config()
+        except Exception:
+            opt_cfg = None
+        if opt_cfg:
+            try:
+                self.optimize_pane.apply_config(opt_cfg)
+            except Exception:
+                pass
+        try:
+            tol_cfg = self.project.get_tolerance_config()
+        except Exception:
+            tol_cfg = None
+        if tol_cfg:
+            try:
+                self.tolerance_pane.apply_config(tol_cfg)
+            except Exception:
+                pass
 
     def _on_scene_loaded(self):
         has_doc = self.project.is_open()
@@ -1946,6 +2028,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Tolerance: add at least one operand row", 8000)
             return False
+        if self.project.is_open():
+            # a run implies persistence: the scene reopens with this
+            # config pre-populated even if the run is never repeated
+            try:
+                self.project.set_tolerance_config(config)
+            except Exception:
+                pass
         args = ToleranceController.build_args(config)
         if not self.tolerance_ctl.start(self.model_path, args,
                                         extra_env=self._run_env()):
@@ -1993,6 +2082,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Optimize: add at least one operand row", 8000)
             return False
+        if self.project.is_open():
+            # a run implies persistence: the scene reopens with this
+            # config pre-populated even if the run is never repeated
+            try:
+                self.project.set_optimize_config(config)
+            except Exception:
+                pass
         args = OptimizeController.build_args(config)
         if not self.optimizer_ctl.start(self.model_path, args,
                                         extra_env=self._run_env()):

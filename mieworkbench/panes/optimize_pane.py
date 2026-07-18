@@ -20,6 +20,7 @@ core/optimize_controller.py's job, mirroring the ConsolePane/RunController
 split.
 """
 
+import argparse
 import re
 import sys
 from os.path import dirname, join, normpath
@@ -606,6 +607,44 @@ class OptimizePane(QWidget):
         if self.rays_spin.value() > 0:
             cfg["rays"] = float(self.rays_spin.value())
         return cfg
+
+    def apply_config(self, cfg):
+        """Rebuild the variable/operand tables and settings from a
+        config() dict (as persisted by Project.set_optimize_config /
+        returned by get_optimize_config). Spec strings that fail to
+        parse are skipped defensively -- a hand-edited or stale document
+        must never block opening the scene. Round-trips: config() ->
+        apply_config() -> config() reproduces the same dict."""
+        if not cfg:
+            return
+        self.var_table.setRowCount(0)
+        for spec in cfg.get("var") or []:
+            try:
+                v = cli_specs.parse_var_spec(spec)
+            except argparse.ArgumentTypeError:
+                continue
+            self.add_variable(v["name"], v["start"], v["lo"], v["hi"])
+        self.operand_table.setRowCount(0)
+        for spec in cfg.get("operand") or []:
+            try:
+                o = cli_specs.parse_operand_spec(spec)
+            except argparse.ArgumentTypeError:
+                continue
+            self.add_operand(o["operand"], o["detector"] or "",
+                             o["target"], o["weight"])
+        if "algorithm" in cfg:
+            self.algorithm_combo.setCurrentText(str(cfg["algorithm"]))
+        if "budget" in cfg:
+            self.budget_spin.setValue(int(cfg["budget"]))
+        if "tol" in cfg:
+            self.tol_spin.setValue(float(cfg["tol"]))
+        if "preset" in cfg:
+            self.preset_combo.setCurrentText(str(cfg["preset"]))
+        if "eval_backend" in cfg:
+            self.backend_combo.setCurrentText(str(cfg["eval_backend"]))
+        self.final_coherent_check.setChecked(
+            not cfg.get("no_final_coherent", False))
+        self.rays_spin.setValue(float(cfg.get("rays") or 0.0))
 
     # -- run-state / progress slots ----------------------------------------------------
     def on_started(self):

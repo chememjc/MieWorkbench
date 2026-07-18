@@ -106,6 +106,68 @@ def test_pane_config_skips_blank_rows_and_defaults(qtbot):
 
 
 # ---------------------------------------------------------------------------
+# pane: config() -> apply_config() -> config() persistence round-trip
+# ---------------------------------------------------------------------------
+def test_apply_config_round_trips(qtbot):
+    """A rich config (multiple variables incl. a sheet-qualified global
+    and a bare dim-sheet alias, a non-default operand, and every scalar
+    setting away from its default) survives a fresh pane's
+    config() -> apply_config() -> config() cycle unchanged -- the
+    persistence contract Project.set/get_optimize_config relies on."""
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.set_variables(_varrows())
+    pane.add_variable("lenspos", -6.0, -8.0, 8.0)      # miewb_vars global
+    pane.add_variable("barealias", 25.0, 20.0, 30.0)   # bare dim alias
+    pane.add_operand("detected_power", "Body.Pad.Face5", 0.0, 2.0)
+    pane.algorithm_combo.setCurrentText("global")
+    pane.budget_spin.setValue(55)
+    pane.tol_spin.setValue(1e-5)
+    pane.preset_combo.setCurrentText("detailed")
+    pane.backend_combo.setCurrentText("full")
+    pane.rays_spin.setValue(5000)
+    pane.final_coherent_check.setChecked(False)
+    cfg1 = pane.config()
+
+    fresh = OptimizePane()
+    qtbot.addWidget(fresh)
+    fresh.apply_config(cfg1)
+    cfg2 = fresh.config()
+    assert cfg2 == cfg1
+
+
+def test_apply_config_default_state_round_trips(qtbot):
+    """The as-constructed default config (empty vars, the seeded default
+    operand row, every setting at its default) also round-trips."""
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    cfg1 = pane.config()
+
+    fresh = OptimizePane()
+    qtbot.addWidget(fresh)
+    fresh.apply_config(cfg1)
+    assert fresh.config() == cfg1
+
+
+def test_apply_config_none_and_empty_are_noop(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.add_variable("lenspos", -6.0, -8.0, 8.0)
+    before = pane.config()
+    pane.apply_config(None)
+    pane.apply_config({})
+    assert pane.config() == before
+
+
+def test_apply_config_skips_unparseable_specs(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.apply_config({"var": ["not:a:valid"], "operand": ["also bad"]})
+    assert pane.config()["var"] == []
+    assert pane.config()["operand"] == []
+
+
+# ---------------------------------------------------------------------------
 # pane: miewb_vars name dropdowns + auto-fill
 # ---------------------------------------------------------------------------
 def test_variable_bounds_fallbacks():

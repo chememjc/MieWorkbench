@@ -21,6 +21,7 @@ core/tolerance_controller.py's job, mirroring the OptimizePane/
 OptimizeController split.
 """
 
+import argparse
 import math
 import sys
 from os.path import dirname, join, normpath
@@ -704,6 +705,69 @@ class TolerancePane(QWidget):
         if self.rays_spin.value() > 0:
             cfg["rays"] = float(self.rays_spin.value())
         return cfg
+
+    def apply_config(self, cfg):
+        """Rebuild the tolerance/operand tables, compensator group, and
+        settings from a config() dict (as persisted by
+        Project.set_tolerance_config / returned by get_tolerance_config).
+        Spec strings that fail to parse are skipped defensively -- a
+        hand-edited or stale document must never block opening the
+        scene. Round-trips: config() -> apply_config() -> config()
+        reproduces the same dict."""
+        if not cfg:
+            return
+        self.tol_table.setRowCount(0)
+        for spec in cfg.get("tolerance") or []:
+            try:
+                t = cli_specs.parse_tolerance_spec(spec)
+            except argparse.ArgumentTypeError:
+                continue
+            self.add_tolerance(t["name"], t["nominal"], t["dist"],
+                               t["band"])
+        self.operand_table.setRowCount(0)
+        for spec in cfg.get("operand") or []:
+            try:
+                o = cli_specs.parse_operand_spec(spec)
+            except argparse.ArgumentTypeError:
+                continue
+            self.add_operand(o["operand"], o["detector"] or "",
+                             o["target"], o["weight"])
+        if "draws" in cfg:
+            self.draws_spin.setValue(int(cfg["draws"]))
+        if "mc_seed" in cfg:
+            self.seed_spin.setValue(int(cfg["mc_seed"]))
+        if "sens_delta" in cfg:
+            self.sens_delta_spin.setValue(float(cfg["sens_delta"]))
+        self.skip_sens_check.setChecked(bool(cfg.get("skip_sensitivity",
+                                                     False)))
+        if "hist_bins" in cfg:
+            self.hist_bins_spin.setValue(int(cfg["hist_bins"]))
+        if "preset" in cfg:
+            self.preset_combo.setCurrentText(str(cfg["preset"]))
+        if "eval_backend" in cfg:
+            self.backend_combo.setCurrentText(str(cfg["eval_backend"]))
+        has_threshold = "merit_threshold" in cfg
+        self.threshold_check.setChecked(has_threshold)
+        self.threshold_spin.setEnabled(has_threshold)
+        if has_threshold:
+            self.threshold_spin.setValue(float(cfg["merit_threshold"]))
+        comp_spec = cfg.get("compensator")
+        if comp_spec:
+            try:
+                c = cli_specs.parse_compensator_spec(comp_spec)
+            except argparse.ArgumentTypeError:
+                c = None
+        else:
+            c = None
+        self.comp_group.setChecked(c is not None)
+        if c is not None:
+            self.comp_var_edit.setText(c["name"])
+            self.comp_start_spin.setValue(c["start"])
+            self.comp_lo_spin.setValue(c["lo"])
+            self.comp_hi_spin.setValue(c["hi"])
+            if "comp_budget" in cfg:
+                self.comp_budget_spin.setValue(int(cfg["comp_budget"]))
+        self.rays_spin.setValue(float(cfg.get("rays") or 0.0))
 
     # -- run-state / progress slots ----------------------------------------------------
     def on_started(self):
