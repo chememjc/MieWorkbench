@@ -1,0 +1,247 @@
+{
+ "bodies": {
+  "D1_crown": {
+   "group": "D1",
+   "label": "D1_lens_achromat_crown",
+   "placement": {
+    "pos_mm": [
+     8.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  },
+  "D1_flint": {
+   "group": "D1",
+   "label": "D1_lens_achromat_flint",
+   "placement": {
+    "pos_mm": [
+     8.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  },
+  "D2_crown": {
+   "group": "D2",
+   "label": "D2_lens_achromat_crown",
+   "placement": {
+    "pos_mm": [
+     33.905,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  },
+  "D2_flint": {
+   "group": "D2",
+   "label": "D2_lens_achromat_flint",
+   "placement": {
+    "pos_mm": [
+     33.905,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  },
+  "L1": {
+   "group": "L1",
+   "label": "L1",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_meniscus"
+  },
+  "L4": {
+   "group": "L4",
+   "label": "L4",
+   "placement": {
+    "pos_mm": [
+     46.81,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_meniscus"
+  },
+  "Scene": {
+   "group": "Scene",
+   "label": "Scene",
+   "placement": {
+    "pos_mm": [
+     -20.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Sensor": {
+   "group": "Sensor",
+   "label": "Sensor",
+   "placement": {
+    "pos_mm": [
+     52.860507109000004,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Stop": {
+   "group": "Stop",
+   "label": "Stop_iris",
+   "placement": {
+    "pos_mm": [
+     25.905,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "iris"
+  },
+  "Stop_plug": {
+   "group": "Stop",
+   "label": "Stop_iris_plug",
+   "placement": {
+    "pos_mm": [
+     25.905,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "iris"
+  }
+ },
+ "demo": "double_gauss",
+ "sheets": {
+  "dim": {},
+  "dim_D1": {
+   "R_back": "=-70.9467 mm",
+   "R_front": "=34.1 mm",
+   "R_iface": "=-24.1516 mm",
+   "aperture": "=20 mm",
+   "ct_crown": "=6.6 mm",
+   "ct_flint": "=3.3 mm",
+   "gap": "=0.005 mm"
+  },
+  "dim_D2": {
+   "R_back": "=-70.9467 mm",
+   "R_front": "=34.1 mm",
+   "R_iface": "=-24.1516 mm",
+   "aperture": "=20 mm",
+   "ct_crown": "=6.6 mm",
+   "ct_flint": "=3.3 mm",
+   "gap": "=0.005 mm"
+  },
+  "dim_L1": {
+   "R_back": "=64 mm",
+   "R_front": "=34 mm",
+   "aperture": "=20 mm",
+   "ct": "=5 mm"
+  },
+  "dim_L4": {
+   "R_back": "=64 mm",
+   "R_front": "=34 mm",
+   "aperture": "=20 mm",
+   "ct": "=5 mm"
+  },
+  "dim_Scene": {
+   "diameter": "=16 mm",
+   "length": "=10 mm",
+   "round_flag": "1"
+  },
+  "dim_Sensor": {
+   "height": "=24 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=24 mm"
+  },
+  "dim_Stop": {
+   "blackness": "0.98",
+   "hole_diameter": "=18 mm",
+   "outer_diameter": "=26 mm",
+   "thickness": "=0.5 mm"
+  },
+  "miewb_vars": {
+   "air_front": "8",
+   "air_front__max": "12",
+   "air_front__min": "5",
+   "air_front__n": "5",
+   "air_front__on": "0",
+   "air_rear": "8",
+   "air_rear__max": "12",
+   "air_rear__min": "5",
+   "air_rear__n": "5",
+   "air_rear__on": "0"
+  }
+ }
+}

@@ -1,0 +1,13 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "Coupled.Coupled_pad.Face5": {
+   "peak_irradiance_W_m2": 2602774.5083540026,
+   "power_seed_std_W": 6.197406539310582e-06,
+   "profile_visibility": 0.9999999533544345,
+   "total_power_W": 0.003472755699793396
+  }
+ },
+ "seeds": 3
+}

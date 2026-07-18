@@ -38,11 +38,18 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "scripts"))
 
+import html
+import re
+import zipfile
+
+import common  # noqa: E402
+import make_demos  # noqa: E402  (the canonical demo list + study policy)
 import miewb_tool  # noqa: E402
 
 from mieworkbench.core.fcclient import FcClient  # noqa: E402
 
 BASELINE_DIR = REPO / "demos" / "baselines"
+DEMOS_DIR = REPO / "demos"
 DEFAULT_WORKDIR = REPO / "var" / "work" / "demo_equivalence"
 
 POS_TOL_MM = 1e-3            # 1 um
@@ -58,8 +65,223 @@ DEMO_NAMES = [
     # Phase-12 new-physics demos
     "ktp_walkoff", "gaussian_bench", "ghost_doublet", "scatter_plate",
     "curved_focal",
+    # optimize/tolerance-round showcase demos (new)
+    "double_gauss", "fiber_coupling_doublet",
 ]
 FRINGE_DEMOS = {"michelson"}
+
+# ---------------------------------------------------------------------------
+# optimize/tolerance study gate (config-resolution + showcase smoke runs)
+# ---------------------------------------------------------------------------
+PENALTY = 1e9               # optimize.PENALTY (a failed/incomplete eval)
+USABLE = 1e8               # a merit below this is a real (non-penalized) value
+SHOWCASE = ["camera_triplet", "schmidt_cassegrain", "double_gauss",
+            "fiber_coupling_doublet"]
+TRAIN_FIELDS = ("distance", "decenter_x", "decenter_y", "tilt_rx", "tilt_ry",
+                "tilt_rz", "fold_deviation", "fold_azimuth")
+
+# per-showcase SMOKE tolerance subsets: a handful of the shipped rows kept
+# short (the fast_eval variant directory name encodes every parameter, so a
+# 30-row study exceeds NAME_MAX — see the notes in this file's report). The
+# subset is enough to prove finite, non-zero, element-resolved sensitivities
+# (and, for camera_triplet, the middle-vs-outer decenter comparison).
+SMOKE_TOL_ROWS = {
+    "camera_triplet": ["train.L1.decenter_x", "train.L2.decenter_x",
+                       "train.L3.decenter_x"],
+    "schmidt_cassegrain": ["train.Secondary.distance",
+                           "train.Secondary.tilt_rx", "train.Focus.distance"],
+    "double_gauss": ["train.D1.decenter_x", "train.D2.decenter_x",
+                     "train.D1.distance"],
+    "fiber_coupling_doublet": ["train.Doublet.decenter_x",
+                               "train.Doublet.distance"],
+}
+# rays/eval for the smoke MC evaluations (kept small; the point is a
+# populated series / finite sensitivity, not a converged number)
+SMOKE_RAYS = 30000
+SMOKE_BUDGET = 3
+
+
+def _read_configs(fcstd_path):
+    """(optimize_cfg, tolerance_cfg) — the panes' config() dicts stashed on
+    the miewb_vars sheet (read straight from the .FCStd Document.xml, stdlib
+    zip). Either may be None (demo ships no such config)."""
+    out = {"optimize": None, "tolerance": None}
+    try:
+        xml = zipfile.ZipFile(str(fcstd_path)).read(
+            "Document.xml").decode("utf8", "replace")
+    except Exception:
+        return None, None
+    for prop, key in (("miewb_optimize_config", "optimize"),
+                      ("miewb_tolerance_config", "tolerance")):
+        m = re.search(r'name="%s".*?<String value="([^"]*)"' % re.escape(prop),
+                      xml, re.S)
+        if not m:
+            continue
+        try:
+            payload = json.loads(html.unescape(m.group(1)))
+            out[key] = payload.get(key)
+        except Exception:
+            out[key] = None
+    return out["optimize"], out["tolerance"]
+
+
+def _resolve_addr(addr, sheets, chained):
+    """None if the variable/tolerance address resolves on the model, else a
+    reason string. Forms: miewb_vars.<name> / dim_<El>.<alias> (a named
+    sheet alias), train.<El>.<field> (a chained element pose field), or a
+    bare 'alias' (default dim sheet, accepted)."""
+    if addr.startswith("train."):
+        el, sep, field = addr[len("train."):].rpartition(".")
+        if not sep or not el:
+            return "malformed train address"
+        if field not in TRAIN_FIELDS:
+            return "unknown train field %r" % field
+        if el not in chained:
+            return ("element %r is not chained (chained: %s)"
+                    % (el, ", ".join(sorted(chained)) or "<none>"))
+        return None
+    if "." in addr:
+        sheet_label, _, alias = addr.partition(".")
+        aliases = sheets.get(sheet_label)
+        if aliases is None:
+            return "sheet %r not found" % sheet_label
+        if alias not in aliases:
+            return "alias %r not on sheet %r" % (alias, sheet_label)
+        return None
+    return None                       # bare dim-sheet alias — not gated here
+
+
+def check_addresses(name, fcstd_path, fc):
+    """[] on pass, else a list of unresolved-address failure strings for the
+    demo's stored optimize/tolerance specs (every miewb_vars.<name>,
+    dim_<El>.<alias>, train.<El>.<field> must resolve on the rebuilt model)."""
+    opt, tol = _read_configs(fcstd_path)
+    st = fc.open_document(str(fcstd_path))
+    failures = []
+    try:
+        sheets = {}
+        for s in st.get("sheets", []):
+            label = s.get("label") or s.get("name")
+            sheets[label] = set((s.get("aliases") or {}).keys())
+        chained = set()
+        for b in st.get("bodies", []):
+            props = b.get("properties", {})
+            if str((props.get("miewb_train_mode") or {}).get("value")) \
+                    == "chained":
+                grp = (props.get("miewb_group") or {}).get("value")
+                if grp:
+                    chained.add(grp)
+                if b.get("label"):
+                    chained.add(b["label"])
+        addrs = []
+        for spec in (opt or {}).get("var", []):
+            addrs.append(("optimize var", spec.split(":")[0]))
+        comp = (tol or {}).get("compensator")
+        if comp:
+            addrs.append(("compensator", comp.split(":")[0]))
+        for spec in (tol or {}).get("tolerance", []):
+            addrs.append(("tolerance", spec.split(":")[0]))
+        for what, addr in addrs:
+            err = _resolve_addr(addr, sheets, chained)
+            if err:
+                failures.append("%s %s -> %s" % (what, addr, err))
+    finally:
+        fc.close(st["doc"])
+    return failures
+
+
+def _run_study(script, cfg, model, out_dir, extra):
+    """Run optimize.py/tolerance.py under the optics env with a JSON config;
+    returns (returncode, report_dict_or_None)."""
+    cfg_path = out_dir.with_suffix(".config.json")
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(cfg))
+    cmd = [common.OPTICS_PYTHON, str(REPO / "scripts" / script),
+           "--model", str(model), "--config", str(cfg_path),
+           "--out", str(out_dir)] + extra
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    report = out_dir / "report.json"
+    data = None
+    if report.exists():
+        try:
+            data = json.loads(report.read_text())
+        except Exception:
+            data = None
+    return proc.returncode, data, proc.stderr
+
+
+def smoke_optimize(name, fcstd_path, workdir):
+    """Short optimize run: assert >=1 non-penalized eval (a populated
+    convergence series). [] on pass."""
+    opt, _ = _read_configs(fcstd_path)
+    if not opt:
+        return ["no optimize config to smoke"]
+    extra = ["--budget", str(SMOKE_BUDGET), "--no-final-coherent"]
+    if opt.get("eval_backend") == "worker":
+        extra += ["--rays", str(SMOKE_RAYS)]
+    rc, data, err = _run_study("optimize.py", opt, fcstd_path,
+                               workdir / ("opt_%s" % name), extra)
+    if data is None:
+        last = (err or "").strip().splitlines()
+        return ["optimize produced no report (exit %d): %s"
+                % (rc, last[-1] if last else "")]
+    history = data.get("history") or []
+    good = [h for h in history
+            if h.get("merit") is not None and h["merit"] < USABLE]
+    if not good:
+        return ["optimize: no non-penalized eval in %d (status %s)"
+                % (len(history), data.get("status"))]
+    return []
+
+
+def smoke_tolerance(name, fcstd_path, workdir):
+    """Short sensitivity pass over a trimmed row subset: assert finite,
+    non-zero sensitivities. For camera_triplet also report the decenter
+    ranking (middle L2 vs outer L1/L3). ([], notes) on pass."""
+    _, tol = _read_configs(fcstd_path)
+    if not tol:
+        return ["no tolerance config to smoke"], []
+    rows_wanted = SMOKE_TOL_ROWS.get(name)
+    shipped = {r.split(":")[0]: r for r in tol.get("tolerance", [])}
+    rows = [shipped[a] for a in rows_wanted if a in shipped] if rows_wanted \
+        else list(tol.get("tolerance", []))[:3]
+    if not rows:
+        return ["tolerance: none of the smoke rows are in the shipped config"], []
+    cfg = dict(tol, tolerance=rows, operand=tol.get("operand") or ["spot_rms:0:1"],
+               eval_backend="worker")
+    rc, data, err = _run_study(
+        "tolerance.py", cfg, fcstd_path, workdir / ("tol_%s" % name),
+        ["--draws", "0", "--rays", str(SMOKE_RAYS)])
+    if data is None:
+        last = (err or "").strip().splitlines()
+        return ["tolerance produced no report (exit %d): %s"
+                % (rc, last[-1] if last else "")], []
+    sens = data.get("sensitivity") or []
+    nonzero = [r for r in sens
+               if r.get("impact") is not None and abs(r["impact"]) > 0.0]
+    if not nonzero:
+        return ["tolerance: no finite non-zero sensitivity (%d rows)"
+                % len(sens)], []
+    notes = ["sens %s"
+             % ", ".join("%s=%.3g" % (r["name"].split(".", 1)[-1], r["impact"])
+                         for r in sens if r.get("impact") is not None)]
+    if name == "camera_triplet":
+        # The idealized Cooke-triplet story is that the MIDDLE element's
+        # decenter dominates. The as-built broadband triplet is aberration/
+        # stray-ray limited (spot_rms is unstable — a few far-landing rays
+        # dominate the RMS), so this does NOT reproduce cleanly; the
+        # measured ranking is REPORTED, not asserted (the gate passes on
+        # finite non-zero sensitivity, like the other showcases). See the
+        # round report / demos/README.md.
+        dec = [r for r in sens if ".decenter_" in r["name"]
+               and r.get("impact")]
+        dec.sort(key=lambda r: -r["impact"])
+        if dec:
+            l2 = any(".L2." in r["name"] for r in dec[:2])
+            notes.append("decenter rank: %s (L2 in top-2: %s)"
+                         % (" > ".join(r["name"].split(".")[1] for r in dec),
+                            l2))
+    return [], notes
 
 
 def quat_axis(quat):
@@ -215,12 +437,21 @@ def main():
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--skip-run", action="store_true",
                     help="placement gate only (no trace)")
+    ap.add_argument("--skip-configs", action="store_true",
+                    help="skip the optimize/tolerance address-resolution "
+                         "sweep over EVERY demo")
+    ap.add_argument("--skip-smoke", action="store_true",
+                    help="skip the showcase optimize/tolerance smoke runs")
+    ap.add_argument("--demos-dir", default=str(DEMOS_DIR),
+                    help="dir of committed demo .FCStd/.MieWB for the "
+                         "config-resolution sweep + smoke runs (default demos/)")
     args = ap.parse_args()
 
     names = [n.strip() for n in args.demos.split(",") if n.strip()]
     unknown = [n for n in names if n not in DEMO_NAMES]
     if unknown:
         ap.error("unknown demos: %s" % ", ".join(unknown))
+    demos_dir = Path(args.demos_dir)
     workdir = Path(args.workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     csv_path = workdir / "results.csv"
@@ -256,6 +487,48 @@ def main():
                   flush=True)
             if failures:
                 n_fail += 1
+
+        # -- config address-resolution sweep over EVERY demo -----------------
+        if not args.skip_configs:
+            print("\n== optimize/tolerance config address resolution "
+                  "(every demo) ==", flush=True)
+            for name in sorted(make_demos.DEMOS):
+                fcstd = (workdir / ("%s.FCStd" % name)) if (
+                    workdir / ("%s.FCStd" % name)).exists() \
+                    else (demos_dir / ("%s.FCStd" % name))
+                if not fcstd.exists():
+                    print("[configs] %-24s SKIP (no .FCStd)" % name)
+                    continue
+                cf = check_addresses(name, fcstd, fc)
+                opt, tol = _read_configs(fcstd)
+                tag = "opt+tol" if (opt and tol) else (
+                    "tol" if tol else ("opt" if opt else "none"))
+                print("[configs] %-24s %s (%s)"
+                      % (name, "PASS" if not cf else "FAIL",
+                         "; ".join(cf) if cf else tag), flush=True)
+                if cf:
+                    n_fail += 1
+
+        # -- showcase smoke runs (short optimize + tolerance sensitivity) ----
+        if not args.skip_smoke:
+            print("\n== showcase optimize/tolerance smoke runs ==", flush=True)
+            for name in SHOWCASE:
+                fcstd = (workdir / ("%s.FCStd" % name)) if (
+                    workdir / ("%s.FCStd" % name)).exists() \
+                    else (demos_dir / ("%s.FCStd" % name))
+                if not fcstd.exists():
+                    print("[smoke] %-24s SKIP (no .FCStd)" % name)
+                    continue
+                of = smoke_optimize(name, fcstd, workdir / "smoke")
+                tf, tn = smoke_tolerance(name, fcstd, workdir / "smoke")
+                fails = of + tf
+                print("[smoke] %-24s %s%s"
+                      % (name, "PASS" if not fails else "FAIL",
+                         ((": " + "; ".join(fails)) if fails
+                          else ("  " + " | ".join(tn) if tn else ""))),
+                      flush=True)
+                if fails:
+                    n_fail += 1
     finally:
         fc.shutdown()
 

@@ -1,9 +1,10 @@
 # MieWorkbench demo gallery
 
-Thirty-four optical systems (eleven classic instruments, five
+Thirty-eight optical systems (eleven classic instruments, five
 single-physics benches, four analysis/scattering benches, four
-physics-showcase benches, the telephoto pair, a folded periscope, and
-seven pulsed-optics/time-domain benches),
+physics-showcase benches, the telephoto pair, a folded periscope,
+seven pulsed-optics/time-domain benches, and two optimize/tolerance
+showcase objectives),
 each a self-contained `.MieWB` workbench archive (double-click-open in
 the GUI, or run headlessly) plus the bare `.FCStd` scene. All are assembled as **optical trains** by
 `scripts/make_demos.py` (the GUI's own Project/chain op path): every
@@ -27,6 +28,72 @@ oracles live in `demos/baselines/`). `demos/UXNOTES.md` and
 `demos/UXNOTES_ROUND2.md` record the friction found while building these
 through the interface (and the real bugs each exercise caught).
 
+## Optimization & tolerancing
+
+Every demo now **ships pre-configured** for the Optimize and Tolerance
+panes — open either pane on a demo and its tables are already populated
+(nothing has been *run*; the gallery ships configured but unoptimized).
+`scripts/make_demos.py` attaches the configs through the same
+`Project.set_optimize_config` / `set_tolerance_config` the GUI uses (they
+persist as JSON on the `miewb_vars` sheet):
+
+- **Optimize** — where a merit is meaningful, each demo's own global
+  variables (air gaps, spacings, working distances — qualified
+  `miewb_vars.<name>`, bounds = their sweep min/max) drive a merit:
+  `spot_rms` for imagers, `detected_power` for coupling/throughput,
+  `mtf50` where the imaging-analysis products run. The
+  pattern-characterization benches (`airy_singleslit`, `bladed_iris_star`,
+  `gaussian_bench`, `diffuser_speckle`, `aerosol_mie`) and the pure
+  no-variable scenes ship no optimize config (optimization is meaningless
+  there). Airspace optimization runs on the deterministic sequential
+  (Optiland) backend; power/MTF merits on the Monte-Carlo worker backend.
+- **Tolerance** — `Demo.auto_tolerances()` walks each demo's chained
+  elements and emits **commercial-precision** rows (the quoted ± are 2σ;
+  the stored `normal` band is 1σ = half): despace ±0.1 mm on every chained
+  element, decenter ±0.05 mm on refractive elements / apertures /
+  detectors / fibers, tilt ±0.1° on mirrors / beamsplitters / gratings /
+  prisms / lenses, surface-radius ±0.1 % and center-thickness ±0.1 mm on
+  lenses. Sources get no tilt/decenter (symmetric + the first element is
+  fixed). Tolerance studies run on the **worker (MC) backend**: the
+  sequential Optiland backend models an axisymmetric system and reports
+  decenter/tilt impact as identically zero — only the 3D MC trace honours
+  the actual perturbed geometry.
+
+**Showcase stories** (the four `SHOWCASE` demos the gate smoke-runs):
+
+- **`camera_triplet`** — the two air gaps optimize against `spot_rms`; the
+  full tolerance table ranks per-element decenter/despace/tilt. The
+  *idealized* Cooke-triplet lesson is that the middle element's decenter
+  dominates — but the as-built **broadband** triplet is aberration/
+  stray-ray limited (its geometric `spot_rms` is unstable — a few
+  far-landing rays dominate the RMS), so the measured decenter ranking
+  does **not** reproduce that cleanly (the middle element measures *least*
+  sensitive at high ray counts). The gate reports the ranking rather than
+  asserting it; a re-corrected monochromatic triplet or a wavefront
+  (encircled-energy) merit would be needed for the textbook result.
+- **`schmidt_cassegrain`** — the primary→secondary separation `sct_sep`
+  optimizes against `spot_rms`; the tolerance table features the secondary
+  mirror's despace and tilt (the despace-to-focus magnification is the
+  story).
+- **`double_gauss`** — the two symmetric central airspaces optimize
+  against `spot_rms`; the story is that symmetry-breaking decenters
+  dominate a fast near-symmetric objective.
+- **`fiber_coupling_doublet`** — the entry gap + working distance optimize
+  against the coupled `detected_power`; the story is that a lateral
+  decenter of the doublet kills coupling far faster than the same despace.
+
+> **Known limitation (engine-side, out of this round's scope).** A
+> tolerance study with *many* parameters (a full auto-generated table is
+> ~15–30 rows) currently fails to *run* end-to-end: `fast_eval` encodes
+> every parameter value into a single scratch-directory name, which
+> overruns the filesystem's 255-char component limit
+> (`OSError: [Errno 36] File name too long`). The shipped configs all
+> **resolve** (every address is valid — gated below), and studies over a
+> handful of parameters run fine; the fix belongs in
+> `fast_eval._variant` / `common.variant_name` (hash the encoded name when
+> it grows too long). The gate's showcase smoke runs therefore exercise a
+> trimmed row subset.
+
 | Demo | System | What it shows | Detected (of 5 mW, quick preset) |
 |---|---|---|---|
 | `beam_expander` | 3× Keplerian expander: BK7 PCX f=50 + f=150, spacing f1+f2, convex sides out | Collimation preserved, 3× beam diameter; loss = the four uncoated Fresnel surfaces (0.96⁴ ≈ 0.85) | **4.23 mW** |
@@ -40,6 +107,8 @@ through the interface (and the real bugs each exercise caught).
 | `microscope_objective` | Lister-type: two air-spaced achromats (f=25 + f=50, 10 mm apart), finite conjugates, white-light point source | Aberration-corrected imaging of a point source | **2.79 mW** |
 | `fiber_coupler` | 650 nm laser → 2 mm BK7 ball lens (BFL 0.47 mm) → 75 mm of 200 µm/0.22 NA fiber | TIR guiding down the fiber core (~60 bounces; `max_reflections` simparam) | **3.95 mW** at the exit face |
 | `schmidt_cassegrain` | C8-class 203 mm f/10: quartic Schmidt corrector (hand-authored asphere), perforated spherical primary R 812.8, spherical secondary R 231.07, white-light star | Catadioptric folding: corrector → primary → secondary → focus through the primary's hole; loss ≈ two Al bounces + 11 % obstruction | **3.42 mW** |
+| `double_gauss` | Symmetric six-element double-Gauss-form objective (~53 mm focus, f/2.6): outer positive meniscus + cemented BK7/SF5 achromat, iris stop, second achromat + outer meniscus, white-light scene (486–656 nm) | The canonical four-group double-Gauss stack built through the chain; the two central airspaces are optimize variables; symmetry-breaking decenters dominate its tolerance table | **2.24 mW** |
+| `fiber_coupling_doublet` | 660 nm collimated laser → cemented BK7/SF5 f=30 achromat doublet (f/5.6, NA≈0.09) → 200 µm/0.22 NA fiber → exit detector | Doublet coupling into a step-index fiber (TIR-guided); entry gap + working distance optimize the coupled power; decenter kills coupling faster than defocus | **~3 mW** at the exit face |
 
 ### New-physics benches (Phase 12)
 
@@ -336,6 +405,22 @@ reflections cost 21% — set `ideal_folds` to 1 to see the difference).
   table, uniformly rescaled to 50 mm EFL (scale-invariant optics); crowns
   as BK7, flint as SF5 (nearest shipped glasses), sensor plane re-solved
   paraxially for those indices.
+- **Double-Gauss**: design family from W. J. Smith, *Modern Lens Design*
+  (2nd ed., McGraw-Hill 2005), ch. 22 "Double-Gauss / Biotar" — the
+  classic Mandler f/2 50 mm symmetric six-element layout (positive
+  meniscus + cemented crown/flint doublet, stop, doublet + meniscus). The
+  `double_gauss` demo is a **representative construction** to that form
+  (BK7/SF5 doublets from `wizards.solve_achromat`, plausible outer-meniscus
+  radii; not a verbatim patent copy): a symmetric focusing objective whose
+  sensor sits at the offline paraxial focus. A teaching model for the
+  symmetry-breaking-decenter tolerance story, not a corrected commercial
+  prescription.
+- **Fiber-coupling doublet** (`fiber_coupling_doublet`): a cemented BK7/SF5
+  f = 30 mm achromat (`wizards.solve_achromat`, the standard V-number power
+  split) focusing a 6 mm collimated 660 nm beam (f/5.6, cone NA ≈ 0.09)
+  into a 200 µm / 0.22 NA step-index fiber; working distance = the paraxial
+  back focus from the doublet exit vertex. Fiber core index as
+  `fiber_core_na22` (below). A coupling-tolerance teaching model.
 - **Schmidt-Cassegrain**: R. Suiter, "Design of the Schmidt-Cassegrain"
   (bay-astronomers.org), C8-class table; corrector uses the classic
   single-wavelength profile z = K[r⁴ − (3/2)a²r²], K = 1/(4(n−1)R_m³),

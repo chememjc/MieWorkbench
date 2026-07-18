@@ -190,6 +190,14 @@ class Demo:
         self._var_row = 0
         self.detector_pins = []   # [(body_label, beam_dir)] see pin_detector
         self.grating_pins = []    # [(body_label, beam_dir, value)]
+        # a build record the optimize/tolerance study helpers walk: one
+        # dict per add()/chain() call {kind,label,category,params,chained,
+        # distance(raw),nominal(resolved mm)}, in creation order.
+        self.elements = []
+        self._elements_by_label = {}
+        # {miewb_vars name: resolved float value} for eval-ing chain-
+        # distance expressions to a tolerance nominal (train_solver grammar)
+        self.var_values = {}
 
     def note(self, text):
         self.notes.append(text)
@@ -222,6 +230,21 @@ class Demo:
                 req["alias"] = alias
             self.fc.request("set_cell", req)
         self.project._refetch_structure()
+        # remember the resolved value (value may itself be an expression
+        # over earlier variables) so auto_tolerances can resolve a chain-
+        # distance expression to a numeric nominal
+        try:
+            from train_solver import eval_expr
+            self.var_values[name] = eval_expr(value, dict(self.var_values))
+        except Exception:
+            try:
+                self.var_values[name] = float(value)
+            except (TypeError, ValueError):
+                pass
+        # remember sweep bounds so optimize() can use them as var bounds
+        self._var_bounds = getattr(self, "_var_bounds", {})
+        if vmin is not None and vmax is not None:
+            self._var_bounds[name] = (float(vmin), float(vmax))
         return name
 
     # -- element creation ------------------------------------------------------
@@ -244,6 +267,12 @@ class Demo:
         for key, value in (props or {}).items():
             body, prop = key if isinstance(key, tuple) else (label, key)
             self.project.set_property(body, prop, value)
+        rec = {"kind": kind, "label": label,
+               "category": primitivelib.PRIMITIVES[kind].get("category", ""),
+               "params": dict(params or {}), "props": dict(props or {}),
+               "chained": False, "distance": None, "nominal": 0.0}
+        self.elements.append(rec)
+        self._elements_by_label[label] = rec
         return label
 
     def add(self, kind, label, pos=(0.0, 0.0, 0.0), rot_deg=None, quat=None,
@@ -274,6 +303,18 @@ class Demo:
         for k, v in edge.items():
             full[k] = _expr(v) if not isinstance(v, bool) else v
         self.project.set_chain(label, full, text="Chain %s" % label)
+        rec = self._elements_by_label.get(label)
+        if rec is not None:
+            rec["chained"] = True
+            rec["distance"] = distance
+            try:
+                from train_solver import eval_expr
+                rec["nominal"] = eval_expr(distance, dict(self.var_values))
+            except Exception:
+                try:
+                    rec["nominal"] = float(distance)
+                except (TypeError, ValueError):
+                    rec["nominal"] = 0.0
         return label
 
     def fold_mirror(self, label, ref, distance, deviation=90.0,
@@ -325,6 +366,125 @@ class Demo:
         --grating CLI override (which takes precedence) on the face
         resolved post-save from the beam direction."""
         self.grating_pins.append((label, tuple(beam_dir), value))
+
+    # -- optimize / tolerance study configs ------------------------------------
+    def optimize(self, operands, variables, algorithm="local", budget=40,
+                 preset="quick", eval_backend="worker", tol=1e-3,
+                 no_final_coherent=False, rays=None):
+        """Store an OptimizePane-shaped config() dict on the miewb_vars
+        sheet (Project.set_optimize_config), so a reopened scene's
+        Optimize pane pre-populates via apply_config(). `variables` are
+        'name:start:lo:hi' spec strings (names SHEET-QUALIFIED
+        miewb_vars.<n> or the train.<El>.<field> form); `operands` are
+        'operand[@detector]:target:weight' specs (cli_specs grammar).
+        Nothing is run here — the demo ships CONFIGURED, unoptimized."""
+        cfg = {"var": list(variables), "operand": list(operands),
+               "algorithm": algorithm, "budget": int(budget),
+               "tol": float(tol), "preset": preset,
+               "eval_backend": eval_backend,
+               "no_final_coherent": bool(no_final_coherent)}
+        if rays:
+            cfg["rays"] = float(rays)
+        self.project.set_optimize_config(cfg)
+        return cfg
+
+    def tolerance(self, rows, operands, draws=50, mc_seed=42,
+                  sens_delta=1.0, skip_sensitivity=False, hist_bins=20,
+                  preset="quick", eval_backend="worker", compensator=None,
+                  comp_budget=10, merit_threshold=None, rays=None):
+        """Store a TolerancePane-shaped config() dict (Project.
+        set_tolerance_config). `rows` are 'name:nominal:dist:band' specs;
+        `operands` as optimize()."""
+        cfg = {"tolerance": list(rows), "operand": list(operands),
+               "draws": int(draws), "mc_seed": int(mc_seed),
+               "sens_delta": float(sens_delta),
+               "skip_sensitivity": bool(skip_sensitivity),
+               "hist_bins": int(hist_bins), "preset": preset,
+               "eval_backend": eval_backend}
+        if merit_threshold is not None:
+            cfg["merit_threshold"] = float(merit_threshold)
+        if compensator is not None:
+            cfg["compensator"] = compensator
+            cfg["comp_budget"] = int(comp_budget)
+        if rays:
+            cfg["rays"] = float(rays)
+        self.project.set_tolerance_config(cfg)
+        return cfg
+
+    # commercial-precision default tolerances (the quoted +/- are the 2-sigma
+    # band; the stored 'normal' band field is 1-sigma = half — see cli_specs
+    # parse_tolerance_spec) and the per-category DOF policy:
+    _RADIUS_ALIASES = ("R_front", "R_back", "R", "R_iface", "roc")
+    _THICKNESS_ALIASES = ("ct", "ct_crown", "ct_flint")
+    # lateral decenter: refractive elements, apertures, detectors, the fiber
+    # coupling target — NOT sources (a divergent/collimated source's transverse
+    # shift is degenerate with the whole train and the first element is fixed)
+    _DECENTER_CATS = ("Lenses", "Apertures", "Detectors", "Fiber Optics")
+    # tilt: mirrors/beamsplitters/gratings/prisms (worst offenders) + refractive
+    _TILT_CATS = ("Lenses", "Prisms & Mirrors", "Beamsplitters",
+                  "Polarization")
+
+    def auto_tolerances(self, operands, despace_pm=0.1, decenter_pm=0.05,
+                        tilt_pm=0.1, radius_rel=0.001, ct_pm=0.1, dims=True,
+                        skip=(), extra_rows=(), **tol_kw):
+        """Generate commercial-precision per-element tolerance rows by
+        walking the demo's CHAINED elements and store them via
+        tolerance(). Skip rules (physically meaningless DOFs are omitted):
+
+          * despace  train.<El>.distance  +/-0.1 mm  — every chained
+            element (its axial position is always a real DOF);
+          * decenter train.<El>.decenter_x/y +/-0.05 mm — refractive
+            elements, apertures, detectors, fiber (never sources: the
+            first element is fixed and a symmetric source shift is
+            degenerate);
+          * tilt     train.<El>.tilt_rx/ry +/-0.1 deg — mirrors, beam-
+            splitters, gratings, prisms (dominant) and refractive lenses
+            (never rotationally-symmetric sources / plain detectors);
+          * dims     dim_<El>.<radius>  +/-0.1 % (relative -> absolute
+            band from the nominal) and dim_<El>.<ct> +/-0.1 mm — lens-
+            like primitives only, and only for aliases the demo actually
+            set to a NUMERIC value (a variable-driven / expression cell
+            has no static nominal, so it is left out).
+
+        Quoted +/- are 2-sigma; the stored normal band is 1-sigma = half.
+        `skip` is a set of element labels to exclude; `extra_rows` are
+        literal spec strings appended. Returns the stored config, or None
+        when no rows were generated (an add()-only, chain-less demo)."""
+        rows = []
+        skip = set(skip)
+
+        def add_row(name, nominal, band):
+            if band > 0:
+                rows.append("%s:%.10g:normal:%.10g" % (name, nominal, band))
+
+        for rec in self.elements:
+            if not rec["chained"] or rec["label"] in skip:
+                continue
+            el, cat = rec["label"], rec["category"]
+            add_row("train.%s.distance" % el, rec["nominal"], despace_pm / 2.0)
+            if cat in self._DECENTER_CATS:
+                add_row("train.%s.decenter_x" % el, 0.0, decenter_pm / 2.0)
+                add_row("train.%s.decenter_y" % el, 0.0, decenter_pm / 2.0)
+            if cat in self._TILT_CATS or rec["kind"] == "grating_plate":
+                add_row("train.%s.tilt_rx" % el, 0.0, tilt_pm / 2.0)
+                add_row("train.%s.tilt_ry" % el, 0.0, tilt_pm / 2.0)
+            if dims and cat == "Lenses":
+                for alias, value in rec["params"].items():
+                    if isinstance(value, str):
+                        continue           # expression cell — no static nominal
+                    try:
+                        val = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if alias in self._RADIUS_ALIASES:
+                        add_row("dim_%s.%s" % (el, alias), val,
+                                radius_rel * abs(val) / 2.0)
+                    elif alias in self._THICKNESS_ALIASES:
+                        add_row("dim_%s.%s" % (el, alias), val, ct_pm / 2.0)
+        rows.extend(extra_rows)
+        if not rows:
+            return None
+        return self.tolerance(rows, operands, **tol_kw)
 
     def save(self):
         # run the chain validator first: a demo must never ship with a
@@ -2191,6 +2351,141 @@ def demo_bladed_iris_star(d):
     return {"preset": "quick", "save_fields": True, "nlambda": 1}
 
 
+def demo_double_gauss(d):
+    """Symmetric SIX-element double-Gauss-form objective (design family:
+    W. Smith, *Modern Lens Design*, 2nd ed., McGraw-Hill 2005, ch. 22
+    "Double-Gauss / Biotar"; the classic Mandler f/2 50 mm layout). Built
+    THROUGH THE CHAIN from catalog primitives as the canonical four-group
+    stack straddling the aperture stop: an outer positive meniscus, a
+    cemented BK7/SF5 achromat (a single nested crown+flint solid — the
+    optical-contact rule, CLAUDE.md), the iris stop, a second cemented
+    achromat, and a second outer meniscus (six glass elements total). The
+    two symmetric central airspaces `air_front`/`air_rear` (stop-flanking)
+    are live variables optimized against spot_rms. Radii/thicknesses are
+    a representative construction to the double-Gauss form (not a verbatim
+    patent copy); the sensor sits at the offline paraxial focus. STORY:
+    the tolerance sensitivity ranks the symmetry-BREAKING element
+    decenters above the despaces — a fast near-symmetric system is
+    alignment-limited, not spacing-limited."""
+    lam = 587.6
+    # outer positive meniscus (convex toward the object): R_front < R_back
+    men = {"R_front": 34.0, "R_back": 64.0, "ct": 5.0}
+    ach = solve_achromat(55.0)          # crown/flint cemented doublet
+    ap = 20.0
+    a1 = 3.0                            # meniscus <-> doublet air gap
+    stop_ct = 0.5
+    air_front = 8.0                    # front doublet -> stop (variable)
+    air_rear = 8.0                    # stop -> rear doublet (variable)
+    ach_ap = {k: ach[k] for k in ("R_front", "R_iface", "R_back",
+                                  "ct_crown", "ct_flint")}
+    ach_ap["aperture"] = ap
+    # exact doublet exit vertex (includes the 5 um cemented interface gap)
+    ct_dob = primitivelib.port_frames("lens_achromat", ach_ap)["exit"][0]
+
+    def men_surf(x0):
+        return [(x0, men["R_front"], None, "bk7"),
+                (x0 + men["ct"], men["R_back"], "bk7", None)]
+
+    def ach_surf(x0):
+        return [(x0, ach["R_front"], None, "bk7"),
+                (x0 + ach["ct_crown"], ach["R_iface"], "bk7", "sf5"),
+                (x0 + ct_dob, ach["R_back"], "sf5", None)]
+
+    # absolute front vertices in beam order
+    x_L1 = 0.0
+    x_D1 = x_L1 + men["ct"] + a1
+    x_stop = x_D1 + ct_dob + air_front
+    # the iris exit port is its FRONT vertex (thin plug), so the stop adds
+    # no axial offset to the chained rear group (matches camera_triplet)
+    x_D2 = x_stop + air_rear
+    x_L4 = x_D2 + ct_dob + a1
+    x_L4_exit = x_L4 + men["ct"]
+    surfaces = (men_surf(x_L1) + ach_surf(x_D1) + ach_surf(x_D2)
+                + men_surf(x_L4))
+    x_img = paraxial_image_x(surfaces, float("-inf"), lam)
+
+    d.variable("air_front", air_front, 5.0, 12.0, 5,
+               comment="front doublet back vertex -> stop, mm")
+    d.variable("air_rear", air_rear, 5.0, 12.0, 5,
+               comment="stop -> rear doublet front vertex, mm")
+    men_p = dict(men, aperture=ap)
+    ach_p = dict(ach_ap)
+    d.add("laser_collimated", "Scene", pos=(-20, 0, 0),
+          params={"diameter": 16.0},
+          props={"lambdac": lam, "lambdamin": 486.0, "lambdamax": 656.0,
+                 "coherent": False})
+    d.chain("lens_meniscus", "L1", "Scene", 20.0, params=men_p)
+    d.chain("lens_achromat", "D1", "L1", a1, params=dict(ach_p))
+    d.chain("iris", "Stop", "D1", "air_front",
+            params={"outer_diameter": 26.0, "thickness": stop_ct,
+                    "hole_diameter": ap - 2.0})
+    d.chain("lens_achromat", "D2", "Stop", "air_rear", params=dict(ach_p))
+    d.chain("lens_meniscus", "L4", "D2", a1, params=men_p)
+    d.chain("detector_plane", "Sensor", "L4",
+            "%.10g" % (x_img - x_L4_exit),
+            params={"width": 24.0, "height": 24.0, "round_flag": 0})
+    d.expect("L1", (x_L1, 0, 0))
+    d.expect("D1", (x_D1, 0, 0))
+    d.expect("Stop", (x_stop, 0, 0))
+    d.expect("D2", (x_D2, 0, 0))
+    d.expect("L4", (x_L4, 0, 0))
+    d.expect("Sensor", (x_img, 0, 0))
+    d.note("double_gauss: symmetric 6-element double-Gauss form; the two "
+           "central airspaces are optimize variables; paraxial focus %.2f "
+           "mm (f/%.1f)" % (x_img, x_img / ap))
+    return {"preset": "quick"}
+
+
+def demo_fiber_coupling_doublet(d):
+    """660 nm collimated laser -> cemented BK7/SF5 achromat doublet ->
+    200 um / 0.22 NA step-index fiber (TIR-guided) -> exit detector. The
+    doublet (lens_achromat = a single nested crown+flint solid, per
+    CLAUDE.md's optical-contact rule) focuses the f~5 cone into the fiber
+    core; the exit-face detector reads the COUPLED power. Both airspaces
+    -- `entry_gap` (laser -> doublet) and `work_dist` (doublet -> fiber
+    entrance) -- are live variables optimized against detected_power. The
+    source is coherent=False (direct geometric deposit -- the focused-spot
+    coherent-gather trap, CLAUDE.md). STORY: a lateral decenter of the
+    doublet drops the coupled power far faster than the same despace --
+    coupling is decenter-limited."""
+    lam = 660.0
+    ach = solve_achromat(30.0)          # f = 30 mm doublet
+    ap = 10.0
+    beam = 6.0
+    ach_p = {k: ach[k] for k in ("R_front", "R_iface", "R_back",
+                                 "ct_crown", "ct_flint")}
+    ach_p["aperture"] = ap
+    exit_v = primitivelib.port_frames("lens_achromat", ach_p)["exit"][0]
+    surfaces = [
+        (0.0, ach["R_front"], None, "bk7"),
+        (ach["ct_crown"], ach["R_iface"], "bk7", "sf5"),
+        (ach["ct_crown"] + ach["ct_flint"], ach["R_back"], "sf5", None),
+    ]
+    x_focus = paraxial_image_x(surfaces, float("-inf"), lam)
+    work = x_focus - exit_v            # doublet exit vertex -> focus
+    d.variable("entry_gap", 6.0, 2.0, 12.0, 6,
+               comment="laser exit -> doublet front vertex, mm")
+    d.variable("work_dist", work, work * 0.5, work * 1.5, 7,
+               comment="doublet exit vertex -> fiber entrance, mm")
+    d.add("laser_collimated", "Laser", pos=(-6, 0, 0),
+          params={"diameter": beam, "length": 5.0},
+          props={"lambdac": lam, "coherent": False})
+    d.chain("lens_achromat", "Doublet", "Laser", "entry_gap",
+            params=dict(ach_p))
+    d.chain("fiber_optic", "Fiber", "Doublet", "work_dist",
+            params={"length": 60.0})
+    d.chain("detector_plane", "Coupled", "Fiber", 0.5,
+            params={"width": 2.0, "round_flag": 0})
+    d.expect("Doublet", (0, 0, 0))
+    d.expect("Fiber", (x_focus, 0, 0))
+    d.expect("Coupled", (x_focus + 60.0 + 0.5, 0, 0))
+    d.note("fiber_coupling_doublet: f=30 achromat couples a Ø%.0f mm beam "
+           "(f/%.1f, NA~%.2f) into the 0.22-NA fiber; work_dist=%.2f mm is "
+           "the back working distance." % (beam, x_focus / beam,
+                                           beam / (2.0 * x_focus), work))
+    return {"preset": "quick", "max_reflections": 200}
+
+
 DEMOS = {
     "bladed_iris_star": demo_bladed_iris_star,
     "sc_spectrogram": demo_sc_spectrogram,
@@ -2228,7 +2523,150 @@ DEMOS = {
     "fiber_coupler": demo_fiber_coupler,
     "schmidt_cassegrain": demo_schmidt_cassegrain,
     "instrument_bench": demo_instrument_bench,
+    "double_gauss": demo_double_gauss,
+    "fiber_coupling_doublet": demo_fiber_coupling_doublet,
 }
+
+
+# ---------------------------------------------------------------------------
+# optimize / tolerance study policy (applied to EVERY demo after its build,
+# before save — the gallery ships CONFIGURED but UNOPTIMIZED)
+# ---------------------------------------------------------------------------
+# Per demo: {"opt": (merit, detector, [miewb_vars names]) | None,
+#            "tol": (merit, detector)}.  optimize is emitted only when a
+# demo has meaningful design variables AND the merit fits (imaging ->
+# spot_rms / mtf50; coupling & throughput -> detected_power; the pattern-
+# characterization demos get NO optimize).  auto_tolerances runs for every
+# entry; it self-skips (stores nothing) when a demo has no chained element.
+# Merit detectors are the demo's real detector labels.  Merit choices for
+# non-imaging systems are illustrative — see demos/README.md.
+DEMO_STUDIES = {
+    # -- imaging systems: spot_rms --------------------------------------------
+    "beam_expander": {"opt": ("spot_rms", "Eyepiece", ["sep", "eye_dist"]),
+                      "tol": ("spot_rms", "Eyepiece")},
+    "newtonian": {"opt": None, "tol": ("spot_rms", "Eyepiece")},
+    "dobsonian": {"opt": None, "tol": ("spot_rms", "Eyepiece")},
+    "prism_spectrometer": {"opt": ("spot_rms", "Screen",
+                                   ["cam_dist", "det_dist"]),
+                           "tol": ("spot_rms", "Screen")},
+    "czerny_turner": {"opt": ("spot_rms", "Screen",
+                              ["arm_coll", "arm_cam", "det_arm"]),
+                      "tol": ("spot_rms", "Screen")},
+    "camera_triplet": {"opt": ("spot_rms", "Sensor", ["air12", "air23"]),
+                       "tol": ("spot_rms", "Sensor")},   # SHOWCASE
+    "microscope_objective": {"opt": ("spot_rms", "Image",
+                                     ["obj_dist", "ach_gap"]),
+                             "tol": ("spot_rms", "Image")},
+    # reflective folded system -> the sequential/Optiland backend can't
+    # build it (all evals penalize); optimize on the worker (MC) backend
+    "schmidt_cassegrain": {"opt": ("spot_rms", "Focus", ["sct_sep"]),
+                           "opt_backend": "worker",
+                           "tol": ("spot_rms", "Focus")},   # SHOWCASE
+    "imaging_analysis": {"opt": ("mtf50", "Sensor", ["air12", "air23"]),
+                         "tol": ("spot_rms", "Sensor")},
+    "telephoto": {"opt": ("spot_rms", "Collimated", ["efl"]),
+                  "tol": ("spot_rms", "Collimated")},
+    "telephoto_zoom": {"opt": ("spot_rms", "Sensor", ["z"]),
+                       "tol": ("spot_rms", "Sensor")},
+    "curved_focal": {"opt": None, "tol": ("spot_rms", "CurvedDet")},
+    "curved_focal_surface": {"opt": None, "tol": ("spot_rms", "FlatDet")},
+    "double_gauss": {"opt": ("spot_rms", "Sensor",
+                             ["air_front", "air_rear"]),
+                     "tol": ("spot_rms", "Sensor")},   # SHOWCASE (new)
+    # -- coupling / throughput: detected_power --------------------------------
+    "michelson": {"opt": ("detected_power", "Screen",
+                          ["arm1", "arm2", "screen_arm"]),
+                  "tol": ("detected_power", "Screen")},
+    "michelson_folded": {"opt": ("detected_power", "Screen",
+                                 ["arm1", "arm2", "screen_arm"]),
+                         "tol": ("detected_power", "Screen")},
+    "fiber_coupler": {"opt": ("detected_power", "Exit", ["exit_gap"]),
+                      "tol": ("detected_power", "Exit")},
+    "folded_periscope": {"opt": ("detected_power", "Exit", ["arm"]),
+                         "tol": ("detected_power", "Exit")},
+    "tof_rangefinder": {"opt": ("detected_power", "DetReturn",
+                                ["range_mm"]),
+                        "tol": ("detected_power", "DetReturn")},
+    "multiled_photometry": {"opt": None,
+                            "tol": ("detected_power", "TargetLux")},
+    "shg_green_bench": {"opt": None, "tol": ("detected_power", "DetGreen")},
+    "instrument_bench": {"opt": None, "tol": ("detected_power", "DetPower")},
+    "fiber_coupling_doublet": {"opt": ("detected_power", "Coupled",
+                                       ["entry_gap", "work_dist"]),
+                               "tol": ("detected_power", "Coupled")},  # NEW
+    # -- pattern-characterization & specialty: tolerance-only -----------------
+    "airy_singleslit": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "bladed_iris_star": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "gaussian_bench": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "diffuser_speckle": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "aerosol_mie": {"opt": None, "tol": ("spot_rms", "Forward")},
+    "ktp_walkoff": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "ghost_doublet": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "scatter_plate": {"opt": None, "tol": ("spot_rms", "DetRefl")},
+    "stokes_polarimeter": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "biaxial_conoscopy": {"opt": None, "tol": ("spot_rms", "Figure")},
+    "sc_spectrogram": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "erfiber_spm": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "fs_lens_telescope": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "fs_oap_telescope": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "treacy_compressor": {"opt": None, "tol": ("spot_rms", "Screen")},
+}
+
+# operands evaluable on the deterministic sequential (Optiland) backend —
+# the rest (detected_power, mtf50) need the MC worker backend
+_SEQ_MERITS = {"spot_rms", "focus", "encircled_energy"}
+
+
+def _study_backend(merit):
+    return "sequential" if merit in _SEQ_MERITS else "worker"
+
+
+def _operand_spec(merit, detector=None):
+    """A cli_specs 'OPERAND:TARGET:WEIGHT' spec (target 0, weight 1:
+    spot_rms/mtf50 minimize toward 0, detected_power maximizes). Operands
+    are stored UNQUALIFIED (no @detector): the report labels detectors by
+    ELEMENT label on the sequential/Optiland backend but by FACE PATH
+    (e.g. 'Sensor.Sensor_pad.Face5') on the worker/MC backend, so a
+    qualifier would bind to one backend only. The demo detector name is
+    kept in DEMO_STUDIES for documentation; every demo here has a single
+    meaningful detector, so the unqualified aggregate is exactly it. A
+    user can re-qualify in the pane."""
+    return "%s:0:1" % merit
+
+
+def apply_studies(demo, name):
+    """Attach the demo's optimize + tolerance configs (DEMO_STUDIES) to the
+    just-built scene, before save. Runs nothing — only stores configs the
+    Optimize/Tolerance panes reopen via apply_config()."""
+    study = DEMO_STUDIES.get(name)
+    if study is None:
+        return
+    opt = study.get("opt")
+    if opt:
+        merit, det, varnames = opt
+        bounds = getattr(demo, "_var_bounds", {})
+        specs = []
+        for vn in varnames:
+            val = demo.var_values.get(vn)
+            bnd = bounds.get(vn)
+            if val is None or bnd is None:
+                continue
+            lo, hi = bnd
+            start = min(max(val, lo), hi)
+            specs.append("miewb_vars.%s:%.10g:%.10g:%.10g"
+                         % (vn, start, lo, hi))
+        if specs:
+            backend = study.get("opt_backend") or _study_backend(merit)
+            demo.optimize([_operand_spec(merit, det)], specs,
+                          eval_backend=backend)
+    tol = study.get("tol")
+    if tol:
+        merit, det = tol
+        # tolerance studies ALWAYS use the worker (MC) backend: auto rows
+        # include decenter/tilt, which the sequential/Optiland backend
+        # models as an axisymmetric system and reports as zero impact.
+        # Only the 3D MC trace honours the actual perturbed geometry.
+        demo.auto_tolerances([_operand_spec(merit)], eval_backend="worker")
 
 
 def _resolve_front_face(model, label, beam_dir):
@@ -2325,6 +2763,7 @@ def build_demo(name, outdir, pack=True):
     try:
         demo = Demo(fc, fcstd)
         simparams = DEMOS[name](demo)
+        apply_studies(demo, name)
         demo.save()
     finally:
         fc.shutdown()
