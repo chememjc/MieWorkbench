@@ -23,10 +23,13 @@ Layout: `scripts/` engine + pipeline + tools · `scripts/fcserver/` headless
 FreeCAD worker · `mieworkbench/` the GUI package (`core/` logic, `panes/`
 dock widgets, `widgets/` VTK, `tests/`) · `opticalproperties/` property
 library · `primitives/` parametric element library · `basemodels/` test
-scenes · `demos/` 35 classic-system `.MieWB` galleries — benchmark set is
+scenes · `demos/` 42 classic-system `.MieWB` galleries — benchmark set is
 11 scenes, 15 designs have committed baselines (coherent-diffraction
 characterization demos like `airy_singleslit`/`bladed_iris_star` are gated
-by their pattern tests, not the placement/power oracle) — (built by
+by their pattern tests, not the placement/power oracle) — incl.
+`fizeau_flats`/`fs_shg_spectrogram`/`quartz_rotator`/`speckle_mie_combo`
+(coherent ghost fringes / fs SHG+dispersion time products / gyrotropic
+Berreman rotation / coherent Mie speckle) — (built by
 `scripts/make_demos.py` through the Project/chain op path; `demos/README.md`
 has prescriptions+citations, `demos/UXNOTES.md` + `demos/UXNOTES_ROUND2.md`
 the shakedown logs; `demos/baselines/` committed placement+power oracles
@@ -414,6 +417,8 @@ promote entries to the repo (system) library.
 - **train_solver.py must stay pure stdlib** (FreeCAD's python has no
   numpy) and `reflect_matrix` (det=-1) must NEVER touch a Placement —
   fold placements use the proper `fold_rotation` about the fold line.
+- GUI features are verified interactively via `scripts/tools/gui_verify.py`
+  (`xvfb-run`) — screenshots per scenario; run it before closing GUI work.
 
 ## Physics invariants pinned by tests (don't break them)
 

@@ -15,6 +15,21 @@ just that body, and (re-)connects to the `Project` so a reshape/move/
 property edit of the shown body refreshes the view automatically — no
 need to call `set_body()` again after every edit.
 
+## Multi-body elements
+
+A single-body element routes straight to `set_body` (its one body IS the
+face-selection surface). A **multi-body element** (or an empty
+selection) routes to `set_element(project, element, bodies)` instead: the
+3D view is blanked and swapped for a neutral state — a hint line
+("Element *Name* — *N* bodies. Pick one to inspect it." or "No element
+selected.") over a clickable **member list** (`MemberListWidget`, shared
+with the [Element Editor](element-editor.md)). Clicking a member is an
+explicit **sub-selection** of that one body — it routes through the
+shared `SelectionModel` with a distinct origin so the dispatcher treats
+it as a sub-selection rather than re-expanding back to the whole element,
+then behaves exactly like a single-body element (`set_body`). Face
+picking on a single body is otherwise unchanged.
+
 ## How to use it
 
 - Click a face to select it; **Shift+click** extends, **Ctrl+click**

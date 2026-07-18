@@ -25,21 +25,38 @@ actor.
 - **Fit** resets the camera to frame the whole scene; **+X/-X/+Y/+Z**
   toolbar buttons snap to an axis-aligned view.
 - **Click** a face to select it — `Scene3DPane` only selects whole
-  *elements* (the hit body highlights in full); face-level selection for
-  editing lives in the [Inspector](inspector.md), not here.
+  *elements*: clicking **any** member body of a multi-body element (a
+  `miewb_group`) highlights **every** member's faces, not just the body
+  that was hit. Face-level selection for editing lives in the
+  [Inspector](inspector.md), not here.
   - **Shift+click** extends the selection (adds without removing).
   - **Ctrl+click** toggles one face's membership.
   - A plain click on empty space clears the selection; a modified
     (Shift/Ctrl) click on empty space leaves it untouched.
+  - **Sub-selecting one member body** of a multi-body element is done
+    elsewhere, never by clicking in this view: an [outliner](outliner.md)
+    child row, or a click in the [Inspector](inspector.md)/
+    [Element Editor](element-editor.md)'s member list.
+  - **Clear selection** — the toolbar button on the 3D-view row, **Esc**,
+    or **Edit → Clear Selection** — deselects everything. Selection-
+    dependent actions (Copy, Delete, Clear itself, the Transform panel's
+    operations) disable automatically when nothing is selected.
 - **Rays** toggle button shows/hides the loaded ray overlay
   (`results/viz/rays.vtp`); if nothing is loaded yet, checking it emits
   `raysPreviewRequested` (the orchestrator runs one).
-- **View → Face Orientation Indicators**: red half-disc = source
-  emit-face / detector detect-face; blue dot = optic body-local +x face;
-  green dot = aperture (slit/iris/pinhole) body-local +x face. Visual
-  only, never traced — uses tessellation-time `normal_hint`
-  (FreeCAD's `normalAt()`), **not** the physics contract's
+- **View → Face Orientation Indicators** (also on the main toolbar, with
+  the same checked-highlight style as other toolbar toggles — a
+  translucent tint derived from the palette's Highlight color): red
+  half-disc = source emit-face / detector detect-face; blue dot = optic
+  body-local +x face; green dot = aperture (slit/iris/pinhole) body-local
+  +x face. Visual only, never traced — uses tessellation-time
+  `normal_hint` (FreeCAD's `normalAt()`), **not** the physics contract's
   `orientation_outward`.
+- **Absorbing aperture stops** render **opaque near-black** instead of
+  the usual glassy-blue optic look: an iris/bladed-iris/pinhole/slit body
+  with `absorbance >= 0.5`, `material` not `air`, and no `mirror`
+  property (`widgets/vtkview.body_style`/`_ABSORBER_STYLE`). Sources and
+  detectors never darken this way regardless of `absorbance`.
 - **Scale bar**: adaptive mm/µm bottom-right overlay, toggleable via
   `set_scale_bar_visible`.
 - **Train ghosting**: excluded bodies (an unfolded fold mirror's

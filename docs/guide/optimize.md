@@ -90,6 +90,34 @@ line plot — same data API either way. Evaluations with `merit >=
 PENALTY_FLOOR (1e8)` are excluded from axis scaling so one failed
 candidate can't flatten the plot.
 
+**Hover** a point for a tooltip (`format_point_tooltip`): `eval N —
+merit M (rank R)` plus one `name = value` line per design variable at
+that evaluation, R a **dense** rank (1,2,2,3 — ties share a rank, the
+next distinct merit takes the next integer) over every non-penalized
+point. **Right-click → "Show data…"** opens a non-modal table (`eval# |
+<variables…> | merit | rank`) with an **Export CSV…** button
+(`plot_inspect.DataTableDialog`, shared with Tolerance). A small overlay
+label on the plot shows the running **penalized-evaluation count**
+(`penalized_count()` — evals whose merit hit `PENALTY_FLOOR`, kept out
+of the plotted series and the rank computation).
+
+## Apply optimum
+
+Enabled once a run finishes with a real (non-penalized) best merit and
+recorded params — disabled again on Stop/Run start or a penalty-only
+result. Writes `best_params` back into the open scene through
+`Project.apply_parameter_values` as **one undoable action**, routing
+each address through the matching document API: `miewb_vars.<name>` (or
+a bare variables-sheet name) → the global variable cell;
+`sheetlabel.alias` → that primitive's `dim` sheet cell, followed by a
+rebuild of its group; `train.<Element>.<field>` → the chained element's
+`MieTrain` pose field, followed by the train's rigid re-solve. Every
+address is validated **before** anything is written, so a bad one (an
+unknown variable, a missing alias, an **expression-bound dim cell**, a
+non-chained train element) raises and changes nothing — it does not
+silently revert the way a plain placement edit would. On success the
+Start column of the variable table refreshes to the applied values.
+
 ## Failure banner
 
 A styled, word-wrapped, non-modal `QLabel` (hidden by default) surfaces

@@ -26,8 +26,9 @@ slower by 1/n automatically (same geometry, larger opl window).
 
 **View → Tracer Bead Animation** (also the toolbar's first button) is one
 checkable action shared by the menu and toolbar (Qt keeps both in sync).
-Enabling it is required before anything else is available — it also gates
-on an overlay actually being loaded.
+Enabling it is required before anything else is available — see
+**Self-sufficient enable** below for what happens when there's nothing to
+animate yet.
 
 - **Play / Pause / Stop / Step** — Stop rewinds every bead to the sources
   at t = 0; Step advances exactly one frame (`speed ÷ fps` mm of vacuum
@@ -35,8 +36,47 @@ on an overlay actually being loaded.
 - **Bead** (radius, mm), **Speed** (mm/s — "mm of ray path per real
   second for a bead in vacuum"; beads in glass move slower by 1/n), **FPS**
   (5/10/15/24/30).
+- **Cap** (`anim_ray_cap`, default 300): max animated rays per source —
+  viz segments carry no ray id, so this is a render cap, not a trace cap.
+  In the default "off" opacity mode it keeps the first N rays by index;
+  in **By power** mode it keeps the **brightest** beads per source
+  instead (leading-wavefront beads are always kept, even past the cap —
+  see below).
 - **Bead opacity**: **Opaque** (default, bit-identical to pre-feature
   behavior) or **By power** — see below.
+
+## Self-sufficient enable
+
+Toggling the enable action on no longer just gates on an overlay already
+being loaded. If there's nothing to animate — no segments yet, or the
+loaded overlay is stale — enabling generates a fresh ray preview
+automatically, using the configured [Ray Preview pattern](#ray-preview-configuration)
+(the status bar shows "Generating ray preview…" while it runs). Beads
+park **paused at t = 0** the instant the fresh segments land; enabling
+never auto-plays. Only when a project isn't open, or a run/preview is
+already in flight, does it fall back to the old informational warning.
+
+This also means animation now works out of the box on on-axis
+(sequential/Optiland preview) systems: the sequential preview path emits
+per-segment optical-path (`opl0`/`opl1`) timing data, so enabling
+animation on a scene like `telephoto_zoom` no longer errors "rays predate
+timing data" — it just animates. A ray overlay cached from before this
+fix (sequential rows with no `opl` columns) still has no timing data;
+regenerate it (any manual or auto preview overwrites the cache).
+
+## Ray Preview configuration
+
+The pattern used both by self-sufficient enable above and by **Live ray
+preview…** is one `--viz-pattern` spec, edited on **Simulation Settings ▸
+Ray Preview** tab (`PreviewConfigWidget`): a **Fan** (rays per source,
+`fan:n=<K>`) or **Rings** (spacing / rays-per-ring / ring count,
+`rings:dr=<mm>:nper=<N>[:nrings=<K>]`) form. It persists **per document**
+(`Project.set_preview_config`/`get_preview_config`, document property
+`miewb_preview_config`, travels with the `.FCStd`/`.MieWB`); with no
+document config it falls back to this install's last-used spec
+(QSettings), then the app default `fan:n=5`. The manual **Live ray
+preview…** dialog pre-fills its text field with the resolved spec, and
+accepts a bare integer as shorthand for `fan:n=<int>`.
 
 ## Bead opacity ("By power" mode)
 

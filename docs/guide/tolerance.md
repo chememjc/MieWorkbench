@@ -74,14 +74,23 @@ draws (a failed evaluation counts as a failed unit).
 ## Live result views
 
 Mirrors Optimize's plotting: `QtCharts` when importable, else a
-dependency-free `QPainter` fallback.
+dependency-free `QPainter` fallback. Both charts share Optimize's hover +
+right-click "Show data…" (non-modal table with an **Export CSV…**
+button, `plot_inspect.DataTableDialog`).
 
 - **Sensitivity bar chart** — ranked by impact, fed by the run's
   `phase="sensitivity_done"` progress event (a compact ranked table).
-- **Yield histogram** — the Monte-Carlo merit distribution, fed
-  incrementally per draw (`draw`/`draws`/`merit`/yield-so-far`/`params`
+  Still bars; hover shows a `name — impact I (derivative D)` tooltip,
+  right-click → Show data opens `name | impact | derivative | rank`.
+- **Monte-Carlo merit distribution** (`MeritDistributionPlot`, the former
+  "yield histogram") — no longer bars: a **frequency polygon** (a line
+  through the histogram bin centres, x-axis labeled "merit") plus a
+  **cumulative-distribution (CDF)** curve on a right-hand 0–1 axis, fed
+  incrementally per draw (`draw`/`draws`/`merit`/`yield-so-far`/`params`
   extras). Draws with `merit >= PENALTY_FLOOR (1e8)` are excluded from
-  binning but counted separately.
+  both curves but counted separately. Hover either curve for a per-draw
+  tooltip; right-click → Show data opens `draw# | <variables…> | merit |
+  pass/fail | rank`.
 
 ## Failure banner
 

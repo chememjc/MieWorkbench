@@ -1,12 +1,14 @@
 # Demo gallery
 
-`demos/` ships 38 optical systems as self-contained `.MieWB` workbenches
+`demos/` ships 42 optical systems as self-contained `.MieWB` workbenches
 (+ the bare `.FCStd` scene): eleven classic instruments, five
 single-physics benches, four analysis/scattering benches, four
 physics-showcase benches, the telephoto pair + a folded periscope, seven
-pulsed-optics/time-domain benches, and two dedicated optimize/tolerance
-showcase objectives (`double_gauss`, `fiber_coupling_doublet`) alongside
-extended versions of `camera_triplet`/`schmidt_cassegrain`. Every demo is
+pulsed-optics/time-domain benches, four coherence/anisotropy/scattering
+benches (see "Beyond sequential codes" below), and two dedicated
+optimize/tolerance showcase objectives (`double_gauss`,
+`fiber_coupling_doublet`) alongside extended versions of
+`camera_triplet`/`schmidt_cassegrain`. Every demo is
 assembled as a real **optical train** through `scripts/make_demos.py`
 (the GUI's own Project/chain op path — vertex-to-vertex chained
 distances, live unfoldable fold mirrors, deviate ports for prisms/
@@ -31,6 +33,23 @@ real bugs) found building these through the interface.
 renders (irradiance/PSF/Stokes/etc. — not 3D scene views, see
 [viewport-3d.md](viewport-3d.md)'s screenshot note) for eleven of the
 design-usability demos.
+
+## Beyond sequential codes
+
+Four demos exercise physics no sequential (Optiland-style) lens-design
+code models at all — each is its own single-physics showcase, not an
+imaging system:
+
+- **`fizeau_flats`** — coherent ghost fringes off a thin wedged air gap
+  between two flats.
+- **`fs_shg_spectrogram`** — femtosecond SHG plus dispersion time
+  products (a Mai Tai pulse, stretched then frequency-doubled).
+- **`quartz_rotator`** — gyrotropic polarization rotation through a
+  z-cut crystal, resolved via the full-anisotropy Berreman 4×4 solver.
+- **`speckle_mie_combo`** — coherent laser speckle formed by exact Mie
+  scattering off a ground-glass diffuser.
+
+See `demos/README.md` for the full prescription + citation of each.
 
 ## Every demo ships pre-configured Optimize/Tolerance panes
 

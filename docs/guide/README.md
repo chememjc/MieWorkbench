@@ -39,7 +39,7 @@ shot list and `img/manifest.json` for current status).
 | [file-formats.md](file-formats.md) | `.MieWB` / `.MieSim` / `.FCStd`, `miewb_tool.py`, `sniff()` |
 | [headless-remote.md](headless-remote.md) | Running the pipeline/tool without the GUI, locking, testing |
 | [authoring.md](authoring.md) | Pointer page: new primitives / new property entries |
-| [demo-gallery.md](demo-gallery.md) | The 38-demo gallery overview + the every-demo-ships-configured Optimize/Tolerance story |
+| [demo-gallery.md](demo-gallery.md) | The 42-demo gallery overview + the every-demo-ships-configured Optimize/Tolerance story |
 
 ## Walkthroughs
 

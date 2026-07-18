@@ -61,6 +61,18 @@ commit → `project.set_spreadsheet(...)`. If the body carries a
 not a live constraint expression (see CUSTOMIZE.md §1: topology can
 change with a parameter, e.g. a curvature going to zero).
 
+## Multi-body elements
+
+A single-body element edits normally (`set_face_selection` routes it
+through the three sections above). A **multi-body element** (or an empty
+selection) blanks all three sections instead, via `set_element(element,
+bodies)`: a hint line ("Element *Name* — *N* bodies. Pick one to edit
+it." or "No element selected.") over a clickable **member list**
+(`MemberListWidget`, shared with the [Inspector](inspector.md)). Clicking
+a member sub-selects that one body and the editor drops back into its
+normal single-body state for it. Face picking for property assignment
+(section b) is otherwise unchanged.
+
 ## Gotchas
 
 - A sheet param must never live in the body `Placement` —

@@ -20,7 +20,14 @@ Columns: element / role / primitive kind.
 
 ## How to use it
 
-- Click a row to select it in the app (`selectBodyRequested`).
+- Click the **top-level row** to select the **whole element**
+  (`selectBodyRequested`) — all member bodies highlight together in the
+  3D views.
+- Click a **child row** (a member body of a multi-body element) to
+  **explicitly sub-select just that one body** — the same sub-selection
+  the [Inspector](inspector.md)/[Element Editor](element-editor.md)
+  member lists offer, routed through a distinct selection origin so it
+  is never re-expanded back to the whole element.
 - Double-click to open the editor/wizard for that element
   (`customizeRequested`).
 - **Del** key or right-click → Delete removes the element group
