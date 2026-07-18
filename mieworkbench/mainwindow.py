@@ -487,6 +487,16 @@ class MainWindow(QMainWindow):
         self.delete_action.triggered.connect(
             lambda: self._on_delete_element())
 
+        edit_menu.addSeparator()
+        # Esc is otherwise unbound at the window level (the 3D view's own Esc
+        # cancels an in-progress axis drag via a VTK observer, not a QAction)
+        self.clear_selection_action = edit_menu.addAction("Clear &Selection")
+        self.clear_selection_action.setShortcut("Esc")
+        self.clear_selection_action.setToolTip("Clear the current selection")
+        self.clear_selection_action.setEnabled(False)
+        self.clear_selection_action.triggered.connect(
+            lambda: self.selection.clear(origin="clear_action"))
+
         sim_menu = menubar.addMenu("&Simulation")
         self.settings_action = sim_menu.addAction("Simulation &Settings…")
         self.settings_action.setToolTip(
@@ -1291,16 +1301,31 @@ class MainWindow(QMainWindow):
             lambda: self.config_matrix.values())
 
         # all selection flows through the shared SelectionModel: 3D picks,
-        # outliner rows and problems-pane jumps stay in sync
+        # outliner rows and problems-pane jumps stay in sync. A bare-body
+        # origin that names a member of a multi-body group is EXPANDED to a
+        # whole-element selection by the dispatcher; the two explicit sub-
+        # selection origins (outliner child rows, inspector member lists)
+        # are exempt.
         self.outliner.set_project(self.project)
         self.scene3d.selectionChanged.connect(
             lambda body, faces: self.selection.select(body, faces,
                                                       origin="scene3d"))
+        self.outliner.selectElementRequested.connect(
+            self._on_outliner_element_selected)
         self.outliner.selectBodyRequested.connect(
-            lambda body: self.selection.select(body, (), origin="outliner"))
+            lambda body: self.selection.select(body, (),
+                                               origin="outliner_child"))
         self.problems.selectBodyRequested.connect(
-            lambda body: self.selection.select(body, ()))
+            lambda body: self.selection.select(body, (), origin="problems"))
+        self.inspector.memberSelected.connect(
+            lambda body: self.selection.select(body, (),
+                                               origin="inspector_member"))
+        self.element_editor.memberSelected.connect(
+            lambda body: self.selection.select(body, (),
+                                               origin="inspector_member"))
         self.selection.changed.connect(self._on_selection_changed)
+        # Clear-selection lives on the 3D-view button row too
+        self.scene3d.add_toolbar_action(self.clear_selection_action)
 
         self.outliner.customizeRequested.connect(self._on_customize_element)
         self.outliner.deleteRequested.connect(self._on_delete_element)
@@ -1433,19 +1458,84 @@ class MainWindow(QMainWindow):
         self.close_action.setEnabled(has_doc)
         self._update_window_title()
 
+    # origins that are EXPLICIT sub-selections (a single member body) and so
+    # must NOT be expanded into a whole-element selection
+    _NO_EXPAND_ORIGINS = {"outliner_child", "inspector_member"}
+
+    def _on_outliner_element_selected(self, element, primary):
+        """A top-level outliner row: select the whole element (expand to its
+        member bodies; a single-body element stays a plain body select)."""
+        try:
+            bodies = self.project.element_bodies(element)
+        except Exception:
+            bodies = [primary] if primary else []
+        if len(bodies) > 1:
+            self.selection.select_element(element, bodies, origin="outliner",
+                                          primary=primary)
+        else:
+            self.selection.select(primary or element, (), origin="outliner")
+
     def _on_selection_changed(self, body_name, faces, origin):
-        enable = bool(body_name)
-        self.copy_action.setEnabled(enable)
-        self.delete_action.setEnabled(enable)
-        if not body_name:
-            return
-        self.inspector.set_body(self.project, body_name)
-        self.element_editor.set_face_selection(body_name, set(faces))
-        self.transform_panel.set_body(body_name)
-        if origin != "outliner":
-            self.outliner.set_selected_body(body_name)
-        if origin != "scene3d" and hasattr(self.scene3d, "select_body"):
-            self.scene3d.select_body(body_name)
+        # Expand a bare-body 3D/problems/programmatic pick into its whole
+        # element (union highlight, element panes). The element==None guard
+        # stops the re-entrant select_element from re-expanding (loop break);
+        # explicit sub-selection origins skip expansion entirely.
+        if (body_name and origin not in self._NO_EXPAND_ORIGINS
+                and self.selection.element is None):
+            try:
+                element = self.project.element_group(body_name)
+                bodies = self.project.element_bodies(element)
+            except Exception:
+                element, bodies = None, [body_name]
+            if len(bodies) > 1:
+                self.selection.select_element(
+                    element, bodies, faces=faces, origin=origin,
+                    primary=body_name)
+                return   # select_element re-emits; this pass stops here
+
+        element = self.selection.element
+        bodies = list(self.selection.bodies)
+        primary = self.selection.body
+        faces = self.selection.faces
+        single = bool(primary) and not self.selection.is_element()
+
+        # 3D highlight. Driven even for a scene3d-originated pick: the view
+        # pre-highlighted only the clicked body, but an expanded element
+        # needs the whole-member UNION (select_body/select_element dedupe
+        # the redundant single-body case, so no double render).
+        if single:
+            self.scene3d.select_body(primary)
+        else:
+            self.scene3d.select_element(bodies)
+
+        # inspector + element editor: single body -> face-selection surface;
+        # multi-body element OR empty -> blank + count hint + member list
+        if single:
+            self.inspector.set_body(self.project, primary)
+            self.element_editor.set_face_selection(primary, set(faces))
+        else:
+            self.inspector.set_element(self.project, element, bodies)
+            self.element_editor.set_element(element, bodies)
+
+        # transform panel operates on the primary (group moves are safe via
+        # Project._flush_placement/miewb_group); None -> neutral
+        self.transform_panel.set_body(primary)
+
+        # outliner echo (skip when the outliner initiated the selection)
+        if origin not in ("outliner", "outliner_child"):
+            self.outliner.set_selected_body(primary)
+
+        self._update_selection_actions()
+
+    def _update_selection_actions(self):
+        """Single authority for selection-dependent action state: copy/
+        delete/clear + the transform panel's operation buttons, all keyed
+        off whether anything is selected."""
+        has = bool(self.selection.body)
+        self.copy_action.setEnabled(has)
+        self.delete_action.setEnabled(has)
+        self.clear_selection_action.setEnabled(has)
+        self.transform_panel.set_operations_enabled(has)
 
     # kept for tests/back-compat: route an explicit (body, faces) pair
     # through the shared selection model
@@ -1850,6 +1940,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Updated %s" % group, 5000)
 
     def _selected_element(self):
+        if self.selection.element is not None:
+            return self.selection.element
         if self.selection.body is None:
             return None
         try:
@@ -1941,7 +2033,11 @@ class MainWindow(QMainWindow):
         self.project.end_macro()
         names = self.project.element_bodies(new_label)
         if names:
-            self.selection.select(names[0], ())
+            if len(names) > 1:
+                self.selection.select_element(new_label, names,
+                                              origin="paste")
+            else:
+                self.selection.select(names[0], (), origin="paste")
         self.statusBar().showMessage("Pasted %s" % new_label, 5000)
 
     def _open_prop_editor(self, category=None, which_library=None):

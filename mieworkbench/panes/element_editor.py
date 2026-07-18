@@ -111,6 +111,7 @@ from PySide6.QtWidgets import (
 
 from ..core import facemaps
 from ..core import opticalvalues, paraxial, wizards
+from .member_list import MemberListWidget
 from ..core.facemaps import (   # noqa: F401  (re-exported for back-compat)
     FACEMAP_PROPERTIES, active_face_index, merge_facemap,
     validate_facemap_value,
@@ -304,6 +305,8 @@ def _fmt_property_value(value):
 # Widget
 # ---------------------------------------------------------------------------
 class ElementEditorPane(QWidget):
+    memberSelected = Signal(str)   # member-list body pick (sub-selection)
+
     def __init__(self, parent=None, optprops_root=None):
         super().__init__(parent)
         self._project = None
@@ -324,6 +327,13 @@ class ElementEditorPane(QWidget):
         self._refresh_timer.setInterval(0)
         self._refresh_timer.timeout.connect(self._deferred_refresh)
 
+        # neutral state for a multi-body element / empty selection: a count
+        # hint + clickable member list, shown INSTEAD of the (blanked) group
+        # boxes so users don't have to switch panes to sub-select a body
+        self.member_list = MemberListWidget(self)
+        self.member_list.memberChosen.connect(self.memberSelected)
+        self.member_list.hide()
+
         self._build_properties_box()
         self._build_pulse_box()
         self._build_paraxial_box()
@@ -333,6 +343,7 @@ class ElementEditorPane(QWidget):
 
         body = QWidget()
         body_layout = QVBoxLayout(body)
+        body_layout.addWidget(self.member_list)
         body_layout.addWidget(self.props_box)
         body_layout.addWidget(self.pulse_box)
         body_layout.addWidget(self.paraxial_box)
@@ -705,11 +716,44 @@ class ElementEditorPane(QWidget):
 
     facesPicked = Signal(str, set)   # body, faces chosen in the table
 
+    def set_element(self, element, bodies):
+        """Neutral state for a multi-body element (or an empty selection):
+        blank every section and show the count hint + member list. A
+        single-body element routes to set_face_selection (its lone body IS
+        the editing surface)."""
+        bodies = tuple(bodies or ())
+        if len(bodies) == 1:
+            self.set_face_selection(bodies[0], set())
+            return
+        self._body_name = None
+        self._face_selection = set()
+        self._show_face_warning(None)
+        if element:
+            hint = "Element %s — %d bodies. Pick one to edit it." % (
+                element, len(bodies))
+        else:
+            hint = "No element selected."
+        self.member_list.set_members(
+            hint, [(n, self._body_label(n)) for n in bodies])
+        self.member_list.show()
+        self._refresh_all()
+
+    def _body_label(self, name):
+        if self._project is None:
+            return name
+        try:
+            return self._project.body(name).get("label") or name
+        except Exception:
+            return name
+
     def set_face_selection(self, body_name, faces):
         """Slot: wire InspectorPane.faceSelectionChanged straight in.
         Also tracks which body is "current" for sections (a)/(c) -- a
         body change refreshes those too. Any selection change re-filters
         the Active Properties table."""
+        # a real (single) body is being shown -- the member-list neutral
+        # state (if any) no longer applies
+        self.member_list.hide()
         # PySide6 coerces None through the str-typed signals into "" --
         # normalize so the is-None guards downstream keep working
         body_name = body_name or None

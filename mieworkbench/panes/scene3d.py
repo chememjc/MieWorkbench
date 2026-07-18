@@ -15,7 +15,9 @@ Inspector's single-element view.
 """
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout, QPushButton, QToolButton, QVBoxLayout, QWidget,
+)
 
 from ..widgets.vtkview import VtkSceneView
 
@@ -31,6 +33,12 @@ class Scene3DPane(QWidget):
         self._project = None
         self._selected_body = None
         self._selected_faces = set()
+        # the member bodies whose faces are currently highlighted: (a,) for a
+        # single-body highlight, (a, b, ...) for a whole-element union. Lets
+        # select_body/select_element skip redundant re-highlights while still
+        # re-highlighting on an element<->body transition (same _selected_body,
+        # different highlighted set).
+        self._selected_bodies = ()
         self._rays_path = None
         self._rays_visible = True
         self._rays_stale = False
@@ -56,6 +64,11 @@ class Scene3DPane(QWidget):
             toolbar.addWidget(btn)
             self._view_buttons[axis] = btn
 
+        # host-supplied actions (e.g. Clear selection) insert here, grouped
+        # with the view buttons and left of the stretch
+        self._toolbar = toolbar
+        self._toolbar_insert_index = toolbar.count()
+
         self.rays_button = QPushButton("Rays")
         self.rays_button.setCheckable(True)
         self.rays_button.setChecked(True)
@@ -68,6 +81,17 @@ class Scene3DPane(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(toolbar)
         layout.addWidget(self.view)
+
+    def add_toolbar_action(self, action):
+        """Insert a QToolButton (setDefaultAction) into the view's button
+        row, grouped with the view buttons and left of the stretch. The
+        host owns the QAction (e.g. the main window's Clear-selection
+        action); the button just mirrors it."""
+        btn = QToolButton(self)
+        btn.setDefaultAction(action)
+        self._toolbar.insertWidget(self._toolbar_insert_index, btn)
+        self._toolbar_insert_index += 1
+        return btn
 
     # -- Project wiring -----------------------------------------------------
     def set_project(self, project):
@@ -120,20 +144,47 @@ class Scene3DPane(QWidget):
     def _clear_selection(self):
         self._selected_body = None
         self._selected_faces = set()
+        self._selected_bodies = ()
         self.view.clear_highlights()
 
+    def _body_face_ids(self, body_name):
+        if self._project is None or not body_name:
+            return set()
+        return {f["id"] for f in
+                self._project.faces.get(body_name, {}).get("faces", [])}
+
     def select_body(self, body_name):
-        """Programmatic selection (outliner/problems-pane driven):
-        highlight EVERY face of the body so the element is obvious in the
-        train. Does not re-emit selectionChanged (the shared selection
-        model is the caller)."""
-        if body_name == self._selected_body and not self._selected_faces:
+        """Programmatic SINGLE-body selection (outliner child row /
+        inspector member list / problems-pane driven): highlight EVERY
+        face of just this body. Does not re-emit selectionChanged (the
+        shared selection model is the caller). Re-highlights on an
+        element->body transition even when body_name is unchanged (the
+        highlighted set differs)."""
+        body_name = body_name or None
+        target = (body_name,) if body_name else ()
+        if body_name == self._selected_body and not self._selected_faces \
+                and self._selected_bodies == target:
             return
         self._selected_body = body_name
         self._selected_faces = set()
-        faces = (self._project.faces.get(body_name, {}).get("faces", [])
-                 if self._project is not None else [])
-        self.view.set_selection({f["id"] for f in faces})
+        self._selected_bodies = target
+        self.view.set_selection(self._body_face_ids(body_name))
+
+    def select_element(self, bodies):
+        """Programmatic whole-ELEMENT selection: highlight the UNION of
+        every member body's faces so the whole element reads as one. The
+        primary (bodies[0]) becomes _selected_body for the scalar-body
+        consumers."""
+        bodies = tuple(bodies or ())
+        if bodies == self._selected_bodies and not self._selected_faces:
+            return
+        self._selected_body = bodies[0] if bodies else None
+        self._selected_faces = set()
+        self._selected_bodies = bodies
+        union = set()
+        for name in bodies:
+            union |= self._body_face_ids(name)
+        self.view.set_selection(union)
 
     def selection(self):
         return self._selected_body, set(self._selected_faces)

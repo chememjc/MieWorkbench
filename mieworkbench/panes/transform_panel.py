@@ -204,6 +204,7 @@ class TransformPanel(QWidget):
         btn_t = QPushButton("Apply translation")
         btn_t.setToolTip("Move the element by (dx, dy, dz) mm")
         btn_t.clicked.connect(self._apply_translate)
+        self.btn_translate = btn_t
         tgl.addWidget(btn_t, 1, 0, 1, 6)
 
         self.toward = ReferencePointPicker("Toward:")
@@ -220,6 +221,7 @@ class TransformPanel(QWidget):
         btn_tw.setToolTip("Move the element the given distance toward the "
                           "reference point (from its own optical center)")
         btn_tw.clicked.connect(self._apply_toward)
+        self.btn_toward = btn_tw
         row.addWidget(btn_tw)
         tgl.addLayout(row, 3, 0, 1, 6)
         lay.addWidget(tg)
@@ -263,6 +265,7 @@ class TransformPanel(QWidget):
         btn_r = QPushButton("Apply rotation")
         btn_r.setToolTip("Rotate the element about the reference point")
         btn_r.clicked.connect(self._apply_rotate)
+        self.btn_rotate = btn_r
         rgl.addWidget(btn_r, 3, 0, 1, 3)
         lay.addWidget(rg)
 
@@ -280,6 +283,29 @@ class TransformPanel(QWidget):
         self.history.setMaximumHeight(110)
         lay.addWidget(self.history)
         lay.addStretch(1)
+
+        # operation buttons disabled wholesale when nothing is selected (the
+        # main window's selection-action authority drives this). Their apply
+        # handlers already no-op on an empty selection; this is the visual
+        # cue. btn_set_pos/btn_set_rot/btn_again keep their own finer gating
+        # (placement-bound / last-op) via the refresh path when re-enabled.
+        self._op_buttons = [
+            self.btn_translate, self.btn_toward, self.btn_rotate,
+            self.btn_set_pos, self.btn_set_rot, self.snap_pick_btn,
+            self.polar_apply_btn,
+        ]
+
+    def set_operations_enabled(self, enabled):
+        """Enable/disable the transform operation buttons as a group. When
+        re-enabling, the per-button refreshes restore their nuanced states
+        (a spreadsheet-bound placement still disables Set position/orient)."""
+        for btn in self._op_buttons:
+            btn.setEnabled(bool(enabled))
+        if enabled:
+            self._refresh_absolute()
+            self._refresh_positioning()
+        else:
+            self.btn_again.setEnabled(False)
 
     # -- train positioning -----------------------------------------------------
     _EDGE_FIELDS = ("distance", "decenter_x", "decenter_y")

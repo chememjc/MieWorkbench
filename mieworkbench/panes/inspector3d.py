@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from ..widgets.facepicker import pick_to_selection, select_all
 from ..widgets.vtkview import VtkSceneView
+from .member_list import MemberListWidget
 
 
 class InspectorPane(QWidget):
@@ -22,6 +23,8 @@ class InspectorPane(QWidget):
                                               # here and none is loaded yet
     contextMenuRequested = Signal(object)     # global QPoint of a right-
                                               # click in the 3D view
+    memberSelected = Signal(str)              # member-list body pick (sub-
+                                              # selection); host routes it
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,10 +65,17 @@ class InspectorPane(QWidget):
         toolbar.addStretch(1)
         toolbar.addWidget(self.rays_button)
 
+        # neutral state for a multi-body element / empty selection: hidden
+        # while a single body is shown, swapped in for the 3D view otherwise
+        self.member_list = MemberListWidget(self)
+        self.member_list.memberChosen.connect(self.memberSelected)
+        self.member_list.hide()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(toolbar)
         layout.addWidget(self.view)
+        layout.addWidget(self.member_list)
 
     # -- body / project wiring -----------------------------------------------
     def set_body(self, project, body_name):
@@ -73,8 +83,51 @@ class InspectorPane(QWidget):
             self._disconnect_project()
             self._project = project
             self._connect_project()
+        self.member_list.hide()
+        self.view.show()
+        self._set_face_buttons_enabled(True)
         self._body_name = body_name
         self._rebuild()
+
+    def set_element(self, project, element, bodies):
+        """Neutral state for a multi-body element (or an empty selection):
+        blank the single-body 3D surface and show the count hint + member
+        list instead. A single-body element routes to set_body (its lone
+        body IS the face-selection surface)."""
+        if self._project is not project:
+            self._disconnect_project()
+            self._project = project
+            self._connect_project()
+        bodies = tuple(bodies or ())
+        if len(bodies) == 1:
+            self.set_body(project, bodies[0])
+            return
+        # blank the 3D view (no single body to show)
+        self._body_name = None
+        self._rebuild()
+        self.view.hide()
+        self._set_face_buttons_enabled(False)
+        if element:
+            hint = "Element %s — %d bodies. Pick one to inspect it." % (
+                element, len(bodies))
+        else:
+            hint = "No element selected."
+        self.member_list.set_members(
+            hint, [(n, self._body_label(n)) for n in bodies])
+        self.member_list.show()
+
+    def _body_label(self, name):
+        if self._project is None:
+            return name
+        try:
+            return self._project.body(name).get("label") or name
+        except Exception:
+            return name
+
+    def _set_face_buttons_enabled(self, enabled):
+        self.select_all_button.setEnabled(enabled)
+        self.clear_button.setEnabled(enabled)
+        self.rays_button.setEnabled(enabled)
 
     def _connect_project(self):
         if self._project is None:
