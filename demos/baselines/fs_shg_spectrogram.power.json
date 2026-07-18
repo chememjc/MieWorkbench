@@ -1,0 +1,13 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "Screen.Screen_pad.Face2": {
+   "peak_irradiance_W_m2": 1496960.3728781277,
+   "power_seed_std_W": 0.003256740473596395,
+   "profile_visibility": 0.9257341132223667,
+   "total_power_W": 1.9267254929748097
+  }
+ },
+ "seeds": 3
+}

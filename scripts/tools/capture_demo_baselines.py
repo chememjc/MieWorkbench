@@ -45,6 +45,9 @@ DEMO_NAMES = [
     "curved_focal",
     # optimize/tolerance-round showcase demos (new)
     "double_gauss", "fiber_coupling_doublet",
+    # WP7 beyond-sequential showcase demos
+    "fizeau_flats", "fs_shg_spectrogram", "quartz_rotator",
+    "speckle_mie_combo",
 ]
 
 

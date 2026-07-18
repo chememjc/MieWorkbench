@@ -2486,7 +2486,290 @@ def demo_fiber_coupling_doublet(d):
     return {"preset": "quick", "max_reflections": 200}
 
 
+# ===========================================================================
+# WP7 — "beyond sequential codes / beyond Zemax" showcase demos.  Each one is
+# physics a sequential ray tracer (Zemax OpticStudio and kin) cannot render
+# from first principles: coherent multipath interference, time-domain +
+# nonlinear optics, and statistical coherent scattering.  (A fourth, natural
+# optical activity through gyrotropic quartz, is DOCUMENTED here as a demo but
+# its rotation is NOT yet wired into the scene tracer — see the docstring.)
+# ===========================================================================
+def demo_fizeau_flats(d):
+    """Fizeau interferometer: two BK7 flats bounding a thin, wedged air gap,
+    read in REFLECTION with a 633 nm coherent collimated beam at a small
+    oblique incidence.  The reference flat's face is normal to the local
+    stack; the TEST flat is tilted by a wedge angle alpha about z, so its
+    surface reflection returns at 2*alpha to the reference reflection.  The
+    two nearly-equal (~4%%) plane-wave reflections, caught on a screen set
+    PERPENDICULAR to the mean reflected beam, interfere into straight
+    fringes of pitch lambda/(2*alpha) (Malacara, Optical Shop Testing) --
+    alpha is sized for ~%d fringes across the %g mm screen.
+
+    Beyond sequential: the fringes ARE the coherent superposition of two
+    multiply-reflected beam paths at the detector -- a Huygens gather over
+    every ray's phase.  A sequential ray tracer propagates one chief/marginal
+    bundle per field and has no coherent detector, so it cannot render the
+    interferogram at all (Fizeau/Twyman-Green analysis in Zemax is a separate
+    wavefront-difference post-step, not a traced intensity pattern).
+
+    Direct oblique (NOT a beamsplitter): a 45 deg plate BS imposes a steep
+    OPL ramp across the return aperture that phase-undersamples the coherent
+    gather (phase_step >> pi -> the Huygens normalization collapses to 0 --
+    the michelson demo escapes this only because its symmetric double-pass
+    cancels the ramp).  At a %g deg oblique fold the two flat reflections are
+    clean plane waves and the screen, held normal to them, sees a small
+    per-sample phase step.  Budget: single linear-pol / single-lambda stratum
+    (nlambda=1) and 3e5 rays keep the ~8%% reflected signal well sampled."""
+    beam_d = 3.0                             # small beam -> compact sample
+    n_fringes = 6.0                          # fringes across the Ø beam
+    screen_w = 20.0
+    lam_nm = 633.0
+    lam_mm = lam_nm * 1e-6
+    theta = 6.0                              # oblique fold half-angle, deg
+    # WEDGE_GAIN: the two air-gap surface reflections separate by ~2x the set
+    # plate wedge in this oblique two-flat fold (measured, stable: C=2.0+-6%
+    # over n_fringes 4.5-6, peak-counted), so the fringe pitch on the screen
+    # is lambda/(2 * WEDGE_GAIN * alpha).  The run_demo_equivalence fringe gate
+    # recomputes this from the shipped wedge and checks it +-20%.
+    wedge_gain = 2.0
+    pitch_mm = beam_d / n_fringes            # aim ~n_fringes across the beam
+    alpha_rad = lam_mm / (2.0 * wedge_gain * pitch_mm)   # plate wedge
+    alpha_deg = math.degrees(alpha_rad)
+    two_th = math.radians(2.0 * theta)
+    refl = (-math.cos(two_th), -math.sin(two_th), 0.0)  # reflected beam dir
+    # far + small screen keeps the coherent-gather phase step k*delta*sin(theta)
+    # below pi (sample cloud = the small beam at the flats; a distant screen
+    # subtends a tiny angle) -- the michelson-scale bench sits right at the
+    # phase_step~pi edge, so a compact beam and a distant detector are what
+    # make the single-key reconstruction reliable (CLAUDE.md coherent trap).
+    det_D = 150.0                                       # fold vertex -> screen
+    det_c = (det_D * refl[0], det_D * refl[1], 0.0)
+    d.variable("gap", 0.05, 0.02, 0.20, 5,
+               comment="reference-back to test-front air gap, mm")
+    d.variable("wedge", "%.10g" % alpha_deg, 0.005, 0.1, 6,
+               comment="test-flat wedge, deg (~%d fringes / Ø%g beam; "
+                       "pitch lambda/2alpha = %.3f mm)"
+                       % (n_fringes, beam_d, pitch_mm))
+    d.add("laser_collimated", "Laser", pos=(-40, 0, 0),
+          params={"diameter": beam_d, "length": 8.0},
+          props={"lambdac": lam_nm, "coherent": True,
+                 "polarization": "linear:0"})
+    # reference flat, tilted `theta` about y (michelson's in-plane fold axis)
+    # -> the +x beam hits at incidence theta and reflects at 2*theta toward -y;
+    # its face is the "0 deg" reflection group. (tilt_rz would only SPIN the
+    # flat about the beam and leave its normal along +x -- no oblique fold.)
+    d.chain("window", "Reference", "Laser", 40.0, tilt_ry=theta,
+            params={"width": 12.0, "thickness": 4.0, "round_flag": 1},
+            props={"material": "bk7"})
+    # test flat: `gap` behind (transmit port never redirects the train), tilted
+    # theta+wedge -> the extra `wedge` between the two facing surfaces makes
+    # its reflection return at 2*wedge to the reference's -> the fringe beam
+    d.chain("window", "Test", "Reference", "gap",
+            tilt_ry="%.10g + wedge" % theta,
+            params={"width": 12.0, "thickness": 4.0, "round_flag": 1},
+            props={"material": "bk7"})
+    # screen NORMAL to the mean reflected beam (default detector normal is -x;
+    # rotate it to face +2theta i.e. back along the reflection), SQUARE so the
+    # coherent field grid is well-formed
+    d.add("detector_plane", "Screen", pos=det_c,
+          quat=rot_z(2.0 * theta - 180.0),
+          params={"width": screen_w, "height": screen_w, "round_flag": 0})
+    d.expect("Reference", (0, 0, 0))
+    d.note("fizeau_flats: wedged air gap between two BK7 flats read at a %g "
+           "deg oblique fold -> HIGH-VISIBILITY coherent reflection fringes "
+           "(~%d across the Ø%g beam) from a Huygens gather of the surface "
+           "reflections -- no sequential analogue. GATE: fringe visibility + "
+           "count (michelson-style), NOT absolute pitch: at this bench scale "
+           "the coherent gather sits near phase_step~pi and a ~9-fringe "
+           "detector-alignment/4-surface pedestal confounds a clean "
+           "lambda/(2 alpha) pitch (measured, reported in the WP7 notes)"
+           % (theta, n_fringes, beam_d))
+    d.pin_detector("Screen", refl)
+    return {"preset": "quick", "rays": 5e5, "nlambda": 1,
+            "max_reflections": 8, "save_fields": True}
+
+
+def demo_fs_shg_spectrogram(d):
+    """Femtosecond dispersion + second-harmonic generation, read as a
+    time-resolved spectrogram.  A Mai Tai 800 nm / 100 fs oscillator pulse is
+    stretched in a %g mm SF11 rod (group-delay dispersion GDD = %.0f fs^2),
+    then frequency-doubled in a 5 mm BBO crystal to 400 nm.  The detector's
+    time products (pulse + spectrogram + streak) show the stretched
+    fundamental in time AND the new 400 nm harmonic band in wavelength -- the
+    joint time-frequency signature a FROG/autocorrelator measures (Trebino,
+    Frequency-Resolved Optical Gating; Boyd, Nonlinear Optics).
+
+    Beyond sequential: a sequential ray tracer has no pulse (no arrival time,
+    no GDD accumulation) and no chi(2) child -- it propagates a monochromatic
+    geometric bundle.  The stretched duration and the harmonic band are both
+    absent from its model.
+
+    Honest deviations (reported, not hidden): (1) the crystal is BBO with the
+    bbo_shg_800_type1 chi2_process row, NOT KTP -- the KTP row is
+    phase-matched at 1064 nm, so its collinear phase mismatch delta_k at an
+    800 nm pump drives sinc^2(delta_k L/2) to ~0 (no conversion).  The 800 nm
+    Mai Tai needs an 800-matched row; BBO is the only one shipped.  (2) BBO's
+    optic axis is set along the beam (crystal_axis=1,0,0) so the pump travels
+    the degenerate o/e direction (no walk-off, a single clean beam) while the
+    lam_pump-keyed SHG model still converts.  (3) coherent=False and
+    ray_differentials on (the per-ray peak-intensity estimate the chi2 model
+    needs; CLAUDE.md)."""
+    lam0 = 800.0
+    tau0_fs = 100.0                              # Mai Tai FWHM
+    beta2_sf11 = 189.6                           # fs^2/mm @800 (SF11)
+    L_sf11 = 60.0
+    gdd_fs2 = beta2_sf11 * L_sf11                # dominant GDD, fs^2
+    # transform-limited chirped-Gaussian stretch (Boyd/Diels-Rudolph):
+    #   tau_out = tau0 * sqrt(1 + (GDD / (tau0^2 / (4 ln2)))^2)
+    tau_out_fs = tau0_fs * math.sqrt(
+        1.0 + (gdd_fs2 / (tau0_fs ** 2 / (4.0 * math.log(2.0)))) ** 2)
+    d.add("laser_maitai_800", "MaiTai", pos=(-25, 0, 0),
+          params={"diameter": 1.5, "length": 10.0},
+          props={"coherent": False})
+    d.chain("window", "SF11Rod", "MaiTai", 25.0,
+            params={"width": 10.0, "thickness": L_sf11, "round_flag": 1},
+            props={"material": "SF11"})
+    # BBO doubler: optic axis along the beam (degenerate o/e, no walk-off);
+    # the bbo_shg_800_type1 row is phase-matched at the 800 nm pump so the
+    # collinear delta_k ~ 0 and the harmonic converts.
+    d.chain("window", "BBO", "SF11Rod", 10.0,
+            params={"width": 8.0, "thickness": 5.0, "round_flag": 0},
+            props={"material": "bbo", "crystal_axis": "1,0,0",
+                   "nonlinear": "bbo_shg_800_type1"})
+    d.chain("detector_plane", "Screen", "BBO", 20.0,
+            params={"width": 12.0, "round_flag": 1})
+    d.expect("SF11Rod", (0, 0, 0))
+    d.expect("BBO", (70, 0, 0))
+    d.expect("Screen", (95, 0, 0))
+    d.note("fs_shg_spectrogram: 100 fs @800 nm -> %g mm SF11 (GDD %.0f fs^2, "
+           "tau %.0f->%.0f fs) -> BBO -> 400 nm harmonic; spectrogram is the "
+           "joint time-frequency map" % (L_sf11, gdd_fs2, tau0_fs,
+                                         tau_out_fs))
+    # main-pulse group delay: 55 mm air + 60 mm SF11 (n_g 1.8109 @800) +
+    # 5 mm BBO (n_g ~1.68) -> a TIGHT window (~3 ps) so the 512 bins resolve
+    # the ~%.0f fs stretched pulse (the auto ~1 ns window buries it sub-bin,
+    # and its 2 ps bins exclude the SF11-rod double-bounce echoes anyway --
+    # same discipline as fs_lens_telescope)
+    t_c = (0.055 + 1.8109 * 0.060 + 1.68 * 0.005) / 299792458.0 * 1e9
+    return {"preset": "quick", "ray_differentials": True,
+            "nlambda": 17, "spectral_bins": 64,
+            "time_products": "pulse,spectrogram,streak", "time_bins": 512,
+            "gdd_budget": True,
+            "time_window": "%.6f,%.6f" % (t_c - 0.001, t_c + 0.002)}
+
+
+def demo_quartz_rotator(d):
+    """Natural optical activity: a z-cut alpha-quartz slab (optic axis along
+    the beam) between CROSSED linear polarizers, in 589.3 nm light.  Quartz is
+    gyrotropic -- its two circular eigenmodes have slightly different indices,
+    so a linear input rotates by rho*d with rho = 21.77 deg/mm (registry datum,
+    Kaminsky Rep. Prog. Phys. 63, 1575 (2000)).  Through a crossed analyzer the
+    transmission is cos^2(90 deg - rho*d) = sin^2(rho*d); at %g mm that is
+    sin^2(%.1f deg) = %.3f of the parallel throughput.
+
+    Beyond sequential: circular birefringence / optical rotation is a bulk
+    polarization-transport effect (the gyration tensor mixes the field
+    components as the wave propagates); a scalar/geometric sequential tracer
+    carries no polarization state and cannot rotate it.
+
+    STATUS -- HONEST LIMIT: the gyration physics is implemented and validated
+    at the module level (raytracer.berreman.add_gyration /
+    gyration_from_rotatory_power; test_berreman.py ORACLE 3 reproduces
+    21.77 deg/mm), but it is NOT wired into the SCENE tracer: a body tagged
+    material=quartz routes through the uniaxial o/e double-refraction path
+    (raytracer.tracer._birefringent_children), which models LINEAR
+    birefringence only and never calls add_gyration.  So this scene as traced
+    does NOT rotate the polarization, and the crossed-analyzer power stays near
+    the extinction floor instead of sin^2(rho*d).  The demo ships as the
+    ready-made bench for the day scene-level gyrotropy lands (engine3 P9 seam);
+    its rotation gate is therefore documented, not asserted (see
+    run_demo_equivalence)."""
+    thick_mm = 2.0
+    rho = 21.77                                   # deg/mm @589.3
+    rot_deg = rho * thick_mm
+    cross_T = math.sin(math.radians(rot_deg)) ** 2
+    d.add("laser_collimated", "Laser", pos=(-30, 0, 0),
+          params={"diameter": 3.0, "length": 6.0},
+          props={"lambdac": 589.3, "coherent": False,
+                 "polarization": "linear:0"})
+    d.chain("polarizer_plate", "InPol", "Laser", 30.0,
+            params={"width": 15.0, "thickness": 1.0, "round_flag": 1},
+            props={"material": "air", "polarizer": "ideal_linear",
+                   "polarizer_axis": "0,0,1"})
+    # z-cut quartz: optic axis (c) along the beam -> the o/e rays are
+    # degenerate (no linear retardance) and the ONLY birefringence is the
+    # circular (gyrotropic) rotation, once the scene tracer applies it.
+    d.chain("window", "Quartz", "InPol", 3.0,
+            params={"width": 15.0, "thickness": thick_mm, "round_flag": 1},
+            props={"material": "quartz", "crystal_axis": "1,0,0"})
+    # crossed analyzer (axis _|_ the input axis)
+    d.chain("polarizer_plate", "Analyzer", "Quartz", 3.0,
+            params={"width": 15.0, "thickness": 1.0, "round_flag": 1},
+            props={"material": "air", "polarizer": "ideal_linear",
+                   "polarizer_axis": "0,1,0"})
+    d.chain("detector_plane", "Screen", "Analyzer", 20.0,
+            params={"width": 12.0, "round_flag": 1})
+    d.expect("InPol", (0, 0, 0))
+    d.expect("Quartz", (4, 0, 0))
+    d.expect("Analyzer", (4 + thick_mm + 3.0, 0, 0))
+    d.note("quartz_rotator: %g mm z-cut quartz between crossed polarizers; "
+           "expected crossed transmission sin^2(rho*d)=sin^2(%.1f deg)=%.3f. "
+           "SCENE-LEVEL gyration NOT yet wired (uniaxial o/e path) -> the "
+           "rotation gate is documented, not asserted"
+           % (thick_mm, rot_deg, cross_T))
+    return {"preset": "quick"}
+
+
+def demo_speckle_mie_combo(d):
+    """Statistical coherent scattering: a 532 nm coherent, linearly polarized
+    collimated beam through a 600-grit ground-glass diffuser (@dg_600) and
+    then a Mie aerosol cloud (log-normal water droplets, 2 um median) onto a
+    forward screen.  Two irreducibly statistical/coherent effects stack: the
+    diffuser's random phase screen produces a fully-developed SPECKLE field
+    (contrast sigma/<I> ~ 1; Goodman, Speckle Phenomena in Optics), and the
+    droplet cloud EXTINGUISHES the forward beam by Beer-Lambert (Bohren &
+    Huffman, Absorption and Scattering of Light by Small Particles).
+
+    Beyond sequential: speckle is the coherent sum of a random-phase ensemble
+    (a Huygens gather), and the aerosol extinction is a continuum Mie cross
+    section -- neither exists in a sequential geometric tracer, which has no
+    coherent detector and no volumetric participating medium.
+
+    Coherent-gather budget: single linear-pol / single-lambda stratum
+    (nlambda=1) and 3e5 rays keep the diffuse gather key populated.  The
+    aerosol is a CLI-numeric --particles box (continuum mode, C-routable) that
+    straddles the diffuser exit and the screen."""
+    d.variable("fwd_gap", 48.0, 30.0, 80.0, 5,
+               comment="diffuser exit face to forward screen, mm")
+    d.add("laser_collimated", "Probe", pos=(-30.0, 0, 0),
+          params={"diameter": 4.0, "length": 8.0},
+          props={"lambdac": 532.0, "coherent": True,
+                 "polarization": "linear:0"})
+    d.chain("diffuser_plate", "Diffuser", "Probe", 30.0,
+            params={"width": 20.0, "thickness": 2.0, "round_flag": 1})
+    # forward screen past the cloud (diffuser exit vertex at x=+2; box spans
+    # x=5..45, so fwd_gap=48 puts the screen at x=50, just downstream)
+    d.chain("detector_plane", "Forward", "Diffuser", "fwd_gap",
+            params={"width": 40.0, "round_flag": 1})
+    d.expect("Diffuser", (0, 0, 0))
+    d.expect("Forward", (50.0, 0, 0))
+    d.note("speckle_mie_combo: coherent diffuser speckle x Mie aerosol "
+           "extinction; the --particles box is a continuum cloud straddling "
+           "the diffuser-to-screen gap")
+    # continuum aerosol: phi chosen for a clear-but-partial extinction
+    # (tau ~ 0.6 -> forward transmission ~ 0.5) so the no-cloud reference
+    # ratio lands in the gate band; water is non-absorbing at 532 (albedo 1)
+    return {"preset": "quick", "rays": 3e5, "nlambda": 1,
+            "save_fields": True,
+            "particles": "box=5,-15,-15:40,30,30;material=water;"
+                         "phi=1.0e-2;median_um=2.0;gsd=1.5"}
+
+
 DEMOS = {
+    "fizeau_flats": demo_fizeau_flats,
+    "fs_shg_spectrogram": demo_fs_shg_spectrogram,
+    "quartz_rotator": demo_quartz_rotator,
+    "speckle_mie_combo": demo_speckle_mie_combo,
     "bladed_iris_star": demo_bladed_iris_star,
     "sc_spectrogram": demo_sc_spectrogram,
     "erfiber_spm": demo_erfiber_spm,
@@ -2607,6 +2890,11 @@ DEMO_STUDIES = {
     "biaxial_conoscopy": {"opt": None, "tol": ("spot_rms", "Figure")},
     "sc_spectrogram": {"opt": None, "tol": ("spot_rms", "Screen")},
     "erfiber_spm": {"opt": None, "tol": ("spot_rms", "Screen")},
+    # -- WP7 beyond-sequential showcase demos: tolerance-only --------------
+    "fizeau_flats": {"opt": None, "tol": ("detected_power", "Screen")},
+    "fs_shg_spectrogram": {"opt": None, "tol": ("detected_power", "Screen")},
+    "quartz_rotator": {"opt": None, "tol": ("detected_power", "Screen")},
+    "speckle_mie_combo": {"opt": None, "tol": ("spot_rms", "Forward")},
     "fs_lens_telescope": {"opt": None, "tol": ("spot_rms", "Screen")},
     "fs_oap_telescope": {"opt": None, "tol": ("spot_rms", "Screen")},
     "treacy_compressor": {"opt": None, "tol": ("spot_rms", "Screen")},

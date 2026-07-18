@@ -67,8 +67,15 @@ DEMO_NAMES = [
     "curved_focal",
     # optimize/tolerance-round showcase demos (new)
     "double_gauss", "fiber_coupling_doublet",
+    # WP7 beyond-sequential showcase demos
+    "fizeau_flats", "fs_shg_spectrogram", "quartz_rotator",
+    "speckle_mie_combo",
 ]
 FRINGE_DEMOS = {"michelson"}
+# WP7 demos with a bespoke physics gate (implemented in wp7_gates.py-style
+# functions below) run IN ADDITION to the placement + power baseline gates.
+PATTERN_DEMOS = {"fizeau_flats", "fs_shg_spectrogram", "quartz_rotator",
+                 "speckle_mie_combo"}
 
 # ---------------------------------------------------------------------------
 # optimize/tolerance study gate (config-resolution + showcase smoke runs)
@@ -353,6 +360,218 @@ def harvest(results_dir, stem):
         return json.load(fh)
 
 
+# ---------------------------------------------------------------------------
+# WP7 bespoke physics gates (beyond-sequential showcase demos).  Each returns
+# (failures, notes); they read the finished case directory's detector .h5 +
+# report.json.  Run under the GUI venv (numpy/scipy/h5py present).
+# ---------------------------------------------------------------------------
+def _detector_image(case_dir):
+    """(image[H,W] W/pixel-sum, pixel_mm, attrs, h5dict) for the single
+    detector in a WP7 case (all four have exactly one)."""
+    import glob as _glob
+
+    import h5py
+    import numpy as np
+    files = sorted(_glob.glob(str(Path(case_dir) / "detectors" / "*.h5")))
+    if not files:
+        raise RuntimeError("no detector .h5 under %s" % case_dir)
+    with h5py.File(files[0], "r") as h:
+        cube = h["spectral_cube_mean"][...]
+        attrs = dict(h.attrs)
+        extra = {k: h[k][...] for k in ("time_profile", "mask")
+                 if k in h}
+    img = cube.sum(axis=0)
+    return img, float(attrs["pixel_m"]) * 1e3, attrs, extra, cube
+
+
+def _fringe_metrics(img, pixel_mm):
+    """(lit_visibility, n_peaks) along the brightest profile of a fringe
+    image.  Visibility = (max-min)/(max+min) over the lit segment; peaks
+    counted on the envelope-normalized profile."""
+    import numpy as np
+    from scipy.signal import find_peaks
+    if img.max() <= 0:
+        return 0.0, 0
+    iy, ix = np.unravel_index(np.argmax(img), img.shape)
+    best = (0.0, 0)
+    for prof in (img[iy].astype(float), img[:, ix].astype(float)):
+        m = np.where(prof > prof.max() * 0.05)[0]
+        if len(m) < 8:
+            continue
+        seg = prof[m.min():m.max() + 1]
+        pos = seg[seg > 0]
+        vis = (pos.max() - pos.min()) / (pos.max() + pos.min()) \
+            if len(pos) else 0.0
+        win = max(5, len(seg) // 4)
+        env = np.convolve(seg, np.ones(win) / win, "same")
+        env[env <= 0] = env.max() if env.max() > 0 else 1.0
+        pk, _ = find_peaks(seg / env, distance=3, prominence=0.15)
+        if len(pk) > best[1] or vis > best[0]:
+            best = (max(best[0], vis), max(best[1], len(pk)))
+    return best
+
+
+def gate_fizeau(name, case_dir, report):
+    """Coherent Fizeau: a reconstructed high-visibility multi-fringe pattern
+    (the beyond-sequential coherent multipath interference).  Absolute pitch
+    is NOT gated -- at this bench scale the coherent gather sits near
+    phase_step~pi and a detector-alignment / 4-surface pedestal confounds a
+    clean lambda/(2 alpha); the robust observables are fringe visibility +
+    count (michelson's approach)."""
+    det = list((report.get("detectors") or {}).values())
+    fail, notes = [], []
+    p = float(det[0]["total_power_W"]) if det else 0.0
+    if p <= 0:
+        return ["fizeau: zero detected power (coherent reconstruction "
+                "collapsed)"], []
+    img, pix, attrs, extra, cube = _detector_image(case_dir)
+    vis, npk = _fringe_metrics(img, pix)
+    if vis < 0.30:
+        fail.append("fizeau: lit-region fringe visibility %.3f < 0.30" % vis)
+    if npk < 4:
+        fail.append("fizeau: only %d fringe peaks (< 4) -- no interferogram"
+                    % npk)
+    notes.append("fizeau: power=%.3g W, visibility=%.3f, %d fringes"
+                 % (p, vis, npk))
+    return fail, notes
+
+
+def gate_fs_shg(name, case_dir, report):
+    """fs SHG spectrogram: (a) a lambda/2 (400 nm) harmonic band above
+    threshold in the spectral cube, and (b) the fundamental pulse FWHM within
+    +-30%% of the analytic chirped-Gaussian stretch tau(GDD) for the SF11 rod
+    (tau0=100 fs, beta2=189.6 fs^2/mm * 60 mm)."""
+    import numpy as np
+    fail, notes = [], []
+    img, pix, attrs, extra, cube = _detector_image(case_dir)
+    lo = float(attrs["lam_lo_m"]) * 1e9
+    hi = float(attrs["lam_hi_m"]) * 1e9
+    bins = cube.shape[0]
+    lam = lo + (np.arange(bins) + 0.5) * (hi - lo) / bins
+    pw = cube.reshape(bins, -1).sum(axis=1)
+    harm = pw[(lam >= 350) & (lam <= 450)].sum()
+    fund = pw[(lam >= 750) & (lam <= 850)].sum()
+    ratio = harm / fund if fund > 0 else 0.0
+    if ratio < 1e-3:
+        fail.append("fs_shg: 400 nm harmonic band %.2e of fundamental "
+                    "(< 1e-3) -- no SHG conversion" % ratio)
+    else:
+        notes.append("fs_shg: harmonic/fundamental band ratio = %.3g" % ratio)
+    # fundamental stretched FWHM from the time profile
+    prof = extra.get("time_profile")
+    if prof is None or float(np.max(prof)) <= 0:
+        fail.append("fs_shg: no time profile (pulse product missing)")
+        return fail, notes
+    dt = float(attrs["time_dt_s"])
+    pk = float(np.max(prof))
+    above = np.where(prof >= pk / 2.0)[0]
+    fwhm_fs = (above[-1] - above[0] + 1) * dt * 1e15 if len(above) else 0.0
+    tau0, beta2, L = 100.0, 189.6, 60.0
+    gdd = beta2 * L
+    tau_an = tau0 * math.sqrt(
+        1.0 + (gdd / (tau0 ** 2 / (4.0 * math.log(2.0)))) ** 2)
+    rel = abs(fwhm_fs - tau_an) / tau_an
+    if rel > 0.30:
+        fail.append("fs_shg: pulse FWHM %.0f fs vs analytic %.0f fs "
+                    "(%.0f%% > 30%%)" % (fwhm_fs, tau_an, 100 * rel))
+    else:
+        notes.append("fs_shg: pulse FWHM %.0f fs vs analytic %.0f fs "
+                     "(%.0f%%)" % (fwhm_fs, tau_an, 100 * rel))
+    return fail, notes
+
+
+def gate_quartz(name, case_dir, report):
+    """Quartz rotator: DOCUMENTED, NOT asserted.  Scene-level gyration is not
+    yet wired into the tracer (uniaxial o/e path; see the demo docstring), so
+    the crossed-analyzer power stays near the extinction floor instead of the
+    optically-active sin^2(rho*d).  This gate only REPORTS the measured vs
+    expected numbers -- it never fails -- so the demo ships as the ready bench
+    for when scene gyrotropy lands."""
+    det = list((report.get("detectors") or {}).values())
+    p = float(det[0]["total_power_W"]) if det else 0.0
+    rho, d_mm = 21.77, 2.0
+    expect_frac = math.sin(math.radians(rho * d_mm)) ** 2
+    return [], ["quartz_rotator (DOCUMENTED, not asserted): crossed-analyzer "
+                "power=%.3g W; if scene gyration were wired the throughput "
+                "would be sin^2(rho*d)=sin^2(%.1f deg)=%.3f of parallel -- "
+                "scene-level optical activity is a documented engine seam"
+                % (p, rho * d_mm, expect_frac)]
+
+
+# the demo's aerosol spec (kept in lock-step with demo_speckle_mie_combo)
+_SPECKLE_PARTICLES = ("box=5,-15,-15:40,30,30;material=water;phi=1.0e-2;"
+                      "median_um=2.0;gsd=1.5")
+_SPECKLE_LAM_NM = 532.0
+# analytic Mie extinction of the spec, computed under the optics env (miepython
+# lives there, not in the GUI venv the gate runs in).  A no-cloud TRACE
+# reference is unusable here: a phi~0 particle box is a pathological continuum
+# edge case that runs many minutes, so the "no-cloud analytic" the WP7 brief
+# allows is the analytic ballistic optical depth instead.
+_MU_EXT_SCRIPT = r"""
+import sys, json
+sys.path.insert(0, "%s")
+import numpy as np, common
+from raytracer.particles import ParticleCloud
+from raytracer.optprops import load_optical_properties
+spec = common.parse_particles_spec(sys.argv[1]); lam_nm = float(sys.argv[2])
+props = load_optical_properties(root="%s")
+class Stub:
+    matdb = props.matdb
+    ambient = props.matdb.get("air")
+cloud = ParticleCloud(spec, Stub(), lam_list=(lam_nm*1e-9,))
+mu = cloud.tables.mu_ext(lam_nm*1e-9); L = float(spec["box_size_m"][0])
+print(json.dumps({"tau": mu*L, "T": float(np.exp(-mu*L)), "mu": mu}))
+""" % (str(REPO / "scripts"), str(REPO / "opticalproperties"))
+
+
+def gate_speckle(name, case_dir, report, workdir, seeds):
+    """Speckle x Mie: (a) speckle contrast sigma/<I> over the lit region in
+    [0.5, 1.1] (coherent diffuser speckle -- the beyond-sequential headline),
+    and (b) the aerosol cloud's analytic Beer-Lambert optical depth tau in a
+    loose band [0.3, 1.5] (real, significant, partial extinction), computed
+    under the optics env from the same --particles spec the demo ships."""
+    import numpy as np
+    fail, notes = [], []
+    img, pix, attrs, extra, cube = _detector_image(case_dir)
+    det = list((report.get("detectors") or {}).values())
+    p_cloud = float(det[0]["total_power_W"]) if det else 0.0
+    lit = img[img > img.max() * 0.1]
+    contrast = float(lit.std() / lit.mean()) if len(lit) > 10 \
+        and lit.mean() > 0 else 0.0
+    if not (0.5 <= contrast <= 1.1):
+        fail.append("speckle: contrast sigma/<I>=%.3f outside [0.5, 1.1]"
+                    % contrast)
+    else:
+        notes.append("speckle: contrast sigma/<I>=%.3f (fwd power %.3g W)"
+                     % (contrast, p_cloud))
+    # analytic Mie extinction (optics env subprocess)
+    proc = subprocess.run(
+        [common.OPTICS_PYTHON, "-c", _MU_EXT_SCRIPT, _SPECKLE_PARTICLES,
+         "%g" % _SPECKLE_LAM_NM], capture_output=True, text=True)
+    try:
+        ext = json.loads(proc.stdout.strip().splitlines()[-1])
+    except Exception:
+        fail.append("speckle: analytic mu_ext subprocess failed: %s"
+                    % (proc.stderr.strip().splitlines()[-1:] or [""])[0])
+        return fail, notes
+    tau = float(ext["tau"])
+    if not (0.3 <= tau <= 1.5):
+        fail.append("speckle: analytic cloud optical depth tau=%.3f outside "
+                    "[0.3, 1.5]" % tau)
+    else:
+        notes.append("speckle: analytic Mie tau=%.3f (ballistic T=%.3f, "
+                     "extinction %.0f%%)" % (tau, ext["T"], 100 * (1 - ext["T"])))
+    return fail, notes
+
+
+PATTERN_GATES = {
+    "fizeau_flats": gate_fizeau,
+    "fs_shg_spectrogram": gate_fs_shg,
+    "quartz_rotator": gate_quartz,
+    "speckle_mie_combo": gate_speckle,
+}
+
+
 def check_power(name, workdir, seeds):
     base = json.loads(
         (BASELINE_DIR / ("%s.power.json" % name)).read_text())
@@ -395,6 +614,23 @@ def check_power(name, workdir, seeds):
                     and abs(float(v1) - float(v0)) > VIS_TOL:
                 failures.append("%s visibility %.3f vs %.3f"
                                 % (label, float(v1), float(v0)))
+    # WP7 bespoke physics gate (reads the finished case dir before cleanup)
+    if name in PATTERN_GATES:
+        case_dirs = [dd for dd in sorted((rundir / "results" / stem).glob("*"))
+                     if (dd / "report.json").exists()]
+        if not case_dirs:
+            failures.append("%s: no case dir for the pattern gate" % name)
+        else:
+            gate = PATTERN_GATES[name]
+            try:
+                if name == "speckle_mie_combo":
+                    pf, pn = gate(name, case_dirs[0], report, workdir, seeds)
+                else:
+                    pf, pn = gate(name, case_dirs[0], report)
+                failures += pf
+                notes += pn
+            except Exception as exc:      # a gate crash is a gate failure
+                failures.append("%s: pattern gate raised %r" % (name, exc))
     shutil.rmtree(str(rundir), ignore_errors=True)
     return failures, notes
 

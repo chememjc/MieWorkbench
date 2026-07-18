@@ -1,0 +1,85 @@
+{
+ "bodies": {
+  "Diffuser": {
+   "group": "Diffuser",
+   "label": "Diffuser",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "diffuser_plate"
+  },
+  "Forward": {
+   "group": "Forward",
+   "label": "Forward",
+   "placement": {
+    "pos_mm": [
+     50.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Probe": {
+   "group": "Probe",
+   "label": "Probe",
+   "placement": {
+    "pos_mm": [
+     -30.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  }
+ },
+ "demo": "speckle_mie_combo",
+ "sheets": {
+  "dim": {},
+  "dim_Diffuser": {
+   "round_flag": "1",
+   "thickness": "=2 mm",
+   "width": "=20 mm"
+  },
+  "dim_Forward": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=40 mm"
+  },
+  "dim_Probe": {
+   "diameter": "=4 mm",
+   "length": "=8 mm",
+   "round_flag": "1"
+  },
+  "miewb_vars": {
+   "fwd_gap": "48",
+   "fwd_gap__max": "80",
+   "fwd_gap__min": "30",
+   "fwd_gap__n": "5",
+   "fwd_gap__on": "0"
+  }
+ }
+}

@@ -1,0 +1,125 @@
+{
+ "bodies": {
+  "Analyzer": {
+   "group": "Analyzer",
+   "label": "Analyzer",
+   "placement": {
+    "pos_mm": [
+     9.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "polarizer_plate"
+  },
+  "InPol": {
+   "group": "InPol",
+   "label": "InPol",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "polarizer_plate"
+  },
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -30.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Quartz": {
+   "group": "Quartz",
+   "label": "Quartz",
+   "placement": {
+    "pos_mm": [
+     4.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "window"
+  },
+  "Screen": {
+   "group": "Screen",
+   "label": "Screen",
+   "placement": {
+    "pos_mm": [
+     30.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  }
+ },
+ "demo": "quartz_rotator",
+ "sheets": {
+  "dim": {},
+  "dim_Analyzer": {
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=15 mm"
+  },
+  "dim_InPol": {
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=15 mm"
+  },
+  "dim_Laser": {
+   "diameter": "=3 mm",
+   "length": "=6 mm",
+   "round_flag": "1"
+  },
+  "dim_Quartz": {
+   "round_flag": "1",
+   "thickness": "=2 mm",
+   "width": "=15 mm"
+  },
+  "dim_Screen": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=12 mm"
+  },
+  "miewb_vars": {}
+ }
+}

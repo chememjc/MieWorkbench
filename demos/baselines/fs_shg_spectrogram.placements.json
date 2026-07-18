@@ -1,0 +1,102 @@
+{
+ "bodies": {
+  "BBO": {
+   "group": "BBO",
+   "label": "BBO",
+   "placement": {
+    "pos_mm": [
+     70.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "window"
+  },
+  "MaiTai": {
+   "group": "MaiTai",
+   "label": "MaiTai",
+   "placement": {
+    "pos_mm": [
+     -25.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_maitai_800"
+  },
+  "SF11Rod": {
+   "group": "SF11Rod",
+   "label": "SF11Rod",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "window"
+  },
+  "Screen": {
+   "group": "Screen",
+   "label": "Screen",
+   "placement": {
+    "pos_mm": [
+     95.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  }
+ },
+ "demo": "fs_shg_spectrogram",
+ "sheets": {
+  "dim": {},
+  "dim_BBO": {
+   "round_flag": "0",
+   "thickness": "=5 mm",
+   "width": "=8 mm"
+  },
+  "dim_MaiTai": {
+   "diameter": "=1.5 mm",
+   "length": "=10 mm",
+   "round_flag": "1"
+  },
+  "dim_SF11Rod": {
+   "round_flag": "1",
+   "thickness": "=60 mm",
+   "width": "=10 mm"
+  },
+  "dim_Screen": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=12 mm"
+  },
+  "miewb_vars": {}
+ }
+}

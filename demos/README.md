@@ -1,10 +1,11 @@
 # MieWorkbench demo gallery
 
-Thirty-eight optical systems (eleven classic instruments, five
+Forty-two optical systems (eleven classic instruments, five
 single-physics benches, four analysis/scattering benches, four
 physics-showcase benches, the telephoto pair, a folded periscope,
-seven pulsed-optics/time-domain benches, and two optimize/tolerance
-showcase objectives),
+seven pulsed-optics/time-domain benches, two optimize/tolerance
+showcase objectives, and four "beyond sequential codes" showcase
+benches),
 each a self-contained `.MieWB` workbench archive (double-click-open in
 the GUI, or run headlessly) plus the bare `.FCStd` scene. All are assembled as **optical trains** by
 `scripts/make_demos.py` (the GUI's own Project/chain op path): every
@@ -293,6 +294,89 @@ gate warnings) drowns the EO retardance — the voltage sweep moved
 the detected power 0.6% where sin² predicts 61%. The transverse
 Pockels physics is pinned instead by the engine oracle
 (test_nlo_elements: sin²(πV/2V_π) at 1% on a beat-length cell).
+
+### Beyond sequential codes (WP7)
+
+Four benches whose physics a **sequential ray tracer** (Zemax OpticStudio and
+kin) cannot render from first principles — coherent multipath interference,
+time-domain + nonlinear optics, statistical coherent scattering, and
+gyrotropic optical activity. A sequential code propagates one chief/marginal
+bundle per field through an ordered surface list; it has no coherent detector,
+no pulse/GDD, no participating medium, and no polarization transport, so each
+demo below lands squarely outside its model. Gated by
+`run_demo_equivalence.py` (bespoke physics gate + the placement/power
+baselines); every run closes the energy ledger <1e-3.
+
+**`fizeau_flats`** — two BK7 flats bound a thin wedged air gap, read in
+reflection at a 6° oblique fold with a 633 nm coherent Ø3 mm beam. The
+surface reflections recombine in the coherent Huygens gather into a
+high-visibility multi-fringe interferogram — the coherent superposition of
+multiply-reflected beam paths at the detector. *Why sequential can't:* there
+is no coherent detector in a sequential trace; Fizeau/Twyman-Green analysis in
+Zemax is a separate wavefront-difference post-step, not a traced intensity
+pattern. *Prescription:* laser → reference flat (`tilt_ry` 6°) → test flat
+(gap 0.05 mm, +wedge) → screen ⊥ to the mean reflected beam, 5e5 rays /
+`nlambda=1`, `max_reflections=8`. *Gate:* fringe **visibility** (0.83
+lit-region) + **count** (13 fringes) — the robust michelson-style observables.
+*Honest limit (measured, reported):* at this bench scale the coherent gather
+sits near the `phase_step≈π` edge and a ~9-fringe detector-alignment/4-surface
+pedestal confounds a clean λ/(2α) **pitch** (the pitch does not cleanly track
+the set wedge), so pitch is NOT gated — the same gallery-scale phase-noise
+limit that retired the `pockels_switch` bench above. Cite: Malacara, *Optical
+Shop Testing* (Fizeau/wedge fringes).
+
+**`fs_shg_spectrogram`** — a Mai Tai 800 nm / 100 fs pulse is stretched in a
+60 mm SF11 rod (GDD = 189.6 fs²/mm × 60 = 11 376 fs²) then doubled to 400 nm in
+a 5 mm BBO crystal; the detector's `pulse,spectrogram,streak` products show
+the stretched fundamental in time AND the harmonic band in wavelength — the
+joint time-frequency signature a FROG measures. *Why sequential can't:* a
+sequential trace carries no arrival time / GDD accumulation and no χ² child —
+both the stretch and the harmonic are absent from its model. *Prescription:*
+`laser_maitai_800` (coherent=False, `--ray-differentials`) → SF11 rod → BBO
+(`nonlinear=bbo_shg_800_type1`, optic axis along the beam) → screen; tight
+±ps time window so the 512 bins resolve the pulse. *Gate:* 400 nm harmonic band
+present (**1.0%** of the fundamental) AND fundamental FWHM **328 fs** within
+±30% of the analytic chirped-Gaussian τ(GDD) = **331 fs** (0.99×). *Deviation
+(reported):* the crystal is **BBO**, not KTP — the KTP `ktp_shg_1064_type2` row
+is phase-matched at 1064 nm, so its collinear Δk drives sinc²(ΔkL/2)→0 at an
+800 nm pump (no conversion); the 800-matched row shipped is BBO. Cite: Boyd,
+*Nonlinear Optics*; Trebino, *Frequency-Resolved Optical Gating*.
+
+**`speckle_mie_combo`** — a 532 nm coherent Ø4 mm beam through a 600-grit
+ground-glass diffuser (`@dg_600`) and then a Mie aerosol cloud (log-normal
+water droplets, 2 µm median, `--particles` continuum box) onto a forward
+screen. Two irreducibly statistical/coherent effects stack: the diffuser's
+random phase screen makes a fully-developed **speckle** field, and the droplet
+cloud **extinguishes** the forward beam by Beer-Lambert. *Why sequential
+can't:* speckle is the coherent sum of a random-phase ensemble (a Huygens
+gather) and the aerosol is a volumetric Mie continuum — neither exists in a
+sequential geometric tracer. *Prescription:* coherent probe → diffuser → cloud
+box straddling the diffuser-to-screen gap → forward screen, 3e5 rays /
+`nlambda=1`. *Gate (3-seed):* speckle contrast σ/⟨I⟩ = **0.555** in [0.5, 1.1]
+AND the cloud's analytic Mie optical depth τ = **0.564** (ballistic
+transmission 0.57, 43% extinction) in [0.3, 1.5]. The extinction reference is
+ANALYTIC (a phi≈0 no-cloud trace is a pathological continuum edge case that
+runs many minutes). Cite: Goodman, *Speckle Phenomena in Optics*; Bohren &
+Huffman, *Absorption and Scattering of Light by Small Particles*.
+
+**`quartz_rotator`** — a 2 mm z-cut α-quartz slab (optic axis along the beam)
+between crossed polarizers in 589.3 nm light. Quartz is gyrotropic: its
+circular eigenmodes have different indices, so a linear input should rotate by
+ρ·d with ρ = 21.77°/mm, and a crossed analyzer should pass sin²(ρ·d) =
+sin²(43.5°) = **0.475** of the parallel throughput. *Why sequential can't:*
+circular birefringence / optical rotation is a bulk polarization-transport
+effect; a scalar/geometric sequential tracer has no polarization state to
+rotate. *STATUS — HONEST LIMIT:* the gyration physics is implemented and
+validated at the MODULE level (`raytracer.berreman.add_gyration`;
+`test_berreman.py` ORACLE 3 reproduces 21.77°/mm), but it is **not wired into
+the scene tracer** — a `material=quartz` body routes through the uniaxial o/e
+double-refraction path (`tracer._birefringent_children`), which models LINEAR
+birefringence only and never calls `add_gyration`. So the scene as traced does
+NOT rotate the polarization, and the measured crossed-analyzer power is
+**0 W** (extinction floor) instead of 0.475. The demo ships as the ready bench
+for when scene-level gyrotropy lands (engine3 P9 seam); its rotation gate is
+therefore **documented, not asserted**. Cite: Kaminsky, *Rep. Prog. Phys.* 63,
+1575 (2000) (α-quartz rotatory power — the registry row citation).
 
 ### Virtual instrument bench (P2.5)
 
