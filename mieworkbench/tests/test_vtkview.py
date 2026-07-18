@@ -17,7 +17,8 @@ import pytest  # noqa: E402
 
 from mieworkbench.core.transforms import axis_angle_quat  # noqa: E402
 from mieworkbench.widgets.vtkview import (  # noqa: E402
-    VtkSceneView, placement_to_vtk_transform, role_for_body,
+    _ABSORBER_STYLE, _ROLE_STYLE, VtkSceneView, body_style,
+    placement_to_vtk_transform, role_for_body,
 )
 from mieworkbench.tests.vtk_test_support import (  # noqa: E402
     make_two_body_scene, write_simple_vtp,
@@ -97,6 +98,63 @@ def test_role_for_body_optic_default():
 
 def test_role_for_body_no_properties_is_optic():
     assert role_for_body({}) == "optic"
+
+
+# ---------------------------------------------------------------------------
+# body_style (WP5: opaque absorbing aperture stops)
+# ---------------------------------------------------------------------------
+def _props(**kv):
+    return {"properties": {k: {"value": v} for k, v in kv.items()}}
+
+
+def test_body_style_iris_disc_is_opaque_dark():
+    # iris/iris_bladed/pinhole/slit discs: material=aluminum, absorbance
+    # derived from 'blackness' (0.95-1.0 typical, see primitivelib.py).
+    body = _props(material="aluminum", absorbance="1.0")
+    assert body_style(body) == _ABSORBER_STYLE
+
+
+def test_body_style_air_plug_stays_optic():
+    # the aperture's own clear-opening 'plug' body (material=air) must
+    # never darken, even if it happened to carry a high absorbance value.
+    body = _props(material="air", absorbance="1.0")
+    assert body_style(body) == _ROLE_STYLE["optic"]
+
+
+def test_body_style_mirror_prop_with_absorbance_stays_optic():
+    # a reflective element (carries a 'mirror' property) must keep its
+    # normal role color even alongside a high absorbance value.
+    body = _props(material="aluminum", absorbance="1.0", mirror="true")
+    assert body_style(body) == _ROLE_STYLE["optic"]
+
+
+def test_body_style_edge_blackened_lens_stays_optic():
+    # edge_blackened lenses only carry the bool 'edge_blackened' sheet
+    # prop -- the per-face absorbance it drives is extract-time-only,
+    # never a body-level 'absorbance' property (see primitivelib.py
+    # lines ~1083-1089).
+    body = _props(material="BK7", edge_blackened=1)
+    assert body_style(body) == _ROLE_STYLE["optic"]
+
+
+def test_body_style_below_threshold_stays_optic():
+    body = _props(material="aluminum", absorbance="0.3")
+    assert body_style(body) == _ROLE_STYLE["optic"]
+
+
+def test_body_style_non_numeric_absorbance_stays_optic():
+    body = _props(material="aluminum", absorbance="n/a")
+    assert body_style(body) == _ROLE_STYLE["optic"]
+
+
+def test_body_style_source_role_unaffected_by_absorbance():
+    body = _props(power=5.0, lambdac=532.0, absorbance="1.0")
+    assert body_style(body) == _ROLE_STYLE["source"]
+
+
+def test_body_style_detector_role_unaffected_by_absorbance():
+    body = _props(material="detector", absorbance="1.0")
+    assert body_style(body) == _ROLE_STYLE["detector"]
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +240,39 @@ def test_set_selection_highlights_then_clears(qtbot, tmp_path):
     view.clear_highlights()
     assert actor.GetProperty().GetColor() == pytest.approx(base_color)
     assert not actor.GetProperty().GetEdgeVisibility()
+
+
+def test_absorber_body_gets_dark_style_and_still_composes_selection(
+        qtbot, tmp_path):
+    # WP5: an absorbing aperture-stop body (e.g. an iris disc) must build
+    # with the opaque _ABSORBER_STYLE as its cached base style, AND the
+    # selection-highlight compose path (_apply_face_style) must still work
+    # on top of it exactly like any other body.
+    structure, faces = make_two_body_scene(tmp_path)
+    lens = next(b for b in structure["bodies"] if b["name"] == "Lens")
+    lens["properties"]["material"]["value"] = "aluminum"
+    lens["properties"]["absorbance"] = {"value": "1.0"}
+
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    view.load_bodies(faces, structure)
+
+    face_id = "Lens.Revolution.Face1"
+    actor = view._face_actor_map[face_id]
+    assert view._actor_base_style[actor] == _ABSORBER_STYLE
+    assert actor.GetProperty().GetColor() == pytest.approx(
+        _ABSORBER_STYLE[0])
+    assert actor.GetProperty().GetOpacity() == pytest.approx(
+        _ABSORBER_STYLE[1])
+
+    view.set_selection({face_id})
+    assert actor.GetProperty().GetColor() == pytest.approx((1.0, 0.55, 0.0))
+
+    view.clear_highlights()
+    assert actor.GetProperty().GetColor() == pytest.approx(
+        _ABSORBER_STYLE[0])
+    assert actor.GetProperty().GetOpacity() == pytest.approx(
+        _ABSORBER_STYLE[1])
 
 
 def test_fit_camera_and_view_along_do_not_crash_offscreen(qtbot, tmp_path):

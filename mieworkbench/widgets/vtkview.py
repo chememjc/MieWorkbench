@@ -19,9 +19,11 @@ source-tagging convention, see scripts/extract_geometry.py's header); a
 is an "optic". Sources render red-ish and fully lit (boosted ambient/
 diffuse standing in for "emissive" -- VTK's fixed-function pipeline has no
 true emission term); detectors gray-blue translucent; optics glassy light
-blue translucent. A selected face is highlighted solid orange, overriding
-the body's role color on just that face's actor (one actor per face makes
-this a simple property swap, no shaders needed).
+blue translucent -- EXCEPT an absorbing aperture-stop plate (see
+body_style), which renders opaque dark instead of glassy blue. A selected
+face is highlighted solid orange, overriding the body's role color on just
+that face's actor (one actor per face makes this a simple property swap,
+no shaders needed).
 
 Offscreen safety: building this widget (actors/mappers/readers/the
 orientation marker) never touches the GPU -- only vtkRenderWindow-level
@@ -78,6 +80,14 @@ _ROLE_STYLE = {
     "optic":    ((0.58, 0.80, 0.96), 0.45),
 }
 _SELECTED_COLOR = (1.00, 0.55, 0.00)
+
+# -- opaque override for absorbing aperture stops (WP5), see body_style ----
+# iris/iris_bladed/pinhole/slit discs carry a body-level 'absorbance'
+# derived from their 'blackness' sheet param (scripts/primitivelib.py); at
+# blackness>=0.95 the classic glassy-blue "optic" look reads wrong -- these
+# are opaque blackened metal, not a transmissive element.
+_ABSORBER_STYLE = ((0.12, 0.12, 0.13), 1.00)
+_ABSORBER_THRESHOLD = 0.5
 
 # -- ghosted (train-excluded) style, see set_excluded_bodies ---------------
 _GHOST_OPACITY = 0.25
@@ -166,6 +176,44 @@ def role_for_body(body):
     if isinstance(material, str) and material.strip().lower() == "detector":
         return "detector"
     return "optic"
+
+
+def body_style(body):
+    """(RGB 0..1, opacity) render style for a body: the opaque
+    _ABSORBER_STYLE override for absorbing aperture-stop plates (iris,
+    iris_bladed, pinhole, slit -- see primitivelib.py), else the plain
+    role-based _ROLE_STYLE. Pure function so re-tessellation
+    (_build_body_actors) and the tests can exercise the rule without VTK.
+
+    The override applies only when ALL hold:
+      - role_for_body(body) == 'optic' (sources/detectors never darken)
+      - body property 'absorbance' parses as a float >= _ABSORBER_THRESHOLD
+        (non-numeric/absent -> not an absorber, e.g. edge_blackened lenses,
+        which only carry a bool 'edge_blackened' prop -- the per-face
+        absorbance they derive is extract-time-only, never a body prop)
+      - body property 'material' is not (case/whitespace-insensitively)
+        'air' (excludes the aperture's own clear-opening 'plug' body)
+      - body property 'mirror' is absent (a reflective element must stay
+        its normal role color even if it also happens to carry a high
+        absorbance -- this is a user-facing requirement, not inferred from
+        current primitives: no shipped kind currently stamps both)
+    """
+    role = role_for_body(body)
+    if role != "optic":
+        return _ROLE_STYLE[role]
+    props = body.get("properties") or {}
+    if "mirror" in props:
+        return _ROLE_STYLE[role]
+    material = (props.get("material") or {}).get("value")
+    if isinstance(material, str) and material.strip().lower() == "air":
+        return _ROLE_STYLE[role]
+    try:
+        absorbance = float((props.get("absorbance") or {}).get("value"))
+    except (TypeError, ValueError):
+        return _ROLE_STYLE[role]
+    if absorbance >= _ABSORBER_THRESHOLD:
+        return _ABSORBER_STYLE
+    return _ROLE_STYLE[role]
 
 
 # ---------------------------------------------------------------------------
@@ -678,7 +726,7 @@ class VtkSceneView(QWidget):
         transform = placement_to_vtk_transform(body.get("placement", {}))
         self._body_transforms[name] = transform
         role = role_for_body(body)
-        color, opacity = _ROLE_STYLE[role]
+        color, opacity = body_style(body)
 
         face_entries = (faces_dict.get(name) or {}).get("faces", [])
         actors = []
