@@ -913,9 +913,14 @@ OPTIMIZE_OPERANDS = ("spot_rms", "encircled_energy", "detected_power",
 
 def parse_var_spec(s):
     """'NAME:START:LO:HI' -> {"name","start","lo","hi"} with LO<=START<=HI.
-    argparse type= for --var (optimize stage). NAME is a spreadsheet cell
-    alias (bare 'alias' on the default dim sheet, or 'sheetlabel.alias' —
-    exactly what permute_model --var / fast_eval address)."""
+    argparse type= for --var (optimize stage). NAME is any of the three
+    permute_model --var / fast_eval address forms: a bare 'alias' (default
+    dim sheet), a 'sheetlabel.alias' (named sheet, e.g. 'miewb_vars.gap'),
+    or a 'train.<ElementLabel>.<field>' optical-train chain-recipe pose
+    field (distance/decenter_x/decenter_y/tilt_rx/tilt_ry/tilt_rz/
+    fold_deviation/fold_azimuth of a CHAINED element; distance+decenter in
+    mm, tilts in degrees). The ':' delimiters mean NAME must not contain a
+    ':' (element labels with ':' are unsupported for this spec)."""
     parts = s.split(":")
     if len(parts) != 4:
         raise argparse.ArgumentTypeError(
@@ -1067,11 +1072,16 @@ TOLERANCE_DISTS = ("normal", "uniform")
 
 def parse_tolerance_spec(s):
     """'NAME:NOMINAL:DIST:BAND' -> {"name","nominal","dist","band"}.
-    argparse type= for --tolerance (tolerance stage). NAME is a
-    spreadsheet cell alias (exactly what permute_model --var / fast_eval
-    address); DIST is one of TOLERANCE_DISTS; BAND > 0 is the 1-sigma
-    width for 'normal' and the half-width for 'uniform', in the sheet's
-    units (mm)."""
+    argparse type= for --tolerance (tolerance stage). NAME is any of the
+    three permute_model --var / fast_eval address forms: a bare 'alias'
+    (default dim sheet), a 'sheetlabel.alias' (named sheet), or a
+    'train.<ElementLabel>.<field>' optical-train chain-recipe pose field
+    (distance/decenter_x/decenter_y/tilt_rx/tilt_ry/tilt_rz/fold_deviation/
+    fold_azimuth of a CHAINED element — exactly the per-element decenter/
+    despace/tilt tolerancing wants; distance+decenter in mm, tilts in
+    degrees). DIST is one of TOLERANCE_DISTS; BAND > 0 is the 1-sigma width
+    for 'normal' and the half-width for 'uniform', in NAME's units. NAME
+    must not contain a ':' (the spec delimiter)."""
     parts = s.split(":")
     if len(parts) != 4:
         raise argparse.ArgumentTypeError(

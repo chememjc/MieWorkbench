@@ -111,7 +111,16 @@ def parse_args():
                     help="input .FCStd filename (bare name resolved under the "
                          "project root, or an absolute/relative path)")
     p.add_argument("--var", action="append", required=True,
-                    help="spreadsheet cell alias to sweep (repeatable)")
+                    help="parameter to sweep (repeatable). One of: a "
+                         "'alias' (default 'dim' sheet cell), a "
+                         "'sheetlabel.alias' (named sheet, e.g. "
+                         "'miewb_vars.gap'), or 'train.<ElementLabel>."
+                         "<field>' (an optical-train chain-recipe pose "
+                         "field of a chained element: distance/decenter_x/"
+                         "decenter_y/tilt_rx/tilt_ry/tilt_rz/fold_deviation/"
+                         "fold_azimuth; distance+decenter in mm, tilts in "
+                         "degrees — the literal OVERRIDES any expression the "
+                         "field held)")
     p.add_argument("--min", action="append", type=float, required=True,
                     help="minimum value (repeatable, paired with --var in order)")
     p.add_argument("--max", action="append", type=float, required=True,
@@ -171,10 +180,107 @@ def find_sheet(doc, label=None):
     return sheets[0]
 
 
+# -- optical-train ("train.<ElementLabel>.<field>") variable address form --
+#
+# Three --var / assignment address forms are recognized (see split_var and
+# parse_train_var):
+#
+#   "alias"                        -> a cell alias on the default 'dim' sheet
+#   "sheetlabel.alias"             -> a cell alias on the named sheet
+#                                     (e.g. "dim_Lens1.ct", "miewb_vars.gap")
+#   "train.<ElementLabel>.<field>" -> an OPTICAL-TRAIN chain-recipe pose
+#                                     field on a CHAINED element's primary
+#                                     body (tolerancing/optimizing per-element
+#                                     decenter/despace/tilt).
+#
+# Train fields are stored as App::PropertyString values (group "MieTrain",
+# names miewb_train_<field>) that may hold train_solver EXPRESSIONS over the
+# miewb_vars globals. A train.<El>.<field> assignment writes the LITERAL
+# numeric value into that property, OVERRIDING any expression it held for
+# this variant; the per-variant train re-solve (train_fcstd.apply_train, run
+# unconditionally by apply_assignments) then bakes the perturbed placement.
+# Units are the recipe's native units: distance/decenter in mm, tilts in
+# degrees, fold_deviation/fold_azimuth in degrees.
+#
+# NOTE: element labels containing "." are unsupported for this form (the
+# field is taken as the segment after the LAST dot).
+TRAIN_VAR_PREFIX = "train."
+TRAIN_GROUP = "MieTrain"
+# Pose fields a train.<El>.<field> assignment may set. Deliberately a
+# subset of train_fcstd.TRAIN_PROPS: the continuous, numeric per-element
+# perturbation fields tolerancing/optimization vary (NOT mode/ref/port/
+# flip/fold/rot_order/pivot — structural or non-numeric).
+TRAIN_FIELDS = ("distance", "decenter_x", "decenter_y",
+                "tilt_rx", "tilt_ry", "tilt_rz",
+                "fold_deviation", "fold_azimuth")
+
+
+def parse_train_var(var):
+    """Recognize the optical-train address form
+    "train.<ElementLabel>.<field>".
+
+    Returns (element_label, field) for a train address, or None when `var`
+    is not one (an ordinary sheet.alias / alias name — handled by
+    split_var). Element labels containing "." are unsupported: the field is
+    the segment after the LAST dot, so a label like "L.1" would misparse —
+    die() with a clear message rather than silently mangle it."""
+    if not var.startswith(TRAIN_VAR_PREFIX):
+        return None
+    body = var[len(TRAIN_VAR_PREFIX):]
+    element, sep, field = body.rpartition(".")
+    if not sep or not element or not field:
+        die("malformed train variable %r (expected "
+            "'train.<ElementLabel>.<field>', field one of: %s)"
+            % (var, ", ".join(TRAIN_FIELDS)))
+    return element, field
+
+
+def _chained_element_labels(doc):
+    """Sorted labels of the elements that carry a chained train recipe."""
+    out = []
+    for element, info in train_fcstd._elements(doc).items():
+        mode = getattr(info["primary"], "miewb_train_mode", None)
+        if str(mode) == "chained":
+            out.append(element)
+    return sorted(out)
+
+
+def apply_train_field(doc, element, field, value):
+    """Write the LITERAL numeric `value` into the chained element's
+    miewb_train_<field> pose property (overriding any expression), so the
+    per-variant train re-solve places the element with the perturbation.
+
+    Hard-errors (die/PermuteError) with a helpful, available-labels listing
+    when the field is not settable, the element does not exist, or the
+    element has no chained train recipe (an anchored element)."""
+    if field not in TRAIN_FIELDS:
+        die("train field %r is not settable (element %r); settable train "
+            "fields: %s" % (field, element, ", ".join(TRAIN_FIELDS)))
+    elements = train_fcstd._elements(doc)
+    if element not in elements:
+        die("train element %r not found (chained elements available: %s)"
+            % (element, ", ".join(_chained_element_labels(doc)) or "<none>"))
+    primary = elements[element]["primary"]
+    mode = getattr(primary, "miewb_train_mode", None)
+    if str(mode) != "chained":
+        die("element %r has no chained train recipe (mode=%r); a "
+            "train.<El>.<field> variable needs a CHAINED element "
+            "(chained elements available: %s)"
+            % (element, mode,
+               ", ".join(_chained_element_labels(doc)) or "<none>"))
+    prop = "miewb_train_%s" % field
+    if prop not in primary.PropertiesList:
+        primary.addProperty("App::PropertyString", prop, TRAIN_GROUP)
+    setattr(primary, prop, "%.10g" % value)
+
+
 def split_var(var):
     """'alias' -> (None, 'alias'); 'sheetlabel.alias' -> ('sheetlabel',
     'alias'). Sheet-qualified names address per-element parameter sheets
-    (dim_<element>) written by MieWorkbench primitives."""
+    (dim_<element>) written by MieWorkbench primitives.
+
+    The "train.<ElementLabel>.<field>" form is NOT handled here — it is
+    intercepted by parse_train_var() upstream in apply_assignments."""
     if "." in var:
         sheet_label, _, alias = var.partition(".")
         return sheet_label, alias
@@ -303,6 +409,15 @@ def apply_assignments(doc, assignments, unit="mm"):
     default_sheet = None
     touched_sheets = []
     for var, value in assignments:
+        # optical-train pose field ("train.<ElementLabel>.<field>"): write
+        # the literal into the element's miewb_train_<field> property. The
+        # train re-solve below (train_fcstd.apply_train, run unconditionally)
+        # then bakes the perturbed placement — no touched_sheets bookkeeping
+        # needed, so a variant that perturbs ONLY train fields still solves.
+        train = parse_train_var(var)
+        if train is not None:
+            apply_train_field(doc, train[0], train[1], value)
+            continue
         sheet_label, alias = split_var(var)
         if sheet_label is None:
             if default_sheet is None:
