@@ -451,3 +451,103 @@ def test_failure_banner_surfaces_first_error(qtbot):
     pane.on_progress(_event(1, 5.0, 5.0))
     pane.on_finished(0)
     assert not pane.error_banner.isVisibleTo(pane)
+
+
+# ---------------------------------------------------------------------------
+# WP3: convergence-plot data inspection + Apply optimum
+# ---------------------------------------------------------------------------
+def test_convergence_plot_stores_params_history_and_var_names(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.on_progress(_event(1, 5.0, 5.0, params={"z": 10.0}))
+    pane.on_progress(_event(2, 2.0, 2.0, params={"z": 12.0, "gap": 3.0}))
+    hist = pane.plot.history()
+    assert [h["eval"] for h in hist] == [1, 2]
+    assert hist[1]["params"] == {"z": 12.0, "gap": 3.0}
+    # insertion-ordered union of param keys across points
+    assert pane.plot.var_names() == ["z", "gap"]
+
+
+def test_convergence_plot_tooltip_text(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.on_progress(_event(1, 5.0, 5.0, params={"z": 10.0}))
+    pane.on_progress(_event(2, 2.0, 2.0, params={"z": 12.0}))
+    tip = pane.plot._tooltip_for(1)      # the better (rank 1) point
+    head = tip.splitlines()[0]
+    assert head.startswith("eval 2")
+    assert "rank 1" in head
+    assert "z = 12" in tip
+
+
+def test_convergence_plot_show_data_dialog_contents(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.on_progress(_event(1, 5.0, 5.0, params={"z": 10.0}))
+    pane.plot._show_data_dialog()
+    dlg = pane.plot._data_dialog
+    assert dlg is not None
+    assert dlg.table.horizontalHeaderItem(0).text() == "eval#"
+    assert dlg.table.rowCount() == 1
+
+
+def test_convergence_plot_data_dialog_csv_export(qtbot, tmp_path):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.on_progress(_event(1, 5.0, 5.0, params={"z": 10.0}))
+    pane.plot._show_data_dialog()
+    out = tmp_path / "conv.csv"
+    pane.plot._data_dialog.export_to(str(out))
+    assert out.exists() and out.read_text().splitlines()[0].startswith("eval#")
+
+
+def test_apply_button_state_machine(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    assert not pane.apply_btn.isEnabled()
+
+    # started -> disabled + best cleared
+    pane.on_started()
+    assert not pane.apply_btn.isEnabled()
+    # progress alone does not enable (only on_finished decides)
+    pane.on_progress(_event(1, 5.0, 5.0, params={"miewb_vars.gap": 3.0}))
+    assert not pane.apply_btn.isEnabled()
+    # clean finish with a real best -> enabled
+    pane.on_finished(0)
+    assert pane.apply_btn.isEnabled()
+    assert pane.best_merit() == 5.0
+    assert pane.best_params() == {"miewb_vars.gap": 3.0}
+
+    # a penalized-only run -> no usable best -> disabled
+    pane.on_started()
+    pane.on_progress(_event(2, 1e9, 1e9, params={"miewb_vars.gap": 1.0}))
+    pane.on_finished(0)
+    assert not pane.apply_btn.isEnabled()
+
+    # a clean run that exits non-zero -> disabled
+    pane.on_started()
+    pane.on_progress(_event(1, 2.0, 2.0, params={"miewb_vars.gap": 4.0}))
+    pane.on_finished(1)
+    assert not pane.apply_btn.isEnabled()
+
+    # a clean run then reset_best() (scene load) -> disabled + cleared
+    pane.on_started()
+    pane.on_progress(_event(1, 2.0, 2.0, params={"miewb_vars.gap": 4.0}))
+    pane.on_finished(0)
+    assert pane.apply_btn.isEnabled()
+    pane.reset_best()
+    assert not pane.apply_btn.isEnabled()
+    assert pane.best_params() == {}
+
+
+def test_set_start_values_rewrites_matching_rows(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.set_variables(_varrows())
+    pane.add_variable("gap", start=5.0, lo=0.0, hi=10.0)
+    pane.add_variable("lenspos", start=-6.0, lo=-8.0, hi=8.0)
+    # keys are the miewb_vars-qualified spec names the optimizer reports
+    pane.set_start_values({"miewb_vars.gap": 7.5})
+    specs = {s.split(":")[0]: s for s in pane.config()["var"]}
+    assert specs["miewb_vars.gap"].startswith("miewb_vars.gap:7.5:")
+    assert specs["miewb_vars.lenspos"].startswith("miewb_vars.lenspos:-6:")

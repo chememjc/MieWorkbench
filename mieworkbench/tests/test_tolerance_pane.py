@@ -537,3 +537,90 @@ def test_failure_banner_surfaces_first_error(qtbot):
     pane.on_progress(_draw_event(1, 5.0))
     pane.on_finished(0)
     assert not pane.error_banner.isVisibleTo(pane)
+
+
+# ---------------------------------------------------------------------------
+# WP3: MeritDistributionPlot (frequency polygon + CDF) + data inspection
+# ---------------------------------------------------------------------------
+def test_merit_distribution_add_merit_new_signature_compat(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    # legacy 1-arg call still works (existing tests rely on it)
+    pane.hist_plot.add_merit(90000.0)
+    # new optional params/passed
+    pane.hist_plot.add_merit(110000.0, params={"lenspos": 2.0}, passed=True)
+    assert pane.hist_plot.merit_count() == 2
+    assert pane.hist_plot.plotted_merits() == [90000.0, 110000.0]
+    hist = pane.hist_plot.history()
+    assert hist[1]["params"] == {"lenspos": 2.0}
+    assert hist[1]["passed"] is True
+    assert [h["draw"] for h in hist] == [1, 2]
+
+
+def test_merit_distribution_cdf_monotone_0_1(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    for m in (30.0, 10.0, 20.0, 40.0):
+        pane.hist_plot.add_merit(m)
+    cdf = pane.hist_plot.cdf_points()
+    xs = [x for x, _ in cdf]
+    ys = [y for _, y in cdf]
+    assert xs == sorted(xs)                      # sorted by merit
+    assert ys == sorted(ys)                      # non-decreasing
+    assert all(0.0 < y <= 1.0 for y in ys)
+    assert ys[-1] == 1.0                         # ends at 1
+
+
+def test_merit_distribution_x_axis_titled_merit(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    if pane.hist_plot.__dict__.get("_ax_x") is not None:   # QtCharts backend
+        assert pane.hist_plot._ax_x.titleText() == "merit"
+        assert pane.hist_plot._ax_cdf.titleText() == "cumulative"
+        assert pane.hist_plot._ax_cdf.max() == 1.0
+
+
+def test_merit_distribution_passed_derived_from_threshold(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.threshold_check.setChecked(True)
+    pane.threshold_spin.setValue(100000.0)
+    pane.on_started()
+    pane.on_progress(_draw_event(1, 90000.0, 1.0))     # <= threshold -> pass
+    pane.on_progress(_draw_event(2, 150000.0, 0.5))    # > threshold -> fail
+    pane.on_progress(_draw_event(3, 1e9, 0.33))        # penalized -> fail
+    hist = pane.hist_plot.history()
+    assert [h["passed"] for h in hist] == [True, False, False]
+
+
+def test_merit_distribution_no_threshold_passed_none(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.threshold_check.setChecked(False)
+    pane.on_started()
+    pane.on_progress(_draw_event(1, 90000.0))
+    assert pane.hist_plot.history()[0]["passed"] is None
+
+
+def test_merit_distribution_show_data_dialog(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.on_progress(_draw_event(1, 90000.0))
+    pane.hist_plot._show_data_dialog()
+    dlg = pane.hist_plot._data_dialog
+    assert dlg is not None
+    assert dlg.table.horizontalHeaderItem(0).text() == "draw#"
+
+
+def test_sensitivity_show_data_dialog(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    rows = [{"name": "lenspos", "rank": 1, "impact": 6188.0,
+             "derivative": -561.5}]
+    pane.on_progress(_sens_done_event(rows))
+    pane.sens_plot._show_data_dialog()
+    dlg = pane.sens_plot._data_dialog
+    assert dlg is not None
+    assert [dlg.table.horizontalHeaderItem(c).text()
+            for c in range(dlg.table.columnCount())] == \
+        ["name", "impact", "derivative", "rank"]

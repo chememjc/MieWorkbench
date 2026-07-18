@@ -31,21 +31,24 @@ sys.path.insert(0, normpath(join(dirname(__file__), "..", "..",
 import cli_specs  # noqa: E402  (stdlib-only; specs + parsers)
 import common     # noqa: E402  (stdlib-only; PRESETS)
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QCursor, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QTableWidget, QTableWidgetItem, QToolTip, QVBoxLayout, QWidget,
 )
 
 from ..core.variables import qualify_var_name
 from .optimize_pane import (NAME_COMBO_TOOLTIP, match_error_line,
                             variable_bounds, _make_error_banner)
+from .plot_inspect import (DataTableDialog, build_plot_menu,
+                           format_point_tooltip)
 
 try:
     from PySide6.QtCharts import (QBarCategoryAxis, QBarSeries, QBarSet,
-                                  QChart, QChartView, QValueAxis)
+                                  QChart, QChartView, QLineSeries,
+                                  QValueAxis)
     HAVE_QTCHARTS = True
 except ImportError:            # pragma: no cover - GUI venv ships QtCharts
     HAVE_QTCHARTS = False
@@ -85,6 +88,10 @@ class _BarChartBase(QWidget):
     def _bars(self):
         raise NotImplementedError
 
+    def _connect_bar_hover(self, bar_set):    # pragma: no cover - QtCharts
+        """Hook: subclasses connect bar_set.hovered here (default no-op).
+        Called once per rebuild, since QBarSet is recreated each time."""
+
     def _rebuild(self):
         if not HAVE_QTCHARTS:
             self._canvas.update()
@@ -98,6 +105,7 @@ class _BarChartBase(QWidget):
         bar_set = QBarSet("")
         for v in vals:
             bar_set.append(float(v))
+        self._connect_bar_hover(bar_set)
         series = QBarSeries()
         series.append(bar_set)
         self._chart.addSeries(series)
@@ -163,6 +171,9 @@ class SensitivityBarPlot(_BarChartBase):
         super().__init__("Sensitivity (merit impact over the band)",
                          parent)
         self._rows = []
+        self._data_dialog = None
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
 
     def set_rows(self, rows):
         """rows: [{"name","rank","impact","derivative"}] (ranked;
@@ -183,25 +194,100 @@ class SensitivityBarPlot(_BarChartBase):
                 for r in self._rows]
         return cats, vals
 
+    # -- hover / context menu ------------------------------------------------------
+    def _connect_bar_hover(self, bar_set):    # pragma: no cover - QtCharts
+        bar_set.hovered.connect(self._on_bar_hovered)
 
-class YieldHistogram(_BarChartBase):
-    """Live merit histogram over the Monte-Carlo draws. add_merit() per
-    draw event; bins are recomputed over the collected non-penalized
-    merits (penalty sentinels are counted, never binned)."""
+    def _on_bar_hovered(self, status, index):   # pragma: no cover - QtCharts
+        if not status or index < 0 or index >= len(self._rows):
+            QToolTip.hideText()
+            return
+        r = self._rows[index]
+        QToolTip.showText(QCursor.pos(), format_point_tooltip(
+            r.get("name", ""), {"derivative": r.get("derivative")},
+            r.get("impact"), r.get("rank")))
 
-    y_title = "draws"
+    def _on_context_menu(self, pos):
+        menu = build_plot_menu([("Show data…", self._show_data_dialog)],
+                               self)
+        menu.exec(self.mapToGlobal(pos))
+
+    def _show_data_dialog(self):
+        self._data_dialog = DataTableDialog(
+            self.rows(), "sensitivity", "Sensitivity", self)
+        self._data_dialog.show()
+        self._data_dialog.raise_()
+
+
+class MeritDistributionPlot(QWidget):
+    """Live Monte-Carlo merit distribution: a frequency polygon (a line
+    through the histogram bin centres) plus a cumulative-distribution
+    curve on a RIGHT-hand 0..1 axis (the "Both" view). add_merit() per
+    draw; bins are recomputed over the collected non-penalized merits
+    (penalty sentinels are counted, never binned).
+
+    The public data API is preserved from the former YieldHistogram
+    (add_merit / merit_count / plotted_merits / penalized_count / bins)
+    so existing tests keep passing; add_merit now also records the draw's
+    params + pass/fail for hover + the "Show data…" dialog. QtCharts when
+    importable, else a dependency-free QPainter canvas — same API either
+    way."""
+
     MAX_BINS = 12
 
     def __init__(self, parent=None):
-        super().__init__("Monte-Carlo merit distribution", parent)
+        super().__init__(parent)
         self._merits = []
+        self._params = []
+        self._passed = []
+        self._data_dialog = None
+        self.setMinimumHeight(150)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        if HAVE_QTCHARTS:
+            self._chart = QChart()
+            self._chart.setTitle("Monte-Carlo merit distribution")
+            self._chart.legend().setVisible(True)
+            self._freq_series = QLineSeries()
+            self._freq_series.setName("draws")
+            self._cdf_series = QLineSeries()
+            self._cdf_series.setName("cumulative")
+            self._chart.addSeries(self._freq_series)
+            self._chart.addSeries(self._cdf_series)
+            self._ax_x = QValueAxis()
+            self._ax_x.setTitleText("merit")     # fixes the missing label
+            self._ax_y = QValueAxis()
+            self._ax_y.setTitleText("draws")
+            self._ax_cdf = QValueAxis()
+            self._ax_cdf.setTitleText("cumulative")
+            self._ax_cdf.setRange(0.0, 1.0)
+            self._chart.addAxis(self._ax_x, Qt.AlignmentFlag.AlignBottom)
+            self._chart.addAxis(self._ax_y, Qt.AlignmentFlag.AlignLeft)
+            self._chart.addAxis(self._ax_cdf, Qt.AlignmentFlag.AlignRight)
+            self._freq_series.attachAxis(self._ax_x)
+            self._freq_series.attachAxis(self._ax_y)
+            self._cdf_series.attachAxis(self._ax_x)
+            self._cdf_series.attachAxis(self._ax_cdf)
+            self._freq_series.hovered.connect(self._on_hovered)
+            self._cdf_series.hovered.connect(self._on_hovered)
+            self._view = QChartView(self._chart)
+            self._view.setRenderHint(QPainter.RenderHint.Antialiasing)
+            layout.addWidget(self._view)
+        else:
+            self._canvas = _PainterDistribution(self)
+            layout.addWidget(self._canvas)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
 
-    def add_merit(self, merit):
+    # -- data API (preserved) ------------------------------------------------------
+    def add_merit(self, merit, params=None, passed=None):
         self._merits.append(float(merit))
+        self._params.append(dict(params) if params else {})
+        self._passed.append(passed)
         self._rebuild()
 
     def clear(self):
-        self._merits = []
+        self._merits, self._params, self._passed = [], [], []
         self._rebuild()
 
     def merit_count(self):
@@ -235,13 +321,121 @@ class YieldHistogram(_BarChartBase):
             counts[min(int((m - lo) / width), nb - 1)] += 1
         return edges, counts
 
-    def _bars(self):
+    def cdf_points(self):
+        """[(merit, cumulative_fraction)] over the plotted merits sorted
+        ascending — monotone, ending at 1.0 (empty when no data)."""
+        ok = sorted(self.plotted_merits())
+        n = len(ok)
+        return [(m, (i + 1) / n) for i, m in enumerate(ok)] if n else []
+
+    def history(self):
+        """Per-draw records [{"draw","merit","params","passed"}] in
+        arrival order (draw# is the 1-based arrival index)."""
+        return [{"draw": i + 1, "merit": m, "params": dict(p),
+                 "passed": pa}
+                for i, (m, p, pa) in enumerate(
+                    zip(self._merits, self._params, self._passed))]
+
+    def var_names(self):
+        seen = []
+        for params in self._params:
+            for key in params:
+                if key not in seen:
+                    seen.append(key)
+        return seen
+
+    # -- rendering -----------------------------------------------------------------
+    def _rebuild(self):
+        if not HAVE_QTCHARTS:
+            self._canvas.update()
+            return
         edges, counts = self.bins()
+        self._freq_series.clear()
+        self._cdf_series.clear()
+        if counts:
+            centres = [0.5 * (a + b) for a, b in zip(edges, edges[1:])]
+            for c, y in zip(centres, counts):
+                self._freq_series.append(c, float(y))
+            self._ax_x.setRange(edges[0], edges[-1])
+            top = max(counts)
+            self._ax_y.setRange(0.0, top * 1.1 if top > 0 else 1.0)
+        for m, frac in self.cdf_points():
+            self._cdf_series.append(m, frac)
+
+    # -- hover / context menu ------------------------------------------------------
+    def _on_hovered(self, point, state):    # pragma: no cover - QtCharts
+        if not state:
+            QToolTip.hideText()
+            return
+        QToolTip.showText(QCursor.pos(), "merit %.4g" % point.x())
+
+    def _on_context_menu(self, pos):
+        menu = build_plot_menu([("Show data…", self._show_data_dialog)],
+                               self)
+        menu.exec(self.mapToGlobal(pos))
+
+    def _show_data_dialog(self):
+        self._data_dialog = DataTableDialog(
+            self.history(), "mc", "Monte-Carlo draws", self)
+        self._data_dialog.show()
+        self._data_dialog.raise_()
+
+
+class _PainterDistribution(QWidget):
+    """Dependency-free fallback: frequency polygon + CDF + x tick labels."""
+
+    def __init__(self, plot):
+        super().__init__(plot)
+        self._plot = plot
+        self.setMinimumHeight(150)
+
+    def paintEvent(self, _event):    # pragma: no cover - fallback backend
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#1e1e1e"))
+        p.setPen(QPen(QColor("#9ca3af")))
+        p.drawText(6, 14, "Monte-Carlo merit distribution")
+        margin = 32
+        area = QRectF(margin, 20, self.width() - 2 * margin,
+                      self.height() - margin - 24)
+        p.setPen(QPen(QColor("#6b7280")))
+        p.drawRect(area)
+        edges, counts = self._plot.bins()
         if not counts:
-            return [], []
-        cats = ["%.3g" % (0.5 * (a + b))
-                for a, b in zip(edges, edges[1:])]
-        return cats, [float(c) for c in counts]
+            p.drawText(area, Qt.AlignmentFlag.AlignCenter, "no data yet")
+            return
+        lo, hi = edges[0], edges[-1]
+        span = (hi - lo) or 1.0
+        top = max(counts) or 1
+
+        def x_of(m):
+            return area.left() + area.width() * ((m - lo) / span)
+
+        # frequency polygon through bin centres
+        centres = [0.5 * (a + b) for a, b in zip(edges, edges[1:])]
+        p.setPen(QPen(QColor("#22d3ee"), 2))
+        prev = None
+        for c, y in zip(centres, counts):
+            cur = QPointF(x_of(c),
+                          area.bottom() - area.height() * (y / (top * 1.1)))
+            if prev is not None:
+                p.drawLine(prev, cur)
+            prev = cur
+        # CDF on the same x, full-height 0..1
+        p.setPen(QPen(QColor("#e879f9"), 2))
+        prev = None
+        for m, frac in self._plot.cdf_points():
+            cur = QPointF(x_of(m), area.bottom() - area.height() * frac)
+            if prev is not None:
+                p.drawLine(prev, cur)
+            prev = cur
+        # x tick labels at the edges
+        p.setPen(QPen(QColor("#9ca3af")))
+        p.drawText(QRectF(area.left(), area.bottom() + 2, 60, 14),
+                   Qt.AlignmentFlag.AlignLeft, "%.3g" % lo)
+        p.drawText(QRectF(area.right() - 60, area.bottom() + 2, 60, 14),
+                   Qt.AlignmentFlag.AlignRight, "%.3g" % hi)
+        p.drawText(QRectF(area.center().x() - 20, area.bottom() + 2, 40, 14),
+                   Qt.AlignmentFlag.AlignHCenter, "merit")
 
 
 # =============================================================================
@@ -259,6 +453,7 @@ class TolerancePane(QWidget):
         super().__init__(parent)
         self._varrows = {}     # {name: core.variables.VarRow} from the scene
         self._first_error = None   # first backend error line this run
+        self._mc_threshold = None  # captured at on_started for pass/fail
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
@@ -279,7 +474,7 @@ class TolerancePane(QWidget):
 
         plots_row = QHBoxLayout()
         self.sens_plot = SensitivityBarPlot()
-        self.hist_plot = YieldHistogram()
+        self.hist_plot = MeritDistributionPlot()
         plots_row.addWidget(self.sens_plot, 1)
         plots_row.addWidget(self.hist_plot, 1)
         layout.addLayout(plots_row, 1)
@@ -774,6 +969,10 @@ class TolerancePane(QWidget):
         self.sens_plot.clear()
         self.hist_plot.clear()
         self._first_error = None
+        # capture the run's yield threshold so per-draw pass/fail matches
+        # tolerance.py exactly (the @MIEWB mc event carries no threshold)
+        self._mc_threshold = (float(self.threshold_spin.value())
+                              if self.threshold_check.isChecked() else None)
         self.error_banner.setVisible(False)
         self.error_banner.clear()
         self.status_label.setText("Tolerancing…")
@@ -796,7 +995,16 @@ class TolerancePane(QWidget):
             self.sens_plot.set_rows(event.get("sensitivity") or [])
             return
         if phase == "mc" and event.get("merit") is not None:
-            self.hist_plot.add_merit(event["merit"])
+            merit = event["merit"]
+            # pass/fail mirrors tolerance.py: threshold set AND not
+            # penalized AND merit <= threshold (else None when no threshold)
+            if self._mc_threshold is None:
+                passed = None
+            else:
+                passed = (not event.get("penalized")
+                          and merit <= self._mc_threshold)
+            self.hist_plot.add_merit(merit, params=event.get("params"),
+                                     passed=passed)
             y = event.get("merit_yield")
             self.status_label.setText(
                 "Draw %s/%s   merit %.6g%s"
