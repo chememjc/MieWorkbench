@@ -144,7 +144,7 @@ class Body:
                  "detector", "closed", "face_ids", "polarizer",
                  "polarizer_axis", "filter", "crystal_axis", "birefringent",
                  "filter_lam_um", "filter_alpha_per_m", "crystal_axis2",
-                 "crystal_frame", "biaxial",
+                 "crystal_frame", "biaxial", "gyration",
                  # pulsed-optics Phase P8 (Pockels / saturable / TPA / Kerr):
                  "nonlinear", "pockels_voltage", "pockels_gap_mm",
                  "pockels_mats", "saturable_raw", "saturable_spec",
@@ -205,6 +205,11 @@ class Body:
         self.crystal_axis = np.asarray(ca, dtype=np.float64) \
             if ca is not None else np.array([1.0, 0.0, 0.0])
         self.birefringent = False           # set by Scene from the matdb
+        # (rho_deg_per_mm, ref_lam_nm) for an optically-active (gyrotropic)
+        # uniaxial crystal, else None. Set by Scene from the matdb; drives
+        # scene-level natural optical activity in the tracer (bulk rotation
+        # of the polarization plane along the optic axis).
+        self.gyration = None
         ca2 = rec.get("crystal_axis2")
         self.crystal_axis2 = np.asarray(ca2, dtype=np.float64) \
             if ca2 is not None else None
@@ -318,6 +323,10 @@ class Scene:
                         raise ValueError("body %s: zero crystal_axis"
                                          % body.label)
                     body.crystal_axis = body.crystal_axis / nrm
+                    # natural optical activity (gyrotropic crystals, e.g.
+                    # alpha-quartz): carry the registry rotatory power so the
+                    # tracer can rotate the polarization plane along the axis
+                    body.gyration = matdb.gyration(body.material)
                 elif matdb.is_biaxial(body.material):
                     # full principal frame: crystal_axis = X, crystal_axis2
                     # = Y (Gram-Schmidt orthogonalized), Z = X x Y

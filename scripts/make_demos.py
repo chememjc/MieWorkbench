@@ -2672,18 +2672,17 @@ def demo_quartz_rotator(d):
     components as the wave propagates); a scalar/geometric sequential tracer
     carries no polarization state and cannot rotate it.
 
-    STATUS -- HONEST LIMIT: the gyration physics is implemented and validated
-    at the module level (raytracer.berreman.add_gyration /
-    gyration_from_rotatory_power; test_berreman.py ORACLE 3 reproduces
-    21.77 deg/mm), but it is NOT wired into the SCENE tracer: a body tagged
-    material=quartz routes through the uniaxial o/e double-refraction path
-    (raytracer.tracer._birefringent_children), which models LINEAR
-    birefringence only and never calls add_gyration.  So this scene as traced
-    does NOT rotate the polarization, and the crossed-analyzer power stays near
-    the extinction floor instead of sin^2(rho*d).  The demo ships as the
-    ready-made bench for the day scene-level gyrotropy lands (engine3 P9 seam);
-    its rotation gate is therefore documented, not asserted (see
-    run_demo_equivalence)."""
+    Scene-level gyration IS wired into the tracer: near the optic axis the o/e
+    indices are degenerate, so a body tagged material=quartz routes its
+    near-axis rays through the isotropic n_o path (single child, full Jones)
+    and the tracer rotates the polarization plane by rho*ds in the bulk step
+    (raytracer.tracer._apply_optical_activity; rho from the SAME uniaxial.miebrf
+    datum the Berreman oracle uses, test_berreman.py ORACLE 3).  So this scene
+    physically rotates the polarization and the crossed analyzer passes
+    sin^2(rho*d); the rotation gate is ASSERTED (see run_demo_equivalence
+    gate_quartz).  Off-axis gyration (elliptical eigenmodes) is a documented
+    limit -- there the exact o/e linear split is kept and gyration neglected
+    (engine3 P9 seam)."""
     thick_mm = 2.0
     rho = 21.77                                   # deg/mm @589.3
     rot_deg = rho * thick_mm
@@ -2713,9 +2712,9 @@ def demo_quartz_rotator(d):
     d.expect("Quartz", (4, 0, 0))
     d.expect("Analyzer", (4 + thick_mm + 3.0, 0, 0))
     d.note("quartz_rotator: %g mm z-cut quartz between crossed polarizers; "
-           "expected crossed transmission sin^2(rho*d)=sin^2(%.1f deg)=%.3f. "
-           "SCENE-LEVEL gyration NOT yet wired (uniaxial o/e path) -> the "
-           "rotation gate is documented, not asserted"
+           "crossed transmission sin^2(rho*d)=sin^2(%.1f deg)=%.3f of the light "
+           "reaching the analyzer. Scene-level optical activity is wired "
+           "(tracer._apply_optical_activity) -> the rotation gate is ASSERTED"
            % (thick_mm, rot_deg, cross_T))
     return {"preset": "quick"}
 

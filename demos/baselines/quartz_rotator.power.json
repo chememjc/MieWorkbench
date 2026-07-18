@@ -3,10 +3,10 @@
  "closure_ok": true,
  "detectors": {
   "Screen.Screen_pad.Face2": {
-   "peak_irradiance_W_m2": 0.0,
-   "power_seed_std_W": 0.0,
-   "profile_visibility": null,
-   "total_power_W": 0.0
+   "peak_irradiance_W_m2": 506.24757824390184,
+   "power_seed_std_W": 3.760369518897882e-06,
+   "profile_visibility": 0.9790905315325785,
+   "total_power_W": 0.002166232697110048
   }
  },
  "seeds": 3

@@ -481,21 +481,32 @@ def gate_fs_shg(name, case_dir, report):
 
 
 def gate_quartz(name, case_dir, report):
-    """Quartz rotator: DOCUMENTED, NOT asserted.  Scene-level gyration is not
-    yet wired into the tracer (uniaxial o/e path; see the demo docstring), so
-    the crossed-analyzer power stays near the extinction floor instead of the
-    optically-active sin^2(rho*d).  This gate only REPORTS the measured vs
-    expected numbers -- it never fails -- so the demo ships as the ready bench
-    for when scene gyrotropy lands."""
-    det = list((report.get("detectors") or {}).values())
-    p = float(det[0]["total_power_W"]) if det else 0.0
+    """Quartz rotator: ASSERTED.  Scene-level natural optical activity is wired
+    into the tracer (tracer._apply_optical_activity: near-axis gyrotropic rays
+    take the isotropic n_o path and rotate the polarization plane by rho*d).  A
+    2 mm z-cut quartz slab between CROSSED polarizers passes sin^2(rho*d) of the
+    light reaching the analyzer, rho = 21.77 deg/mm @589.3 nm.  The analyzer is
+    a material=air ideal polarizer (no Fresnel) and the quartz-exit Fresnel loss
+    sits UPSTREAM of it, so the crossed throughput measured AT the analyzer --
+    detected / analyzer_power_in -- is the clean sin^2(rho*d), independent of
+    the source/coupling absolute power."""
     rho, d_mm = 21.77, 2.0
-    expect_frac = math.sin(math.radians(rho * d_mm)) ** 2
-    return [], ["quartz_rotator (DOCUMENTED, not asserted): crossed-analyzer "
-                "power=%.3g W; if scene gyration were wired the throughput "
-                "would be sin^2(rho*d)=sin^2(%.1f deg)=%.3f of parallel -- "
-                "scene-level optical activity is a documented engine seam"
-                % (p, rho * d_mm, expect_frac)]
+    expect = math.sin(math.radians(rho * d_mm)) ** 2         # ~0.4745
+    det = list((report.get("detectors") or {}).values())
+    p_det = float(det[0]["total_power_W"]) if det else 0.0
+    ana = (report.get("elements") or {}).get("Analyzer")
+    if ana is None or float(ana.get("power_in_W") or 0.0) <= 0.0:
+        return (["quartz_rotator: analyzer element power_in missing/zero -- "
+                 "cannot form the crossed-throughput ratio"], [])
+    p_in = float(ana["power_in_W"])
+    frac = p_det / p_in
+    rel = abs(frac - expect) / expect
+    note = ("quartz_rotator: crossed throughput detected/analyzer_in = %.3f "
+            "vs sin^2(rho*d)=sin^2(%.1f deg)=%.3f (%.1f%%)"
+            % (frac, rho * d_mm, expect, 100 * rel))
+    if rel > 0.05:
+        return ([note + " -- exceeds 5%% optical-rotation tolerance"], [])
+    return ([], [note])
 
 
 # the demo's aerosol spec (kept in lock-step with demo_speckle_mie_combo)
