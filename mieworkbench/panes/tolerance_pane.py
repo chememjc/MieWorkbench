@@ -38,7 +38,9 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .optimize_pane import variable_bounds
+from ..core.variables import qualify_var_name
+from .optimize_pane import (NAME_COMBO_TOOLTIP, match_error_line,
+                            variable_bounds, _make_error_banner)
 
 try:
     from PySide6.QtCharts import (QBarCategoryAxis, QBarSeries, QBarSet,
@@ -209,6 +211,11 @@ class YieldHistogram(_BarChartBase):
         sentinels excluded)."""
         return [m for m in self._merits if m < PENALTY_FLOOR]
 
+    def penalized_count(self):
+        """How many recorded draws were penalty sentinels (merit >=
+        PENALTY_FLOOR) — counted, never binned."""
+        return sum(1 for m in self._merits if m >= PENALTY_FLOOR)
+
     def bins(self):
         """(edges, counts) over the plotted merits (edges has
         len(counts)+1 entries; both empty when no data)."""
@@ -250,8 +257,12 @@ class TolerancePane(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._varrows = {}     # {name: core.variables.VarRow} from the scene
+        self._first_error = None   # first backend error line this run
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+
+        self.error_banner = _make_error_banner()
+        layout.addWidget(self.error_banner)
 
         tables_row = QHBoxLayout()
         tables_row.addWidget(self._build_tolerance_group(), 1)
@@ -282,9 +293,10 @@ class TolerancePane(QWidget):
             0, QHeaderView.ResizeMode.Stretch)
         self.tol_table.setToolTip(
             "Tolerance parameters: spreadsheet cell aliases (bare 'alias' "
-            "on the dim sheet, or 'sheetlabel.alias'), the nominal value, "
-            "the perturbation distribution and its band (1-sigma for "
-            "normal, half-width for uniform) in mm")
+            "on the dim sheet, 'sheetlabel.alias', or a global picked "
+            "from the dropdown = emitted miewb_vars.<name>), the nominal "
+            "value, the perturbation distribution and its band (1-sigma "
+            "for normal, half-width for uniform) in mm")
         v.addWidget(self.tol_table)
         row = QHBoxLayout()
         self.tol_add_btn = QPushButton("Add")
@@ -343,7 +355,9 @@ class TolerancePane(QWidget):
         self.comp_var_edit.setPlaceholderText("e.g. detpos")
         self.comp_var_edit.setToolTip(
             "Compensator spreadsheet cell alias (must differ from every "
-            "tolerance parameter)")
+            "tolerance parameter). Bare name = a `dim`-sheet alias; a "
+            "global miewb_vars variable is emitted miewb_vars.<name> "
+            "automatically; 'sheetlabel.alias' passes through as typed.")
         grid.addWidget(self.comp_var_edit, 0, 1, 1, 3)
 
         grid.addWidget(QLabel("Start:"), 1, 0)
@@ -501,9 +515,7 @@ class TolerancePane(QWidget):
         combo = QComboBox()
         combo.setEditable(True)      # names outside miewb_vars are typed
         combo.addItems(list(self._varrows))
-        combo.setToolTip(
-            "Pick a miewb_vars variable (auto-fills nominal/band from "
-            "the sheet), or type any spreadsheet cell alias")
+        combo.setToolTip(NAME_COMBO_TOOLTIP)
         if name:      # blank keeps Qt's default: the first scene variable
             combo.setCurrentText(name)
         return combo
@@ -622,8 +634,9 @@ class TolerancePane(QWidget):
                         % (row + 1, name, what, text))
             combo = self.tol_table.cellWidget(row, 2)
             dist = combo.currentText() if combo else "normal"
-            out.append("%s:%s:%s:%s" % (name, "%g" % nums[0], dist,
-                                        "%g" % nums[1]))
+            out.append("%s:%s:%s:%s" % (
+                qualify_var_name(name, self._varrows), "%g" % nums[0],
+                dist, "%g" % nums[1]))
         return out
 
     def operands(self):
@@ -665,7 +678,8 @@ class TolerancePane(QWidget):
             raise ValueError(
                 "compensator %s: Start %g outside [%g, %g]"
                 % (name, start, lo, hi))
-        return "%s:%s:%s:%s" % (name, "%g" % start, "%g" % lo, "%g" % hi)
+        return "%s:%s:%s:%s" % (qualify_var_name(name, self._varrows),
+                                "%g" % start, "%g" % lo, "%g" % hi)
 
     def config(self):
         """The controller/build_args config dict (cli_specs 'tolerance'
@@ -695,8 +709,20 @@ class TolerancePane(QWidget):
     def on_started(self):
         self.sens_plot.clear()
         self.hist_plot.clear()
+        self._first_error = None
+        self.error_banner.setVisible(False)
+        self.error_banner.clear()
         self.status_label.setText("Tolerancing…")
         self.set_running(True)
+
+    def on_line(self, text):
+        """A raw stdout/stderr line from the tolerance process (wired
+        alongside the console feed). Latches the FIRST substantive error
+        line so on_finished can surface it on the banner."""
+        if self._first_error is None:
+            hit = match_error_line(text)
+            if hit is not None:
+                self._first_error = hit.strip()
 
     def on_progress(self, event):
         if event.get("stage") != "tolerance":
@@ -725,10 +751,38 @@ class TolerancePane(QWidget):
 
     def on_finished(self, exit_code):
         self.set_running(False)
+        n_pen = self.hist_plot.penalized_count()
+        n_ok = len(self.hist_plot.plotted_merits())
         if exit_code != 0:
             self.status_label.setText(
                 "%s (exit %d — see console)"
                 % (self.status_label.text(), exit_code))
+        # surface a failure banner when the run failed OR every draw was
+        # penalized (no usable merit distribution)
+        if exit_code != 0 or (n_pen and n_ok == 0):
+            self._show_error_banner(exit_code, n_pen)
+        else:
+            self.error_banner.setVisible(False)
+
+    def _show_error_banner(self, exit_code, n_pen):
+        parts = []
+        if self._first_error:
+            parts.append(self._first_error)
+        elif exit_code != 0:
+            parts.append("Tolerance study failed (exit %d)." % exit_code)
+        else:
+            parts.append("No draw produced a usable merit.")
+        if n_pen:
+            parts.append(
+                "%d draw%s penalized (failed / no usable merit)."
+                % (n_pen, "" if n_pen == 1 else "s"))
+        if self._first_error and "not found on spreadsheet" in self._first_error:
+            parts.append(
+                "Hint: a global variable must be addressed miewb_vars.<name>; "
+                "a bare name resolves against the per-element `dim` sheet.")
+        parts.append("See the Console tab for the full log.")
+        self.error_banner.setText("  ".join(parts))
+        self.error_banner.setVisible(True)
 
     def set_running(self, running):
         self.run_btn.setEnabled(not running)

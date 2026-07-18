@@ -60,15 +60,17 @@ def test_pane_default_state(qtbot):
 def test_pane_config_round_trips_through_parser(qtbot):
     pane = TolerancePane()
     qtbot.addWidget(pane)
+    pane.set_variables(_varrows())            # lenspos is a miewb_vars global
     pane.add_tolerance("lenspos", 0.0, "normal", 1.0)
     pane.add_tolerance("dim.lensdy", 0.0, "uniform", 4.0)
+    pane.add_tolerance("barealias", 0.0, "normal", 2.0)   # not a global
     pane.add_operand("detected_power", "Body.Pad.Face5", 0.0, 2.0)
     pane.draws_spin.setValue(12)
     pane.seed_spin.setValue(7)
     pane.threshold_check.setChecked(True)
     pane.threshold_spin.setValue(110000.0)
     pane.comp_group.setChecked(True)
-    pane.comp_var_edit.setText("detpos")
+    pane.comp_var_edit.setText("detpos")      # free-typed, not a global
     pane.comp_start_spin.setValue(50.236)
     pane.comp_lo_spin.setValue(40.0)
     pane.comp_hi_spin.setValue(62.0)
@@ -81,11 +83,15 @@ def test_pane_config_round_trips_through_parser(qtbot):
     parser = cli_specs.build_parser("tolerance")
     ns = parser.parse_args(["--model", "dummy.FCStd"] + args)
 
+    # a global is emitted sheet-qualified; 'sheet.alias' and a bare
+    # non-global name pass through untouched
     assert ns.tolerance == [
-        {"name": "lenspos", "nominal": 0.0, "dist": "normal",
+        {"name": "miewb_vars.lenspos", "nominal": 0.0, "dist": "normal",
          "band": 1.0},
         {"name": "dim.lensdy", "nominal": 0.0, "dist": "uniform",
-         "band": 4.0}]
+         "band": 4.0},
+        {"name": "barealias", "nominal": 0.0, "dist": "normal",
+         "band": 2.0}]
     assert ns.operand[0]["operand"] == "spot_rms"
     assert ns.operand[1] == {"operand": "detected_power",
                              "detector": "Body.Pad.Face5",
@@ -158,10 +164,12 @@ def test_pick_variable_autofills_nominal_and_band(qtbot):
     assert pane.tol_table.item(row, 1).text() == "0"
     assert pane.tol_table.item(row, 3).text() == "0.1"
 
-    # the assembled spec strings read the combo, not a table item
-    assert pane.tolerances() == ["tiltz:0:normal:0.1"]
+    # the assembled spec strings read the combo, not a table item; a
+    # miewb_vars global is emitted sheet-qualified
+    assert pane.tolerances() == ["miewb_vars.tiltz:0:normal:0.1"]
 
-    # typing a non-variable name leaves the cells alone
+    # typing a non-variable name leaves the cells alone; a 'sheet.alias'
+    # name passes through unqualified
     combo.setCurrentText("dim.lensdy")
     assert pane.tol_table.item(row, 3).text() == "0.1"
     assert pane.tolerances() == ["dim.lensdy:0:normal:0.1"]
@@ -362,3 +370,77 @@ def test_console_classifies_tolerance_lines():
     assert "tolerance" in STAGE_CHOICES
     assert classify_stage("[tolerance] yield: 4/6 = 0.667") == "tolerance"
     assert classify_stage("[optimize] best merit 1.0") == "optimize"
+
+
+# ---------------------------------------------------------------------------
+# qualification contract: pane specs resolve through the REAL split_var
+# ---------------------------------------------------------------------------
+def _real_split_var():
+    """The genuine permute_model.split_var. permute_model imports FreeCAD
+    at module load, so stub it with a MagicMock — split_var itself never
+    touches FreeCAD, so we exercise the real resolver without drift."""
+    from unittest import mock
+    scripts_dir = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    with mock.patch.dict(sys.modules, {"FreeCAD": mock.MagicMock()}):
+        import importlib
+        permute_model = importlib.import_module("permute_model")
+    return permute_model.split_var
+
+
+def test_global_variable_resolves_to_miewb_vars_sheet(qtbot):
+    """A pane seeded from a miewb_vars-only variable set must emit specs
+    (tolerances AND compensator) that permute_model.split_var routes to
+    sheet 'miewb_vars', NOT the per-element 'dim' sheet."""
+    split_var = _real_split_var()
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.set_variables(_varrows())
+    pane.add_tolerance("lenspos")               # a global
+    pane.add_tolerance("dim.lensdy", 0.0, "normal", 1.0)   # a dim alias
+    pane.comp_group.setChecked(True)
+    pane.comp_var_edit.setText("gap")           # a global too
+    pane.comp_lo_spin.setValue(-10.0)
+    pane.comp_hi_spin.setValue(10.0)
+    pane.comp_start_spin.setValue(0.0)
+
+    def sheet_of(name):
+        return split_var(name)[0]
+
+    tols = pane.tolerances()
+    assert sheet_of(tols[0].split(":", 1)[0]) == "miewb_vars"
+    assert sheet_of(tols[1].split(":", 1)[0]) == "dim"
+    # the compensator variable is qualified too
+    assert sheet_of(pane.compensator().split(":", 1)[0]) == "miewb_vars"
+
+
+# ---------------------------------------------------------------------------
+# failure surfacing: banner captures the first backend error line
+# ---------------------------------------------------------------------------
+def test_failure_banner_surfaces_first_error(qtbot):
+    pane = TolerancePane()
+    qtbot.addWidget(pane)
+    pane.on_started()
+    assert not pane.error_banner.isVisibleTo(pane)
+
+    pane.on_line("[trace] extracting geometry")
+    pane.on_line("permute_model.py: alias 'z' not found on spreadsheet "
+                 "'dim' (available aliases: ct, r_front)")
+    pane.on_progress(_draw_event(1, 1e9))
+    pane.on_progress(_draw_event(2, 1e9))
+    pane.on_finished(1)
+
+    assert pane.error_banner.isVisibleTo(pane)
+    txt = pane.error_banner.text()
+    assert "alias 'z' not found on spreadsheet 'dim'" in txt
+    assert "2 draws penalized" in txt
+    assert "miewb_vars.<name>" in txt          # the qualification hint
+
+    # a clean re-run clears the banner
+    pane.on_started()
+    assert not pane.error_banner.isVisibleTo(pane)
+    pane.on_progress(_draw_event(1, 5.0))
+    pane.on_finished(0)
+    assert not pane.error_banner.isVisibleTo(pane)

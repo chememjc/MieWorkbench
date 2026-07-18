@@ -1890,6 +1890,7 @@ class MainWindow(QMainWindow):
         convergence plot and the shared stage-chip/status handler (the
         'optimize' chip is in STAGE_ORDER)."""
         self.optimizer_ctl.line.connect(self.console.append_line)
+        self.optimizer_ctl.line.connect(self.optimize_pane.on_line)
         self.optimizer_ctl.progress.connect(self.optimize_pane.on_progress)
         self.optimizer_ctl.progress.connect(self._on_progress)
         self.optimizer_ctl.started.connect(self.optimize_pane.on_started)
@@ -1904,6 +1905,7 @@ class MainWindow(QMainWindow):
         result plots and the shared stage-chip/status handler (the
         'tolerance' chip is in STAGE_ORDER)."""
         self.tolerance_ctl.line.connect(self.console.append_line)
+        self.tolerance_ctl.line.connect(self.tolerance_pane.on_line)
         self.tolerance_ctl.progress.connect(
             self.tolerance_pane.on_progress)
         self.tolerance_ctl.progress.connect(self._on_progress)

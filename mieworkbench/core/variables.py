@@ -222,6 +222,33 @@ def cell_plan(name, row=None, value=None, vmin=None, vmax=None,
 # ---------------------------------------------------------------------------
 # Sweep spec / run-count / estimate
 # ---------------------------------------------------------------------------
+def qualify_var_name(name, varrows):
+    """Sheet-qualify a variable-name token so permute_model.split_var
+    routes it to the right spreadsheet.
+
+    permute_model.split_var reads a bare (dot-free) name against the
+    per-element `dim` sheet and "<sheet>.<alias>" against the named
+    sheet; a global miewb_vars variable must therefore be emitted
+    "miewb_vars.<name>" or it fails to resolve (the observed
+    "alias '<name>' not found on spreadsheet 'dim'"). Rule:
+
+      * a name that already contains "." passes through unchanged
+        (already sheet-qualified, e.g. "dim_Lens1.ct");
+      * a bare name that IS a key in `varrows` (the scene's miewb_vars
+        variables from parse_sheet) is qualified "miewb_vars.<name>";
+      * any other bare name passes through unchanged (a free-typed
+        `dim`-sheet alias the user meant literally).
+
+    This is the ONE authority the Optimize + Tolerance panes share with
+    the sweep path (sweep_spec below), so the qualification rule cannot
+    drift between the three."""
+    if "." in name:
+        return name
+    if varrows and name in varrows:
+        return "%s.%s" % (VARIABLES_SHEET, name)
+    return name
+
+
 def sweep_spec(rows):
     """{name: VarRow} -> (vars, mins, maxs, ns): only enabled rows, vars
     named "miewb_vars.<name>" (sheet-qualified, matching permute_model's

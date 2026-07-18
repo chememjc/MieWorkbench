@@ -59,8 +59,10 @@ def test_pane_default_state(qtbot):
 def test_pane_config_round_trips_through_parser(qtbot):
     pane = OptimizePane()
     qtbot.addWidget(pane)
+    pane.set_variables(_varrows())            # lenspos is a miewb_vars global
     pane.add_variable("lenspos", -6.0, -8.0, 8.0)
     pane.add_variable("dim.sphered", 25.0, 20.0, 30.0)
+    pane.add_variable("barealias", 25.0, 20.0, 30.0)   # not a global
     pane.add_operand("detected_power", "Body.Pad.Face5", 0.0, 2.0)
     pane.algorithm_combo.setCurrentText("global")
     pane.budget_spin.setValue(55)
@@ -72,9 +74,13 @@ def test_pane_config_round_trips_through_parser(qtbot):
     parser = cli_specs.build_parser("optimize")
     ns = parser.parse_args(["--model", "dummy.FCStd"] + args)
 
+    # a name that IS a miewb_vars global is emitted sheet-qualified;
+    # 'sheetlabel.alias' passes through untouched; a bare name NOT in the
+    # varrows stays bare (a literal dim-sheet alias)
     assert ns.var == [
-        {"name": "lenspos", "start": -6.0, "lo": -8.0, "hi": 8.0},
-        {"name": "dim.sphered", "start": 25.0, "lo": 20.0, "hi": 30.0}]
+        {"name": "miewb_vars.lenspos", "start": -6.0, "lo": -8.0, "hi": 8.0},
+        {"name": "dim.sphered", "start": 25.0, "lo": 20.0, "hi": 30.0},
+        {"name": "barealias", "start": 25.0, "lo": 20.0, "hi": 30.0}]
     assert ns.operand[0]["operand"] == "spot_rms"
     assert ns.operand[1] == {"operand": "detected_power",
                              "detector": "Body.Pad.Face5",
@@ -152,10 +158,12 @@ def test_pick_variable_autofills_start_and_bounds(qtbot):
     assert pane.var_table.item(row, 2).text() == "-0.1"
     assert pane.var_table.item(row, 3).text() == "0.1"
 
-    # the assembled spec strings read the combo, not a table item
-    assert pane.variables() == ["tiltz:0:-0.1:0.1"]
+    # the assembled spec strings read the combo, not a table item; a
+    # miewb_vars global is emitted sheet-qualified
+    assert pane.variables() == ["miewb_vars.tiltz:0:-0.1:0.1"]
 
-    # typing a non-variable name leaves the cells alone
+    # typing a non-variable name leaves the cells alone; a 'sheet.alias'
+    # name passes through unqualified
     combo.setCurrentText("dim.ct")
     assert pane.var_table.item(row, 1).text() == "0"
     assert pane.variables() == ["dim.ct:0:-0.1:0.1"]
@@ -304,3 +312,80 @@ def test_console_classifies_optimize_lines():
     assert "optimize" in STAGE_CHOICES
     assert classify_stage("[optimize] best merit 1.0") == "optimize"
     assert classify_stage("[trace] seed 1/3") == "trace"
+
+
+# ---------------------------------------------------------------------------
+# qualification contract: pane specs resolve through the REAL split_var
+# ---------------------------------------------------------------------------
+def _real_split_var():
+    """The genuine permute_model.split_var (the backend resolver at
+    permute_model.py). permute_model imports FreeCAD at module load, so
+    stub it with a MagicMock — split_var itself never touches FreeCAD, so
+    we exercise the real code path and can never drift from it."""
+    import types  # noqa: F401
+    from unittest import mock
+    scripts_dir = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    with mock.patch.dict(sys.modules, {"FreeCAD": mock.MagicMock()}):
+        import importlib
+        permute_model = importlib.import_module("permute_model")
+    return permute_model.split_var
+
+
+def test_global_variable_resolves_to_miewb_vars_sheet(qtbot):
+    """A pane seeded from a miewb_vars-only variable set must emit specs
+    that permute_model.split_var routes to sheet 'miewb_vars', NOT the
+    per-element 'dim' sheet (the bare-name bug)."""
+    split_var = _real_split_var()
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.set_variables(_varrows())
+    pane.add_variable("lenspos")           # a global
+    pane.add_variable("dim.sphered", 1.0, 0.0, 2.0)   # a dim-sheet alias
+    specs = pane.variables()
+
+    # spec string is "name:start:lo:hi"; the name is everything before the
+    # FIRST ':' — and split_var reads its sheet from the name
+    def sheet_of(spec):
+        name = spec.split(":", 1)[0]
+        return split_var(name)[0]
+
+    assert sheet_of(specs[0]) == "miewb_vars"       # global -> miewb_vars
+    assert sheet_of(specs[1]) == "dim"              # 'dim.sphered' -> dim
+
+
+# ---------------------------------------------------------------------------
+# failure surfacing: banner captures the first backend error line
+# ---------------------------------------------------------------------------
+def test_failure_banner_surfaces_first_error(qtbot):
+    pane = OptimizePane()
+    qtbot.addWidget(pane)
+    pane.on_started()
+    assert not pane.error_banner.isVisibleTo(pane)
+
+    # simulate the process output: a real PermuteError line + all-penalized
+    # evaluations (merit == PENALTY sentinel), then a non-zero exit
+    pane.on_line("[trace] extracting geometry")
+    pane.on_line("permute_model.py: alias 'z' not found on spreadsheet "
+                 "'dim' (available aliases: ct, r_front)")
+    pane.on_line("PermuteError: variant 0 failed")
+    pane.on_progress(_event(1, 1e9, 1e9))
+    pane.on_progress(_event(2, 1e9, 1e9))
+    pane.on_finished(1)
+
+    assert pane.error_banner.isVisibleTo(pane)
+    txt = pane.error_banner.text()
+    assert "alias 'z' not found on spreadsheet 'dim'" in txt
+    assert "2 evaluations penalized" in txt
+    assert "miewb_vars.<name>" in txt          # the qualification hint
+    # only the FIRST matching error line is latched
+    assert "PermiteError" not in txt
+
+    # a clean re-run clears the banner
+    pane.on_started()
+    assert not pane.error_banner.isVisibleTo(pane)
+    pane.on_progress(_event(1, 5.0, 5.0))
+    pane.on_finished(0)
+    assert not pane.error_banner.isVisibleTo(pane)
