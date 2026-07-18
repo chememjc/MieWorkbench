@@ -1,0 +1,67 @@
+[
+  {
+    "name": "viewport-3d-1",
+    "status": "black-vtk",
+    "reason": "grab() rendered a single flat color (offscreen VTK/GL limitation)"
+  },
+  {
+    "name": "element-editor-1",
+    "status": "captured",
+    "path": "docs/guide/img/element-editor-1.png"
+  },
+  {
+    "name": "train-editor-1",
+    "status": "captured",
+    "path": "docs/guide/img/train-editor-1.png"
+  },
+  {
+    "name": "variables-1",
+    "status": "captured",
+    "path": "docs/guide/img/variables-1.png"
+  },
+  {
+    "name": "library-browser-1",
+    "status": "captured",
+    "path": "docs/guide/img/library-browser-1.png"
+  },
+  {
+    "name": "property-library-editor-1",
+    "status": "captured",
+    "path": "docs/guide/img/property-library-editor-1.png"
+  },
+  {
+    "name": "run-and-validate-1",
+    "status": "captured",
+    "path": "docs/guide/img/run-and-validate-1.png"
+  },
+  {
+    "name": "console-and-problems-1",
+    "status": "captured",
+    "path": "docs/guide/img/console-and-problems-1.png"
+  },
+  {
+    "name": "results-1",
+    "status": "captured",
+    "path": "docs/guide/img/results-1.png"
+  },
+  {
+    "name": "results-2",
+    "status": "captured",
+    "path": "docs/guide/img/results-2.png"
+  },
+  {
+    "name": "animation-1",
+    "status": "captured",
+    "path": "docs/guide/img/animation-1.png"
+  },
+  {
+    "name": "optimize-1",
+    "status": "deferred",
+    "reason": "needs a completed optimize.py run for a non-empty convergence plot -- capture against a demo run in Phase B"
+  },
+  {
+    "name": "tolerance-1",
+    "status": "deferred",
+    "reason": "needs a completed tolerance.py run for non-empty sensitivity/yield plots -- capture against a demo run in Phase B"
+  }
+]

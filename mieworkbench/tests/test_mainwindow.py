@@ -79,6 +79,34 @@ def test_menu_actions_exist(qtbot):
     assert window.tolerance_action is not None
 
 
+def test_help_menu_docs_pages_resolve(qtbot):
+    """Every docs/guide page wired into the Help menu (mainwindow.py's
+    DOCS_GUIDE_PAGES registry) must exist on disk and its action must be
+    enabled -- a stale/renamed page would otherwise show as a silently
+    disabled entry forever. Offscreen-safe: never calls QAction.menu()
+    (see CLAUDE.md's PySide6 trap) -- reads help_menu.doc_submenus, the
+    supported access path _build_help_menu keeps alive."""
+    from mieworkbench.mainwindow import DOCS_GUIDE_DIR, DOCS_GUIDE_PAGES
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert os.path.isdir(DOCS_GUIDE_DIR)
+    hm = window.help_menu
+    assert set(hm.doc_submenus) == set(DOCS_GUIDE_PAGES)
+
+    for group, pages in DOCS_GUIDE_PAGES.items():
+        submenu = hm.doc_submenus[group]
+        labels = [a.text() for a in submenu.actions()]
+        assert labels == [label for label, _ in pages]
+        for action, (_, relpath) in zip(submenu.actions(), pages):
+            path = os.path.join(DOCS_GUIDE_DIR, relpath)
+            assert os.path.isfile(path), path
+            assert action.isEnabled(), action.text()
+
+    assert window.open_docs_folder_action.isEnabled()
+
+
 def test_progress_updates_stage_chip(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)

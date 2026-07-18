@@ -145,6 +145,12 @@ place), a `.MieWB` workbench (exploded into a scratch workspace under
 read-only, or opened via its embedded workbench for editing/rerun — a
 successful rerun replaces the `.MieSim` in place).
 
+> **Per-feature guides with screenshots:** [`docs/guide/`](docs/guide/README.md)
+> has one terse, code-derived reference page per pane (plus system pages
+> for the CLI/file formats/headless use), also reachable in-app from
+> **Help →**. This section of the README stays a narrative tour; the
+> guide is the page-per-feature lookup.
+
 ### 3.0 File menu and toolbar
 
 **File → New** (Ctrl+N) creates a simulation from scratch: choose to start with
@@ -169,6 +175,8 @@ edits, element moves, and add/paste/delete operations — undo stashes live in t
 workspace directory.
 
 ### 3.1 Central 3D optical-train viewport (`panes/scene3d.py`)
+*Guide: [viewport-3d.md](docs/guide/viewport-3d.md)*
+
 
 The **"3D View"** tab — the first tab of the central `QTabWidget`
 (`central_tabs`, §3 above), and still the tab that opens by default.
@@ -269,6 +277,8 @@ the local +x face of every other traced optic. They are never written to
 the model and never traced.
 
 ### 3.2 Scene Elements outliner (`panes/outliner.py`)
+*Guide: [outliner.md](docs/guide/outliner.md)*
+
 
 Dock **"Scene Elements"** — a tree listing every element in the scene by name,
 role (source/detector/optic/ignored), and primitive kind. Multi-body elements
@@ -280,6 +290,8 @@ offset in +X to avoid overlap), and **Delete**. Copy/paste/delete each count as
 a single undo step.
 
 ### 3.3 Element Inspector (`panes/inspector3d.py`)
+*Guide: [inspector.md](docs/guide/inspector.md)*
+
 
 Dock **"Element Inspector"** — a single-element 3D view showing only the
 currently selected body, centered and camera-fit. This is the primary
@@ -298,6 +310,8 @@ single component's behavior in isolation. Rotating is the standard VTK trackball
 interactor, not a dedicated control.
 
 ### 3.4 Element Properties (`panes/element_editor.py`)
+*Guide: [element-editor.md](docs/guide/element-editor.md)*
+
 
 Dock **"Element Properties"** — edits the selected body's tagging
 contract, per-face assignments, and parameter-sheet aliases, entirely
@@ -351,6 +365,8 @@ sections:
   aren't driven by ordinary FreeCAD expressions).
 
 ### 3.5 Position / Orientation (`panes/transform_panel.py`)
+*Guide: [transform.md](docs/guide/transform.md)*
+
 
 Dock **"Position / Orientation"** — translate and rotate the selected
 element with repeatable operations. Reference points resolve *live* at
@@ -393,6 +409,8 @@ the selected element is **anchored** (absolute pose) or **chained** into
 the optical train, with one-click Chain…/Anchor-here conversion.
 
 ### 3.5.1 Optical Train (`panes/train_editor.py`)
+*Guide: [train-editor.md](docs/guide/train-editor.md)*
+
 
 The LDE-style editable view of the scene as an **optical train**: every
 element is either anchored or chained a **vertex-to-vertex distance
@@ -415,6 +433,8 @@ refolding restores bit-exactly. Dotted blue/orange linkage lines in the
 in the current fold state that opens in plain FreeCAD.
 
 ### 3.5.2 Variables (`panes/variables_pane.py`)
+*Guide: [variables.md](docs/guide/variables.md)*
+
 
 The **global variables** table (stored in the model's `miewb_vars`
 spreadsheet, so files stay standalone): name, value (expressions over
@@ -432,6 +452,8 @@ Pipeline launches the **product or zipped** variant grid — always after
 a summary dialog showing the run count and calibrated time estimate.
 
 ### 3.5.3 Compare (`panes/compare_pane.py`)
+*Guide: [compare.md](docs/guide/compare.md)*
+
 
 Populates automatically when a sweep finishes (or via **Add case…** for
 any finished runs, e.g. michelson vs michelson_folded): scalar
@@ -442,6 +464,8 @@ selectable reference variant, and a scrub slider through the sweep.
 Backend: `scripts/compare_sweep.py` under the optics env.
 
 ### 3.6 Library (`panes/library.py`)
+*Guide: [library-browser.md](docs/guide/library-browser.md)*
+
 
 Dock **"Library"**, three tabs:
 
@@ -660,6 +684,8 @@ calibration, honest single-scatter limits) is documented in
 docs/RAYTRACER.md §5.4.1.
 
 ### 3.7 Console, stage chips, progress (bottom dock, `panes/console.py`)
+*Guide: [console-and-problems.md](docs/guide/console-and-problems.md)*
+
 
 One colored pill per pipeline stage (`extract`/`trace`/`post`/`viz`: blue
 = running, green = done/estimated, red = failed, gray = not yet run), an
@@ -671,6 +697,8 @@ notices orange). Internal `@MIEWB {json}` progress lines are consumed to
 drive the chips/progress bar rather than being printed raw.
 
 ### 3.7a Python console (bottom dock, `panes/py_console.py`)
+*Guide: [console-and-problems.md](docs/guide/console-and-problems.md)*
+
 
 Dock **"Python"** (tabbed with the Console at the bottom) — an in-app REPL
 bound to the live session: `project` (the `core.project.Project` object),
@@ -684,6 +712,8 @@ GUI thread (a long statement briefly blocks the UI — there is no separate
 kernel process).
 
 ### 3.7b Optimize (`panes/optimize_pane.py`)
+*Guide: [optimize.md](docs/guide/optimize.md)*
+
 
 The **"Optimize"** central tab (also reachable via **Simulation →
 Optimize…**, which switches to it) — full GUI parity with
@@ -707,6 +737,8 @@ progress events driving a best-so-far readout, with penalized
 (failed/incomplete) evaluations excluded from axis scaling.
 
 ### 3.7c Tolerance (`panes/tolerance_pane.py`)
+*Guide: [tolerance.md](docs/guide/tolerance.md)*
+
 
 The **"Tolerance"** central tab (also reachable via **Simulation →
 Tolerance…**) — GUI parity with `scripts/tolerance.py` (§5.15): a
@@ -723,6 +755,8 @@ distribution (fed incrementally per draw) — both QtCharts-backed with the
 same QPainter fallback as the Optimize pane's convergence plot.
 
 ### 3.8 Results (`panes/results.py`)
+*Guide: [results.md](docs/guide/results.md)*
+
 
 The **"Results"** central tab (`central_tabs`, §3 above — this used to be
 a dock; it is now one of the four central tabs alongside 3D View/Optimize/
@@ -762,6 +796,8 @@ and shows live stage progress in the title bar — this pane never writes anythi
 while monitoring; editing/rerun affordances are the main window's job to disable.
 
 ### 3.9 Problems (`panes/problems.py`)
+*Guide: [console-and-problems.md](docs/guide/console-and-problems.md)*
+
 
 Dock **"Problems"** — pre-run validation, click-to-locate. **Validate
 scene** runs pure Python checks (missing tags, bad registry references,
@@ -773,6 +809,8 @@ a severity icon; double-click selects the offending body in the scene. Errors
 block **Run** (with a blocking dialog); warnings prompt "Run anyway?".
 
 ### 3.10 Run Pipeline dialog — the configuration matrix (`panes/config_matrix.py`)
+*Guide: [run-and-validate.md](docs/guide/run-and-validate.md)*
+
 
 **Simulation → Run Pipeline…** opens a dialog embedding `ConfigMatrix`, a
 form **auto-generated from the real CLI**: it introspects
@@ -811,6 +849,8 @@ validated both here and by `run_pipeline.py` itself), and its output
 feeds the Results pane's Imaging tab (§3.8).
 
 ### 3.11 Estimate Runtime
+*Guide: [run-and-validate.md](docs/guide/run-and-validate.md)*
+
 
 Available from the Simulation menu, the toolbar, and the configuration
 matrix itself. Resolves the current widget values (falling back to the
@@ -820,6 +860,8 @@ gather time, total time, and accumulator memory (GB) — a pure computed
 estimate; nothing is run.
 
 ### 3.12 Dry Run
+*Guide: [run-and-validate.md](docs/guide/run-and-validate.md)*
+
 
 **Simulation → Dry Run** saves and validates the scene as usual, then
 launches the pipeline with `--dry-run` appended: the trace stage builds
@@ -828,6 +870,8 @@ for that model. Useful as a fast end-to-end sanity check of a
 configuration before committing to a real run.
 
 ### 3.13 Export Run Script
+*Guide: [headless-remote.md](docs/guide/headless-remote.md)*
+
 
 **File → Export Run Script…** packs the current model into a `.MieWB`
 (alongside a `.MieSim` sibling name it will produce) and writes a small,
@@ -847,6 +891,8 @@ configured job to a remote/CI machine.
 ---
 
 ## 4. File formats
+*Guide: [file-formats.md](docs/guide/file-formats.md)*
+
 
 ### 4.1 `.FCStd` — the scene
 
@@ -971,6 +1017,8 @@ the three FreeCAD-only scripts, their argparse source — the FreeCAD
 AppImage's `-c` batch mode does not reliably print `--help` output).
 
 ### 5.1 `run_pipeline.py` — the orchestrator (system `python3`)
+*Guide: [pipeline-cli.md](docs/guide/pipeline-cli.md)*
+
 
 ```
 run_pipeline.py --models FCSTD [FCSTD ...] [--preset {quick,normal,detailed}]
@@ -1248,6 +1296,8 @@ them onto every pipeline subprocess it launches):
 | `MIEWB_PROGRESS` | when `1`, stages also print `@MIEWB {json}` progress lines to stdout | unset (progress.json heartbeat is always written regardless) |
 
 ### 5.14 `optimize.py` — merit-function optimizer (optics env python)
+*Guide: [optimize.md](docs/guide/optimize.md)*
+
 
 ```
 optimize.py --model FCSTD --var NAME:START:LO:HI [--var ...] \
@@ -1282,6 +1332,8 @@ final best design; `--config JSON` mirrors the CLI (explicit flags win).
 This is the engine behind the GUI's Optimize pane (§3.7b).
 
 ### 5.15 `tolerance.py` — sensitivity + Monte-Carlo tolerancing (optics env python)
+*Guide: [tolerance.md](docs/guide/tolerance.md)*
+
 
 ```
 tolerance.py --model FCSTD --tolerance NAME:NOMINAL:DIST:BAND [--tolerance ...] \
@@ -1359,6 +1411,8 @@ trace pipeline).
 ---
 
 ## 6. Concurrency and locking
+*Guide: [headless-remote.md](docs/guide/headless-remote.md)*
+
 
 Exactly one writer is allowed per case directory. `run_trace.py` calls
 `common.acquire_case_lock(case_dir)` before tracing, which atomically
@@ -1384,6 +1438,8 @@ second.
 ---
 
 ## 7. Testing
+*Guide: [headless-remote.md](docs/guide/headless-remote.md)*
+
 
 Two independent test suites, run under two different interpreters —
 never cross-import between them:

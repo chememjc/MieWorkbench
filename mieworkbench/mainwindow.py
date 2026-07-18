@@ -33,8 +33,8 @@ sys.path.insert(0, os.path.normpath(
 import common  # noqa: E402  (stdlib-only shared contract hub)
 import miewb_tool  # noqa: E402  (stdlib-only archive engine)
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QActionGroup, QKeySequence
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QActionGroup, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
     QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
@@ -106,6 +106,42 @@ _CHIP_DEFAULT = "#6b7280"
 _RAY_DIM_MODES = ("off", "linear", "sqrt")
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
+# Help menu: one action per docs/guide page, grouped into submenus that
+# mirror docs/guide/README.md's index tables. Paths are relative to
+# docs/guide/ (resolved against REPO at menu-build time); keep this list
+# and that index in sync by hand -- there is no code generator for either.
+DOCS_GUIDE_DIR = os.path.join(REPO, "docs", "guide")
+DOCS_GUIDE_PAGES = {
+    "GUI": [
+        ("3D Viewport", "viewport-3d.md"),
+        ("Outliner", "outliner.md"),
+        ("Element Inspector", "inspector.md"),
+        ("Element Editor", "element-editor.md"),
+        ("Position / Orientation", "transform.md"),
+        ("Optical Train Editor", "train-editor.md"),
+        ("Variables", "variables.md"),
+        ("Compare", "compare.md"),
+        ("Optimize", "optimize.md"),
+        ("Tolerance", "tolerance.md"),
+        ("Results", "results.md"),
+        ("Library Browser", "library-browser.md"),
+        ("Property Library Editor", "property-library-editor.md"),
+        ("Run & Validate", "run-and-validate.md"),
+        ("Animation", "animation.md"),
+        ("Console and Problems", "console-and-problems.md"),
+    ],
+    "System": [
+        ("Pipeline CLI", "pipeline-cli.md"),
+        ("File Formats", "file-formats.md"),
+        ("Headless / Remote", "headless-remote.md"),
+        ("Authoring", "authoring.md"),
+        ("Demo Gallery", "demo-gallery.md"),
+    ],
+    "Walkthroughs": [
+        ("Walkthroughs (index)", "walkthroughs/README.md"),
+    ],
+}
 
 
 def _aabb_overlap(a, b):
@@ -638,10 +674,55 @@ class MainWindow(QMainWindow):
         self.anim_enable_action.toggled.connect(
             self._on_anim_enabled_toggled)
 
-        help_menu = menubar.addMenu("&Help")
+        # kept as self.help_menu, NEVER re-fetched via QAction.menu() (see
+        # _build_help_menu's docstring / CLAUDE.md's PySide6 trap)
+        self.help_menu = menubar.addMenu("&Help")
+        help_menu = self.help_menu
+        self._build_help_menu(help_menu)
+        help_menu.addSeparator()
         act = help_menu.addAction("&About")
         act.setToolTip("About MieWorkbench")
         act.triggered.connect(self._on_about)
+
+    def _build_help_menu(self, help_menu):
+        """Per-feature guide entries: one action per docs/guide/*.md page,
+        grouped into GUI/System/Walkthroughs submenus mirroring
+        docs/guide/README.md's index, plus "Open Documentation Folder".
+        Degrades gracefully (disabled items, no crash) when docs/guide/
+        is missing -- e.g. a stripped-down deployment that ships only the
+        compiled app. Submenu references are kept on help_menu itself
+        (help_menu.doc_submenus), never re-fetched via QAction.menu():
+        PySide6 hands ownership of a NEW wrapper to Python on that call,
+        so the GC would delete the underlying C++ QMenu out from under a
+        later access (CLAUDE.md's PySide6 trap)."""
+        have_guide = os.path.isdir(DOCS_GUIDE_DIR)
+        help_menu.doc_submenus = {}
+        for group, pages in DOCS_GUIDE_PAGES.items():
+            submenu = help_menu.addMenu(group)
+            help_menu.doc_submenus[group] = submenu
+            for label, relpath in pages:
+                path = os.path.join(DOCS_GUIDE_DIR, relpath)
+                act = submenu.addAction(label)
+                exists = have_guide and os.path.isfile(path)
+                act.setEnabled(exists)
+                act.setToolTip(path if exists else
+                               "%s (not found)" % path)
+                if exists:
+                    act.triggered.connect(
+                        lambda _c=False, p=path: self._open_doc_page(p))
+
+        help_menu.addSeparator()
+        self.open_docs_folder_action = help_menu.addAction(
+            "Open Documentation &Folder")
+        self.open_docs_folder_action.setToolTip(DOCS_GUIDE_DIR)
+        self.open_docs_folder_action.setEnabled(have_guide)
+        if have_guide:
+            self.open_docs_folder_action.triggered.connect(
+                lambda: self._open_doc_page(DOCS_GUIDE_DIR))
+
+    @staticmethod
+    def _open_doc_page(path):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _build_toolbar(self):
         """Grouped main toolbar: file | undo/redo | element ops |
