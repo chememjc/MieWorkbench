@@ -1,6 +1,7 @@
 """prop_editor.py -- PropEditorPane: the "editor mode" for the optical
 property library (materials / coatings / polarizers / filters / gratings /
-birefringence).
+uniaxial + biaxial birefringence / figure errors / nonlinear (chi2/pockels/
+saturable/Kerr) / BSDF scatter / instruments).
 
 One QTabWidget, one tab per registry. Each tab (_CategoryEditor) shows the
 registry's rows in a QTableWidget (columns = the registry csv's own header,
@@ -54,7 +55,13 @@ INVALID_CELL_COLOR = QColor(140, 90, 0)
 
 # Registry -> (tab label, table-file schema for Import-table / plotting).
 # Schema is None for categories whose rows don't reference a spectral table
-# (birefringence rows reference other materials.csv rows, not a file).
+# (birefringence rows reference other materials.csv rows, not a file) OR
+# whose referenced table shape varies by row (instruments: camera/
+# spectrometer rows point at a "qe" table, powermeter rows at a
+# "responsivity_a_w" table -- one fixed required_cols tuple can't cover
+# both, so Import-table stays off for that tab; the chart still plots
+# whatever the selected row's actual table file contains, since
+# _render_chart reads real headers, not TABLE_SCHEMA).
 CATEGORY_TABS = (
     ("materials", "Materials", ("wavelength_nm", "n", "k")),
     ("coatings", "Coatings", ("wavelength_nm", "Rs", "Rp", "Ts", "Tp")),
@@ -63,6 +70,11 @@ CATEGORY_TABS = (
     ("filters", "Filters", ("wavelength_nm", "transmittance_internal")),
     ("gratings", "Gratings", ("wavelength_nm", "order", "eta_s", "eta_p")),
     ("uniaxial", "Birefringence", None),
+    ("biaxial", "Biaxial", None),
+    ("figures", "Figure Errors", None),
+    ("nonlinear", "Nonlinear", None),
+    ("scatter", "BSDF", None),
+    ("instruments", "Instruments", None),
 )
 TABLE_SCHEMA = {cat: schema for cat, _, schema in CATEGORY_TABS}
 
@@ -103,11 +115,39 @@ def apply_column_mapping(src_headers, src_rows, mapping, required_cols):
     return dest_headers, dest_rows
 
 
-def _atomic_write_registry(path, fieldnames, rows):
+def _leading_comment_lines(path, prefix):
+    """Full-line comments at the START of `path` (before the csv header),
+    verbatim including their trailing newline -- or [] if the file doesn't
+    exist yet or has none. Only nonlinear/nonlinear.mienlo uses this today
+    (CATEGORY_INFO["nonlinear"]["comment_prefix"] = "#"): its header block
+    documents the d_il_pm_V/r_coeffs_pm_V packing grammar, which a plain
+    csv.DictWriter rewrite would otherwise silently drop."""
+    path = Path(path)
+    if not prefix or not path.exists():
+        return []
+    lines = []
+    with open(path, newline="") as fh:
+        for line in fh:
+            if not line.lstrip().startswith(prefix):
+                break
+            lines.append(line)
+    return lines
+
+
+def _atomic_write_registry(path, fieldnames, rows, comment_prefix=None):
+    """Atomic (tmp + os.replace) full rewrite of a registry csv. When
+    `comment_prefix` is set, any leading full-line comment block already in
+    the file is preserved verbatim ahead of the rewritten header+rows (see
+    _leading_comment_lines) -- registry_rows()/registry_fieldnames() in
+    core.proplib already strip these lines before DictReader, so they never
+    show up as a spurious "column" in the editor; this is the write-side
+    half of that same contract."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    header_lines = _leading_comment_lines(path, comment_prefix)
     tmp = str(path) + ".tmp"
     with open(tmp, "w", newline="") as fh:
+        fh.writelines(header_lines)
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
@@ -348,7 +388,10 @@ class _CategoryEditor(QWidget):
         txn = Transaction()
         txn.track(path)
         try:
-            _atomic_write_registry(path, self._fieldnames, rows)
+            _atomic_write_registry(
+                path, self._fieldnames, rows,
+                comment_prefix=CATEGORY_INFO[self.category].get(
+                    "comment_prefix"))
             validate_and_commit(lib, txn)
         except LibraryWriteError:
             raise
@@ -460,7 +503,10 @@ class _CategoryEditor(QWidget):
                 writer.writerow(dest_headers)
                 writer.writerows(dest_rows)
             target[info["file_cols"][0]] = dest_path.name
-            _atomic_write_registry(reg_path, self._fieldnames, rows)
+            _atomic_write_registry(
+                reg_path, self._fieldnames, rows,
+                comment_prefix=CATEGORY_INFO[self.category].get(
+                    "comment_prefix"))
             validate_and_commit(lib, txn)
         except Exception:
             txn.rollback()

@@ -4,9 +4,10 @@ optical property library registries edited by panes/prop_editor.py.
 This is a PURE-DATA module (no Qt, no I/O): COLUMN_SCHEMA describes every
 column of every registry PropLibrary/core.proplib.CATEGORY_INFO exposes
 (materials, coatings, polarizers, filters, gratings, uniaxial, diffusers,
-detectors, emission); TABLE_COLUMN_SCHEMA does the same for the per-row
-spectral TABLE files those registries reference (the tuples in
-panes/prop_editor.py's TABLE_SCHEMA/CATEGORY_TABS).
+detectors, emission, biaxial, figures, nonlinear, scatter, instruments);
+TABLE_COLUMN_SCHEMA does the same for the per-row spectral TABLE files
+those registries reference (the tuples in panes/prop_editor.py's
+TABLE_SCHEMA/CATEGORY_TABS).
 
 Content is distilled from three sources that must agree (and the
 drift-proofing test in mieworkbench/tests/test_libschema.py enforces it
@@ -19,13 +20,24 @@ against the live registries so this module can't silently go stale):
     that ships today is documented, including ones the prose docs don't
     call out by name, e.g. the P9 gyration_* / k_x,y,z optional columns)
 
-NOT covered here (out of PropLibrary's CATEGORY_INFO -- proplib.py has no
-registry_rel/file_dir entry for them, so the editor pane cannot open them
-today): birefringence/biaxial.mibiax, figure/figures.miefig,
-nonlinear/nonlinear.mienlo, scatter/bsdf.miebsdf,
-instrument/instruments.mieinst. If any of those categories is ever wired
-into CATEGORY_INFO, extend COLUMN_SCHEMA (and the drift test will start
-enforcing it automatically).
+Two of these registries have a shape the others don't:
+  - nonlinear/nonlinear.mienlo is a WIDE, KIND-DISCRIMINATED table: one
+    'kind' column selects which of the remaining columns apply (a
+    chi2_tensor row's d_il_pm_V is meaningless on a saturable row, and
+    vice versa) -- each column's ColumnInfo says which kind(s) it belongs
+    to. The registry csv also allows full-line '#' comments (documenting
+    the d_il_pm_V/r_coeffs_pm_V packing grammar in the file header);
+    core.proplib.CATEGORY_INFO["nonlinear"]["comment_prefix"] = "#" is
+    what tells PropLibrary.registry_rows()/registry_fieldnames() to strip
+    those lines before csv.DictReader, and prop_editor's
+    _atomic_write_registry re-prepends them on save.
+  - instrument/instruments.mieinst is WIDE and CLASS-discriminated the
+    same way ('class' picks camera/powermeter/spectrometer/polarimeter/
+    wavefront_sensor/autocorrelator); three PLACEHOLDER classes
+    (polarimeter/wavefront_sensor/autocorrelator) have hard-validated
+    column schemas in optprops.py but no shipped rows yet -- documented
+    here anyway since load_instruments will enforce them the moment a row
+    of that class is authored.
 
 Validation is advisory only (Sec.4 of the round brief this module was
 written for): the loaders in optprops.py/materials.py are the one hard
@@ -378,6 +390,434 @@ _EMISSION = {
 }
 
 # ---------------------------------------------------------------------------
+# birefringence/biaxial.mibiax
+# ---------------------------------------------------------------------------
+_BIAXIAL = {
+    "name": _name("biaxial crystal"),
+    "n_x_material": ColumnInfo(
+        "materials.miemat row supplying the principal-axis index n_x (by "
+        "convention the smallest of the three principal indices for a "
+        "positive biaxial crystal -- not enforced by the loader).",
+        format="materials.miemat row name (must exist)"),
+    "n_y_material": ColumnInfo(
+        "materials.miemat row supplying the principal-axis index n_y.",
+        format="materials.miemat row name (must exist)"),
+    "n_z_material": ColumnInfo(
+        "materials.miemat row supplying the principal-axis index n_z.",
+        format="materials.miemat row name (must exist)"),
+    "reference": _REFERENCE,
+    "notes": _NOTES,
+}
+
+# ---------------------------------------------------------------------------
+# figure/figures.miefig
+# ---------------------------------------------------------------------------
+_FIGURES = {
+    "name": _name("surface figure-error set"),
+    "coeffs": ColumnInfo(
+        "Zernike (Noll indexing) surface-figure-error coefficient set, "
+        "applied at scene build as a raytracer.surfaces.PerturbedSurface "
+        "sag perturbation over the transverse pupil. Each term's rms_nm is "
+        "the SURFACE sag RMS at that Noll index (a mirror's WAVEFRONT "
+        "error is 2x this and falls out of the tracer's OPL naturally). "
+        "j=1 (piston) is rejected as a meaningless constant offset; "
+        "duplicate j in one cell is rejected.",
+        units="nm (per term)",
+        format="';'-separated 'j:rms_nm' terms, e.g. '5:100;6:100' -- j is "
+               "a Noll index int >= 2, rms_nm a float"),
+    "r_norm_mm": ColumnInfo(
+        "Pupil (clear-aperture) radius the coeffs are normalized to -- "
+        "the Zernike terms are evaluated over rho = r/r_norm_mm in [0,1].",
+        units="mm", format="float > 0",
+        validator={"kind": "float", "gt": 0.0}),
+    "reference": _REFERENCE,
+    "notes": ColumnInfo(
+        "Free-text annotation -- here often used to name which Zernike "
+        "term(s) the set represents (e.g. 'Z4 only', 'Z9+Z10 trefoil'). "
+        "Never validated by the loader.",
+        format="free text (optional)"),
+}
+
+# ---------------------------------------------------------------------------
+# nonlinear/nonlinear.mienlo -- chi(2)/chi(3)/EO/saturable-absorber registry
+# WIDE, kind-discriminated: 'kind' selects which of the remaining columns
+# are meaningful on a given row (the others stay blank). Full-line '#'
+# comments are allowed in the csv itself (see module docstring / the file's
+# own header block for the d_il_pm_V / r_coeffs_pm_V packing grammar this
+# mirrors).
+# ---------------------------------------------------------------------------
+_NONLINEAR = {
+    "kind": ColumnInfo(
+        "Row-type discriminator -- selects which of this row's other "
+        "columns are read (the rest stay blank).",
+        format="enum: chi2_tensor | chi2_process | pockels | n2 | saturable",
+        validator={"kind": "enum",
+                   "values": ("chi2_tensor", "chi2_process", "pockels",
+                              "n2", "saturable")}),
+    "name": _name("nonlinear-optical row"),
+    "crystal": ColumnInfo(
+        "Host crystal for kind=chi2_tensor/chi2_process/pockels rows. "
+        "Must name a birefringence/uniaxial.miebrf or "
+        "birefringence/biaxial.mibiax row (cross-checked when the loader "
+        "is given both registry handles, i.e. via load_optical_properties; "
+        "skipped when nonlinear.mienlo is loaded standalone).",
+        format="uniaxial.miebrf / biaxial.mibiax row name -- required iff "
+               "kind in {chi2_tensor, chi2_process, pockels}"),
+    "point_group": ColumnInfo(
+        "Crystal point group symbol (e.g. '3m', 'mm2', '-42m'), documents "
+        "which entries of the 3x6 d-matrix the point-group symmetry "
+        "forces to zero/equal -- informational, not cross-validated "
+        "against a lookup table.",
+        format="point-group string -- required iff kind=chi2_tensor"),
+    "d_il_pm_V": ColumnInfo(
+        "Full 3x6 contracted (Voigt) second-order nonlinear-susceptibility "
+        "d-matrix in the crystal principal frame, row-major.",
+        units="pm/V",
+        format="three '|'-separated rows i=1..3 (polarization component), "
+               "each exactly six ';'-separated floats l=1..6 (Voigt "
+               "11->1,22->2,33->3,23/32->4,13/31->5,12/21->6): "
+               "'d11;d12;d13;d14;d15;d16|d21;...;d26|d31;...;d36' -- "
+               "required iff kind=chi2_tensor"),
+    "kleinman": ColumnInfo(
+        "Whether Kleinman symmetry (d_il fully permutation-symmetric, "
+        "valid far from resonance) was assumed when reducing the "
+        "independent tensor components -- documents the d_il_pm_V "
+        "provenance, not re-derived by the loader.",
+        format="literal 'true' or 'false' -- required iff kind=chi2_tensor",
+        validator={"kind": "enum", "values": ("true", "false")}),
+    "lam_ref_nm": ColumnInfo(
+        "Reference wavelength the row's coefficient (d_il_pm_V for "
+        "chi2_tensor, n2_m2_W for n2) was measured/quoted at.",
+        units="nm",
+        format="float > 0 -- required iff kind in {chi2_tensor, n2}",
+        validator={"kind": "float", "gt": 0.0}),
+    "process": ColumnInfo(
+        "Specific SHG phase-matching process this chi2_process row "
+        "characterizes with a single effective coefficient (as opposed to "
+        "the full tensor in a chi2_tensor row).",
+        format="enum: shg_type1 | shg_type2 -- required iff kind=chi2_process",
+        validator={"kind": "enum", "values": ("shg_type1", "shg_type2")}),
+    "lam_pump_nm": ColumnInfo(
+        "Fundamental (pump) wavelength this SHG process row is "
+        "phase-matched at.",
+        units="nm",
+        format="float > 0 -- required iff kind=chi2_process",
+        validator={"kind": "float", "gt": 0.0}),
+    "theta_deg": ColumnInfo(
+        "Phase-matching polar angle theta (crystal-cut angle) for this "
+        "SHG process.",
+        units="deg", format="float -- required iff kind=chi2_process",
+        validator={"kind": "float"}),
+    "phi_deg": ColumnInfo(
+        "Phase-matching azimuthal angle phi for this SHG process.",
+        units="deg", format="float -- required iff kind=chi2_process",
+        validator={"kind": "float"}),
+    "d_eff_pm_V": ColumnInfo(
+        "Single effective nonlinear coefficient for this cut/process "
+        "(projection of the full d-matrix onto the phase-matched "
+        "geometry) -- must be non-zero.",
+        units="pm/V",
+        format="float, non-zero -- required iff kind=chi2_process",
+        validator={"kind": "float"}),
+    "r_coeffs_pm_V": ColumnInfo(
+        "Named linear electro-optic (Pockels) coefficients used by the "
+        "row's `geometry`.",
+        units="pm/V",
+        format="';'-separated 'rNN=value' pairs, e.g. 'r33=30.8;r13=8.6' "
+               "-- required iff kind=pockels"),
+    "geometry": ColumnInfo(
+        "Pockels-cell electrode/field geometry the r_coeffs_pm_V values "
+        "apply to (selects which raytracer.nlo shifted-index formula "
+        "consumes them).",
+        format="enum: longitudinal | transverse -- required iff kind=pockels",
+        validator={"kind": "enum", "values": ("longitudinal", "transverse")}),
+    "material": ColumnInfo(
+        "materials.miemat row this Kerr (n2) coefficient applies to. "
+        "Resolved LAZILY by the Kerr consumer at use time (not checked "
+        "against materials.miemat by this loader), so a staged n2 row may "
+        "precede its materials.miemat index row.",
+        format="materials.miemat row name -- required iff kind=n2"),
+    "n2_m2_W": ColumnInfo(
+        "Nonlinear (Kerr) refractive index n2, must be non-zero.",
+        units="m^2/W",
+        format="float, non-zero -- required iff kind=n2",
+        validator={"kind": "float"}),
+    "I_sat_W_cm2": ColumnInfo(
+        "Saturation intensity of a saturable absorber (SESAM etc.) -- the "
+        "intensity at which the bulk/device absorption drops by half in "
+        "the alpha(I)=alpha0/(1+I/I_sat) model.",
+        units="W/cm^2",
+        format="float > 0 -- required iff kind=saturable",
+        validator={"kind": "float", "gt": 0.0}),
+    "T0": ColumnInfo(
+        "Unsaturated (low-intensity) transmission OR reflectance "
+        "fraction, depending on whether the device is transmissive (bulk "
+        "absorber) or a mirror (SESAM); alpha0_per_mm's blank/set state "
+        "documents which. Must be in (0, 1].",
+        units="fraction",
+        format="float in (0,1] -- required iff kind=saturable",
+        validator={"kind": "float", "range": (0.0, 1.0)}),
+    "tau_recovery_s": ColumnInfo(
+        "Absorber recovery (relaxation) time constant.",
+        units="s",
+        format="float >= 0 -- required iff kind=saturable",
+        validator={"kind": "float", "ge": 0.0}),
+    "alpha0_per_mm": ColumnInfo(
+        "OPTIONAL bulk unsaturated absorption coefficient per millimetre, "
+        "consumed by raytracer.nlo.saturable_alpha0_per_m for the bulk "
+        "alpha(I) = alpha0/(1+I/I_sat) hook. Leave blank for a MIRROR/"
+        "reflectance device row (T0 = 1-A, not a bulk transmission) -- "
+        "blank falls back to reading T0 itself as a per-mm transmission "
+        "(alpha0 = -ln(T0)/mm), which would misrepresent a device spec as "
+        "a bulk coefficient if filled in for a mirror row.",
+        units="1/mm",
+        format="float > 0, optional (saturable rows only)",
+        validator={"kind": "float", "gt": 0.0}),
+    "reference": _REFERENCE,
+    "notes": _NOTES,
+}
+
+# ---------------------------------------------------------------------------
+# scatter/bsdf.miebsdf -- ABg measured-scatter surfaces
+# ---------------------------------------------------------------------------
+_SCATTER = {
+    "name": _name("BSDF scatter surface"),
+    "model": ColumnInfo(
+        "Scatter model family. Only 'abg' has engine support today.",
+        format="enum: abg", validator={"kind": "enum", "values": ("abg",)}),
+    "A": ColumnInfo(
+        "ABg model reflected-side amplitude parameter: "
+        "BSDF(u) = A/(B + u^g), u = |beta - beta0| the direction-cosine "
+        "offset from specular.",
+        format="float > 0", validator={"kind": "float", "gt": 0.0}),
+    "B": ColumnInfo(
+        "ABg model reflected-side B parameter (denominator offset -- "
+        "controls the shoulder/knee of the scatter lobe).",
+        format="float > 0", validator={"kind": "float", "gt": 0.0}),
+    "g": ColumnInfo(
+        "ABg model reflected-side rolloff exponent. g=2 gives a "
+        "closed-form radial CDF (the common case).",
+        format="float > 0", validator={"kind": "float", "gt": 0.0}),
+    "tis_cap": ColumnInfo(
+        "Optional ceiling on the reflected-side total integrated scatter "
+        "(TIS) used by the tracer's specular/scattered power split -- pins "
+        "an ABg fit that would otherwise over-integrate to a plausible "
+        "measured total-scatter fraction.",
+        units="fraction", format="float in (0,1], optional",
+        validator={"kind": "float", "range": (0.0, 1.0)}),
+    "btdf": ColumnInfo(
+        "Enables the OPTIONAL transmitted-side (BTDF) scatter split about "
+        "the refracted direction, using the btdf_* ABg triple below. "
+        "Falsey/blank behaves exactly as a reflected-side-only row.",
+        format="boolean: 1|true|yes|on (enabled) or blank|0|false|no|off "
+               "(disabled)",
+        validator={"kind": "enum",
+                   "values": ("1", "true", "yes", "on", "0", "false", "no",
+                              "off", "")}),
+    "btdf_A": ColumnInfo(
+        "BTDF-side A parameter (see `A`); defaults to the reflected-side "
+        "A when blank. Only read when `btdf` is truthy.",
+        format="float > 0, optional (defaults to `A`)",
+        validator={"kind": "float", "gt": 0.0}),
+    "btdf_B": ColumnInfo(
+        "BTDF-side B parameter (see `B`); defaults to the reflected-side "
+        "B when blank. Only read when `btdf` is truthy.",
+        format="float > 0, optional (defaults to `B`)",
+        validator={"kind": "float", "gt": 0.0}),
+    "btdf_g": ColumnInfo(
+        "BTDF-side rolloff exponent (see `g`); defaults to the "
+        "reflected-side g when blank. Only read when `btdf` is truthy.",
+        format="float > 0, optional (defaults to `g`)",
+        validator={"kind": "float", "gt": 0.0}),
+    "btdf_tis_cap": ColumnInfo(
+        "Optional TIS ceiling for the transmitted-side split (see "
+        "`tis_cap`). Only read when `btdf` is truthy.",
+        units="fraction", format="float in (0,1], optional",
+        validator={"kind": "float", "range": (0.0, 1.0)}),
+    "reference": _REFERENCE,
+    "notes": _NOTES,
+}
+
+# ---------------------------------------------------------------------------
+# instrument/instruments.mieinst -- virtual instrument layer (post-process
+# response model over an ideal detector plane). WIDE, class-discriminated:
+# 'class' selects which of the remaining columns are meaningful on a given
+# row. polarimeter/wavefront_sensor/autocorrelator are PLACEHOLDER classes
+# (schema defined + hard-validated, no shipped rows yet -- engine3.md Sec.9).
+# ---------------------------------------------------------------------------
+_INSTRUMENTS = {
+    "name": _name("instrument profile"),
+    "class": ColumnInfo(
+        "Instrument-model discriminator -- selects which of this row's "
+        "other columns are read (the rest stay blank) and which "
+        "post_process.render_instrument dispatcher handles it.",
+        format="enum: camera | powermeter | spectrometer | polarimeter | "
+               "wavefront_sensor | autocorrelator (the last three are "
+               "PLACEHOLDER classes with a validated schema but no shipped "
+               "rows yet)",
+        validator={"kind": "enum",
+                   "values": ("camera", "powermeter", "spectrometer",
+                              "polarimeter", "wavefront_sensor",
+                              "autocorrelator")}),
+    "pixel_pitch_um": ColumnInfo(
+        "Camera pixel pitch (assumed square).",
+        units="um", format="float > 0 -- required iff class=camera",
+        validator={"kind": "float", "gt": 0.0}),
+    "width_px": ColumnInfo(
+        "Camera sensor width.",
+        units="px", format="int > 0 -- required iff class=camera",
+        validator={"kind": "int", "gt": 0}),
+    "height_px": ColumnInfo(
+        "Camera sensor height.",
+        units="px", format="int > 0 -- required iff class=camera",
+        validator={"kind": "int", "gt": 0}),
+    "fill_factor": ColumnInfo(
+        "Camera pixel fill factor (active photosensitive area fraction).",
+        units="fraction",
+        format="float in (0,1] -- required iff class=camera",
+        validator={"kind": "float", "range": (0.0, 1.0)}),
+    "qe_table": ColumnInfo(
+        "Filename of the camera's per-wavelength quantum-efficiency table "
+        "(column 'qe', fractional, in instrument/tables/).",
+        format="filename (e.g. 'camera_generic_qe.mietab') -- required "
+               "iff class=camera"),
+    "full_well_e": ColumnInfo(
+        "Camera pixel full-well capacity (saturation clipping level).",
+        units="electrons",
+        format="float > 0 -- required iff class=camera",
+        validator={"kind": "float", "gt": 0.0}),
+    "read_noise_e": ColumnInfo(
+        "Camera read noise (RMS electrons added per readout, 'full' mode "
+        "only).",
+        units="electrons rms",
+        format="float >= 0 -- required iff class=camera",
+        validator={"kind": "float", "ge": 0.0}),
+    "dark_current_e_per_s": ColumnInfo(
+        "Camera dark current.",
+        units="electrons/s",
+        format="float >= 0 -- required iff class=camera",
+        validator={"kind": "float", "ge": 0.0}),
+    "bit_depth": ColumnInfo(
+        "Camera ADC bit depth (quantization applied to the counts image).",
+        units="bits", format="int > 0 -- required iff class=camera",
+        validator={"kind": "int", "gt": 0}),
+    "adc_gain_e_per_dn": ColumnInfo(
+        "Camera ADC gain (electrons per digital number/count).",
+        units="electrons/DN",
+        format="float > 0 -- required iff class=camera",
+        validator={"kind": "float", "gt": 0.0}),
+    "integration_time_s_default": ColumnInfo(
+        "Camera default exposure/integration time used when a run doesn't "
+        "override it.",
+        units="s", format="float > 0 -- required iff class=camera",
+        validator={"kind": "float", "gt": 0.0}),
+    "responsivity_table": ColumnInfo(
+        "Filename of the powermeter's per-wavelength responsivity table "
+        "(column 'responsivity_a_w', in instrument/tables/). EXACTLY ONE "
+        "of responsivity_table / flat_responsivity_a_w must be set on a "
+        "powermeter row (the other left blank).",
+        format="filename, optional (mutually exclusive with "
+               "flat_responsivity_a_w) -- class=powermeter only"),
+    "flat_responsivity_a_w": ColumnInfo(
+        "Flat (wavelength-independent) responsivity, an alternative to a "
+        "full responsivity_table. EXACTLY ONE of the two must be set on a "
+        "powermeter row.",
+        units="A/W",
+        format="float > 0, optional (mutually exclusive with "
+               "responsivity_table) -- class=powermeter only",
+        validator={"kind": "float", "gt": 0.0}),
+    "aperture_mm": ColumnInfo(
+        "Powermeter sensor active aperture diameter.",
+        units="mm", format="float > 0 -- required iff class=powermeter",
+        validator={"kind": "float", "gt": 0.0}),
+    "nep_w_per_sqrthz": ColumnInfo(
+        "Powermeter noise-equivalent power spectral density.",
+        units="W/sqrt(Hz)",
+        format="float > 0 -- required iff class=powermeter",
+        validator={"kind": "float", "gt": 0.0}),
+    "bandwidth_hz": ColumnInfo(
+        "Powermeter detection bandwidth (with nep_w_per_sqrthz, sets the "
+        "noise floor in 'full' mode).",
+        units="Hz", format="float > 0 -- required iff class=powermeter",
+        validator={"kind": "float", "gt": 0.0}),
+    "display_digits": ColumnInfo(
+        "Powermeter display resolution -- the reported power is "
+        "significant-figure rounded to this many digits.",
+        format="int >= 1 -- required iff class=powermeter",
+        validator={"kind": "int", "gt": 0}),
+    "lam_lo_nm": ColumnInfo(
+        "Spectrometer lower wavelength bound of the reported range; must "
+        "be < lam_hi_nm.",
+        units="nm",
+        format="float > 0 -- required iff class=spectrometer",
+        validator={"kind": "float", "gt": 0.0}),
+    "lam_hi_nm": ColumnInfo(
+        "Spectrometer upper wavelength bound; must be > lam_lo_nm.",
+        units="nm",
+        format="float > 0 -- required iff class=spectrometer",
+        validator={"kind": "float", "gt": 0.0}),
+    "resolution_fwhm_nm": ColumnInfo(
+        "Spectrometer spectral resolution (Gaussian convolution FWHM "
+        "applied to the reported spectrum).",
+        units="nm",
+        format="float > 0 -- required iff class=spectrometer",
+        validator={"kind": "float", "gt": 0.0}),
+    "slit_um": ColumnInfo(
+        "Spectrometer entrance slit width.",
+        units="um", format="float > 0 -- required iff class=spectrometer",
+        validator={"kind": "float", "gt": 0.0}),
+    "stray_light_floor": ColumnInfo(
+        "Spectrometer stray-light floor added to the reported spectrum.",
+        units="fraction",
+        format="float in [0,1) -- required iff class=spectrometer",
+        validator={"kind": "float", "range": (0.0, 1.0)}),
+    "detector_qe_table": ColumnInfo(
+        "Filename of the spectrometer's internal detector "
+        "quantum-efficiency table (column 'qe', in instrument/tables/).",
+        format="filename (e.g. 'spectrometer_generic_qe.mietab') -- "
+               "required iff class=spectrometer"),
+    "analyzer_states": ColumnInfo(
+        "Polarimeter number of distinct analyzer states sampled per "
+        "measurement (PLACEHOLDER class -- see module note).",
+        format="int >= 2 -- required iff class=polarimeter",
+        validator={"kind": "int", "gt": 1}),
+    "extinction_ratio": ColumnInfo(
+        "Polarimeter analyzer extinction ratio (PLACEHOLDER class).",
+        format="float > 0 -- required iff class=polarimeter",
+        validator={"kind": "float", "gt": 0.0}),
+    "retarder_error_deg": ColumnInfo(
+        "Polarimeter retarder retardance error (PLACEHOLDER class).",
+        units="deg",
+        format="float >= 0 -- required iff class=polarimeter",
+        validator={"kind": "float", "ge": 0.0}),
+    "opd_sampling_um": ColumnInfo(
+        "Wavefront sensor optical-path-difference sampling step "
+        "(PLACEHOLDER class).",
+        units="um",
+        format="float > 0 -- required iff class=wavefront_sensor",
+        validator={"kind": "float", "gt": 0.0}),
+    "reference_arm_model": ColumnInfo(
+        "Wavefront sensor reference-arm model identifier (PLACEHOLDER "
+        "class) -- a non-empty descriptive string, not cross-validated "
+        "against a lookup table.",
+        format="non-empty string -- required iff class=wavefront_sensor"),
+    "shg_crystal": ColumnInfo(
+        "Autocorrelator SHG crystal name (PLACEHOLDER class) -- "
+        "informational only; NOT cross-checked against birefringence/"
+        "nonlinear registries (unlike nonlinear.mienlo's own `crystal` "
+        "column).",
+        format="non-empty string -- required iff class=autocorrelator"),
+    "delay_range_fs": ColumnInfo(
+        "Autocorrelator scan delay-line range (PLACEHOLDER class).",
+        units="fs",
+        format="float > 0 -- required iff class=autocorrelator",
+        validator={"kind": "float", "gt": 0.0}),
+    "reference": _REFERENCE,
+    "notes": _NOTES,
+}
+
+
+# ---------------------------------------------------------------------------
 # category -> {column: ColumnInfo}
 # ---------------------------------------------------------------------------
 COLUMN_SCHEMA = {
@@ -390,6 +830,11 @@ COLUMN_SCHEMA = {
     "diffusers": _DIFFUSERS,
     "detectors": _DETECTORS,
     "emission": _EMISSION,
+    "biaxial": _BIAXIAL,
+    "figures": _FIGURES,
+    "nonlinear": _NONLINEAR,
+    "scatter": _SCATTER,
+    "instruments": _INSTRUMENTS,
 }
 
 
@@ -486,6 +931,23 @@ TABLE_COLUMN_SCHEMA = {
             ">= 0 everywhere and integrate to > 0.",
             units="arbitrary", format="float >= 0",
             validator={"kind": "float", "ge": 0.0}),
+    },
+    # instruments has NO CATEGORY_TABS import schema (its table shape
+    # varies by row class -- see prop_editor.CATEGORY_TABS' comment), but
+    # its two live per-row table shapes are documented here anyway since
+    # the chart still reads/plots them directly by filename.
+    "instruments": {
+        "wavelength_nm": _WAVELENGTH_NM,
+        "qe": ColumnInfo(
+            "Fractional quantum efficiency at this wavelength (camera "
+            "qe_table / spectrometer detector_qe_table rows).",
+            units="fraction", format="float in (0,1]",
+            validator={"kind": "float", "range": (0.0, 1.0)}),
+        "responsivity_a_w": ColumnInfo(
+            "Photodiode responsivity at this wavelength (powermeter "
+            "responsivity_table rows).",
+            units="A/W", format="float > 0",
+            validator={"kind": "float", "gt": 0.0}),
     },
 }
 

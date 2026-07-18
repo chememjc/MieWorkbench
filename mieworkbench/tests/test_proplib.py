@@ -28,7 +28,19 @@ REGISTRY_RELPATHS = {
     "diffusers": "diffuser/diffusers.miedif",
     "detectors": "detector/detectors.miedet",
     "emission": "emission/emitters.miesrc",
+    "biaxial": "birefringence/biaxial.mibiax",
+    "figures": "figure/figures.miefig",
+    "nonlinear": "nonlinear/nonlinear.mienlo",
+    "scatter": "scatter/bsdf.miebsdf",
+    "instruments": "instrument/instruments.mieinst",
 }
+
+# nonlinear/nonlinear.mienlo allows full-line '#' comments ahead of its csv
+# header (documents the d_il_pm_V/r_coeffs_pm_V packing grammar) -- the row
+# count must be computed the same way _csv_row_count's caller expects, but
+# a bare csv.DictReader over the raw file would misparse the comment block
+# as the header. _csv_row_count below strips '#' lines first for every
+# category (a no-op for the other four, which have none).
 
 
 def _system_lib():
@@ -38,7 +50,8 @@ def _system_lib():
 def _csv_row_count(category):
     path = os.path.join(REPO_ROOT, REGISTRY_RELPATHS[category])
     with open(path, newline="") as fh:
-        return len(list(csv.DictReader(fh)))
+        lines = (line for line in fh if not line.lstrip().startswith("#"))
+        return len(list(csv.DictReader(lines)))
 
 
 def test_categories_counts():
@@ -140,6 +153,65 @@ def test_validate_reports_loader_error_on_corrupt_table(tmp_path):
     ok2, msg2 = lib.validate()
     assert ok2 is False
     assert "not strictly increasing" in msg2 or "increasing" in msg2
+
+
+# ---------------------------------------------------------------------------
+# the five categories added alongside libschema.py's COLUMN_SCHEMA
+# (birefringence/biaxial, figure, nonlinear, scatter, instrument) -- were
+# previously missing from CATEGORY_INFO entirely, not just undocumented.
+# ---------------------------------------------------------------------------
+def test_new_categories_row_counts_and_names():
+    lib = _system_lib()
+    cats = lib.categories()
+    assert "ktp" in cats["biaxial"]
+    assert "fig_lambda4_defocus_633" in cats["figures"]
+    assert "linbo3_d" in cats["nonlinear"]
+    assert "polished_fused_silica" in cats["scatter"]
+    assert "camera_generic" in cats["instruments"]
+    for name in ("biaxial", "figures", "nonlinear", "scatter", "instruments"):
+        assert len(cats[name]) == _csv_row_count(name), name
+
+
+def test_new_categories_registry_fieldnames():
+    lib = _system_lib()
+    assert {"name", "n_x_material", "n_y_material", "n_z_material",
+           "reference"} <= set(lib.registry_fieldnames("biaxial"))
+    assert {"name", "coeffs", "r_norm_mm", "reference"} \
+        <= set(lib.registry_fieldnames("figures"))
+    assert {"kind", "name", "crystal", "d_il_pm_V", "reference"} \
+        <= set(lib.registry_fieldnames("nonlinear"))
+    assert {"name", "model", "A", "B", "g", "reference"} \
+        <= set(lib.registry_fieldnames("scatter"))
+    assert {"name", "class", "reference"} \
+        <= set(lib.registry_fieldnames("instruments"))
+
+
+def test_nonlinear_registry_rows_skip_leading_comment_block():
+    """nonlinear.mienlo's on-disk header is a multi-line '#'-comment block
+    documenting the d_il_pm_V packing grammar, THEN the real csv header --
+    a plain csv.DictReader would misparse the first comment line as the
+    header. registry_fieldnames()/registry_rows() must strip it exactly
+    like optprops._read_registry_commented does."""
+    lib = _system_lib()
+    fieldnames = lib.registry_fieldnames("nonlinear")
+    assert fieldnames[:2] == ["kind", "name"]
+    assert not any(f.startswith("#") for f in fieldnames)
+
+    rows = lib.registry_rows("nonlinear")
+    assert len(rows) == _csv_row_count("nonlinear")
+    names = {r["name"] for r in rows}
+    assert "linbo3_d" in names
+    assert "sam_1550_16_2ps" in names
+
+
+def test_nonlinear_source_file_really_has_a_comment_header():
+    """Sanity check that the fixture this test relies on hasn't drifted --
+    if nonlinear.mienlo ever loses its leading comments, the skip-logic
+    above stops being exercised at all."""
+    path = os.path.join(REPO_ROOT, REGISTRY_RELPATHS["nonlinear"])
+    with open(path) as fh:
+        first_line = fh.readline()
+    assert first_line.startswith("#")
 
 
 def test_reload_invalidates_cache(tmp_path):

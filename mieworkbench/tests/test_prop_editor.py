@@ -32,7 +32,15 @@ CATEGORY_BY_LABEL = {
     "materials": "Materials", "coatings": "Coatings",
     "polarizers": "Polarizers", "filters": "Filters",
     "gratings": "Gratings", "uniaxial": "Birefringence",
+    "biaxial": "Biaxial", "figures": "Figure Errors",
+    "nonlinear": "Nonlinear", "scatter": "BSDF",
+    "instruments": "Instruments",
 }
+
+# the five categories landed alongside libschema.py's COLUMN_SCHEMA drift
+# test (they were previously missing from CATEGORY_INFO/CATEGORY_TABS
+# entirely -- not just undocumented) -- exercised individually below.
+NEW_CATEGORIES = ("biaxial", "figures", "nonlinear", "scatter", "instruments")
 
 
 def _tmp_system_manager(tmp_path, with_project=False):
@@ -52,10 +60,11 @@ def test_tab_count_and_labels(qtbot):
     pane = PropEditorPane(mgr)
     qtbot.addWidget(pane)
 
-    assert pane.tabs.count() == 6
+    assert pane.tabs.count() == 11
     labels = [pane.tabs.tabText(i) for i in range(pane.tabs.count())]
     assert labels == ["Materials", "Coatings", "Polarizers", "Filters",
-                      "Gratings", "Birefringence"]
+                      "Gratings", "Birefringence", "Biaxial",
+                      "Figure Errors", "Nonlinear", "BSDF", "Instruments"]
 
 
 def test_row_counts_match_registries(qtbot):
@@ -520,6 +529,126 @@ def test_validation_never_touches_reference_column_styling(qtbot, tmp_path):
     editor._populate_table(rows)
     reloaded_item = editor.table.item(idx, col)
     assert reloaded_item.background().color() == MISSING_REFERENCE_COLOR
+
+
+# ---------------------------------------------------------------------------
+# the five newly-wired categories: birefringence/biaxial, figure errors,
+# nonlinear, BSDF scatter, instruments -- were previously missing from
+# proplib.CATEGORY_INFO and this pane's CATEGORY_TABS entirely (not just
+# undocumented in libschema), so the pane couldn't open them at all.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("category", NEW_CATEGORIES)
+def test_new_category_rows_load_with_documented_header_tooltips(qtbot,
+                                                                 category):
+    mgr = LibraryManager(REPO_ROOT, PRIMITIVES_ROOT)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor(category)
+
+    expected = len(editor.current_lib().registry_rows(category))
+    assert expected > 0, category
+    assert editor.row_count() == expected, category
+
+    for c, col in enumerate(editor._fieldnames):
+        header_item = editor.table.horizontalHeaderItem(c)
+        assert header_item is not None, (category, col)
+        tooltip = header_item.toolTip()
+        assert tooltip.strip(), "no tooltip for %s.%s" % (category, col)
+        assert "no schema entry" not in tooltip, (category, col)
+
+
+# (category, row_name, validated_column, bad_value) -- one validated,
+# non-reference column per category with a known-invalid value (enum
+# mismatch or an out-of-range float per its libschema validator).
+NEW_CATEGORY_BAD_CELL = (
+    ("figures", "fig_lambda4_defocus_633", "r_norm_mm", "-5"),
+    ("nonlinear", "linbo3_d", "kind", "not_a_real_kind"),
+    ("scatter", "polished_fused_silica", "model", "not_abg"),
+    ("instruments", "camera_generic", "class", "not_a_real_class"),
+)
+
+
+@pytest.mark.parametrize("category,row_name,column,bad_value",
+                         NEW_CATEGORY_BAD_CELL)
+def test_new_category_known_bad_cell_flags_amber_and_clears(
+        qtbot, tmp_path, category, row_name, column, bad_value):
+    mgr = _tmp_system_manager(tmp_path)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor(category)
+    editor.set_edit_mode(True)
+
+    rows = editor.rows_from_table()
+    idx = next(i for i, r in enumerate(rows) if r["name"] == row_name)
+    col = editor._fieldnames.index(column)
+    item = editor.table.item(idx, col)
+    good_value = item.text()
+
+    item.setText(bad_value)
+    assert item.background().color() == INVALID_CELL_COLOR, \
+        "%s.%s=%r should have been flagged" % (category, column, bad_value)
+
+    item.setText(good_value)
+    assert item.background().color() != INVALID_CELL_COLOR
+
+
+@pytest.mark.parametrize("category,row_name", (
+    ("biaxial", "ktp"),
+    ("figures", "fig_lambda4_defocus_633"),
+    ("nonlinear", "linbo3_d"),
+    ("scatter", "polished_fused_silica"),
+    ("instruments", "camera_generic"),
+))
+def test_new_category_edit_commit_round_trips(qtbot, tmp_path, category,
+                                               row_name):
+    mgr = _tmp_system_manager(tmp_path)
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor(category)
+    editor.set_edit_mode(True)
+
+    rows = editor.rows_from_table()
+    idx = next(i for i, r in enumerate(rows) if r["name"] == row_name)
+    col = editor._fieldnames.index("notes")
+    editor.table.item(idx, col).setText("edited by test")
+
+    assert editor.commit() is True
+
+    reloaded = mgr.system_lib.registry_rows(category)
+    row = next(r for r in reloaded if r["name"] == row_name)
+    assert row["notes"] == "edited by test"
+
+    ok, msg = mgr.system_lib.validate()
+    assert ok, msg
+
+
+def test_nonlinear_commit_preserves_leading_comment_header(qtbot, tmp_path):
+    """nonlinear.mienlo's packing-grammar documentation lives in a leading
+    '#'-comment block ahead of the csv header -- a save through the pane
+    must not silently drop it (core.proplib.CATEGORY_INFO["nonlinear"]
+    ["comment_prefix"] + prop_editor._atomic_write_registry's re-prepend)."""
+    mgr = _tmp_system_manager(tmp_path)
+    path = mgr.system_lib.registry_path("nonlinear")
+    original_header_lines = [
+        line for line in path.read_text().splitlines(keepends=True)
+        if line.lstrip().startswith("#")]
+    assert original_header_lines   # sanity: the fixture really has comments
+
+    pane = PropEditorPane(mgr)
+    qtbot.addWidget(pane)
+    editor = pane.editor("nonlinear")
+    editor.set_edit_mode(True)
+    rows = editor.rows_from_table()
+    idx = next(i for i, r in enumerate(rows) if r["name"] == "linbo3_d")
+    col = editor._fieldnames.index("notes")
+    editor.table.item(idx, col).setText("comment-preservation check")
+
+    assert editor.commit() is True
+
+    after_lines = path.read_text().splitlines(keepends=True)
+    assert after_lines[:len(original_header_lines)] == original_header_lines
+    # the rewritten header immediately follows the preserved comment block
+    assert after_lines[len(original_header_lines)].startswith("kind,name,")
 
 
 def test_validation_advisory_never_blocks_editing_or_row_gather(qtbot, tmp_path):
