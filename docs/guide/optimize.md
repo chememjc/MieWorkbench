@@ -109,5 +109,7 @@ cfg}`). It travels with the `.FCStd` (`miewb_tool` packs it verbatim into
 `config()` → `apply_config()` → `config()` round-trips exactly.
 
 ![Optimize pane](img/optimize-1.png)
-*(screenshot deferred: needs a completed `optimize.py` run for a
-non-empty convergence plot — see the capture tool's manifest.)*
+*(`camera_triplet`'s shipped config, after the same budget-3 smoke
+optimize `scripts/run_demo_equivalence.py`'s gate runs — see
+[demo-gallery.md](demo-gallery.md) and
+[walkthroughs/camera-triplet.md](walkthroughs/camera-triplet.md).)*

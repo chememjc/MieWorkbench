@@ -24,8 +24,7 @@ callable -> the widget to grab, deferred flag + reason). This list IS the
 "machine-readable manifest of needed shots" the task brief asks for --
 run with --manifest to dump it as JSON without capturing anything.
 
-Two fixture prerequisites, both derived from basemodels/ (never demos/ --
-that tree is being rewritten by another round in parallel):
+Fixture prerequisites:
   * SCENE = basemodels/example-lenspos0.FCStd -- a real multi-element
     scene (2 sources, 1 lens with a coating, 3 detectors) good for most
     static panes.
@@ -35,23 +34,40 @@ that tree is being rewritten by another round in parallel):
         python3 scripts/run_pipeline.py --models basemodels/example-lenspos0.FCStd \
             --preset quick --export-rays --smoke --tag docsshot
     (results/ is gitignored; shots needing it degrade to deferred if it's
-    absent instead of running the pipeline inline -- this tool captures
-    screenshots, it does not orchestrate simulations).
+    absent instead of running the pipeline inline).
+  * demos/camera_triplet.FCStd (Phase B: demos/ is no longer being
+    rewritten, safe to load) -- ships pre-populated Optimize/Tolerance
+    configs (Project.set_optimize_config/set_tolerance_config, see
+    demos/README.md's "Optimization & tolerancing" section). The
+    optimize-1/tolerance-1 shots run the SAME budget-3 / trimmed-row
+    smoke studies scripts/run_demo_equivalence.py's gate uses (real
+    optimize.py/tolerance.py subprocesses, a few seconds to ~a minute),
+    then feed the real report.json history/sensitivity into the panes'
+    live plots through their public on_started/on_progress/on_finished
+    API -- the exact calls RunController would make from real subprocess
+    stdout, just driven directly instead of through QProcess plumbing.
 
 Qt offscreen grab caveat: VtkSceneView does real OpenGL work only in
 Initialize()/Render(), which is safe to construct but may rasterize to a
-solid/black frame under the "offscreen" platform plugin (no real GPU
-context). Each grabbed frame is checked for near-uniform (mostly-black)
-content (`looks_blank`); a shot that comes back blank is recorded
-"black-vtk" in the manifest and its PNG is NOT written (per the task
-brief: don't fight VTK offscreen rendering -- note it and move on). The
-committed demos/gallery/*.png (ParaView-rendered) are the fallback source
-of real viewport imagery for anything that needs one.
+solid/uniform frame under the "offscreen" platform plugin (no real GPU
+context). Each grabbed frame is checked for near-uniform content
+(`looks_blank`); a shot that comes back blank is recorded "black-vtk" in
+the manifest and its PNG is NOT written. viewport-3d-1 instead copies the
+FIXTURE_CASE run's real ParaView-rendered viz/overview3d.png (checked:
+demos/gallery/*.png are all detector-plane irradiance renders, the wrong
+content for a 3D-viewport page) rather than fighting VTK offscreen.
 """
 import argparse
+import html
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import zipfile
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -59,6 +75,8 @@ REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "..", ".."))
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "scripts"))
+
+import common  # noqa: E402  (stdlib-only shared contract hub; OPTICS_PYTHON)
 
 from PySide6.QtCore import QSize  # noqa: E402
 from PySide6.QtGui import QImage  # noqa: E402
@@ -77,6 +95,98 @@ WINDOW_SIZE = QSize(1600, 1000)
 # docstring's "Body Lens {'coating': 'MgF2', ...}" fcclient probe) -- used
 # by the element-editor shot to show a populated Active Properties row
 COATED_BODY = "Body"
+
+# Phase B: demos/ is no longer being rebuilt -- optimize-1/tolerance-1 use
+# the camera_triplet showcase demo (see scripts/run_demo_equivalence.py's
+# SHOWCASE/SMOKE_TOL_ROWS/SMOKE_BUDGET/SMOKE_RAYS, mirrored below so the
+# screenshot matches exactly what the gate itself smoke-runs).
+DEMOS_DIR = os.path.join(REPO, "demos")
+OPT_DEMO = os.path.join(DEMOS_DIR, "camera_triplet.FCStd")
+OPT_DEMO_TOL_ROWS = ["train.L1.decenter_x", "train.L2.decenter_x",
+                     "train.L3.decenter_x"]
+SMOKE_BUDGET = 3
+SMOKE_RAYS = 30000
+# viewport-3d-1: demos/gallery/*.png turned out to all be DETECTOR-PLANE
+# renders (irradiance maps), not 3D scene/geometry renders -- wrong
+# content for a "3D viewport" page despite being real ParaView output.
+# The FIXTURE_CASE run (--smoke enables exactly one make_viz.py view,
+# 'overview3d') already produces the right kind of image: a real
+# ParaView-rendered 3D ray/geometry overview, same pipeline the GUI's
+# "Open in ParaView" / make_viz.py path uses -- just not captured through
+# the live (offscreen-blank) VTK widget. Used verbatim, in place of the
+# demos/gallery detector plots.
+VIEWPORT_RENDER_SOURCE = os.path.join(FIXTURE_CASE, "viz", "overview3d.png")
+
+
+# ---------------------------------------------------------------------------
+# demo config extraction + smoke optimize/tolerance (mirrors
+# run_demo_equivalence.py's _read_configs/_run_study/smoke_optimize/
+# smoke_tolerance, trimmed to what a screenshot needs)
+# ---------------------------------------------------------------------------
+def _read_demo_configs(fcstd_path):
+    xml = zipfile.ZipFile(str(fcstd_path)).read(
+        "Document.xml").decode("utf8", "replace")
+    out = {"optimize": None, "tolerance": None}
+    for prop, key in (("miewb_optimize_config", "optimize"),
+                      ("miewb_tolerance_config", "tolerance")):
+        m = re.search(r'name="%s".*?<String value="([^"]*)"' % re.escape(prop),
+                      xml, re.S)
+        if not m:
+            continue
+        try:
+            payload = json.loads(html.unescape(m.group(1)))
+            out[key] = payload.get(key)
+        except Exception:
+            out[key] = None
+    return out["optimize"], out["tolerance"]
+
+
+def _run_study(script, cfg, model, out_dir, extra):
+    cfg_path = out_dir.parent / (out_dir.name + ".config.json")
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    with open(cfg_path, "w") as fh:
+        json.dump(cfg, fh)
+    cmd = [common.OPTICS_PYTHON, os.path.join(REPO, "scripts", script),
+           "--model", str(model), "--config", str(cfg_path),
+           "--out", str(out_dir)] + extra
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    report_path = out_dir / "report.json"
+    data = None
+    if report_path.exists():
+        try:
+            with open(report_path) as fh:
+                data = json.load(fh)
+        except Exception:
+            data = None
+    return proc.returncode, data, proc.stderr
+
+
+def _smoke_optimize_report(fcstd_path, workdir):
+    opt, _ = _read_demo_configs(fcstd_path)
+    if not opt:
+        return None
+    extra = ["--budget", str(SMOKE_BUDGET), "--no-final-coherent"]
+    if opt.get("eval_backend") == "worker":
+        extra += ["--rays", str(SMOKE_RAYS)]
+    _, data, _ = _run_study("optimize.py", opt, fcstd_path,
+                            Path(workdir) / "opt_camera_triplet", extra)
+    return data
+
+
+def _smoke_tolerance_report(fcstd_path, workdir):
+    _, tol = _read_demo_configs(fcstd_path)
+    if not tol:
+        return None
+    shipped = {r.split(":")[0]: r for r in tol.get("tolerance", [])}
+    rows = [shipped[a] for a in OPT_DEMO_TOL_ROWS if a in shipped]
+    if not rows:
+        return None
+    cfg = dict(tol, tolerance=rows, operand=tol.get("operand") or ["spot_rms:0:1"],
+              eval_backend="worker")
+    _, data, _ = _run_study(
+        "tolerance.py", cfg, fcstd_path, Path(workdir) / "tol_camera_triplet",
+        ["--draws", "0", "--rays", str(SMOKE_RAYS)])
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -117,16 +227,6 @@ def _select(window, label_or_name):
                     break
     window.selection.select(name, ())
     QApplication.processEvents()
-
-
-def shot_viewport_3d(window):
-    window.central_tabs.setCurrentWidget(window.scene3d)
-    window.scene3d.view.fit_camera()
-    QApplication.processEvents()
-    # capture the whole pane (toolbar + view) but blank-check only the
-    # inner VTK widget -- the toolbar's own chrome is never blank, which
-    # would otherwise mask a genuinely blank (offscreen-GL) render below it
-    return window.scene3d, window.scene3d.view
 
 
 def shot_element_editor(window):
@@ -213,21 +313,109 @@ def shot_animation(window):
     return window.findChild(QToolBar, "animation_toolbar")
 
 
+def shot_optimize(window):
+    """Loads the camera_triplet showcase demo (its shipped optimize
+    config auto-populates the pane's variable/operand tables on load,
+    see mainwindow._load_pane_configs), runs the SAME budget-3 smoke
+    optimize the equivalence gate uses, and feeds the real per-eval
+    history into the live convergence plot through the pane's public
+    progress API -- not a fabricated series."""
+    if not os.path.isfile(OPT_DEMO):
+        return None
+    window.open_model(OPT_DEMO)
+    QApplication.processEvents()
+    with tempfile.TemporaryDirectory(prefix="docsshot_opt_") as workdir:
+        report = _smoke_optimize_report(OPT_DEMO, workdir)
+    if not report or not report.get("history"):
+        return None
+    window.central_tabs.setCurrentWidget(window.optimize_pane)
+    window.optimize_pane.on_started()
+    for h in report["history"]:
+        if h.get("merit") is None:
+            continue
+        window.optimize_pane.on_progress({
+            "stage": "optimize", "eval": h["eval"], "budget": report.get("budget"),
+            "merit": h["merit"], "best": h.get("best_merit"),
+            "best_params": h.get("params") if h.get("best_merit") == h.get("merit")
+            else None,
+        })
+    window.optimize_pane.on_finished(0)
+    QApplication.processEvents()
+    return window.optimize_pane
+
+
+def shot_tolerance(window):
+    """Same idea as shot_optimize: real camera_triplet tolerance
+    sensitivity data (the gate's trimmed 3-row smoke subset) fed into the
+    live sensitivity bar chart via the pane's public progress API."""
+    if not os.path.isfile(OPT_DEMO):
+        return None
+    if window.model_path != OPT_DEMO:
+        window.open_model(OPT_DEMO)
+        QApplication.processEvents()
+    with tempfile.TemporaryDirectory(prefix="docsshot_tol_") as workdir:
+        report = _smoke_tolerance_report(OPT_DEMO, workdir)
+    if not report or not report.get("sensitivity"):
+        return None
+    window.central_tabs.setCurrentWidget(window.tolerance_pane)
+    window.tolerance_pane.on_started()
+    window.tolerance_pane.on_progress({
+        "stage": "tolerance", "phase": "sensitivity_done",
+        "sensitivity": report["sensitivity"],
+    })
+    window.tolerance_pane.on_progress({
+        "stage": "tolerance", "status": report.get("status", "completed"),
+        "n_evals": report.get("n_evals"),
+    })
+    window.tolerance_pane.on_finished(0)
+    QApplication.processEvents()
+    return window.tolerance_pane
+
+
+# other showcase demos: a fast, no-run shot of the pane as it looks right
+# after opening -- just the shipped config auto-populating the tables (see
+# mainwindow._load_pane_configs), no optimize.py/tolerance.py subprocess.
+# "no run needed if the plot stays empty" per the walkthrough-shots brief;
+# camera_triplet is the one page with a real run behind its plot/chart
+# (shot_optimize/shot_tolerance above), reused across all four walkthroughs
+# as the worked example.
+OTHER_SHOWCASE_DEMOS = ["schmidt_cassegrain", "double_gauss",
+                        "fiber_coupling_doublet"]
+
+
+def _make_configured_pane_shot(demo_stem, pane_attr):
+    def _shot(window):
+        fcstd = os.path.join(DEMOS_DIR, demo_stem + ".FCStd")
+        if not os.path.isfile(fcstd):
+            return None
+        window.open_model(fcstd)
+        QApplication.processEvents()
+        pane = getattr(window, pane_attr)
+        window.central_tabs.setCurrentWidget(pane)
+        QApplication.processEvents()
+        return pane
+    return _shot
+
+
 # ---------------------------------------------------------------------------
 # the shot list / manifest
 # ---------------------------------------------------------------------------
 class Shot:
-    def __init__(self, name, setup, needs_scene=True, deferred=False,
-                reason=""):
+    def __init__(self, name, setup=None, needs_scene=True, deferred=False,
+                reason="", copy_from=None):
         self.name = name
         self.setup = setup
         self.needs_scene = needs_scene
         self.deferred = deferred
         self.reason = reason
+        self.copy_from = copy_from   # verbatim-file-copy shot (no widget grab)
 
 
 SHOT_LIST = [
-    Shot("viewport-3d-1", shot_viewport_3d),
+    # viewport-3d-1: VTK offscreen grabs come back a uniform flat color
+    # (no real GL context under the "offscreen" platform plugin) -- use a
+    # real ParaView-rendered 3D overview PNG instead of fighting it.
+    Shot("viewport-3d-1", copy_from=VIEWPORT_RENDER_SOURCE),
     Shot("element-editor-1", shot_element_editor),
     Shot("train-editor-1", shot_train_editor),
     Shot("variables-1", shot_variables),
@@ -238,14 +426,12 @@ SHOT_LIST = [
     Shot("results-1", shot_results_power),
     Shot("results-2", shot_results_analysis),
     Shot("animation-1", shot_animation),
-    Shot("optimize-1", None, deferred=True,
-        reason="needs a completed optimize.py run for a non-empty "
-               "convergence plot -- capture against a demo run in "
-               "Phase B"),
-    Shot("tolerance-1", None, deferred=True,
-        reason="needs a completed tolerance.py run for non-empty "
-               "sensitivity/yield plots -- capture against a demo run "
-               "in Phase B"),
+    Shot("optimize-1", shot_optimize, needs_scene=False),
+    Shot("tolerance-1", shot_tolerance, needs_scene=False),
+] + [
+    Shot("walkthrough-%s-optimize-1" % stem.replace("_", "-"),
+        _make_configured_pane_shot(stem, "optimize_pane"), needs_scene=False)
+    for stem in OTHER_SHOWCASE_DEMOS
 ]
 
 
@@ -273,6 +459,19 @@ def run(only=None, scene_root=SCENE_ROOT_DEFAULT, out_dir=IMG_DIR):
             if only and shot.name not in only:
                 continue
             entry = {"name": shot.name}
+            if shot.copy_from is not None:
+                if os.path.isfile(shot.copy_from):
+                    out_path = os.path.join(out_dir, shot.name + ".png")
+                    shutil.copyfile(shot.copy_from, out_path)
+                    entry["status"] = "captured"
+                    entry["path"] = os.path.relpath(out_path, REPO)
+                    entry["source"] = os.path.relpath(shot.copy_from, REPO)
+                else:
+                    entry["status"] = "deferred"
+                    entry["reason"] = "source file not found: %s" % \
+                        shot.copy_from
+                results.append(entry)
+                continue
             if shot.deferred or shot.setup is None:
                 entry["status"] = "deferred"
                 entry["reason"] = shot.reason or "no setup callable"

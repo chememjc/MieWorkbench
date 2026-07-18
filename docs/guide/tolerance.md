@@ -98,5 +98,7 @@ re-populates the pane on reopen via `apply_config()`. Round-trips exactly
 (`config()` → `apply_config()` → `config()`).
 
 ![Tolerance pane](img/tolerance-1.png)
-*(screenshot deferred: needs a completed `tolerance.py` run for non-empty
-sensitivity/yield plots — see the capture tool's manifest.)*
+*(`camera_triplet`'s shipped tolerance table + the gate's trimmed
+3-row sensitivity smoke run — see
+[walkthroughs/camera-triplet.md](walkthroughs/camera-triplet.md) for the
+decenter-ranking caveat this specific system illustrates.)*

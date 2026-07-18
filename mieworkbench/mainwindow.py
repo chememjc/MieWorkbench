@@ -140,6 +140,10 @@ DOCS_GUIDE_PAGES = {
     ],
     "Walkthroughs": [
         ("Walkthroughs (index)", "walkthroughs/README.md"),
+        ("camera_triplet", "walkthroughs/camera-triplet.md"),
+        ("schmidt_cassegrain", "walkthroughs/schmidt-cassegrain.md"),
+        ("double_gauss", "walkthroughs/double-gauss.md"),
+        ("fiber_coupling_doublet", "walkthroughs/fiber-coupling-doublet.md"),
     ],
 }
 

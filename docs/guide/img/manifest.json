@@ -1,8 +1,9 @@
 [
   {
     "name": "viewport-3d-1",
-    "status": "black-vtk",
-    "reason": "grab() rendered a single flat color (offscreen VTK/GL limitation)"
+    "status": "captured",
+    "path": "docs/guide/img/viewport-3d-1.png",
+    "source": "results/example-lenspos0/quick-docsshot/viz/overview3d.png"
   },
   {
     "name": "element-editor-1",
@@ -56,12 +57,27 @@
   },
   {
     "name": "optimize-1",
-    "status": "deferred",
-    "reason": "needs a completed optimize.py run for a non-empty convergence plot -- capture against a demo run in Phase B"
+    "status": "captured",
+    "path": "docs/guide/img/optimize-1.png"
   },
   {
     "name": "tolerance-1",
-    "status": "deferred",
-    "reason": "needs a completed tolerance.py run for non-empty sensitivity/yield plots -- capture against a demo run in Phase B"
+    "status": "captured",
+    "path": "docs/guide/img/tolerance-1.png"
+  },
+  {
+    "name": "walkthrough-schmidt-cassegrain-optimize-1",
+    "status": "captured",
+    "path": "docs/guide/img/walkthrough-schmidt-cassegrain-optimize-1.png"
+  },
+  {
+    "name": "walkthrough-double-gauss-optimize-1",
+    "status": "captured",
+    "path": "docs/guide/img/walkthrough-double-gauss-optimize-1.png"
+  },
+  {
+    "name": "walkthrough-fiber-coupling-doublet-optimize-1",
+    "status": "captured",
+    "path": "docs/guide/img/walkthrough-fiber-coupling-doublet-optimize-1.png"
   }
 ]

@@ -8,8 +8,7 @@ the top-level [`README.md`](../../README.md). Reachable in-app from
 
 Screenshots live in `img/`; a page missing one either has none needed or
 the shot is deferred (see `scripts/tools/capture_docs_screenshots.py`'s
-shot list — entries with `deferred=True` await Phase B, the demo-gallery
-walkthroughs).
+shot list and `img/manifest.json` for current status).
 
 ## GUI
 
@@ -40,10 +39,18 @@ walkthroughs).
 | [file-formats.md](file-formats.md) | `.MieWB` / `.MieSim` / `.FCStd`, `miewb_tool.py`, `sniff()` |
 | [headless-remote.md](headless-remote.md) | Running the pipeline/tool without the GUI, locking, testing |
 | [authoring.md](authoring.md) | Pointer page: new primitives / new property entries |
-| [demo-gallery.md](demo-gallery.md) | Skeleton — the showcase demos (`demos/README.md`); walkthroughs land in Phase B |
+| [demo-gallery.md](demo-gallery.md) | The 38-demo gallery overview + the every-demo-ships-configured Optimize/Tolerance story |
 
 ## Walkthroughs
 
-`walkthroughs/` is reserved for Phase B (after the current demo rebuild):
-one page per showcase demo, each pairing a rendered gallery image with the
-GUI steps that reproduce it. See [walkthroughs/README.md](walkthroughs/README.md).
+One page per optimize/tolerance showcase demo — load, what the
+pre-configured panes show, run a short optimize, run tolerance
+sensitivity, interpret the result. Index + table:
+[walkthroughs/README.md](walkthroughs/README.md).
+
+| Page | System |
+|---|---|
+| [walkthroughs/camera-triplet.md](walkthroughs/camera-triplet.md) | Cooke triplet — `spot_rms`, MC-unstable decenter ranking (honest caveat) |
+| [walkthroughs/schmidt-cassegrain.md](walkthroughs/schmidt-cassegrain.md) | C8 catadioptric — `spot_rms`, secondary despace magnification |
+| [walkthroughs/double-gauss.md](walkthroughs/double-gauss.md) | Symmetric double-Gauss — `spot_rms`, symmetry-breaking decenters |
+| [walkthroughs/fiber-coupling-doublet.md](walkthroughs/fiber-coupling-doublet.md) | Achromat → fiber — `detected_power`, decenter vs. despace |

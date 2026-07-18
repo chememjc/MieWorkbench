@@ -68,7 +68,8 @@ actor.
   notes.
 
 ![3D viewport](img/viewport-3d-1.png)
-*(screenshot pending: VTK's offscreen render came back blank under Qt's
-`offscreen` platform plugin — see the capture tool's `looks_blank` check
-and its module docstring. `demos/gallery/*.png` has ParaView-rendered
-viewport imagery in the meantime.)*
+*(a ParaView `overview3d` render of a traced scene — the GUI's own
+[Results](results.md) "Open in ParaView" path uses the same renderer;
+the live VTK widget itself grabs blank under Qt's offscreen platform
+plugin, so screenshots of this pane are captured this way rather than
+via a direct widget grab — see the capture tool's module docstring.)*
