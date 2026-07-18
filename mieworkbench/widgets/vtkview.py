@@ -254,10 +254,14 @@ class BeadLayer:
     """Tracer-bead glyphs (owned by VtkSceneView, driven per frame by
     core/beadanim.AnimationController): one sphere per active ray
     segment, positioned by the animation clock, colored by the segment's
-    wavelength rgb. Always fully opaque (ForceOpaque) -- attenuation
-    dimming applies to the ray LINES, never to the beads, so a bead stays
-    findable even on a nearly-faded ray. Construction is GPU-free
-    (offscreen-safe, same rationale as FaceIndicatorLayer)."""
+    wavelength rgb. Opaque by default (ForceOpaque) -- attenuation dimming
+    applies to the ray LINES, never to the beads, so a bead stays findable
+    even on a nearly-faded ray. The opt-in "power" bead-opacity mode
+    passes a per-bead alpha to update_beads: the scalar array becomes a
+    4-component RGBA uchar (DirectScalars routes the 4th component to the
+    translucent pass) and ForceOpaque is lifted for that actor; alpha=None
+    restores the opaque default. Construction is GPU-free (offscreen-safe,
+    same rationale as FaceIndicatorLayer)."""
 
     def __init__(self, renderer):
         self.renderer = renderer
@@ -291,16 +295,34 @@ class BeadLayer:
         self.actor.SetVisibility(False)       # off until animation enabled
         self.renderer.AddActor(self.actor)
 
-    def update_beads(self, points_m, rgb):
-        """points_m (M,3) float metres; rgb (M,3) uint8."""
+    def update_beads(self, points_m, rgb, alpha=None):
+        """points_m (M,3) float metres; rgb (M,3) uint8. `alpha` (M,) float
+        in [0,1] switches the beads to a 4-component RGBA scalar (opt-in
+        "power" opacity mode); alpha=None keeps the opaque 3-component path
+        bit-identical to the default."""
+        from vtkmodules.util.numpy_support import numpy_to_vtk
+        pts = np.asarray(points_m, dtype=float).reshape(-1, 3)
+        rgb = np.asarray(rgb, dtype=np.uint8).reshape(-1, 3)
         self._points.Reset()
-        self._rgb.Reset()
-        for i in range(len(points_m)):
-            self._points.InsertNextPoint(*(float(c) for c in points_m[i]))
-            self._rgb.InsertNextTuple3(int(rgb[i][0]), int(rgb[i][1]),
-                                       int(rgb[i][2]))
+        for i in range(len(pts)):
+            self._points.InsertNextPoint(*(float(c) for c in pts[i]))
         self._points.Modified()
-        self._rgb.Modified()
+
+        if alpha is None:
+            scalars = np.ascontiguousarray(rgb)
+            self.actor.GetProperty().SetOpacity(1.0)
+            self.actor.ForceOpaqueOn()
+        else:
+            a = np.clip(np.round(255.0 * np.asarray(alpha, dtype=float)),
+                        0, 255).astype(np.uint8)
+            rgba = np.empty((len(rgb), 4), dtype=np.uint8)
+            rgba[:, :3] = rgb
+            rgba[:, 3] = a
+            scalars = np.ascontiguousarray(rgba)
+            self.actor.ForceOpaqueOff()
+        self._rgb = numpy_to_vtk(scalars, deep=1)   # keep a ref alive
+        self._rgb.SetName("rgb")
+        self._poly.GetPointData().SetScalars(self._rgb)
         self._poly.Modified()
 
     def set_radius_m(self, radius_m):
