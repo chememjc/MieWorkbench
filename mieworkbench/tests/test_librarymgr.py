@@ -286,6 +286,96 @@ def test_promote_to_system_no_such_project_row_raises(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# the five categories added alongside libschema.py's COLUMN_SCHEMA
+# (birefringence/biaxial, figure, nonlinear, scatter, instrument) --
+# CATEGORY_INFO drives ensure_project_item/promote_to_system generically, so
+# these exercise that it really is automatic once the entries exist (no
+# category-specific code needed in either path).
+# ---------------------------------------------------------------------------
+def test_ensure_project_item_copies_a_file_free_new_category_row(tmp_path):
+    # figures/figures.miefig rows are self-contained (packed Zernike coeffs,
+    # no separate table/nk file) -- CATEGORY_INFO["figures"]["file_dir"] is
+    # None, so only the registry row itself should be copied.
+    mgr = _manager(tmp_path)
+    written = mgr.ensure_project_item("figures", "fig_lambda4_defocus_633")
+
+    proj_registry = mgr.project_lib.registry_path("figures")
+    assert proj_registry.exists()
+    assert written == [proj_registry]
+
+    rows = mgr.project_lib.registry_rows("figures")
+    assert len(rows) == 1
+    assert rows[0]["name"] == "fig_lambda4_defocus_633"
+    assert rows[0]["reference"].strip()
+
+
+def test_ensure_project_item_copies_an_instrument_and_its_qe_table(tmp_path):
+    # instruments IS file-backed (qe_table/responsivity_table/
+    # detector_qe_table) -- camera_generic's qe_table should come along.
+    mgr = _manager(tmp_path)
+    written = mgr.ensure_project_item("instruments", "camera_generic")
+
+    proj_table = mgr.project_lib.root / "instrument" / "tables" \
+        / "camera_generic_qe.mietab"
+    assert proj_table.exists()
+    assert proj_table in written
+
+
+def test_promote_to_system_new_category_figures(tmp_path):
+    mgr = _system_copy_manager(tmp_path)
+    mgr.ensure_project_item("figures", "fig_lambda4_defocus_633")
+
+    rows = [r for r in mgr.system_lib.registry_rows("figures")
+           if r["name"] != "fig_lambda4_defocus_633"]
+    fieldnames = mgr.system_lib.registry_fieldnames("figures")
+    path = mgr.system_lib.registry_path("figures")
+    with open(path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    mgr.system_lib.reload()
+
+    written = mgr.promote_to_system("figures", "fig_lambda4_defocus_633")
+    assert not isinstance(written, dict)
+    ok, msg = mgr.system_lib.validate()
+    assert ok, msg
+    assert "fig_lambda4_defocus_633" in mgr.system_lib.categories()["figures"]
+
+
+def test_promote_to_system_nonlinear_preserves_comment_header(tmp_path):
+    """promote_to_system's full-registry rewrite (_write_registry_rows)
+    must not drop nonlinear.mienlo's leading '#' packing-grammar comment
+    block, same contract as prop_editor's save path."""
+    mgr = _system_copy_manager(tmp_path)
+    sys_path = mgr.system_lib.registry_path("nonlinear")
+    header_before = [line for line in sys_path.read_text().splitlines(
+        keepends=True) if line.lstrip().startswith("#")]
+    assert header_before
+
+    mgr.ensure_project_item("nonlinear", "linbo3_d")
+    rows = mgr.project_lib.registry_rows("nonlinear")
+    for r in rows:
+        if r["name"] == "linbo3_d":
+            r["notes"] = r["notes"] + " (edited in project)"
+    fieldnames = mgr.system_lib.registry_fieldnames("nonlinear")
+    with open(mgr.project_lib.registry_path("nonlinear"), "w",
+             newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    written = mgr.promote_to_system("nonlinear", "linbo3_d", force=True)
+    assert not isinstance(written, dict)
+    ok, msg = mgr.system_lib.validate()
+    assert ok, msg
+
+    after_text = sys_path.read_text()
+    header_after = after_text.splitlines(keepends=True)[:len(header_before)]
+    assert header_after == header_before
+    assert "(edited in project)" in after_text
+
+
+# ---------------------------------------------------------------------------
 # primitives_list
 # ---------------------------------------------------------------------------
 def test_primitives_list_from_real_tree():

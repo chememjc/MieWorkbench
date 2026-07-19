@@ -93,7 +93,7 @@ env/bin/python -m mieworkbench demos/newtonian.MieWB
 python3 scripts/miewb_tool.py run demos/fiber_coupler.MieWB -o /tmp/out.MieSim
 ```
 
-The **`demos/`** folder ships 34 ready-to-run `.MieWB` scenes (`ls
+The **`demos/`** folder ships 42 ready-to-run `.MieWB` scenes (`ls
 demos/*.MieWB | wc -l`) spanning the classic optical systems — beam
 expander, Newtonian/Dobsonian/Schmidt-Cassegrain telescopes, Cooke
 triplet camera, Lister microscope objective, Michelson interferometer,
@@ -145,6 +145,12 @@ place), a `.MieWB` workbench (exploded into a scratch workspace under
 read-only, or opened via its embedded workbench for editing/rerun — a
 successful rerun replaces the `.MieSim` in place).
 
+> **Per-feature guides with screenshots:** [`docs/guide/`](docs/guide/README.md)
+> has one terse, code-derived reference page per pane (plus system pages
+> for the CLI/file formats/headless use), also reachable in-app from
+> **Help →**. This section of the README stays a narrative tour; the
+> guide is the page-per-feature lookup.
+
 ### 3.0 File menu and toolbar
 
 **File → New** (Ctrl+N) creates a simulation from scratch: choose to start with
@@ -163,25 +169,40 @@ stale rays can no longer bleed into a freshly opened scene.
 
 The **toolbar** is organized in logical groups: **New/Open/Save** | **Undo/Redo** |
 **Add/Copy/Paste/Delete element** | **Run/Stop/Estimate** | **Validate** | **Fit view**
-(plus a **Rays** menu for ray overlay controls). **Undo** (Ctrl+Z) / **Redo**
+(plus a **Rays** menu for ray overlay controls and a **Face Orientation
+Indicators** toggle, §3.1). Checked toolbar toggles (face indicators, ray
+overlay, tracer-bead animation enable, …) all share one visibly distinct
+highlight style — a translucent tint derived from the palette's Highlight
+color, so a checked state reads clearly in both light and dark themes.
+**Undo** (Ctrl+Z) / **Redo**
 (Ctrl+Shift+Z) support up to ~20 levels of history covering property edits, parameter
 edits, element moves, and add/paste/delete operations — undo stashes live in the
 workspace directory.
 
 ### 3.1 Central 3D optical-train viewport (`panes/scene3d.py`)
+*Guide: [viewport-3d.md](docs/guide/viewport-3d.md)*
+
 
 The **"3D View"** tab — the first tab of the central `QTabWidget`
 (`central_tabs`, §3 above), and still the tab that opens by default.
 Shows every body in the scene in one shared 3D view. Toolbar: **Fit**
 (reframe the whole scene), four
-axis-view buttons (**+X/−X/+Y/+Z**), and a **Rays** menu (show/hide the loaded ray
+axis-view buttons (**+X/−X/+Y/+Z**), a **Clear selection** button, and a **Rays** menu (show/hide the loaded ray
 overlay, reload, or launch **Live ray preview…**). This view selects **whole
-elements only**: clicking any face of a body highlights every face of
-that body and routes the selection to the Element Inspector and Element
-Properties panes — building up a multi-face selection is exclusively the
-Element Inspector's job (§3.3), so the two 3D views can't fight over what's
-picked. Clicking a different body always replaces the selection. Standard
-VTK trackball-camera mouse controls (drag to rotate, scroll to zoom).
+elements only**: clicking **any** face of **any** member body of a
+multi-body element highlights every member's faces (not just the body
+that was hit) and routes the selection to the Element Inspector and
+Element Properties panes — building up a multi-face selection is
+exclusively the Element Inspector's job (§3.3), so the two 3D views can't
+fight over what's picked. Sub-selecting one member body of a multi-body
+element is done elsewhere — an outliner child row, or the Inspector/
+Element Properties member list (§3.2–3.4) — never by clicking here.
+Clicking a different body always replaces the selection; **Clear
+selection** (the toolbar button, **Esc**, or **Edit → Clear Selection**)
+deselects everything, and selection-dependent actions (Copy, Delete, the
+Transform panel's operations) disable automatically when nothing is
+selected. Standard VTK trackball-camera mouse controls (drag to rotate,
+scroll to zoom).
 
 An adaptive **scale bar** (2D overlay) appears in the lower-left corner: 1-2-5-snapped
 to 20–30% of viewport width, labeled in mm and switching to µm below 2.5 mm,
@@ -206,7 +227,11 @@ and scenes with no detector yet, where preview_rays injects a synthetic transpar
 far-field detector behind the scenes so the trace can still run. Simply **checking the
 Rays toggle** with nothing currently shown does something useful too: it loads the last
 run's `viz/rays.vtp` if a finished case is open, and otherwise offers the live preview
-directly.
+directly. The preview pattern itself — **Fan** (rays per source) or
+**Rings** (spacing/rays-per-ring/ring count) — is configured on the
+**Ray Preview** tab of **Simulation → Simulation Settings…**, persists
+per document, and falls back to this install's last-used pattern, then a
+5-ray fan.
 
 Both preview and rendered rays are **colored by wavelength** (each segment
 carries a CIE-derived RGB from its source λ), so chromatic dispersion and
@@ -236,18 +261,22 @@ down in denser media — and spawns a child bead at a reflection/
 transmission split at the instant the parent bead reaches it. A dedicated
 Animation toolbar carries the enable toggle, Play/Pause/Stop/Step
 transport, a Bead size (mm) spinbox, a Speed (mm/s, default 2 mm/s of
-vacuum-equivalent path per real second) spinbox, and an FPS combo
-(5/10/15/24/30, default 15); a live readout shows `t = <auto-scaled
-fs/ps/ns/µs/ms>` and the corresponding vacuum-equivalent path in mm. Play
-loops at the latest ray's arrival time until Stop, which rewinds every
-bead to the sources; Step advances exactly one frame. Beads are colored
-by each ray's wavelength and stay fully opaque regardless of Ray
-Dimming — extinction never fades the beads themselves. Because viz
-segments carry no ray id, `anim_ray_cap` (default 300) bounds how many
-beads are drawn at once per source — a render cap, not a trace cap.
-Works against whatever overlay is loaded (live preview or a finished
-run); rays.npy files predating the opl columns disable the animation
-with a status-bar hint instead of erroring. The tabbed File ▸
+vacuum-equivalent path per real second) spinbox, an FPS combo
+(5/10/15/24/30, default 15), and a **Cap** spinbox (max animated rays per
+source, default 300 — since viz segments carry no ray id, this is a
+render cap, not a trace cap; in **By power** opacity mode it keeps the
+brightest + leading-wavefront beads per source rather than the first N);
+a live readout shows `t = <auto-scaled fs/ps/ns/µs/ms>` and the
+corresponding vacuum-equivalent path in mm. Play loops at the latest
+ray's arrival time until Stop, which rewinds every bead to the sources;
+Step advances exactly one frame. Beads are colored by each ray's
+wavelength and stay fully opaque regardless of Ray Dimming — extinction
+never fades the beads themselves. Enabling animation is **self-sufficient**:
+if there's nothing to animate yet (no overlay, or a stale one), it
+generates a fresh ray preview automatically and parks the beads paused
+at t = 0 the instant it lands — including on on-axis (sequential/
+Optiland) systems, whose preview path now carries the same per-segment
+optical-path timing data as a full run. The tabbed File ▸
 Settings… dialog's **Defaults** tab edits these same enabled/bead-size/
 speed/fps/cap values and pushes changes live into the open session.
 
@@ -259,8 +288,10 @@ re-traces in the background and replaces the stale overlay. Edits made
 while a preview is running queue exactly one follow-up run; a running
 full pipeline is never competed with.
 
-**Face-orientation indicators** (View ▸ *Face Orientation Indicators*, on
-by default, persisted): purely visual glyphs in both 3D views showing
+**Face-orientation indicators** (View ▸ *Face Orientation Indicators* —
+also a toggle on the main toolbar, sharing the checked-highlight style
+described in §3.0 — on by default, persisted): purely visual glyphs in
+both 3D views showing
 which way each element faces — a **red half-disc** on a source's emission
 face and a detector's recording face (the same closest-to-origin face the
 extractor auto-picks; spherical emitters are skipped), a **green dot** on
@@ -269,17 +300,22 @@ the local +x face of every other traced optic. They are never written to
 the model and never traced.
 
 ### 3.2 Scene Elements outliner (`panes/outliner.py`)
+*Guide: [outliner.md](docs/guide/outliner.md)*
+
 
 Dock **"Scene Elements"** — a tree listing every element in the scene by name,
 role (source/detector/optic/ignored), and primitive kind. Multi-body elements
 (groups tagged `miewb_group`) collapse into one top-level row with member bodies
-as children. **Click** to select an element in the 3D view (synced bidirectionally);
-**double-click** to open the Element Properties editor; **Del** key deletes;
+as children. **Click** the top-level row to select the whole element in the 3D
+view (synced bidirectionally); **click a child row** to explicitly sub-select
+just that one member body; **double-click** to open the Element Properties editor; **Del** key deletes;
 **context menu** offers **Copy**, **Paste** (duplicates the element under a unique label,
 offset in +X to avoid overlap), and **Delete**. Copy/paste/delete each count as
 a single undo step.
 
 ### 3.3 Element Inspector (`panes/inspector3d.py`)
+*Guide: [inspector.md](docs/guide/inspector.md)*
+
 
 Dock **"Element Inspector"** — a single-element 3D view showing only the
 currently selected body, centered and camera-fit. This is the primary
@@ -295,14 +331,21 @@ leaving the 3D view (this pane trades VTK's right-drag zoom for the menu;
 the scroll wheel still zooms). A **Rays** toggle (like the main viewport)
 traces a preview fan through just the inspected element, useful for checking a
 single component's behavior in isolation. Rotating is the standard VTK trackball
-interactor, not a dedicated control.
+interactor, not a dedicated control. When the selection is a multi-body
+element (or nothing at all), the 3D view is replaced by a neutral state —
+an "Element *Name* — *N* bodies" hint over a clickable member list; click
+a member to sub-select and inspect that one body.
 
 ### 3.4 Element Properties (`panes/element_editor.py`)
+*Guide: [element-editor.md](docs/guide/element-editor.md)*
+
 
 Dock **"Element Properties"** — edits the selected body's tagging
 contract, per-face assignments, and parameter-sheet aliases, entirely
-through the in-memory Project (never talking to FreeCAD directly). Three
-sections:
+through the in-memory Project (never talking to FreeCAD directly). A
+multi-body element (or an empty selection) blanks all three sections for
+the same clickable member-list neutral state as the Element Inspector
+(§3.3); a single-body element edits normally. Three sections:
 
 - **Optical properties (Base tags)** — one row per non-internal custom
   property on the body (internal `miewb_*` bookkeeping tags are hidden),
@@ -351,6 +394,8 @@ sections:
   aren't driven by ordinary FreeCAD expressions).
 
 ### 3.5 Position / Orientation (`panes/transform_panel.py`)
+*Guide: [transform.md](docs/guide/transform.md)*
+
 
 Dock **"Position / Orientation"** — translate and rotate the selected
 element with repeatable operations. Reference points resolve *live* at
@@ -393,6 +438,8 @@ the selected element is **anchored** (absolute pose) or **chained** into
 the optical train, with one-click Chain…/Anchor-here conversion.
 
 ### 3.5.1 Optical Train (`panes/train_editor.py`)
+*Guide: [train-editor.md](docs/guide/train-editor.md)*
+
 
 The LDE-style editable view of the scene as an **optical train**: every
 element is either anchored or chained a **vertex-to-vertex distance
@@ -415,6 +462,8 @@ refolding restores bit-exactly. Dotted blue/orange linkage lines in the
 in the current fold state that opens in plain FreeCAD.
 
 ### 3.5.2 Variables (`panes/variables_pane.py`)
+*Guide: [variables.md](docs/guide/variables.md)*
+
 
 The **global variables** table (stored in the model's `miewb_vars`
 spreadsheet, so files stay standalone): name, value (expressions over
@@ -432,6 +481,8 @@ Pipeline launches the **product or zipped** variant grid — always after
 a summary dialog showing the run count and calibrated time estimate.
 
 ### 3.5.3 Compare (`panes/compare_pane.py`)
+*Guide: [compare.md](docs/guide/compare.md)*
+
 
 Populates automatically when a sweep finishes (or via **Add case…** for
 any finished runs, e.g. michelson vs michelson_folded): scalar
@@ -442,6 +493,8 @@ selectable reference variant, and a scrub slider through the sweep.
 Backend: `scripts/compare_sweep.py` under the optics env.
 
 ### 3.6 Library (`panes/library.py`)
+*Guide: [library-browser.md](docs/guide/library-browser.md)*
+
 
 Dock **"Library"**, three tabs:
 
@@ -660,6 +713,8 @@ calibration, honest single-scatter limits) is documented in
 docs/RAYTRACER.md §5.4.1.
 
 ### 3.7 Console, stage chips, progress (bottom dock, `panes/console.py`)
+*Guide: [console-and-problems.md](docs/guide/console-and-problems.md)*
+
 
 One colored pill per pipeline stage (`extract`/`trace`/`post`/`viz`: blue
 = running, green = done/estimated, red = failed, gray = not yet run), an
@@ -671,6 +726,8 @@ notices orange). Internal `@MIEWB {json}` progress lines are consumed to
 drive the chips/progress bar rather than being printed raw.
 
 ### 3.7a Python console (bottom dock, `panes/py_console.py`)
+*Guide: [console-and-problems.md](docs/guide/console-and-problems.md)*
+
 
 Dock **"Python"** (tabbed with the Console at the bottom) — an in-app REPL
 bound to the live session: `project` (the `core.project.Project` object),
@@ -684,6 +741,8 @@ GUI thread (a long statement briefly blocks the UI — there is no separate
 kernel process).
 
 ### 3.7b Optimize (`panes/optimize_pane.py`)
+*Guide: [optimize.md](docs/guide/optimize.md)*
+
 
 The **"Optimize"** central tab (also reachable via **Simulation →
 Optimize…**, which switches to it) — full GUI parity with
@@ -704,9 +763,17 @@ launch/kill `scripts/optimize.py` through `core/optimize_controller.py`
 merit points + a best-so-far line, QtCharts when available else a
 dependency-free QPainter fallback) updates from the same `@MIEWB`
 progress events driving a best-so-far readout, with penalized
-(failed/incomplete) evaluations excluded from axis scaling.
+(failed/incomplete) evaluations excluded from axis scaling and shown as a
+running penalized-count. Points are hoverable (eval/variables/merit/rank
+tooltip) and right-click opens a **Show data…** table with CSV export.
+Once a run finishes with a real (non-penalized) best, **Apply optimum**
+writes the best-found parameters back into the scene — variables-sheet
+cells, dim-sheet cells + rebuild, or chained train fields + re-solve, as
+appropriate to each address — as one undoable action.
 
 ### 3.7c Tolerance (`panes/tolerance_pane.py`)
+*Guide: [tolerance.md](docs/guide/tolerance.md)*
+
 
 The **"Tolerance"** central tab (also reachable via **Simulation →
 Tolerance…**) — GUI parity with `scripts/tolerance.py` (§5.15): a
@@ -716,13 +783,17 @@ same **merit-operand table** as Optimize, **draws**/**merit-threshold**/
 **compensator**/**comp-budget**/**sens-delta**/**skip-sensitivity**/
 **hist-bins** fields, and the shared preset/rays/backend fidelity combos.
 **Run**/**Stop** drive `scripts/tolerance.py` through
-`core/tolerance_controller.py`. Two live result views: a **sensitivity
-bar chart** (ranked by impact, fed by the run's `phase="sensitivity_done"`
-progress event) and a **yield histogram** of the Monte-Carlo merit
-distribution (fed incrementally per draw) — both QtCharts-backed with the
-same QPainter fallback as the Optimize pane's convergence plot.
+`core/tolerance_controller.py`. Two live result views, both hoverable
+with a right-click **Show data…** table/CSV export, QtCharts-backed with
+the same QPainter fallback as the Optimize pane's convergence plot: a
+**sensitivity bar chart** (ranked by impact, fed by the run's
+`phase="sensitivity_done"` progress event) and a **Monte-Carlo merit
+distribution** — a frequency polygon plus a cumulative-distribution (CDF)
+curve on a right-hand axis, fed incrementally per draw.
 
 ### 3.8 Results (`panes/results.py`)
+*Guide: [results.md](docs/guide/results.md)*
+
 
 The **"Results"** central tab (`central_tabs`, §3 above — this used to be
 a dock; it is now one of the four central tabs alongside 3D View/Optimize/
@@ -762,6 +833,8 @@ and shows live stage progress in the title bar — this pane never writes anythi
 while monitoring; editing/rerun affordances are the main window's job to disable.
 
 ### 3.9 Problems (`panes/problems.py`)
+*Guide: [console-and-problems.md](docs/guide/console-and-problems.md)*
+
 
 Dock **"Problems"** — pre-run validation, click-to-locate. **Validate
 scene** runs pure Python checks (missing tags, bad registry references,
@@ -773,6 +846,8 @@ a severity icon; double-click selects the offending body in the scene. Errors
 block **Run** (with a blocking dialog); warnings prompt "Run anyway?".
 
 ### 3.10 Run Pipeline dialog — the configuration matrix (`panes/config_matrix.py`)
+*Guide: [run-and-validate.md](docs/guide/run-and-validate.md)*
+
 
 **Simulation → Run Pipeline…** opens a dialog embedding `ConfigMatrix`, a
 form **auto-generated from the real CLI**: it introspects
@@ -811,6 +886,8 @@ validated both here and by `run_pipeline.py` itself), and its output
 feeds the Results pane's Imaging tab (§3.8).
 
 ### 3.11 Estimate Runtime
+*Guide: [run-and-validate.md](docs/guide/run-and-validate.md)*
+
 
 Available from the Simulation menu, the toolbar, and the configuration
 matrix itself. Resolves the current widget values (falling back to the
@@ -820,6 +897,8 @@ gather time, total time, and accumulator memory (GB) — a pure computed
 estimate; nothing is run.
 
 ### 3.12 Dry Run
+*Guide: [run-and-validate.md](docs/guide/run-and-validate.md)*
+
 
 **Simulation → Dry Run** saves and validates the scene as usual, then
 launches the pipeline with `--dry-run` appended: the trace stage builds
@@ -828,6 +907,8 @@ for that model. Useful as a fast end-to-end sanity check of a
 configuration before committing to a real run.
 
 ### 3.13 Export Run Script
+*Guide: [headless-remote.md](docs/guide/headless-remote.md)*
+
 
 **File → Export Run Script…** packs the current model into a `.MieWB`
 (alongside a `.MieSim` sibling name it will produce) and writes a small,
@@ -847,6 +928,8 @@ configured job to a remote/CI machine.
 ---
 
 ## 4. File formats
+*Guide: [file-formats.md](docs/guide/file-formats.md)*
+
 
 ### 4.1 `.FCStd` — the scene
 
@@ -971,6 +1054,8 @@ the three FreeCAD-only scripts, their argparse source — the FreeCAD
 AppImage's `-c` batch mode does not reliably print `--help` output).
 
 ### 5.1 `run_pipeline.py` — the orchestrator (system `python3`)
+*Guide: [pipeline-cli.md](docs/guide/pipeline-cli.md)*
+
 
 ```
 run_pipeline.py --models FCSTD [FCSTD ...] [--preset {quick,normal,detailed}]
@@ -1248,6 +1333,8 @@ them onto every pipeline subprocess it launches):
 | `MIEWB_PROGRESS` | when `1`, stages also print `@MIEWB {json}` progress lines to stdout | unset (progress.json heartbeat is always written regardless) |
 
 ### 5.14 `optimize.py` — merit-function optimizer (optics env python)
+*Guide: [optimize.md](docs/guide/optimize.md)*
+
 
 ```
 optimize.py --model FCSTD --var NAME:START:LO:HI [--var ...] \
@@ -1282,6 +1369,8 @@ final best design; `--config JSON` mirrors the CLI (explicit flags win).
 This is the engine behind the GUI's Optimize pane (§3.7b).
 
 ### 5.15 `tolerance.py` — sensitivity + Monte-Carlo tolerancing (optics env python)
+*Guide: [tolerance.md](docs/guide/tolerance.md)*
+
 
 ```
 tolerance.py --model FCSTD --tolerance NAME:NOMINAL:DIST:BAND [--tolerance ...] \
@@ -1359,6 +1448,8 @@ trace pipeline).
 ---
 
 ## 6. Concurrency and locking
+*Guide: [headless-remote.md](docs/guide/headless-remote.md)*
+
 
 Exactly one writer is allowed per case directory. `run_trace.py` calls
 `common.acquire_case_lock(case_dir)` before tracing, which atomically
@@ -1384,6 +1475,8 @@ second.
 ---
 
 ## 7. Testing
+*Guide: [headless-remote.md](docs/guide/headless-remote.md)*
+
 
 Two independent test suites, run under two different interpreters —
 never cross-import between them:

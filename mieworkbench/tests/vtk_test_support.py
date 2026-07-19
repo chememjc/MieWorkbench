@@ -105,6 +105,73 @@ def make_two_body_scene(tmp_path):
     return structure, faces
 
 
+def make_two_member_group_scene(tmp_path):
+    """A genuine MULTI-body element: an achromat 'achro' with two member
+    bodies (Crown + Flint sharing miewb_group='achro') plus an ungrouped
+    Screen detector -- for the element-vs-sub-selection (WP4) tests."""
+    crown_stl = os.path.join(str(tmp_path), "crown_face1.stl")
+    flint_stl = os.path.join(str(tmp_path), "flint_face1.stl")
+    screen_stl = os.path.join(str(tmp_path), "grp_screen_face1.stl")
+    write_triangle_stl(crown_stl, base=(0.0, 0.0, 0.0), size=0.01)
+    write_triangle_stl(flint_stl, base=(0.0, 0.0, 0.01), size=0.01)
+    write_triangle_stl(screen_stl, base=(0.0, 0.0, 0.0), size=0.02)
+
+    def _body(name, tip, com, mat, group):
+        return {
+            "name": name, "label": name, "tip": tip,
+            "face_count": 1, "solid_closed": True, "volume_mm3": 100.0,
+            "center_of_mass_mm": list(com),
+            "bbox_mm": [com[0] - 5, -5.0, -5.0, com[0] + 5, 5.0, 5.0],
+            "placement": _placement(com),
+            "placement_bound": False, "shape_key": name,
+            "properties": {
+                "material": {"type": "App::PropertyString", "group": "Base",
+                            "value": mat},
+                "miewb_primitive": {"type": "App::PropertyString",
+                                    "group": "Base", "value": "achromat"},
+                "miewb_group": {"type": "App::PropertyString",
+                               "group": "Base", "value": group},
+            },
+        }
+
+    crown = _body("Crown", "Revolution", [0.0, 0.0, 0.0], "BK7", "achro")
+    flint = _body("Flint", "Revolution", [3.0, 0.0, 0.0], "SF2", "achro")
+    screen = {
+        "name": "Screen", "label": "Screen", "tip": "Pad",
+        "face_count": 1, "solid_closed": True, "volume_mm3": 50.0,
+        "center_of_mass_mm": [50.0, 0.0, 0.0],
+        "bbox_mm": [45.0, -10.0, -10.0, 55.0, 10.0, 10.0],
+        "placement": _placement([50.0, 0.0, 0.0]),
+        "placement_bound": False, "shape_key": "scr",
+        "properties": {
+            "material": {"type": "App::PropertyString", "group": "Base",
+                        "value": "detector"},
+        },
+    }
+    structure = {
+        "bodies": [crown, flint, screen],
+        "sheets": [{"name": "dim_achro", "label": "dim_achro", "aliases": {}}],
+    }
+    faces = {
+        "Crown": {"faces": [
+            {"id": "Crown.Revolution.Face1", "stl": crown_stl,
+             "area_m2": 1e-4, "centroid_m": [0.0, 0.0, 0.0],
+             "normal_hint": [0.0, 0.0, 1.0]}],
+            "placement": crown["placement"]},
+        "Flint": {"faces": [
+            {"id": "Flint.Revolution.Face1", "stl": flint_stl,
+             "area_m2": 1e-4, "centroid_m": [0.003, 0.0, 0.0],
+             "normal_hint": [0.0, 0.0, 1.0]}],
+            "placement": flint["placement"]},
+        "Screen": {"faces": [
+            {"id": "Screen.Pad.Face1", "stl": screen_stl,
+             "area_m2": 4e-4, "centroid_m": [0.0, 0.0, 0.0],
+             "normal_hint": [1.0, 0.0, 0.0]}],
+            "placement": screen["placement"]},
+    }
+    return structure, faces
+
+
 def make_lens_two_faces_scene(tmp_path):
     """Lens with TWO faces (for facemap partial-assignment tests, where
     assigning to only one of several faces must NOT collapse to the
@@ -204,6 +271,42 @@ class FakeProject(QObject):
 
     def body_names(self):
         return [b["name"] for b in self.structure.get("bodies", [])]
+
+    # -- element identity (mirrors core.project.Project) --------------------
+    def element_group(self, body_name):
+        b = self.body(body_name)
+        return (b["properties"].get("miewb_group", {}).get("value")
+                or b["label"])
+
+    def element_bodies(self, element):
+        element = str(element)
+        names = [b["name"] for b in self.structure.get("bodies", [])
+                 if b["properties"].get("miewb_group", {}).get("value")
+                 == element]
+        if names:
+            return names
+        b = self.body(element)
+        group = b["properties"].get("miewb_group", {}).get("value")
+        if group:
+            return [x["name"] for x in self.structure.get("bodies", [])
+                    if x["properties"].get("miewb_group", {}).get("value")
+                    == group]
+        return [b["name"]]
+
+    def is_open(self):
+        return True
+
+    def current_placement(self, name):
+        return None
+
+    def resolver(self):
+        class _Resolver:
+            def resolve_point(self, spec):
+                raise ValueError("no resolver in FakeProject")
+
+            def resolve_axis(self, spec):
+                raise ValueError("no resolver in FakeProject")
+        return _Resolver()
 
     def sheets(self):
         return self.structure.get("sheets", [])

@@ -1,0 +1,154 @@
+{
+ "bodies": {
+  "Coupled": {
+   "group": "Coupled",
+   "label": "Coupled",
+   "placement": {
+    "pos_mm": [
+     93.97543039056066,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Doublet_crown": {
+   "group": "Doublet",
+   "label": "Doublet_lens_achromat_crown",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  },
+  "Doublet_flint": {
+   "group": "Doublet",
+   "label": "Doublet_lens_achromat_flint",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_achromat"
+  },
+  "Fiber": {
+   "group": "Fiber",
+   "label": "Fiber_fiber_optic",
+   "placement": {
+    "pos_mm": [
+     33.47543039056066,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "fiber_optic"
+  },
+  "Fiber_clad": {
+   "group": "Fiber",
+   "label": "Fiber_fiber_optic_clad",
+   "placement": {
+    "pos_mm": [
+     33.47543039056066,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "fiber_optic"
+  },
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -6.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  }
+ },
+ "demo": "fiber_coupling_doublet",
+ "sheets": {
+  "dim": {},
+  "dim_Coupled": {
+   "height": "=0 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=2 mm"
+  },
+  "dim_Doublet": {
+   "R_back": "=-38.6982 mm",
+   "R_front": "=18.6 mm",
+   "R_iface": "=-13.1736 mm",
+   "aperture": "=10 mm",
+   "ct_crown": "=3.6 mm",
+   "ct_flint": "=1.8 mm",
+   "gap": "=0.005 mm"
+  },
+  "dim_Fiber": {
+   "clad_diameter": "=0.24 mm",
+   "core_diameter": "=0.2 mm",
+   "gap": "=0.005 mm",
+   "length": "=60 mm"
+  },
+  "dim_Laser": {
+   "diameter": "=6 mm",
+   "length": "=5 mm",
+   "round_flag": "1"
+  },
+  "miewb_vars": {
+   "entry_gap": "6",
+   "entry_gap__max": "12",
+   "entry_gap__min": "2",
+   "entry_gap__n": "6",
+   "entry_gap__on": "0",
+   "work_dist": "28.0704303905607",
+   "work_dist__max": "42.10564559",
+   "work_dist__min": "14.0352152",
+   "work_dist__n": "7",
+   "work_dist__on": "0"
+  }
+ }
+}

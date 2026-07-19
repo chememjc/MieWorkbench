@@ -9,7 +9,9 @@ detector, optic, ignored) / primitive kind (miewb_primitive tag, empty
 for hand-authored bodies).
 
 Signals (the main window owns the actual behavior):
-    selectBodyRequested(str)   click or keyboard move -> select in the app
+    selectElementRequested(str, str)  top-level row -> select the WHOLE
+                                      element (element identity, primary body)
+    selectBodyRequested(str)   child (member) row -> SUB-select that one body
     customizeRequested(str)    double-click -> open the editor/wizard
     deleteRequested(str)       Del key / context menu (element group)
     copyRequested(str)         context menu (element group)
@@ -48,6 +50,7 @@ def role_for_body(body):
 
 
 class OutlinerPane(QWidget):
+    selectElementRequested = Signal(str, str)   # element identity, primary body
     selectBodyRequested = Signal(str)
     customizeRequested = Signal(str)
     deleteRequested = Signal(str)
@@ -222,8 +225,16 @@ class OutlinerPane(QWidget):
         if self._updating or current is None:
             return
         body = current.data(0, Qt.UserRole)
-        if body:
+        if not body:
+            return
+        # a child row is an explicit SUB-selection of one member body; a
+        # top-level row selects the whole element (the host expands it to
+        # its member bodies).
+        if current.parent() is not None:
             self.selectBodyRequested.emit(body)
+        else:
+            element = current.data(0, Qt.UserRole + 1)
+            self.selectElementRequested.emit(element or body, body)
 
     def _on_double_clicked(self, item, _column):
         body = item.data(0, Qt.UserRole)

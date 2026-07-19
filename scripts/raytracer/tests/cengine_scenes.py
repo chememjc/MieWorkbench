@@ -262,7 +262,13 @@ REAL_SCENES = {
     "scatter_plate": "statistical",        # ABg measured scatter (E)
     "bench": "statistical",                # diffuser + coherent source (E)
     "calcite_displacer": "statistical",    # uniaxial o/e walk-off (F)
-    "waveplate_quartz": "statistical",     # quartz retarder + polarizer (F)
+    # NOTE: the retarder parity scene is MgF2, not quartz — quartz carries
+    # gyration data (optical activity) and gyrotropic scenes reference-route
+    # to Python by design (the C engine has no rotation term). waveplate_mgf2
+    # is the same m=30 HWP physics with a gyration-free uniaxial, keeping
+    # C-engine coverage of uniaxial retardance. test_routing_reasons pins the
+    # quartz scene's python routing.
+    "waveplate_mgf2": "statistical",       # MgF2 retarder + polarizer (F)
     "wollaston": "statistical",            # crossed calcite prisms (F)
     "pol_circular": "statistical",         # circular polarizer chain (F)
 }

@@ -18,7 +18,13 @@ property/placement ops; tessellation of changed bodies is the only
 seconds-scale call and only runs for reshaped bodies).
 """
 
+import json
 import os
+import sys
+
+sys.path.insert(0, os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "scripts")))
+import common  # noqa: E402  (stdlib-only shared contract hub)
 
 from PySide6.QtCore import QObject, Signal
 
@@ -33,6 +39,7 @@ from .transforms import (
     snap_to_axis_ops,
 )
 from .undostack import Command, UndoStack
+from . import variables as variables_mod
 
 
 class ProjectError(RuntimeError):
@@ -809,6 +816,303 @@ class Project(QObject):
             raise
         self.end_macro()
         self.opticsChanged.emit()
+
+    @staticmethod
+    def _cell_is_literal(raw):
+        """True when a spreadsheet cell raw is a plain literal quantity
+        ("=5 mm", "=5", "1e-3 mm") — safe to overwrite with a new value.
+        An expression-bound cell ("=<<miewb_vars>>.gap * 1mm", "=2*ct")
+        returns False: overwriting it would sever the binding, so
+        apply_parameter_values hard-errors on it instead."""
+        text = str(raw).strip()
+        if text.startswith("="):
+            text = text[1:].strip()
+        parts = text.split()
+        if not parts:
+            return False
+        try:
+            float(parts[0])
+        except ValueError:
+            return False
+        # a trailing token may only be a bare unit (e.g. "mm"), never
+        # another expression term
+        return all(tok.isalpha() for tok in parts[1:])
+
+    def apply_parameter_values(self, assignments, text="Apply optimum"):
+        """Write a batch of design-parameter values into the scene in ONE
+        undo step (used by the Optimize pane's "Apply optimum").
+
+        `assignments` maps an address to a float, mirroring
+        permute_model's --var split semantics:
+
+          * ``miewb_vars.<name>`` or a bare name found on the variables
+            sheet -> the miewb_vars value cell (apply_variable_cells-style
+            cell command; variable-referencing primitive groups rebuild);
+          * ``dim_<El>.<alias>`` -> that primitive sheet's cell + a
+            rebuild of its group (one combined set-then-rebuild command,
+            so undo restores the value BEFORE re-deriving geometry);
+          * ``train.<El>.<field>`` -> a chained element's MieTrain pose
+            field (field one of EDGE_FIELDS), written as an element
+            property; the train re-solve below bakes the placement.
+
+        ALL addresses are validated BEFORE the macro opens, so a bad
+        address (unknown variable, missing alias, expression-bound dim
+        cell, non-chained train element, bad field) raises ProjectError
+        and changes nothing. Finishes with the train ripple re-solve.
+        Returns the number of assignments applied."""
+        if not assignments:
+            return 0
+        tm = self.train()
+        chained = set(tm.chained_elements())
+        varrows = [None]   # lazy cache in a box (parse only if needed)
+
+        def _rows():
+            if varrows[0] is None:
+                sheet = self.variables_sheet()
+                varrows[0] = (variables_mod.parse_sheet(sheet)
+                              if sheet else {})
+            return varrows[0]
+
+        # ---- validate everything up-front (fail atomically) ----
+        var_actions = []     # (VarRow, value)
+        dim_actions = []     # (sheet_label, alias, value, group)
+        train_actions = []   # (element, field, value)
+        for address, value in assignments.items():
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                raise ProjectError(
+                    "value for %r is not a number: %r" % (address, value))
+
+            if address.startswith("train."):
+                element, sep, field = \
+                    address[len("train."):].rpartition(".")
+                if not sep or not element or not field:
+                    raise ProjectError(
+                        "malformed train address %r "
+                        "(expected train.<Element>.<field>)" % address)
+                if field not in EDGE_FIELDS:
+                    raise ProjectError(
+                        "train field %r not one of: %s"
+                        % (field, ", ".join(EDGE_FIELDS)))
+                if element not in chained:
+                    raise ProjectError(
+                        "%r is not a chained element; cannot apply %r"
+                        % (element, address))
+                train_actions.append((element, field, val))
+                continue
+
+            sheet_label, dot, alias = address.partition(".")
+            if not dot:
+                rows = _rows()
+                if address not in rows:
+                    raise ProjectError(
+                        "unknown parameter %r (not a miewb_vars variable)"
+                        % address)
+                var_actions.append((rows[address], val))
+                continue
+            if sheet_label == variables_mod.VARIABLES_SHEET:
+                rows = _rows()
+                if alias not in rows:
+                    raise ProjectError(
+                        "variable %r not found on the %s sheet"
+                        % (alias, sheet_label))
+                var_actions.append((rows[alias], val))
+                continue
+
+            raw = self._sheet_raw(sheet_label, alias)
+            if raw is None:
+                raise ProjectError(
+                    "alias %r not found on sheet %r" % (alias, sheet_label))
+            if not self._cell_is_literal(raw):
+                raise ProjectError(
+                    "cell %s.%s is expression-bound (%r); unbind it before "
+                    "applying an optimum" % (sheet_label, alias, raw))
+            group = (sheet_label[len("dim_"):]
+                     if sheet_label.startswith("dim_") else None)
+            dim_actions.append((sheet_label, alias, val, group))
+
+        if var_actions:
+            self.ensure_variables_sheet()
+
+        # ---- one macro of macro-safe children ----
+        dim_groups = {g for _, _, _, g in dim_actions if g}
+        self.begin_macro(text)
+        try:
+            # variable value cells (apply_variable_cells pattern)
+            for varrow, val in var_actions:
+                for c in variables_mod.cell_plan(varrow.name,
+                                                 row=varrow.row, value=val):
+                    cell, raw, alias = c["cell"], c["raw"], c.get("alias")
+                    old_raw, old_alias = self._cell_preimage(cell)
+                    self.undo_stack.push_and_do(Command(
+                        "%s %s" % (text, cell),
+                        lambda cl=cell, r=raw, a=alias:
+                            self._do_set_cell(cl, r, a),
+                        lambda cl=cell, r=old_raw, a=old_alias:
+                            self._do_set_cell(cl, r, a)))
+            # dim primitive cells -> set + rebuild as ONE command each
+            # (undo restores the value THEN re-derives geometry)
+            for sheet_label, alias, val, group in dim_actions:
+                self.set_element_parameters(
+                    sheet_label, {alias: "=%.10g mm" % val},
+                    rebuild_group=group,
+                    text="%s %s.%s" % (text, sheet_label, alias))
+            # train pose fields (set_property children)
+            for element, field, val in train_actions:
+                self._write_chain_props(element, {field: val})
+            # variable-referencing primitive groups also rebuild (derived
+            # state: replay on undo AND redo), skipping any already rebuilt
+            if var_actions:
+                for group in self._vars_referencing_groups():
+                    if group in dim_groups:
+                        continue
+                    self.undo_stack.push_and_do(Command(
+                        "Rebuild %s" % group,
+                        lambda g=group: self._do_rebuild_primitive(g),
+                        lambda g=group: self._do_rebuild_primitive(g)))
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        self.opticsChanged.emit()
+        return len(var_actions) + len(dim_actions) + len(train_actions)
+
+    # -- optimize/tolerance pane persistence (miewb_vars sheet) ------------------
+    # Storage: JSON strings in two dynamic document properties on the
+    # miewb_vars Spreadsheet object (created on first save, same as the
+    # variables themselves) -- {"version": 1, "optimize"/"tolerance": cfg}
+    # where cfg is exactly what OptimizePane.config()/TolerancePane.config()
+    # produce (sheet-qualified var/tolerance/compensator specs). Travels
+    # with the .FCStd automatically (miewb_tool packs it verbatim), so a
+    # reopened scene's panes can be pre-populated via apply_config().
+    _CONFIG_VERSION = 1
+    OPTIMIZE_CONFIG_PROP = "miewb_optimize_config"
+    TOLERANCE_CONFIG_PROP = "miewb_tolerance_config"
+
+    def _config_raw(self, prop_name):
+        """The raw JSON string currently stashed in `prop_name` on the
+        miewb_vars sheet, or None (no sheet, or the sheet carries no such
+        property yet)."""
+        sheet = self.variables_sheet()
+        if sheet is None:
+            return None
+        entry = (sheet.get("properties") or {}).get(prop_name)
+        return None if entry is None else entry.get("value")
+
+    def _get_config(self, prop_name, key):
+        """{key: <pane config dict>} from the stashed JSON, or None (no
+        sheet / no property / unparseable / version mismatch all degrade
+        to "nothing stored" -- a fresh scene or a hand-edited document
+        must never raise here)."""
+        raw = self._config_raw(prop_name)
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict) \
+                or payload.get("version") != self._CONFIG_VERSION:
+            return None
+        return payload.get(key)
+
+    def get_optimize_config(self):
+        """The last-saved OptimizePane.config() dict, or None."""
+        return self._get_config(self.OPTIMIZE_CONFIG_PROP, "optimize")
+
+    def get_tolerance_config(self):
+        """The last-saved TolerancePane.config() dict, or None."""
+        return self._get_config(self.TOLERANCE_CONFIG_PROP, "tolerance")
+
+    def _do_set_sheet_property(self, sheet_name, name, raw):
+        return self._route_mutation(
+            self.fc.request("set_property",
+                            {"doc": self.doc, "body": sheet_name,
+                             "name": name, "value": raw, "ptype": "string",
+                             "group": "Base"}),
+            sheet_name)
+
+    def _do_remove_sheet_property(self, sheet_name, name):
+        return self._route_mutation(
+            self.fc.request("remove_property",
+                            {"doc": self.doc, "body": sheet_name,
+                             "name": name}),
+            sheet_name)
+
+    def _set_config(self, prop_name, key, cfg, text):
+        """Stash (cfg is not None) or clear (cfg is None) {"version": 1,
+        key: cfg} in `prop_name` on the miewb_vars sheet -- one undoable
+        Command with pre-image capture, no-op when the serialized config
+        is unchanged. The sheet is created on first use (matching
+        apply_variable_cells: the create itself is not tracked, only the
+        property write is)."""
+        old_raw = self._config_raw(prop_name)
+        new_raw = (None if cfg is None else
+                  json.dumps({"version": self._CONFIG_VERSION, key: cfg},
+                            sort_keys=True))
+        if new_raw == old_raw:
+            return
+        if new_raw is None:
+            sheet = self.variables_sheet()
+            if sheet is None:
+                return
+            sheet_name = sheet["name"]
+            self.undo_stack.push_and_do(Command(
+                text,
+                lambda: self._do_remove_sheet_property(sheet_name, prop_name),
+                lambda: self._do_set_sheet_property(sheet_name, prop_name,
+                                                    old_raw)))
+            return
+        sheet = self.ensure_variables_sheet()
+        sheet_name = sheet["name"]
+        if old_raw is None:
+            undo = lambda: self._do_remove_sheet_property(sheet_name,
+                                                           prop_name)
+        else:
+            undo = lambda: self._do_set_sheet_property(sheet_name, prop_name,
+                                                        old_raw)
+        self.undo_stack.push_and_do(Command(
+            text,
+            lambda: self._do_set_sheet_property(sheet_name, prop_name,
+                                                new_raw),
+            undo))
+
+    def set_optimize_config(self, cfg):
+        """Persist (cfg dict) or clear (cfg=None) the OptimizePane's
+        current config() on the miewb_vars sheet. Undoable; no-op when
+        unchanged."""
+        self._set_config(self.OPTIMIZE_CONFIG_PROP, "optimize", cfg,
+                         "Save optimize configuration")
+
+    def set_tolerance_config(self, cfg):
+        """Persist (cfg dict) or clear (cfg=None) the TolerancePane's
+        current config() on the miewb_vars sheet. Undoable; no-op when
+        unchanged."""
+        self._set_config(self.TOLERANCE_CONFIG_PROP, "tolerance", cfg,
+                         "Save tolerance configuration")
+
+    PREVIEW_CONFIG_PROP = "miewb_preview_config"
+
+    def get_preview_config(self):
+        """The last-saved ray-preview config ({"spec": "<viz-pattern>"}),
+        or None."""
+        return self._get_config(self.PREVIEW_CONFIG_PROP, "preview")
+
+    def set_preview_config(self, cfg):
+        """Persist (cfg dict, e.g. {"spec": "fan:n=5"}) or clear (cfg=None)
+        the ray-preview pattern on the miewb_vars sheet. The spec is
+        validated with common.parse_viz_pattern_spec BEFORE anything is
+        written -- an invalid spec raises ProjectError and touches no
+        state. Undoable; no-op when unchanged."""
+        if cfg is not None:
+            try:
+                common.parse_viz_pattern_spec(cfg.get("spec"))
+            except (ValueError, TypeError) as exc:
+                raise ProjectError("invalid ray-preview pattern: %s" % exc)
+        self._set_config(self.PREVIEW_CONFIG_PROP, "preview", cfg,
+                         "Save ray-preview configuration")
 
     # -- folds -------------------------------------------------------------------
     def _fold_record(self, element):

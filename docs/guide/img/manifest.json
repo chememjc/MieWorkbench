@@ -1,0 +1,83 @@
+[
+  {
+    "name": "viewport-3d-1",
+    "status": "captured",
+    "path": "docs/guide/img/viewport-3d-1.png",
+    "source": "results/example-lenspos0/quick-docsshot/viz/overview3d.png"
+  },
+  {
+    "name": "element-editor-1",
+    "status": "captured",
+    "path": "docs/guide/img/element-editor-1.png"
+  },
+  {
+    "name": "train-editor-1",
+    "status": "captured",
+    "path": "docs/guide/img/train-editor-1.png"
+  },
+  {
+    "name": "variables-1",
+    "status": "captured",
+    "path": "docs/guide/img/variables-1.png"
+  },
+  {
+    "name": "library-browser-1",
+    "status": "captured",
+    "path": "docs/guide/img/library-browser-1.png"
+  },
+  {
+    "name": "property-library-editor-1",
+    "status": "captured",
+    "path": "docs/guide/img/property-library-editor-1.png"
+  },
+  {
+    "name": "run-and-validate-1",
+    "status": "captured",
+    "path": "docs/guide/img/run-and-validate-1.png"
+  },
+  {
+    "name": "console-and-problems-1",
+    "status": "captured",
+    "path": "docs/guide/img/console-and-problems-1.png"
+  },
+  {
+    "name": "results-1",
+    "status": "captured",
+    "path": "docs/guide/img/results-1.png"
+  },
+  {
+    "name": "results-2",
+    "status": "captured",
+    "path": "docs/guide/img/results-2.png"
+  },
+  {
+    "name": "animation-1",
+    "status": "captured",
+    "path": "docs/guide/img/animation-1.png"
+  },
+  {
+    "name": "optimize-1",
+    "status": "captured",
+    "path": "docs/guide/img/optimize-1.png"
+  },
+  {
+    "name": "tolerance-1",
+    "status": "captured",
+    "path": "docs/guide/img/tolerance-1.png"
+  },
+  {
+    "name": "walkthrough-schmidt-cassegrain-optimize-1",
+    "status": "captured",
+    "path": "docs/guide/img/walkthrough-schmidt-cassegrain-optimize-1.png"
+  },
+  {
+    "name": "walkthrough-double-gauss-optimize-1",
+    "status": "captured",
+    "path": "docs/guide/img/walkthrough-double-gauss-optimize-1.png"
+  },
+  {
+    "name": "walkthrough-fiber-coupling-doublet-optimize-1",
+    "status": "captured",
+    "path": "docs/guide/img/walkthrough-fiber-coupling-doublet-optimize-1.png"
+  }
+]

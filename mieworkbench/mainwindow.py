@@ -33,12 +33,12 @@ sys.path.insert(0, os.path.normpath(
 import common  # noqa: E402  (stdlib-only shared contract hub)
 import miewb_tool  # noqa: E402  (stdlib-only archive engine)
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QActionGroup, QKeySequence
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QActionGroup, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
     QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
-    QMessageBox, QProgressBar, QStyle, QTabWidget, QToolButton,
+    QMessageBox, QProgressBar, QSpinBox, QStyle, QTabWidget, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -78,6 +78,8 @@ from .panes.transform_panel import TransformPanel
 from .panes.element_wizard import TypeChooserDialog
 from .panes.wizard_dialog import (ElementWizardDialog, FieldFanDialog,
                                   ZoomPairDialog)
+from .widgets.preview_config import PreviewConfigWidget
+from .widgets.style import checked_toolbutton_stylesheet
 
 try:
     # a parallel round authors this pane; the optical-train wiring degrades
@@ -107,6 +109,46 @@ _RAY_DIM_MODES = ("off", "linear", "sqrt")
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
+# Help menu: one action per docs/guide page, grouped into submenus that
+# mirror docs/guide/README.md's index tables. Paths are relative to
+# docs/guide/ (resolved against REPO at menu-build time); keep this list
+# and that index in sync by hand -- there is no code generator for either.
+DOCS_GUIDE_DIR = os.path.join(REPO, "docs", "guide")
+DOCS_GUIDE_PAGES = {
+    "GUI": [
+        ("3D Viewport", "viewport-3d.md"),
+        ("Outliner", "outliner.md"),
+        ("Element Inspector", "inspector.md"),
+        ("Element Editor", "element-editor.md"),
+        ("Position / Orientation", "transform.md"),
+        ("Optical Train Editor", "train-editor.md"),
+        ("Variables", "variables.md"),
+        ("Compare", "compare.md"),
+        ("Optimize", "optimize.md"),
+        ("Tolerance", "tolerance.md"),
+        ("Results", "results.md"),
+        ("Library Browser", "library-browser.md"),
+        ("Property Library Editor", "property-library-editor.md"),
+        ("Run & Validate", "run-and-validate.md"),
+        ("Animation", "animation.md"),
+        ("Console and Problems", "console-and-problems.md"),
+    ],
+    "System": [
+        ("Pipeline CLI", "pipeline-cli.md"),
+        ("File Formats", "file-formats.md"),
+        ("Headless / Remote", "headless-remote.md"),
+        ("Authoring", "authoring.md"),
+        ("Demo Gallery", "demo-gallery.md"),
+    ],
+    "Walkthroughs": [
+        ("Walkthroughs (index)", "walkthroughs/README.md"),
+        ("camera_triplet", "walkthroughs/camera-triplet.md"),
+        ("schmidt_cassegrain", "walkthroughs/schmidt-cassegrain.md"),
+        ("double_gauss", "walkthroughs/double-gauss.md"),
+        ("fiber_coupling_doublet", "walkthroughs/fiber-coupling-doublet.md"),
+    ],
+}
+
 
 def _aabb_overlap(a, b):
     """Axis-aligned boxes ([lo3], [hi3]) intersect (touching counts)."""
@@ -118,6 +160,10 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("MieWorkbench")
         self.resize(1500, 950)
+        # window-level chrome only -- widget-level stylesheets (stage
+        # chips, etc.) are more specific and always win over this
+        self.setStyleSheet(
+            checked_toolbutton_stylesheet(self.palette()))
 
         self.model_path = None          # the .FCStd the pipeline runs on
         self.opened_path = None         # what the user opened (any format)
@@ -152,6 +198,10 @@ class MainWindow(QMainWindow):
         self.tolerance_ctl = ToleranceController(self.settings, self)
         self.config_matrix = ConfigMatrix()
         self.config_matrix.estimateRequested.connect(self._show_estimate)
+        # persistent Ray Preview tab of the Simulation Settings dialog
+        # (WP2) -- one instance, reparented into the dialog on demand,
+        # same pattern as config_matrix above.
+        self.preview_config = PreviewConfigWidget()
         self.library_manager = LibraryManager(
             os.path.join(REPO, "opticalproperties"),
             os.path.join(REPO, "primitives"))
@@ -447,6 +497,16 @@ class MainWindow(QMainWindow):
         self.delete_action.triggered.connect(
             lambda: self._on_delete_element())
 
+        edit_menu.addSeparator()
+        # Esc is otherwise unbound at the window level (the 3D view's own Esc
+        # cancels an in-progress axis drag via a VTK observer, not a QAction)
+        self.clear_selection_action = edit_menu.addAction("Clear &Selection")
+        self.clear_selection_action.setShortcut("Esc")
+        self.clear_selection_action.setToolTip("Clear the current selection")
+        self.clear_selection_action.setEnabled(False)
+        self.clear_selection_action.triggered.connect(
+            lambda: self.selection.clear(origin="clear_action"))
+
         sim_menu = menubar.addMenu("&Simulation")
         self.settings_action = sim_menu.addAction("Simulation &Settings…")
         self.settings_action.setToolTip(
@@ -638,10 +698,55 @@ class MainWindow(QMainWindow):
         self.anim_enable_action.toggled.connect(
             self._on_anim_enabled_toggled)
 
-        help_menu = menubar.addMenu("&Help")
+        # kept as self.help_menu, NEVER re-fetched via QAction.menu() (see
+        # _build_help_menu's docstring / CLAUDE.md's PySide6 trap)
+        self.help_menu = menubar.addMenu("&Help")
+        help_menu = self.help_menu
+        self._build_help_menu(help_menu)
+        help_menu.addSeparator()
         act = help_menu.addAction("&About")
         act.setToolTip("About MieWorkbench")
         act.triggered.connect(self._on_about)
+
+    def _build_help_menu(self, help_menu):
+        """Per-feature guide entries: one action per docs/guide/*.md page,
+        grouped into GUI/System/Walkthroughs submenus mirroring
+        docs/guide/README.md's index, plus "Open Documentation Folder".
+        Degrades gracefully (disabled items, no crash) when docs/guide/
+        is missing -- e.g. a stripped-down deployment that ships only the
+        compiled app. Submenu references are kept on help_menu itself
+        (help_menu.doc_submenus), never re-fetched via QAction.menu():
+        PySide6 hands ownership of a NEW wrapper to Python on that call,
+        so the GC would delete the underlying C++ QMenu out from under a
+        later access (CLAUDE.md's PySide6 trap)."""
+        have_guide = os.path.isdir(DOCS_GUIDE_DIR)
+        help_menu.doc_submenus = {}
+        for group, pages in DOCS_GUIDE_PAGES.items():
+            submenu = help_menu.addMenu(group)
+            help_menu.doc_submenus[group] = submenu
+            for label, relpath in pages:
+                path = os.path.join(DOCS_GUIDE_DIR, relpath)
+                act = submenu.addAction(label)
+                exists = have_guide and os.path.isfile(path)
+                act.setEnabled(exists)
+                act.setToolTip(path if exists else
+                               "%s (not found)" % path)
+                if exists:
+                    act.triggered.connect(
+                        lambda _c=False, p=path: self._open_doc_page(p))
+
+        help_menu.addSeparator()
+        self.open_docs_folder_action = help_menu.addAction(
+            "Open Documentation &Folder")
+        self.open_docs_folder_action.setToolTip(DOCS_GUIDE_DIR)
+        self.open_docs_folder_action.setEnabled(have_guide)
+        if have_guide:
+            self.open_docs_folder_action.triggered.connect(
+                lambda: self._open_doc_page(DOCS_GUIDE_DIR))
+
+    @staticmethod
+    def _open_doc_page(path):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _build_toolbar(self):
         """Grouped main toolbar: file | undo/redo | element ops |
@@ -724,6 +829,13 @@ class MainWindow(QMainWindow):
         rays_btn.setMenu(rays_menu)
         toolbar.addWidget(rays_btn)
 
+        # the SAME checkable QAction lives in the View menu and here --
+        # Qt keeps the two representations in sync natively. _build_menus()
+        # (which creates face_indicators_action) always runs before
+        # _build_toolbar() -- see __init__.
+        self.face_indicators_action.setIconText("Face marks")
+        toolbar.addAction(self.face_indicators_action)
+
         ext_label = QLabel(" Extinction: ")
         ext_label.setToolTip("Ray extinction (attenuation dimming): fade "
                              "ray segments by remaining power")
@@ -735,7 +847,9 @@ class MainWindow(QMainWindow):
             "Ray extinction: Off = full opacity; Linear = opacity is each "
             "segment's remaining power relative to its ray's power at the "
             "source (P/P₀); Perceptual = √(P/P₀). Same setting as "
-            "View ▸ Ray Dimming; applies live to loaded rays.")
+            "View ▸ Ray Dimming; applies live to loaded rays. Dims ray "
+            "LINES only -- animation bead opacity is a separate control "
+            "on the Animation toolbar.")
         self.ray_dim_combo.setCurrentIndex(
             _RAY_DIM_MODES.index(self._ray_dim_mode))
         self.ray_dim_combo.currentIndexChanged.connect(
@@ -793,20 +907,60 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Ray preview already running…",
                                          4000)
             return
-        n, ok = QInputDialog.getInt(
+        text, ok = QInputDialog.getText(
             self, "Live ray preview",
-            "Rays per source (center + edge midpoints, then rim fill):",
-            5, 1, 999)
+            "Pattern (--viz-pattern spec, e.g. 'fan:n=5' or "
+            "'rings:dr=1:nper=12[:nrings=K]'; a bare integer means "
+            "fan:n=<int>):",
+            text=self._preview_pattern_spec())
         if not ok:
+            return
+        spec = text.strip()
+        try:
+            spec = "fan:n=%d" % int(spec)
+        except ValueError:
+            pass   # not a bare integer -- use the typed spec as-is
+        try:
+            common.parse_viz_pattern_spec(spec)
+        except ValueError as exc:
+            self.statusBar().showMessage(
+                "Invalid ray-preview pattern: %s" % exc, 6000)
             return
         self._preview_target = target
         started = self.raypreview.start(
             self.project, self._preview_workspace(),
-            pattern="fan:n=%d" % n, only_bodies=only_bodies,
+            pattern=spec, only_bodies=only_bodies,
             optical_properties=self._workspace_optprops())
         if started:
             self.statusBar().showMessage(
-                "Tracing %d preview ray(s) per source…" % n)
+                "Tracing preview rays (%s)…" % spec)
+
+    def _preview_pattern_spec(self):
+        """Resolve the ray-preview pattern spec: the open project's
+        stored spec (Project.get_preview_config, re-validated -- a
+        hand-edited or stale document must never surface a broken
+        pattern) -> the last spec used this install (QSettings) ->
+        the "fan:n=5" default. Never raises."""
+        if self.project.is_open():
+            try:
+                cfg = self.project.get_preview_config()
+            except Exception:
+                cfg = None
+            spec = (cfg or {}).get("spec") if cfg else None
+            if spec:
+                try:
+                    common.parse_viz_pattern_spec(spec)
+                    return spec
+                except ValueError:
+                    pass
+        stored = self.settings.get("preview_pattern_spec", None)
+        if stored:
+            try:
+                common.parse_viz_pattern_spec(stored)
+                return stored
+            except ValueError:
+                pass
+        return "fan:n=5"
 
     def _on_scene_rays_requested(self):
         """Rays toggle checked with no overlay: load the last run's rays
@@ -866,26 +1020,35 @@ class MainWindow(QMainWindow):
         self.inspector.set_rays_stale(True)
         self.preview_scheduler.notify_change()
 
-    def _on_auto_preview_wanted(self):
+    def _start_scene_preview(self):
+        """Guarded launch of a whole-scene preview (the resolved
+        pattern spec, see _preview_pattern_spec) into the main 3D
+        view. Shared by the debounced auto-preview scheduler and the
+        bead-animation enable handler -- one implementation, both
+        callers. Returns True if a preview was actually launched."""
         if not self.project.is_open():
-            return
+            return False
         if self.runner.is_running():
-            return   # never compete with a real pipeline run; its own
-                     # rays load when it completes
+            return False   # never compete with a real pipeline run; its
+                            # own rays load when it completes
         if self.raypreview.is_running():
-            # a manual preview is in flight; queue one more behind it
+            # a preview is already in flight; queue one more behind it
             self.preview_scheduler.notify_busy(True)
             self.preview_scheduler.notify_change()
-            return
+            return False
         self._preview_target = "scene"
         started = self.raypreview.start(
             self.project, self._preview_workspace(),
-            pattern="fan:n=5",
+            pattern=self._preview_pattern_spec(),
             optical_properties=self._workspace_optprops())
         if started:
             self.preview_scheduler.notify_busy(True)
             self.statusBar().showMessage("Auto-updating ray preview…",
                                          3000)
+        return started
+
+    def _on_auto_preview_wanted(self):
+        self._start_scene_preview()
 
     def _on_auto_preview_toggled(self, checked):
         self.preview_scheduler.set_enabled(checked)
@@ -978,6 +1141,10 @@ class MainWindow(QMainWindow):
             speed_mm_s=self._anim_setting("anim_speed_mm_s", 2.0),
             fps=int(self._anim_setting("anim_fps", 15)),
             ray_cap=int(self._anim_setting("anim_ray_cap", 300)),
+            bead_opacity_mode=self.settings.get("anim_bead_opacity_mode",
+                                                "off"),
+            bead_opacity_range_db=self._anim_setting("anim_bead_opacity_db",
+                                                     30.0),
             enabled=self.settings.get_bool("anim_enabled", False))
         view.overlayChanged.connect(self._on_scene_overlay_changed)
         self.anim_controller.frameAdvanced.connect(self._on_anim_frame)
@@ -1050,6 +1217,46 @@ class MainWindow(QMainWindow):
         self.anim_fps_combo.currentTextChanged.connect(self._on_anim_fps)
         tb.addWidget(self.anim_fps_combo)
 
+        tb.addWidget(QLabel(" Cap "))
+        self.anim_ray_cap_spin = QSpinBox()
+        self.anim_ray_cap_spin.setRange(1, 100000)
+        self.anim_ray_cap_spin.setSingleStep(50)
+        self.anim_ray_cap_spin.setValue(
+            int(self._anim_setting("anim_ray_cap", 300)))
+        self.anim_ray_cap_spin.setToolTip(
+            "Max animated rays per source")
+        self.anim_ray_cap_spin.valueChanged.connect(self._on_anim_ray_cap)
+        tb.addWidget(self.anim_ray_cap_spin)
+
+        tb.addSeparator()
+        tb.addWidget(QLabel(" Bead opacity "))
+        self.anim_opacity_combo = QComboBox()
+        self.anim_opacity_combo.addItem("Opaque", "off")
+        self.anim_opacity_combo.addItem("By power", "power")
+        cur_mode = self.anim_controller.bead_opacity_mode
+        self.anim_opacity_combo.setCurrentIndex(1 if cur_mode == "power"
+                                                else 0)
+        self.anim_opacity_combo.setToolTip(
+            "Bead opacity: Opaque (default) or fade beads by their optical "
+            "power over a log-dB range, leading-wavefront beads stay solid")
+        self.anim_opacity_combo.currentIndexChanged.connect(
+            self._on_anim_opacity_mode)
+        tb.addWidget(self.anim_opacity_combo)
+
+        self.anim_opacity_db_spin = QDoubleSpinBox()
+        self.anim_opacity_db_spin.setRange(10.0, 60.0)
+        self.anim_opacity_db_spin.setDecimals(0)
+        self.anim_opacity_db_spin.setSingleStep(5.0)
+        self.anim_opacity_db_spin.setSuffix(" dB")
+        self.anim_opacity_db_spin.setValue(
+            self.anim_controller.bead_opacity_range_db)
+        self.anim_opacity_db_spin.setToolTip(
+            "Dynamic range of the power-to-opacity map: a bead at "
+            "Pmax/10^(dB/10) fades to the faint floor")
+        self.anim_opacity_db_spin.setEnabled(cur_mode == "power")
+        self.anim_opacity_db_spin.valueChanged.connect(self._on_anim_opacity_db)
+        tb.addWidget(self.anim_opacity_db_spin)
+
         tb.addSeparator()
         self.anim_readout = QLabel("")
         self.anim_readout.setToolTip(
@@ -1063,7 +1270,22 @@ class MainWindow(QMainWindow):
         self.anim_controller.apply_settings(enabled=checked)
         self.settings.set_bool("anim_enabled", checked)
         self._update_anim_transport_enabled()
-        if checked:
+        if not checked:
+            return
+        # self-sufficient enable: if there is nothing to animate yet (no
+        # segments, or the loaded overlay is stale) generate one instead
+        # of just complaining -- beads park paused at t=0 when the fresh
+        # segments land (_on_scene_overlay_changed), never auto-play.
+        needs_preview = (not self.anim_controller.has_segments()
+                         or self.scene3d.view.overlay_is_stale())
+        if (needs_preview and self.project.is_open()
+                and not self.runner.is_running()
+                and not self.raypreview.is_running()):
+            self._start_scene_preview()
+            self.statusBar().showMessage("Generating ray preview…", 4000)
+        else:
+            # genuinely blocked (no project, a real run/preview already
+            # in flight, ...) -- fall back to the informational warning
             self._warn_if_anim_data_missing()
 
     def _on_anim_size(self, value):
@@ -1080,6 +1302,25 @@ class MainWindow(QMainWindow):
             self.settings.set("anim_fps", text)
         except ValueError:
             pass
+
+    def _on_anim_ray_cap(self, value):
+        self.anim_controller.apply_settings(ray_cap=value)
+        self.settings.set("anim_ray_cap", str(value))
+
+    def _on_anim_opacity_mode(self, _index):
+        mode = self.anim_opacity_combo.currentData() or "off"
+        self.anim_controller.apply_settings(bead_opacity_mode=mode)
+        self.settings.set("anim_bead_opacity_mode", mode)
+        self.anim_opacity_db_spin.setEnabled(mode == "power")
+        if (mode == "power" and self.anim_controller.has_segments()
+                and not self.anim_controller.power_available()):
+            self.statusBar().showMessage(
+                "Loaded rays predate per-segment power — beads stay opaque "
+                "until you re-run or re-preview.", 6000)
+
+    def _on_anim_opacity_db(self, value):
+        self.anim_controller.apply_settings(bead_opacity_range_db=value)
+        self.settings.set("anim_bead_opacity_db", str(value))
 
     def _on_anim_frame(self, clock_s, path_mm):
         readout = getattr(self, "anim_readout", None)
@@ -1158,16 +1399,31 @@ class MainWindow(QMainWindow):
             lambda: self.config_matrix.values())
 
         # all selection flows through the shared SelectionModel: 3D picks,
-        # outliner rows and problems-pane jumps stay in sync
+        # outliner rows and problems-pane jumps stay in sync. A bare-body
+        # origin that names a member of a multi-body group is EXPANDED to a
+        # whole-element selection by the dispatcher; the two explicit sub-
+        # selection origins (outliner child rows, inspector member lists)
+        # are exempt.
         self.outliner.set_project(self.project)
         self.scene3d.selectionChanged.connect(
             lambda body, faces: self.selection.select(body, faces,
                                                       origin="scene3d"))
+        self.outliner.selectElementRequested.connect(
+            self._on_outliner_element_selected)
         self.outliner.selectBodyRequested.connect(
-            lambda body: self.selection.select(body, (), origin="outliner"))
+            lambda body: self.selection.select(body, (),
+                                               origin="outliner_child"))
         self.problems.selectBodyRequested.connect(
-            lambda body: self.selection.select(body, ()))
+            lambda body: self.selection.select(body, (), origin="problems"))
+        self.inspector.memberSelected.connect(
+            lambda body: self.selection.select(body, (),
+                                               origin="inspector_member"))
+        self.element_editor.memberSelected.connect(
+            lambda body: self.selection.select(body, (),
+                                               origin="inspector_member"))
         self.selection.changed.connect(self._on_selection_changed)
+        # Clear-selection lives on the 3D-view button row too
+        self.scene3d.add_toolbar_action(self.clear_selection_action)
 
         self.outliner.customizeRequested.connect(self._on_customize_element)
         self.outliner.deleteRequested.connect(self._on_delete_element)
@@ -1219,6 +1475,12 @@ class MainWindow(QMainWindow):
         self.project.sceneLoaded.connect(self._refresh_pane_variables)
         self.project.propertiesChanged.connect(
             self._refresh_pane_variables)
+        # Pre-populate the panes from any config stashed on the scene --
+        # scene-open ONLY (not propertiesChanged: that fires on every
+        # unrelated property write, which would stomp in-progress
+        # unsaved pane edits). Runs after _refresh_pane_variables so the
+        # name combos are already seeded when apply_config rebuilds rows.
+        self.project.sceneLoaded.connect(self._load_pane_configs)
 
         # a finished sweep hands its manifest to the Compare pane
         self.runner.finished.connect(self._maybe_run_compare)
@@ -1257,6 +1519,38 @@ class MainWindow(QMainWindow):
         self.optimize_pane.set_variables(varrows)
         self.tolerance_pane.set_variables(varrows)
 
+    def _load_pane_configs(self, *_args):
+        """Pre-populate the Optimize/Tolerance panes from any config
+        stashed on the miewb_vars sheet (Project.set_optimize_config/
+        set_tolerance_config) -- so a saved scene reopens with the panes
+        already configured, even though the run itself was not repeated.
+        Best-effort: a missing/stale/unparseable config must never block
+        opening the scene."""
+        if not self.project.is_open():
+            return
+        try:
+            opt_cfg = self.project.get_optimize_config()
+        except Exception:
+            opt_cfg = None
+        if opt_cfg:
+            try:
+                self.optimize_pane.apply_config(opt_cfg)
+            except Exception:
+                pass
+        try:
+            tol_cfg = self.project.get_tolerance_config()
+        except Exception:
+            tol_cfg = None
+        if tol_cfg:
+            try:
+                self.tolerance_pane.apply_config(tol_cfg)
+            except Exception:
+                pass
+        try:
+            self.preview_config.set_spec(self._preview_pattern_spec())
+        except Exception:
+            pass
+
     def _on_scene_loaded(self):
         has_doc = self.project.is_open()
         self.save_action.setEnabled(has_doc)
@@ -1266,19 +1560,84 @@ class MainWindow(QMainWindow):
         self.close_action.setEnabled(has_doc)
         self._update_window_title()
 
+    # origins that are EXPLICIT sub-selections (a single member body) and so
+    # must NOT be expanded into a whole-element selection
+    _NO_EXPAND_ORIGINS = {"outliner_child", "inspector_member"}
+
+    def _on_outliner_element_selected(self, element, primary):
+        """A top-level outliner row: select the whole element (expand to its
+        member bodies; a single-body element stays a plain body select)."""
+        try:
+            bodies = self.project.element_bodies(element)
+        except Exception:
+            bodies = [primary] if primary else []
+        if len(bodies) > 1:
+            self.selection.select_element(element, bodies, origin="outliner",
+                                          primary=primary)
+        else:
+            self.selection.select(primary or element, (), origin="outliner")
+
     def _on_selection_changed(self, body_name, faces, origin):
-        enable = bool(body_name)
-        self.copy_action.setEnabled(enable)
-        self.delete_action.setEnabled(enable)
-        if not body_name:
-            return
-        self.inspector.set_body(self.project, body_name)
-        self.element_editor.set_face_selection(body_name, set(faces))
-        self.transform_panel.set_body(body_name)
-        if origin != "outliner":
-            self.outliner.set_selected_body(body_name)
-        if origin != "scene3d" and hasattr(self.scene3d, "select_body"):
-            self.scene3d.select_body(body_name)
+        # Expand a bare-body 3D/problems/programmatic pick into its whole
+        # element (union highlight, element panes). The element==None guard
+        # stops the re-entrant select_element from re-expanding (loop break);
+        # explicit sub-selection origins skip expansion entirely.
+        if (body_name and origin not in self._NO_EXPAND_ORIGINS
+                and self.selection.element is None):
+            try:
+                element = self.project.element_group(body_name)
+                bodies = self.project.element_bodies(element)
+            except Exception:
+                element, bodies = None, [body_name]
+            if len(bodies) > 1:
+                self.selection.select_element(
+                    element, bodies, faces=faces, origin=origin,
+                    primary=body_name)
+                return   # select_element re-emits; this pass stops here
+
+        element = self.selection.element
+        bodies = list(self.selection.bodies)
+        primary = self.selection.body
+        faces = self.selection.faces
+        single = bool(primary) and not self.selection.is_element()
+
+        # 3D highlight. Driven even for a scene3d-originated pick: the view
+        # pre-highlighted only the clicked body, but an expanded element
+        # needs the whole-member UNION (select_body/select_element dedupe
+        # the redundant single-body case, so no double render).
+        if single:
+            self.scene3d.select_body(primary)
+        else:
+            self.scene3d.select_element(bodies)
+
+        # inspector + element editor: single body -> face-selection surface;
+        # multi-body element OR empty -> blank + count hint + member list
+        if single:
+            self.inspector.set_body(self.project, primary)
+            self.element_editor.set_face_selection(primary, set(faces))
+        else:
+            self.inspector.set_element(self.project, element, bodies)
+            self.element_editor.set_element(element, bodies)
+
+        # transform panel operates on the primary (group moves are safe via
+        # Project._flush_placement/miewb_group); None -> neutral
+        self.transform_panel.set_body(primary)
+
+        # outliner echo (skip when the outliner initiated the selection)
+        if origin not in ("outliner", "outliner_child"):
+            self.outliner.set_selected_body(primary)
+
+        self._update_selection_actions()
+
+    def _update_selection_actions(self):
+        """Single authority for selection-dependent action state: copy/
+        delete/clear + the transform panel's operation buttons, all keyed
+        off whether anything is selected."""
+        has = bool(self.selection.body)
+        self.copy_action.setEnabled(has)
+        self.delete_action.setEnabled(has)
+        self.clear_selection_action.setEnabled(has)
+        self.transform_panel.set_operations_enabled(has)
 
     # kept for tests/back-compat: route an explicit (body, faces) pair
     # through the shared selection model
@@ -1683,6 +2042,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Updated %s" % group, 5000)
 
     def _selected_element(self):
+        if self.selection.element is not None:
+            return self.selection.element
         if self.selection.body is None:
             return None
         try:
@@ -1774,7 +2135,11 @@ class MainWindow(QMainWindow):
         self.project.end_macro()
         names = self.project.element_bodies(new_label)
         if names:
-            self.selection.select(names[0], ())
+            if len(names) > 1:
+                self.selection.select_element(new_label, names,
+                                              origin="paste")
+            else:
+                self.selection.select(names[0], (), origin="paste")
         self.statusBar().showMessage("Pasted %s" % new_label, 5000)
 
     def _open_prop_editor(self, category=None, which_library=None):
@@ -1890,6 +2255,7 @@ class MainWindow(QMainWindow):
         convergence plot and the shared stage-chip/status handler (the
         'optimize' chip is in STAGE_ORDER)."""
         self.optimizer_ctl.line.connect(self.console.append_line)
+        self.optimizer_ctl.line.connect(self.optimize_pane.on_line)
         self.optimizer_ctl.progress.connect(self.optimize_pane.on_progress)
         self.optimizer_ctl.progress.connect(self._on_progress)
         self.optimizer_ctl.started.connect(self.optimize_pane.on_started)
@@ -1897,6 +2263,9 @@ class MainWindow(QMainWindow):
         self.optimizer_ctl.error.connect(self._on_error)
         self.optimize_pane.runRequested.connect(self._on_run_optimize)
         self.optimize_pane.stopRequested.connect(self.optimizer_ctl.stop)
+        self.optimize_pane.applyRequested.connect(self._on_apply_optimum)
+        # a fresh scene has no optimum yet -> disable Apply
+        self.project.sceneLoaded.connect(self.optimize_pane.reset_best)
         self._wire_tolerance()
 
     def _wire_tolerance(self):
@@ -1904,6 +2273,7 @@ class MainWindow(QMainWindow):
         result plots and the shared stage-chip/status handler (the
         'tolerance' chip is in STAGE_ORDER)."""
         self.tolerance_ctl.line.connect(self.console.append_line)
+        self.tolerance_ctl.line.connect(self.tolerance_pane.on_line)
         self.tolerance_ctl.progress.connect(
             self.tolerance_pane.on_progress)
         self.tolerance_ctl.progress.connect(self._on_progress)
@@ -1944,6 +2314,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Tolerance: add at least one operand row", 8000)
             return False
+        if self.project.is_open():
+            # a run implies persistence: the scene reopens with this
+            # config pre-populated even if the run is never repeated
+            try:
+                self.project.set_tolerance_config(config)
+            except Exception:
+                pass
         args = ToleranceController.build_args(config)
         if not self.tolerance_ctl.start(self.model_path, args,
                                         extra_env=self._run_env()):
@@ -1991,6 +2368,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Optimize: add at least one operand row", 8000)
             return False
+        if self.project.is_open():
+            # a run implies persistence: the scene reopens with this
+            # config pre-populated even if the run is never repeated
+            try:
+                self.project.set_optimize_config(config)
+            except Exception:
+                pass
         args = OptimizeController.build_args(config)
         if not self.optimizer_ctl.start(self.model_path, args,
                                         extra_env=self._run_env()):
@@ -2000,6 +2384,33 @@ class MainWindow(QMainWindow):
         self.stage_chips["optimize"].setStyleSheet(
             self._chip_style(_CHIP_COLORS["running"]))
         self.statusBar().showMessage("Optimization started")
+        return True
+
+    def _on_apply_optimum(self):
+        """Apply optimum: write the optimizer's best-found parameters back
+        into the scene (one undo step). Dialog-free — problems land in the
+        status bar (offscreen-test discipline)."""
+        if not self.project.is_open():
+            self.statusBar().showMessage(
+                "Open a model before applying an optimum", 8000)
+            return False
+        if self.optimizer_ctl.is_running():
+            self.statusBar().showMessage(
+                "Wait for the optimization to finish before applying", 8000)
+            return False
+        params = self.optimize_pane.best_params()
+        if not params:
+            self.statusBar().showMessage("No optimum to apply yet", 8000)
+            return False
+        try:
+            self.project.apply_parameter_values(params)
+        except Exception as exc:
+            self.statusBar().showMessage("Apply optimum: %s" % exc, 8000)
+            return False
+        self.optimize_pane.set_start_values(params)
+        summary = "  ".join("%s=%.6g" % (k, v)
+                            for k, v in sorted(params.items()))
+        self.statusBar().showMessage("Applied optimum:  %s" % summary, 8000)
         return True
 
     def _on_optimize_finished(self, exit_code):
@@ -2931,12 +3342,37 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_settings_dialog(self):
         """Simulation menu > Simulation Settings…: view/edit the settings
-        WITHOUT running. OK persists them into the open .MieWB (settings
-        travel with the project); Cancel leaves the widget state as-is
-        (it is the shared matrix, so any edits made before Cancel remain
-        visible in the Run dialog but are not written to the archive)."""
-        dialog, buttons = self._config_matrix_dialog(
-            "Simulation Settings", "OK")
+        WITHOUT running. Tabbed: "Simulation" is the shared ConfigMatrix
+        widget (reparenting/OK/apply semantics UNCHANGED from before —
+        deliberately NOT routed through _config_matrix_dialog, which
+        Run Pipeline… still uses standalone); "Ray Preview" is the
+        persistent per-document preview-pattern editor (WP2). OK persists
+        simparams into the open .MieWB exactly as before, and (if the
+        pattern changed) the preview spec into the project + QSettings;
+        Cancel leaves both widgets' state as-is (shared instances, so
+        edits made before Cancel remain visible next time but are not
+        written anywhere)."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Simulation Settings")
+        layout = QVBoxLayout(dialog)
+
+        tabs = QTabWidget()
+        tabs.addTab(self.config_matrix, "Simulation")
+        tabs.addTab(self.preview_config, "Ray Preview")
+        layout.addWidget(tabs)
+
+        original_spec = self._preview_pattern_spec()
+        try:
+            self.preview_config.set_spec(original_spec)
+        except ValueError:
+            pass
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        layout.addWidget(buttons)
+        dialog.resize(720, 640)
 
         def on_ok():
             if self.miewb_path:
@@ -2945,6 +3381,15 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(
                     "Settings applied for this session (open/save a "
                     ".MieWB to store them with the project)", 8000)
+            spec = self.preview_config.spec()
+            if spec != original_spec and self.project.is_open():
+                try:
+                    self.project.set_preview_config({"spec": spec})
+                except ProjectError as exc:
+                    self.statusBar().showMessage(
+                        "Could not save ray-preview pattern: %s" % exc,
+                        8000)
+            self.settings.set("preview_pattern_spec", spec)
             dialog.accept()
 
         buttons.accepted.connect(on_ok)

@@ -34,9 +34,17 @@ from raytracer.optprops import load_optical_properties        # noqa: E402
 from raytracer.materials import MaterialError, resolve_prop_path  # noqa: E402
 
 CATEGORIES = ("materials", "coatings", "polarizers", "filters", "gratings",
-              "uniaxial", "diffusers", "detectors", "emission")
+              "uniaxial", "diffusers", "detectors", "emission", "biaxial",
+              "figures", "nonlinear", "scatter", "instruments")
 
 # subdir=None means the registry lives directly at <root>/<filename>.
+# comment_prefix (optional, default None): set for a registry whose csv
+# allows full-line comments (currently only nonlinear/nonlinear.mienlo,
+# matching optprops._read_registry_commented) -- registry_fieldnames()/
+# registry_rows() strip lines starting with this prefix before DictReader,
+# and prop_editor._atomic_write_registry re-prepends the original leading
+# comment block on save so the packing-grammar documentation in the file
+# header survives a round-trip through the editor.
 CATEGORY_INFO = {
     "materials": {
         "registry_rel": "materials.miemat",
@@ -90,6 +98,42 @@ CATEGORY_INFO = {
         "registry_rel": "emission/emitters.miesrc",
         "file_dir": "emission/tables",
         "file_cols": ("table_csv",),
+        "file_alt_ext": ".mietab",
+    },
+    "biaxial": {
+        "registry_rel": "birefringence/biaxial.mibiax",
+        "file_dir": None,           # rows reference OTHER materials, not files
+        "file_cols": (),
+        "file_alt_ext": None,
+    },
+    "figures": {
+        "registry_rel": "figure/figures.miefig",
+        "file_dir": None,           # rows are self-contained (packed coeffs)
+        "file_cols": (),
+        "file_alt_ext": None,
+    },
+    "nonlinear": {
+        "registry_rel": "nonlinear/nonlinear.mienlo",
+        "file_dir": None,           # rows are self-contained (packed d/r coeffs)
+        "file_cols": (),
+        "file_alt_ext": None,
+        "comment_prefix": "#",      # full-line '#' comments document the
+                                     # d_il_pm_V/r_coeffs_pm_V packing grammar
+    },
+    "scatter": {
+        "registry_rel": "scatter/bsdf.miebsdf",
+        "file_dir": None,           # rows are self-contained (A/B/g inline)
+        "file_cols": (),
+        "file_alt_ext": None,
+    },
+    "instruments": {
+        "registry_rel": "instrument/instruments.mieinst",
+        "file_dir": "instrument/tables",
+        # only one of these three is populated on a given row (camera /
+        # powermeter / spectrometer respectively) -- table_path()/table_data()
+        # just need the first non-blank one, same pattern _CategoryEditor.
+        # _table_filename_for_row already implements for multi-file_cols.
+        "file_cols": ("qe_table", "responsivity_table", "detector_qe_table"),
         "file_alt_ext": ".mietab",
     },
 }
@@ -159,6 +203,11 @@ class PropLibrary:
             "diffusers": list(getattr(props, "diffusers", {}) or {}),
             "detectors": list(getattr(props, "detectors", {}) or {}),
             "emission": list(getattr(props, "emission", {}) or {}),
+            "biaxial": list(getattr(props, "biaxial", {}) or {}),
+            "figures": list(getattr(props, "figures", {}) or {}),
+            "nonlinear": list(getattr(props, "nonlinear", {}) or {}),
+            "scatter": list(getattr(props, "scatter", {}) or {}),
+            "instruments": list(getattr(props, "instruments", {}) or {}),
         }
 
     def material_names(self):
@@ -174,24 +223,38 @@ class PropLibrary:
         _check_category(category)
         return resolve_prop_path(self.root / CATEGORY_INFO[category]["registry_rel"])
 
+    def _registry_dictreader_lines(self, category, fh):
+        """Lines of an open registry file, with full-line comments dropped
+        for a category whose CATEGORY_INFO sets comment_prefix (currently
+        only 'nonlinear', matching optprops._read_registry_commented's
+        skip rule) -- otherwise every line, unchanged."""
+        prefix = CATEGORY_INFO[category].get("comment_prefix")
+        if not prefix:
+            return fh
+        return (line for line in fh if not line.lstrip().startswith(prefix))
+
     def registry_fieldnames(self, category):
         """Column header of the category's registry csv."""
+        _check_category(category)
         path = self.registry_path(category)
         if not path.exists():
             raise PropLibraryError("%s registry not found: %s"
                                    % (category, path))
         with open(path, newline="") as fh:
-            return list(csv.DictReader(fh).fieldnames or [])
+            lines = self._registry_dictreader_lines(category, fh)
+            return list(csv.DictReader(lines).fieldnames or [])
 
     def registry_rows(self, category):
         """List of dict rows (csv.DictReader) for the category's registry
         -- the raw csv content, not the loader's parsed/validated form (the
         loader drops columns once resolved, e.g. table_csv/nk_file paths)."""
+        _check_category(category)
         path = self.registry_path(category)
         if not path.exists():
             return []
         with open(path, newline="") as fh:
-            return list(csv.DictReader(fh))
+            lines = self._registry_dictreader_lines(category, fh)
+            return list(csv.DictReader(lines))
 
     def table_path(self, category, filename):
         """Resolve a per-row referenced file (nk_file / table / table_csv

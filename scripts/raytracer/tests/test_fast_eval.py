@@ -340,3 +340,23 @@ def test_param_vector_is_locked(session):
         ev.evaluate({"lenspos": 1.0})
     with pytest.raises(ValueError, match="non-empty"):
         ev.evaluate({})
+
+
+def test_many_param_variant_name_is_bounded():
+    """A full auto-generated tolerance table (~30 rows) chains every
+    parameter into the variant stem; shorten_variant must cap it below
+    NAME_MAX headroom, deterministically, without colliding distinct
+    vectors (the regression: OSError Errno 36 at ~15+ rows)."""
+    stem = "camera_triplet"
+    names = ["train.L%d.decenter_x" % i for i in range(10)] + \
+            ["train.L%d.tilt_rx" % i for i in range(10)] + \
+            ["dim_L%d.ct" % i for i in range(10)]
+    full = stem
+    for n in names:
+        full = common.variant_name(full, n, 0.0123456)
+    assert len(full) > 255  # the raw chain really would overrun NAME_MAX
+    short = common.shorten_variant(full)
+    assert len(short) <= common.VARIANT_NAME_LIMIT
+    assert short == common.shorten_variant(full)  # deterministic
+    other = common.variant_name(full, "train.L9.tilt_ry", 0.5)
+    assert common.shorten_variant(other) != short  # distinct vectors differ

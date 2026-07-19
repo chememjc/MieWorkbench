@@ -298,6 +298,25 @@ SCENES = {
         "detector_x_mm": 45.0,
         "faces_plate": {"plane": 6},
     },
+    "waveplate_mgf2": {
+        "description": "multi-order (m=30) half-wave MgF2 plate at 589nm "
+                       "between crossed ideal_linear polarizers at +/-45deg; "
+                       "crystal_axis '0,0,1'. Same physics as "
+                       "waveplate_quartz but MgF2 carries NO gyration data, "
+                       "so the scene stays C-engine routable (quartz is "
+                       "gyrotropic and reference-routes by design) — this is "
+                       "the C-parity uniaxial-retardance coverage scene.",
+        "material": "mgf2", "crystal_axis_local": "0,0,1",
+        "lambda_nm": 589.0, "order_m": 30,
+        "n_o_589": 1.37772, "n_e_589": 1.38953, "delta_n": 0.011812,
+        "thickness_mm": 1.5209, "retardance_waves": 30.5,
+        "pol_in_axis_local": "0,0.70711,0.70711",   # +45 in the y-z plane
+        "pol_out_axis_local": "0,-0.70711,0.70711",  # -45, crossed vs pol_in
+        "substrate_material": "air",
+        "expected_transmission_factor": 1.0,  # sin^2(delta/2), delta=pi
+        "detector_x_mm": 45.0,
+        "faces_plate": {"plane": 6},
+    },
     "pbs_cube": {
         "description": "20mm BK7 polarizing-beamsplitter cube: two 45deg "
                        "right-angle prisms, first prism's hypotenuse coated "
@@ -1192,9 +1211,9 @@ def make_pol_circular(outpath):
         App.closeDocument(doc.Name)
 
 
-def make_waveplate_quartz(outpath):
-    s = SCENES["waveplate_quartz"]
-    doc = App.newDocument("waveplate_quartz")
+def make_waveplate_quartz(outpath, scene_key="waveplate_quartz"):
+    s = SCENES[scene_key]
+    doc = App.newDocument(scene_key)
     try:
         # input polarizer +45
         new_body_pad(doc, "PolIn", "PolIn",
@@ -1614,6 +1633,8 @@ BUILDERS = {
     "pol_crossed": make_pol_crossed,
     "pol_circular": make_pol_circular,
     "waveplate_quartz": make_waveplate_quartz,
+    "waveplate_mgf2": lambda outpath: make_waveplate_quartz(
+        outpath, scene_key="waveplate_mgf2"),
     "pbs_cube": make_pbs_cube,
     "calcite_displacer": make_calcite_displacer,
     "wollaston": make_wollaston,

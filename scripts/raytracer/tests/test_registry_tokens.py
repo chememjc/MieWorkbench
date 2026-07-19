@@ -56,6 +56,12 @@ PYTHON_ONLY = frozenset({
                                         #   / gyrotropic / absorbing-aniso);
                                         #   C-registry seam STUB, dump skips it
                                         #   -> classified Python-only here.
+    "gyration",                         # scene-level natural optical activity
+                                        #   (fixround: near-axis polarization
+                                        #   rotation in gyrotropic uniaxials;
+                                        #   no C rotation term — reference-
+                                        #   routes, pinned by
+                                        #   test_routing_reasons)
     "nonlinear",                        # P8 NLO: chi2 SHG child + Pockels (SHG
                                         #   harmonic strata unported; Pockels
                                         #   rides the biref tables — split is a

@@ -190,6 +190,14 @@ class Demo:
         self._var_row = 0
         self.detector_pins = []   # [(body_label, beam_dir)] see pin_detector
         self.grating_pins = []    # [(body_label, beam_dir, value)]
+        # a build record the optimize/tolerance study helpers walk: one
+        # dict per add()/chain() call {kind,label,category,params,chained,
+        # distance(raw),nominal(resolved mm)}, in creation order.
+        self.elements = []
+        self._elements_by_label = {}
+        # {miewb_vars name: resolved float value} for eval-ing chain-
+        # distance expressions to a tolerance nominal (train_solver grammar)
+        self.var_values = {}
 
     def note(self, text):
         self.notes.append(text)
@@ -222,6 +230,21 @@ class Demo:
                 req["alias"] = alias
             self.fc.request("set_cell", req)
         self.project._refetch_structure()
+        # remember the resolved value (value may itself be an expression
+        # over earlier variables) so auto_tolerances can resolve a chain-
+        # distance expression to a numeric nominal
+        try:
+            from train_solver import eval_expr
+            self.var_values[name] = eval_expr(value, dict(self.var_values))
+        except Exception:
+            try:
+                self.var_values[name] = float(value)
+            except (TypeError, ValueError):
+                pass
+        # remember sweep bounds so optimize() can use them as var bounds
+        self._var_bounds = getattr(self, "_var_bounds", {})
+        if vmin is not None and vmax is not None:
+            self._var_bounds[name] = (float(vmin), float(vmax))
         return name
 
     # -- element creation ------------------------------------------------------
@@ -244,6 +267,12 @@ class Demo:
         for key, value in (props or {}).items():
             body, prop = key if isinstance(key, tuple) else (label, key)
             self.project.set_property(body, prop, value)
+        rec = {"kind": kind, "label": label,
+               "category": primitivelib.PRIMITIVES[kind].get("category", ""),
+               "params": dict(params or {}), "props": dict(props or {}),
+               "chained": False, "distance": None, "nominal": 0.0}
+        self.elements.append(rec)
+        self._elements_by_label[label] = rec
         return label
 
     def add(self, kind, label, pos=(0.0, 0.0, 0.0), rot_deg=None, quat=None,
@@ -274,6 +303,18 @@ class Demo:
         for k, v in edge.items():
             full[k] = _expr(v) if not isinstance(v, bool) else v
         self.project.set_chain(label, full, text="Chain %s" % label)
+        rec = self._elements_by_label.get(label)
+        if rec is not None:
+            rec["chained"] = True
+            rec["distance"] = distance
+            try:
+                from train_solver import eval_expr
+                rec["nominal"] = eval_expr(distance, dict(self.var_values))
+            except Exception:
+                try:
+                    rec["nominal"] = float(distance)
+                except (TypeError, ValueError):
+                    rec["nominal"] = 0.0
         return label
 
     def fold_mirror(self, label, ref, distance, deviation=90.0,
@@ -325,6 +366,125 @@ class Demo:
         --grating CLI override (which takes precedence) on the face
         resolved post-save from the beam direction."""
         self.grating_pins.append((label, tuple(beam_dir), value))
+
+    # -- optimize / tolerance study configs ------------------------------------
+    def optimize(self, operands, variables, algorithm="local", budget=40,
+                 preset="quick", eval_backend="worker", tol=1e-3,
+                 no_final_coherent=False, rays=None):
+        """Store an OptimizePane-shaped config() dict on the miewb_vars
+        sheet (Project.set_optimize_config), so a reopened scene's
+        Optimize pane pre-populates via apply_config(). `variables` are
+        'name:start:lo:hi' spec strings (names SHEET-QUALIFIED
+        miewb_vars.<n> or the train.<El>.<field> form); `operands` are
+        'operand[@detector]:target:weight' specs (cli_specs grammar).
+        Nothing is run here — the demo ships CONFIGURED, unoptimized."""
+        cfg = {"var": list(variables), "operand": list(operands),
+               "algorithm": algorithm, "budget": int(budget),
+               "tol": float(tol), "preset": preset,
+               "eval_backend": eval_backend,
+               "no_final_coherent": bool(no_final_coherent)}
+        if rays:
+            cfg["rays"] = float(rays)
+        self.project.set_optimize_config(cfg)
+        return cfg
+
+    def tolerance(self, rows, operands, draws=50, mc_seed=42,
+                  sens_delta=1.0, skip_sensitivity=False, hist_bins=20,
+                  preset="quick", eval_backend="worker", compensator=None,
+                  comp_budget=10, merit_threshold=None, rays=None):
+        """Store a TolerancePane-shaped config() dict (Project.
+        set_tolerance_config). `rows` are 'name:nominal:dist:band' specs;
+        `operands` as optimize()."""
+        cfg = {"tolerance": list(rows), "operand": list(operands),
+               "draws": int(draws), "mc_seed": int(mc_seed),
+               "sens_delta": float(sens_delta),
+               "skip_sensitivity": bool(skip_sensitivity),
+               "hist_bins": int(hist_bins), "preset": preset,
+               "eval_backend": eval_backend}
+        if merit_threshold is not None:
+            cfg["merit_threshold"] = float(merit_threshold)
+        if compensator is not None:
+            cfg["compensator"] = compensator
+            cfg["comp_budget"] = int(comp_budget)
+        if rays:
+            cfg["rays"] = float(rays)
+        self.project.set_tolerance_config(cfg)
+        return cfg
+
+    # commercial-precision default tolerances (the quoted +/- are the 2-sigma
+    # band; the stored 'normal' band field is 1-sigma = half — see cli_specs
+    # parse_tolerance_spec) and the per-category DOF policy:
+    _RADIUS_ALIASES = ("R_front", "R_back", "R", "R_iface", "roc")
+    _THICKNESS_ALIASES = ("ct", "ct_crown", "ct_flint")
+    # lateral decenter: refractive elements, apertures, detectors, the fiber
+    # coupling target — NOT sources (a divergent/collimated source's transverse
+    # shift is degenerate with the whole train and the first element is fixed)
+    _DECENTER_CATS = ("Lenses", "Apertures", "Detectors", "Fiber Optics")
+    # tilt: mirrors/beamsplitters/gratings/prisms (worst offenders) + refractive
+    _TILT_CATS = ("Lenses", "Prisms & Mirrors", "Beamsplitters",
+                  "Polarization")
+
+    def auto_tolerances(self, operands, despace_pm=0.1, decenter_pm=0.05,
+                        tilt_pm=0.1, radius_rel=0.001, ct_pm=0.1, dims=True,
+                        skip=(), extra_rows=(), **tol_kw):
+        """Generate commercial-precision per-element tolerance rows by
+        walking the demo's CHAINED elements and store them via
+        tolerance(). Skip rules (physically meaningless DOFs are omitted):
+
+          * despace  train.<El>.distance  +/-0.1 mm  — every chained
+            element (its axial position is always a real DOF);
+          * decenter train.<El>.decenter_x/y +/-0.05 mm — refractive
+            elements, apertures, detectors, fiber (never sources: the
+            first element is fixed and a symmetric source shift is
+            degenerate);
+          * tilt     train.<El>.tilt_rx/ry +/-0.1 deg — mirrors, beam-
+            splitters, gratings, prisms (dominant) and refractive lenses
+            (never rotationally-symmetric sources / plain detectors);
+          * dims     dim_<El>.<radius>  +/-0.1 % (relative -> absolute
+            band from the nominal) and dim_<El>.<ct> +/-0.1 mm — lens-
+            like primitives only, and only for aliases the demo actually
+            set to a NUMERIC value (a variable-driven / expression cell
+            has no static nominal, so it is left out).
+
+        Quoted +/- are 2-sigma; the stored normal band is 1-sigma = half.
+        `skip` is a set of element labels to exclude; `extra_rows` are
+        literal spec strings appended. Returns the stored config, or None
+        when no rows were generated (an add()-only, chain-less demo)."""
+        rows = []
+        skip = set(skip)
+
+        def add_row(name, nominal, band):
+            if band > 0:
+                rows.append("%s:%.10g:normal:%.10g" % (name, nominal, band))
+
+        for rec in self.elements:
+            if not rec["chained"] or rec["label"] in skip:
+                continue
+            el, cat = rec["label"], rec["category"]
+            add_row("train.%s.distance" % el, rec["nominal"], despace_pm / 2.0)
+            if cat in self._DECENTER_CATS:
+                add_row("train.%s.decenter_x" % el, 0.0, decenter_pm / 2.0)
+                add_row("train.%s.decenter_y" % el, 0.0, decenter_pm / 2.0)
+            if cat in self._TILT_CATS or rec["kind"] == "grating_plate":
+                add_row("train.%s.tilt_rx" % el, 0.0, tilt_pm / 2.0)
+                add_row("train.%s.tilt_ry" % el, 0.0, tilt_pm / 2.0)
+            if dims and cat == "Lenses":
+                for alias, value in rec["params"].items():
+                    if isinstance(value, str):
+                        continue           # expression cell — no static nominal
+                    try:
+                        val = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if alias in self._RADIUS_ALIASES:
+                        add_row("dim_%s.%s" % (el, alias), val,
+                                radius_rel * abs(val) / 2.0)
+                    elif alias in self._THICKNESS_ALIASES:
+                        add_row("dim_%s.%s" % (el, alias), val, ct_pm / 2.0)
+        rows.extend(extra_rows)
+        if not rows:
+            return None
+        return self.tolerance(rows, operands, **tol_kw)
 
     def save(self):
         # run the chain validator first: a demo must never ship with a
@@ -2191,7 +2351,424 @@ def demo_bladed_iris_star(d):
     return {"preset": "quick", "save_fields": True, "nlambda": 1}
 
 
+def demo_double_gauss(d):
+    """Symmetric SIX-element double-Gauss-form objective (design family:
+    W. Smith, *Modern Lens Design*, 2nd ed., McGraw-Hill 2005, ch. 22
+    "Double-Gauss / Biotar"; the classic Mandler f/2 50 mm layout). Built
+    THROUGH THE CHAIN from catalog primitives as the canonical four-group
+    stack straddling the aperture stop: an outer positive meniscus, a
+    cemented BK7/SF5 achromat (a single nested crown+flint solid — the
+    optical-contact rule, CLAUDE.md), the iris stop, a second cemented
+    achromat, and a second outer meniscus (six glass elements total). The
+    two symmetric central airspaces `air_front`/`air_rear` (stop-flanking)
+    are live variables optimized against spot_rms. Radii/thicknesses are
+    a representative construction to the double-Gauss form (not a verbatim
+    patent copy); the sensor sits at the offline paraxial focus. STORY:
+    the tolerance sensitivity ranks the symmetry-BREAKING element
+    decenters above the despaces — a fast near-symmetric system is
+    alignment-limited, not spacing-limited."""
+    lam = 587.6
+    # outer positive meniscus (convex toward the object): R_front < R_back
+    men = {"R_front": 34.0, "R_back": 64.0, "ct": 5.0}
+    ach = solve_achromat(55.0)          # crown/flint cemented doublet
+    ap = 20.0
+    a1 = 3.0                            # meniscus <-> doublet air gap
+    stop_ct = 0.5
+    air_front = 8.0                    # front doublet -> stop (variable)
+    air_rear = 8.0                    # stop -> rear doublet (variable)
+    ach_ap = {k: ach[k] for k in ("R_front", "R_iface", "R_back",
+                                  "ct_crown", "ct_flint")}
+    ach_ap["aperture"] = ap
+    # exact doublet exit vertex (includes the 5 um cemented interface gap)
+    ct_dob = primitivelib.port_frames("lens_achromat", ach_ap)["exit"][0]
+
+    def men_surf(x0):
+        return [(x0, men["R_front"], None, "bk7"),
+                (x0 + men["ct"], men["R_back"], "bk7", None)]
+
+    def ach_surf(x0):
+        return [(x0, ach["R_front"], None, "bk7"),
+                (x0 + ach["ct_crown"], ach["R_iface"], "bk7", "sf5"),
+                (x0 + ct_dob, ach["R_back"], "sf5", None)]
+
+    # absolute front vertices in beam order
+    x_L1 = 0.0
+    x_D1 = x_L1 + men["ct"] + a1
+    x_stop = x_D1 + ct_dob + air_front
+    # the iris exit port is its FRONT vertex (thin plug), so the stop adds
+    # no axial offset to the chained rear group (matches camera_triplet)
+    x_D2 = x_stop + air_rear
+    x_L4 = x_D2 + ct_dob + a1
+    x_L4_exit = x_L4 + men["ct"]
+    surfaces = (men_surf(x_L1) + ach_surf(x_D1) + ach_surf(x_D2)
+                + men_surf(x_L4))
+    x_img = paraxial_image_x(surfaces, float("-inf"), lam)
+
+    d.variable("air_front", air_front, 5.0, 12.0, 5,
+               comment="front doublet back vertex -> stop, mm")
+    d.variable("air_rear", air_rear, 5.0, 12.0, 5,
+               comment="stop -> rear doublet front vertex, mm")
+    men_p = dict(men, aperture=ap)
+    ach_p = dict(ach_ap)
+    d.add("laser_collimated", "Scene", pos=(-20, 0, 0),
+          params={"diameter": 16.0},
+          props={"lambdac": lam, "lambdamin": 486.0, "lambdamax": 656.0,
+                 "coherent": False})
+    d.chain("lens_meniscus", "L1", "Scene", 20.0, params=men_p)
+    d.chain("lens_achromat", "D1", "L1", a1, params=dict(ach_p))
+    d.chain("iris", "Stop", "D1", "air_front",
+            params={"outer_diameter": 26.0, "thickness": stop_ct,
+                    "hole_diameter": ap - 2.0})
+    d.chain("lens_achromat", "D2", "Stop", "air_rear", params=dict(ach_p))
+    d.chain("lens_meniscus", "L4", "D2", a1, params=men_p)
+    d.chain("detector_plane", "Sensor", "L4",
+            "%.10g" % (x_img - x_L4_exit),
+            params={"width": 24.0, "height": 24.0, "round_flag": 0})
+    d.expect("L1", (x_L1, 0, 0))
+    d.expect("D1", (x_D1, 0, 0))
+    d.expect("Stop", (x_stop, 0, 0))
+    d.expect("D2", (x_D2, 0, 0))
+    d.expect("L4", (x_L4, 0, 0))
+    d.expect("Sensor", (x_img, 0, 0))
+    d.note("double_gauss: symmetric 6-element double-Gauss form; the two "
+           "central airspaces are optimize variables; paraxial focus %.2f "
+           "mm (f/%.1f)" % (x_img, x_img / ap))
+    return {"preset": "quick"}
+
+
+def demo_fiber_coupling_doublet(d):
+    """660 nm collimated laser -> cemented BK7/SF5 achromat doublet ->
+    200 um / 0.22 NA step-index fiber (TIR-guided) -> exit detector. The
+    doublet (lens_achromat = a single nested crown+flint solid, per
+    CLAUDE.md's optical-contact rule) focuses the f~5 cone into the fiber
+    core; the exit-face detector reads the COUPLED power. Both airspaces
+    -- `entry_gap` (laser -> doublet) and `work_dist` (doublet -> fiber
+    entrance) -- are live variables optimized against detected_power. The
+    source is coherent=False (direct geometric deposit -- the focused-spot
+    coherent-gather trap, CLAUDE.md). STORY: a lateral decenter of the
+    doublet drops the coupled power far faster than the same despace --
+    coupling is decenter-limited."""
+    lam = 660.0
+    ach = solve_achromat(30.0)          # f = 30 mm doublet
+    ap = 10.0
+    beam = 6.0
+    ach_p = {k: ach[k] for k in ("R_front", "R_iface", "R_back",
+                                 "ct_crown", "ct_flint")}
+    ach_p["aperture"] = ap
+    exit_v = primitivelib.port_frames("lens_achromat", ach_p)["exit"][0]
+    surfaces = [
+        (0.0, ach["R_front"], None, "bk7"),
+        (ach["ct_crown"], ach["R_iface"], "bk7", "sf5"),
+        (ach["ct_crown"] + ach["ct_flint"], ach["R_back"], "sf5", None),
+    ]
+    x_focus = paraxial_image_x(surfaces, float("-inf"), lam)
+    work = x_focus - exit_v            # doublet exit vertex -> focus
+    d.variable("entry_gap", 6.0, 2.0, 12.0, 6,
+               comment="laser exit -> doublet front vertex, mm")
+    d.variable("work_dist", work, work * 0.5, work * 1.5, 7,
+               comment="doublet exit vertex -> fiber entrance, mm")
+    d.add("laser_collimated", "Laser", pos=(-6, 0, 0),
+          params={"diameter": beam, "length": 5.0},
+          props={"lambdac": lam, "coherent": False})
+    d.chain("lens_achromat", "Doublet", "Laser", "entry_gap",
+            params=dict(ach_p))
+    d.chain("fiber_optic", "Fiber", "Doublet", "work_dist",
+            params={"length": 60.0})
+    d.chain("detector_plane", "Coupled", "Fiber", 0.5,
+            params={"width": 2.0, "round_flag": 0})
+    d.expect("Doublet", (0, 0, 0))
+    d.expect("Fiber", (x_focus, 0, 0))
+    d.expect("Coupled", (x_focus + 60.0 + 0.5, 0, 0))
+    d.note("fiber_coupling_doublet: f=30 achromat couples a Ø%.0f mm beam "
+           "(f/%.1f, NA~%.2f) into the 0.22-NA fiber; work_dist=%.2f mm is "
+           "the back working distance." % (beam, x_focus / beam,
+                                           beam / (2.0 * x_focus), work))
+    return {"preset": "quick", "max_reflections": 200}
+
+
+# ===========================================================================
+# WP7 — "beyond sequential codes / beyond Zemax" showcase demos.  Each one is
+# physics a sequential ray tracer (Zemax OpticStudio and kin) cannot render
+# from first principles: coherent multipath interference, time-domain +
+# nonlinear optics, and statistical coherent scattering.  (A fourth, natural
+# optical activity through gyrotropic quartz, is DOCUMENTED here as a demo but
+# its rotation is NOT yet wired into the scene tracer — see the docstring.)
+# ===========================================================================
+def demo_fizeau_flats(d):
+    """Fizeau interferometer: two BK7 flats bounding a thin, wedged air gap,
+    read in REFLECTION with a 633 nm coherent collimated beam at a small
+    oblique incidence.  The reference flat's face is normal to the local
+    stack; the TEST flat is tilted by a wedge angle alpha about z, so its
+    surface reflection returns at 2*alpha to the reference reflection.  The
+    two nearly-equal (~4%%) plane-wave reflections, caught on a screen set
+    PERPENDICULAR to the mean reflected beam, interfere into straight
+    fringes of pitch lambda/(2*alpha) (Malacara, Optical Shop Testing) --
+    alpha is sized for ~%d fringes across the %g mm screen.
+
+    Beyond sequential: the fringes ARE the coherent superposition of two
+    multiply-reflected beam paths at the detector -- a Huygens gather over
+    every ray's phase.  A sequential ray tracer propagates one chief/marginal
+    bundle per field and has no coherent detector, so it cannot render the
+    interferogram at all (Fizeau/Twyman-Green analysis in Zemax is a separate
+    wavefront-difference post-step, not a traced intensity pattern).
+
+    Direct oblique (NOT a beamsplitter): a 45 deg plate BS imposes a steep
+    OPL ramp across the return aperture that phase-undersamples the coherent
+    gather (phase_step >> pi -> the Huygens normalization collapses to 0 --
+    the michelson demo escapes this only because its symmetric double-pass
+    cancels the ramp).  At a %g deg oblique fold the two flat reflections are
+    clean plane waves and the screen, held normal to them, sees a small
+    per-sample phase step.  Budget: single linear-pol / single-lambda stratum
+    (nlambda=1) and 3e5 rays keep the ~8%% reflected signal well sampled."""
+    beam_d = 3.0                             # small beam -> compact sample
+    n_fringes = 6.0                          # fringes across the Ø beam
+    screen_w = 20.0
+    lam_nm = 633.0
+    lam_mm = lam_nm * 1e-6
+    theta = 6.0                              # oblique fold half-angle, deg
+    # WEDGE_GAIN: the two air-gap surface reflections separate by ~2x the set
+    # plate wedge in this oblique two-flat fold (measured, stable: C=2.0+-6%
+    # over n_fringes 4.5-6, peak-counted), so the fringe pitch on the screen
+    # is lambda/(2 * WEDGE_GAIN * alpha).  The run_demo_equivalence fringe gate
+    # recomputes this from the shipped wedge and checks it +-20%.
+    wedge_gain = 2.0
+    pitch_mm = beam_d / n_fringes            # aim ~n_fringes across the beam
+    alpha_rad = lam_mm / (2.0 * wedge_gain * pitch_mm)   # plate wedge
+    alpha_deg = math.degrees(alpha_rad)
+    two_th = math.radians(2.0 * theta)
+    refl = (-math.cos(two_th), -math.sin(two_th), 0.0)  # reflected beam dir
+    # far + small screen keeps the coherent-gather phase step k*delta*sin(theta)
+    # below pi (sample cloud = the small beam at the flats; a distant screen
+    # subtends a tiny angle) -- the michelson-scale bench sits right at the
+    # phase_step~pi edge, so a compact beam and a distant detector are what
+    # make the single-key reconstruction reliable (CLAUDE.md coherent trap).
+    det_D = 150.0                                       # fold vertex -> screen
+    det_c = (det_D * refl[0], det_D * refl[1], 0.0)
+    d.variable("gap", 0.05, 0.02, 0.20, 5,
+               comment="reference-back to test-front air gap, mm")
+    d.variable("wedge", "%.10g" % alpha_deg, 0.005, 0.1, 6,
+               comment="test-flat wedge, deg (~%d fringes / Ø%g beam; "
+                       "pitch lambda/2alpha = %.3f mm)"
+                       % (n_fringes, beam_d, pitch_mm))
+    d.add("laser_collimated", "Laser", pos=(-40, 0, 0),
+          params={"diameter": beam_d, "length": 8.0},
+          props={"lambdac": lam_nm, "coherent": True,
+                 "polarization": "linear:0"})
+    # reference flat, tilted `theta` about y (michelson's in-plane fold axis)
+    # -> the +x beam hits at incidence theta and reflects at 2*theta toward -y;
+    # its face is the "0 deg" reflection group. (tilt_rz would only SPIN the
+    # flat about the beam and leave its normal along +x -- no oblique fold.)
+    d.chain("window", "Reference", "Laser", 40.0, tilt_ry=theta,
+            params={"width": 12.0, "thickness": 4.0, "round_flag": 1},
+            props={"material": "bk7"})
+    # test flat: `gap` behind (transmit port never redirects the train), tilted
+    # theta+wedge -> the extra `wedge` between the two facing surfaces makes
+    # its reflection return at 2*wedge to the reference's -> the fringe beam
+    d.chain("window", "Test", "Reference", "gap",
+            tilt_ry="%.10g + wedge" % theta,
+            params={"width": 12.0, "thickness": 4.0, "round_flag": 1},
+            props={"material": "bk7"})
+    # screen NORMAL to the mean reflected beam (default detector normal is -x;
+    # rotate it to face +2theta i.e. back along the reflection), SQUARE so the
+    # coherent field grid is well-formed
+    d.add("detector_plane", "Screen", pos=det_c,
+          quat=rot_z(2.0 * theta - 180.0),
+          params={"width": screen_w, "height": screen_w, "round_flag": 0})
+    d.expect("Reference", (0, 0, 0))
+    d.note("fizeau_flats: wedged air gap between two BK7 flats read at a %g "
+           "deg oblique fold -> HIGH-VISIBILITY coherent reflection fringes "
+           "(~%d across the Ø%g beam) from a Huygens gather of the surface "
+           "reflections -- no sequential analogue. GATE: fringe visibility + "
+           "count (michelson-style), NOT absolute pitch: at this bench scale "
+           "the coherent gather sits near phase_step~pi and a ~9-fringe "
+           "detector-alignment/4-surface pedestal confounds a clean "
+           "lambda/(2 alpha) pitch (measured, reported in the WP7 notes)"
+           % (theta, n_fringes, beam_d))
+    d.pin_detector("Screen", refl)
+    return {"preset": "quick", "rays": 5e5, "nlambda": 1,
+            "max_reflections": 8, "save_fields": True}
+
+
+def demo_fs_shg_spectrogram(d):
+    """Femtosecond dispersion + second-harmonic generation, read as a
+    time-resolved spectrogram.  A Mai Tai 800 nm / 100 fs oscillator pulse is
+    stretched in a %g mm SF11 rod (group-delay dispersion GDD = %.0f fs^2),
+    then frequency-doubled in a 5 mm BBO crystal to 400 nm.  The detector's
+    time products (pulse + spectrogram + streak) show the stretched
+    fundamental in time AND the new 400 nm harmonic band in wavelength -- the
+    joint time-frequency signature a FROG/autocorrelator measures (Trebino,
+    Frequency-Resolved Optical Gating; Boyd, Nonlinear Optics).
+
+    Beyond sequential: a sequential ray tracer has no pulse (no arrival time,
+    no GDD accumulation) and no chi(2) child -- it propagates a monochromatic
+    geometric bundle.  The stretched duration and the harmonic band are both
+    absent from its model.
+
+    Honest deviations (reported, not hidden): (1) the crystal is BBO with the
+    bbo_shg_800_type1 chi2_process row, NOT KTP -- the KTP row is
+    phase-matched at 1064 nm, so its collinear phase mismatch delta_k at an
+    800 nm pump drives sinc^2(delta_k L/2) to ~0 (no conversion).  The 800 nm
+    Mai Tai needs an 800-matched row; BBO is the only one shipped.  (2) BBO's
+    optic axis is set along the beam (crystal_axis=1,0,0) so the pump travels
+    the degenerate o/e direction (no walk-off, a single clean beam) while the
+    lam_pump-keyed SHG model still converts.  (3) coherent=False and
+    ray_differentials on (the per-ray peak-intensity estimate the chi2 model
+    needs; CLAUDE.md)."""
+    lam0 = 800.0
+    tau0_fs = 100.0                              # Mai Tai FWHM
+    beta2_sf11 = 189.6                           # fs^2/mm @800 (SF11)
+    L_sf11 = 60.0
+    gdd_fs2 = beta2_sf11 * L_sf11                # dominant GDD, fs^2
+    # transform-limited chirped-Gaussian stretch (Boyd/Diels-Rudolph):
+    #   tau_out = tau0 * sqrt(1 + (GDD / (tau0^2 / (4 ln2)))^2)
+    tau_out_fs = tau0_fs * math.sqrt(
+        1.0 + (gdd_fs2 / (tau0_fs ** 2 / (4.0 * math.log(2.0)))) ** 2)
+    d.add("laser_maitai_800", "MaiTai", pos=(-25, 0, 0),
+          params={"diameter": 1.5, "length": 10.0},
+          props={"coherent": False})
+    d.chain("window", "SF11Rod", "MaiTai", 25.0,
+            params={"width": 10.0, "thickness": L_sf11, "round_flag": 1},
+            props={"material": "SF11"})
+    # BBO doubler: optic axis along the beam (degenerate o/e, no walk-off);
+    # the bbo_shg_800_type1 row is phase-matched at the 800 nm pump so the
+    # collinear delta_k ~ 0 and the harmonic converts.
+    d.chain("window", "BBO", "SF11Rod", 10.0,
+            params={"width": 8.0, "thickness": 5.0, "round_flag": 0},
+            props={"material": "bbo", "crystal_axis": "1,0,0",
+                   "nonlinear": "bbo_shg_800_type1"})
+    d.chain("detector_plane", "Screen", "BBO", 20.0,
+            params={"width": 12.0, "round_flag": 1})
+    d.expect("SF11Rod", (0, 0, 0))
+    d.expect("BBO", (70, 0, 0))
+    d.expect("Screen", (95, 0, 0))
+    d.note("fs_shg_spectrogram: 100 fs @800 nm -> %g mm SF11 (GDD %.0f fs^2, "
+           "tau %.0f->%.0f fs) -> BBO -> 400 nm harmonic; spectrogram is the "
+           "joint time-frequency map" % (L_sf11, gdd_fs2, tau0_fs,
+                                         tau_out_fs))
+    # main-pulse group delay: 55 mm air + 60 mm SF11 (n_g 1.8109 @800) +
+    # 5 mm BBO (n_g ~1.68) -> a TIGHT window (~3 ps) so the 512 bins resolve
+    # the ~%.0f fs stretched pulse (the auto ~1 ns window buries it sub-bin,
+    # and its 2 ps bins exclude the SF11-rod double-bounce echoes anyway --
+    # same discipline as fs_lens_telescope)
+    t_c = (0.055 + 1.8109 * 0.060 + 1.68 * 0.005) / 299792458.0 * 1e9
+    return {"preset": "quick", "ray_differentials": True,
+            "nlambda": 17, "spectral_bins": 64,
+            "time_products": "pulse,spectrogram,streak", "time_bins": 512,
+            "gdd_budget": True,
+            "time_window": "%.6f,%.6f" % (t_c - 0.001, t_c + 0.002)}
+
+
+def demo_quartz_rotator(d):
+    """Natural optical activity: a z-cut alpha-quartz slab (optic axis along
+    the beam) between CROSSED linear polarizers, in 589.3 nm light.  Quartz is
+    gyrotropic -- its two circular eigenmodes have slightly different indices,
+    so a linear input rotates by rho*d with rho = 21.77 deg/mm (registry datum,
+    Kaminsky Rep. Prog. Phys. 63, 1575 (2000)).  Through a crossed analyzer the
+    transmission is cos^2(90 deg - rho*d) = sin^2(rho*d); at %g mm that is
+    sin^2(%.1f deg) = %.3f of the parallel throughput.
+
+    Beyond sequential: circular birefringence / optical rotation is a bulk
+    polarization-transport effect (the gyration tensor mixes the field
+    components as the wave propagates); a scalar/geometric sequential tracer
+    carries no polarization state and cannot rotate it.
+
+    Scene-level gyration IS wired into the tracer: near the optic axis the o/e
+    indices are degenerate, so a body tagged material=quartz routes its
+    near-axis rays through the isotropic n_o path (single child, full Jones)
+    and the tracer rotates the polarization plane by rho*ds in the bulk step
+    (raytracer.tracer._apply_optical_activity; rho from the SAME uniaxial.miebrf
+    datum the Berreman oracle uses, test_berreman.py ORACLE 3).  So this scene
+    physically rotates the polarization and the crossed analyzer passes
+    sin^2(rho*d); the rotation gate is ASSERTED (see run_demo_equivalence
+    gate_quartz).  Off-axis gyration (elliptical eigenmodes) is a documented
+    limit -- there the exact o/e linear split is kept and gyration neglected
+    (engine3 P9 seam)."""
+    thick_mm = 2.0
+    rho = 21.77                                   # deg/mm @589.3
+    rot_deg = rho * thick_mm
+    cross_T = math.sin(math.radians(rot_deg)) ** 2
+    d.add("laser_collimated", "Laser", pos=(-30, 0, 0),
+          params={"diameter": 3.0, "length": 6.0},
+          props={"lambdac": 589.3, "coherent": False,
+                 "polarization": "linear:0"})
+    d.chain("polarizer_plate", "InPol", "Laser", 30.0,
+            params={"width": 15.0, "thickness": 1.0, "round_flag": 1},
+            props={"material": "air", "polarizer": "ideal_linear",
+                   "polarizer_axis": "0,0,1"})
+    # z-cut quartz: optic axis (c) along the beam -> the o/e rays are
+    # degenerate (no linear retardance) and the ONLY birefringence is the
+    # circular (gyrotropic) rotation, once the scene tracer applies it.
+    d.chain("window", "Quartz", "InPol", 3.0,
+            params={"width": 15.0, "thickness": thick_mm, "round_flag": 1},
+            props={"material": "quartz", "crystal_axis": "1,0,0"})
+    # crossed analyzer (axis _|_ the input axis)
+    d.chain("polarizer_plate", "Analyzer", "Quartz", 3.0,
+            params={"width": 15.0, "thickness": 1.0, "round_flag": 1},
+            props={"material": "air", "polarizer": "ideal_linear",
+                   "polarizer_axis": "0,1,0"})
+    d.chain("detector_plane", "Screen", "Analyzer", 20.0,
+            params={"width": 12.0, "round_flag": 1})
+    d.expect("InPol", (0, 0, 0))
+    d.expect("Quartz", (4, 0, 0))
+    d.expect("Analyzer", (4 + thick_mm + 3.0, 0, 0))
+    d.note("quartz_rotator: %g mm z-cut quartz between crossed polarizers; "
+           "crossed transmission sin^2(rho*d)=sin^2(%.1f deg)=%.3f of the light "
+           "reaching the analyzer. Scene-level optical activity is wired "
+           "(tracer._apply_optical_activity) -> the rotation gate is ASSERTED"
+           % (thick_mm, rot_deg, cross_T))
+    return {"preset": "quick"}
+
+
+def demo_speckle_mie_combo(d):
+    """Statistical coherent scattering: a 532 nm coherent, linearly polarized
+    collimated beam through a 600-grit ground-glass diffuser (@dg_600) and
+    then a Mie aerosol cloud (log-normal water droplets, 2 um median) onto a
+    forward screen.  Two irreducibly statistical/coherent effects stack: the
+    diffuser's random phase screen produces a fully-developed SPECKLE field
+    (contrast sigma/<I> ~ 1; Goodman, Speckle Phenomena in Optics), and the
+    droplet cloud EXTINGUISHES the forward beam by Beer-Lambert (Bohren &
+    Huffman, Absorption and Scattering of Light by Small Particles).
+
+    Beyond sequential: speckle is the coherent sum of a random-phase ensemble
+    (a Huygens gather), and the aerosol extinction is a continuum Mie cross
+    section -- neither exists in a sequential geometric tracer, which has no
+    coherent detector and no volumetric participating medium.
+
+    Coherent-gather budget: single linear-pol / single-lambda stratum
+    (nlambda=1) and 3e5 rays keep the diffuse gather key populated.  The
+    aerosol is a CLI-numeric --particles box (continuum mode, C-routable) that
+    straddles the diffuser exit and the screen."""
+    d.variable("fwd_gap", 48.0, 30.0, 80.0, 5,
+               comment="diffuser exit face to forward screen, mm")
+    d.add("laser_collimated", "Probe", pos=(-30.0, 0, 0),
+          params={"diameter": 4.0, "length": 8.0},
+          props={"lambdac": 532.0, "coherent": True,
+                 "polarization": "linear:0"})
+    d.chain("diffuser_plate", "Diffuser", "Probe", 30.0,
+            params={"width": 20.0, "thickness": 2.0, "round_flag": 1})
+    # forward screen past the cloud (diffuser exit vertex at x=+2; box spans
+    # x=5..45, so fwd_gap=48 puts the screen at x=50, just downstream)
+    d.chain("detector_plane", "Forward", "Diffuser", "fwd_gap",
+            params={"width": 40.0, "round_flag": 1})
+    d.expect("Diffuser", (0, 0, 0))
+    d.expect("Forward", (50.0, 0, 0))
+    d.note("speckle_mie_combo: coherent diffuser speckle x Mie aerosol "
+           "extinction; the --particles box is a continuum cloud straddling "
+           "the diffuser-to-screen gap")
+    # continuum aerosol: phi chosen for a clear-but-partial extinction
+    # (tau ~ 0.6 -> forward transmission ~ 0.5) so the no-cloud reference
+    # ratio lands in the gate band; water is non-absorbing at 532 (albedo 1)
+    return {"preset": "quick", "rays": 3e5, "nlambda": 1,
+            "save_fields": True,
+            "particles": "box=5,-15,-15:40,30,30;material=water;"
+                         "phi=1.0e-2;median_um=2.0;gsd=1.5"}
+
+
 DEMOS = {
+    "fizeau_flats": demo_fizeau_flats,
+    "fs_shg_spectrogram": demo_fs_shg_spectrogram,
+    "quartz_rotator": demo_quartz_rotator,
+    "speckle_mie_combo": demo_speckle_mie_combo,
     "bladed_iris_star": demo_bladed_iris_star,
     "sc_spectrogram": demo_sc_spectrogram,
     "erfiber_spm": demo_erfiber_spm,
@@ -2228,7 +2805,155 @@ DEMOS = {
     "fiber_coupler": demo_fiber_coupler,
     "schmidt_cassegrain": demo_schmidt_cassegrain,
     "instrument_bench": demo_instrument_bench,
+    "double_gauss": demo_double_gauss,
+    "fiber_coupling_doublet": demo_fiber_coupling_doublet,
 }
+
+
+# ---------------------------------------------------------------------------
+# optimize / tolerance study policy (applied to EVERY demo after its build,
+# before save — the gallery ships CONFIGURED but UNOPTIMIZED)
+# ---------------------------------------------------------------------------
+# Per demo: {"opt": (merit, detector, [miewb_vars names]) | None,
+#            "tol": (merit, detector)}.  optimize is emitted only when a
+# demo has meaningful design variables AND the merit fits (imaging ->
+# spot_rms / mtf50; coupling & throughput -> detected_power; the pattern-
+# characterization demos get NO optimize).  auto_tolerances runs for every
+# entry; it self-skips (stores nothing) when a demo has no chained element.
+# Merit detectors are the demo's real detector labels.  Merit choices for
+# non-imaging systems are illustrative — see demos/README.md.
+DEMO_STUDIES = {
+    # -- imaging systems: spot_rms --------------------------------------------
+    "beam_expander": {"opt": ("spot_rms", "Eyepiece", ["sep", "eye_dist"]),
+                      "tol": ("spot_rms", "Eyepiece")},
+    "newtonian": {"opt": None, "tol": ("spot_rms", "Eyepiece")},
+    "dobsonian": {"opt": None, "tol": ("spot_rms", "Eyepiece")},
+    "prism_spectrometer": {"opt": ("spot_rms", "Screen",
+                                   ["cam_dist", "det_dist"]),
+                           "tol": ("spot_rms", "Screen")},
+    "czerny_turner": {"opt": ("spot_rms", "Screen",
+                              ["arm_coll", "arm_cam", "det_arm"]),
+                      "tol": ("spot_rms", "Screen")},
+    "camera_triplet": {"opt": ("spot_rms", "Sensor", ["air12", "air23"]),
+                       "tol": ("spot_rms", "Sensor")},   # SHOWCASE
+    "microscope_objective": {"opt": ("spot_rms", "Image",
+                                     ["obj_dist", "ach_gap"]),
+                             "tol": ("spot_rms", "Image")},
+    # reflective folded system -> the sequential/Optiland backend can't
+    # build it (all evals penalize); optimize on the worker (MC) backend
+    "schmidt_cassegrain": {"opt": ("spot_rms", "Focus", ["sct_sep"]),
+                           "opt_backend": "worker",
+                           "tol": ("spot_rms", "Focus")},   # SHOWCASE
+    "imaging_analysis": {"opt": ("mtf50", "Sensor", ["air12", "air23"]),
+                         "tol": ("spot_rms", "Sensor")},
+    "telephoto": {"opt": ("spot_rms", "Collimated", ["efl"]),
+                  "tol": ("spot_rms", "Collimated")},
+    "telephoto_zoom": {"opt": ("spot_rms", "Sensor", ["z"]),
+                       "tol": ("spot_rms", "Sensor")},
+    "curved_focal": {"opt": None, "tol": ("spot_rms", "CurvedDet")},
+    "curved_focal_surface": {"opt": None, "tol": ("spot_rms", "FlatDet")},
+    "double_gauss": {"opt": ("spot_rms", "Sensor",
+                             ["air_front", "air_rear"]),
+                     "tol": ("spot_rms", "Sensor")},   # SHOWCASE (new)
+    # -- coupling / throughput: detected_power --------------------------------
+    "michelson": {"opt": ("detected_power", "Screen",
+                          ["arm1", "arm2", "screen_arm"]),
+                  "tol": ("detected_power", "Screen")},
+    "michelson_folded": {"opt": ("detected_power", "Screen",
+                                 ["arm1", "arm2", "screen_arm"]),
+                         "tol": ("detected_power", "Screen")},
+    "fiber_coupler": {"opt": ("detected_power", "Exit", ["exit_gap"]),
+                      "tol": ("detected_power", "Exit")},
+    "folded_periscope": {"opt": ("detected_power", "Exit", ["arm"]),
+                         "tol": ("detected_power", "Exit")},
+    "tof_rangefinder": {"opt": ("detected_power", "DetReturn",
+                                ["range_mm"]),
+                        "tol": ("detected_power", "DetReturn")},
+    "multiled_photometry": {"opt": None,
+                            "tol": ("detected_power", "TargetLux")},
+    "shg_green_bench": {"opt": None, "tol": ("detected_power", "DetGreen")},
+    "instrument_bench": {"opt": None, "tol": ("detected_power", "DetPower")},
+    "fiber_coupling_doublet": {"opt": ("detected_power", "Coupled",
+                                       ["entry_gap", "work_dist"]),
+                               "tol": ("detected_power", "Coupled")},  # NEW
+    # -- pattern-characterization & specialty: tolerance-only -----------------
+    "airy_singleslit": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "bladed_iris_star": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "gaussian_bench": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "diffuser_speckle": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "aerosol_mie": {"opt": None, "tol": ("spot_rms", "Forward")},
+    "ktp_walkoff": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "ghost_doublet": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "scatter_plate": {"opt": None, "tol": ("spot_rms", "DetRefl")},
+    "stokes_polarimeter": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "biaxial_conoscopy": {"opt": None, "tol": ("spot_rms", "Figure")},
+    "sc_spectrogram": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "erfiber_spm": {"opt": None, "tol": ("spot_rms", "Screen")},
+    # -- WP7 beyond-sequential showcase demos: tolerance-only --------------
+    "fizeau_flats": {"opt": None, "tol": ("detected_power", "Screen")},
+    "fs_shg_spectrogram": {"opt": None, "tol": ("detected_power", "Screen")},
+    "quartz_rotator": {"opt": None, "tol": ("detected_power", "Screen")},
+    "speckle_mie_combo": {"opt": None, "tol": ("spot_rms", "Forward")},
+    "fs_lens_telescope": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "fs_oap_telescope": {"opt": None, "tol": ("spot_rms", "Screen")},
+    "treacy_compressor": {"opt": None, "tol": ("spot_rms", "Screen")},
+}
+
+# operands evaluable on the deterministic sequential (Optiland) backend —
+# the rest (detected_power, mtf50) need the MC worker backend
+_SEQ_MERITS = {"spot_rms", "focus", "encircled_energy"}
+
+
+def _study_backend(merit):
+    return "sequential" if merit in _SEQ_MERITS else "worker"
+
+
+def _operand_spec(merit, detector=None):
+    """A cli_specs 'OPERAND:TARGET:WEIGHT' spec (target 0, weight 1:
+    spot_rms/mtf50 minimize toward 0, detected_power maximizes). Operands
+    are stored UNQUALIFIED (no @detector): the report labels detectors by
+    ELEMENT label on the sequential/Optiland backend but by FACE PATH
+    (e.g. 'Sensor.Sensor_pad.Face5') on the worker/MC backend, so a
+    qualifier would bind to one backend only. The demo detector name is
+    kept in DEMO_STUDIES for documentation; every demo here has a single
+    meaningful detector, so the unqualified aggregate is exactly it. A
+    user can re-qualify in the pane."""
+    return "%s:0:1" % merit
+
+
+def apply_studies(demo, name):
+    """Attach the demo's optimize + tolerance configs (DEMO_STUDIES) to the
+    just-built scene, before save. Runs nothing — only stores configs the
+    Optimize/Tolerance panes reopen via apply_config()."""
+    study = DEMO_STUDIES.get(name)
+    if study is None:
+        return
+    opt = study.get("opt")
+    if opt:
+        merit, det, varnames = opt
+        bounds = getattr(demo, "_var_bounds", {})
+        specs = []
+        for vn in varnames:
+            val = demo.var_values.get(vn)
+            bnd = bounds.get(vn)
+            if val is None or bnd is None:
+                continue
+            lo, hi = bnd
+            start = min(max(val, lo), hi)
+            specs.append("miewb_vars.%s:%.10g:%.10g:%.10g"
+                         % (vn, start, lo, hi))
+        if specs:
+            backend = study.get("opt_backend") or _study_backend(merit)
+            demo.optimize([_operand_spec(merit, det)], specs,
+                          eval_backend=backend)
+    tol = study.get("tol")
+    if tol:
+        merit, det = tol
+        # tolerance studies ALWAYS use the worker (MC) backend: auto rows
+        # include decenter/tilt, which the sequential/Optiland backend
+        # models as an axisymmetric system and reports as zero impact.
+        # Only the 3D MC trace honours the actual perturbed geometry.
+        demo.auto_tolerances([_operand_spec(merit)], eval_backend="worker")
 
 
 def _resolve_front_face(model, label, beam_dir):
@@ -2325,6 +3050,7 @@ def build_demo(name, outdir, pack=True):
     try:
         demo = Demo(fc, fcstd)
         simparams = DEMOS[name](demo)
+        apply_studies(demo, name)
         demo.save()
     finally:
         fc.shutdown()

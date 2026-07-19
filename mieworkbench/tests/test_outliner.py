@@ -71,15 +71,23 @@ def test_outliner_lists_elements(qtbot, tmp_path):
     assert "Screen" in labels
 
 
-def test_outliner_click_emits_select(qtbot, tmp_path):
+def test_outliner_top_level_row_emits_select_element(qtbot, tmp_path):
+    """A top-level row selects the WHOLE element (selectElementRequested
+    carries the element identity + its primary body); child rows are the
+    sub-selection path (selectBodyRequested)."""
     pane, project = _make_pane(qtbot, tmp_path)
-    seen = []
-    pane.selectBodyRequested.connect(seen.append)
+    elements = []
+    bodies = []
+    pane.selectElementRequested.connect(
+        lambda el, primary: elements.append((el, primary)))
+    pane.selectBodyRequested.connect(bodies.append)
     for item in pane._walk():
         if item.text(0) == "Screen":
             pane.tree.setCurrentItem(item)
             break
-    assert seen and seen[-1] == "Screen"
+    # Screen is an ungrouped single-body element: identity == its own label
+    assert elements and elements[-1] == ("Screen", "Screen")
+    assert bodies == []
 
 
 def test_outliner_programmatic_select_does_not_echo(qtbot, tmp_path):

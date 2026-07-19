@@ -41,6 +41,15 @@ from . import poltransport as pt
 from .rays import RayBatch, AMBIENT, HIST_DEPTH
 from .audit import PowerLedger
 
+# Natural optical activity (gyrotropic uniaxial crystals) is applied as a
+# BULK rotation of the polarization plane only for rays travelling near the
+# optic axis, where the linear o/e splitting is degenerate (n_o == n_e on
+# the axis) and circular birefringence is the sole anisotropy. Off the axis
+# the linear retardance dominates and the scene path keeps the exact o/e
+# split (gyration neglected there — engine3 P9 documented limit). The cutoff
+# is the cosine of the half-angle of the on-axis cone: cos(5 deg).
+GYRO_AXIS_COS = np.cos(np.deg2rad(5.0))
+
 
 def _kill_differentials(batch):
     """Mark a child batch's ray differentials as lost (NaN): the gather
@@ -390,6 +399,20 @@ class Tracer:
         # absorbing crystals.
         n_phase = np.where(batch.n_eff > 0.0, batch.n_eff, np.real(n_med))
         batch.opl += n_phase * seg
+
+        # ---- natural optical activity (gyrotropic crystals) --------------
+        # Bulk circular birefringence: inside an optically-active uniaxial
+        # crystal, a linear input's polarization plane rotates by rho*ds
+        # along the beam. These rays were routed here (pol_mode 0, near the
+        # optic axis) by _optic_children's gyro gate, so the o/e linear
+        # split is degenerate and rotation is the only anisotropy. The
+        # rotation is a UNITARY Jones step (R+T unchanged) -> energy closes.
+        # rho is the SAME registry rotatory power the Berreman oracle uses
+        # (deg/mm at its reference wavelength; dispersion of rho itself is
+        # not modeled). Sense: right-handed about the propagation direction,
+        # flipped by sign(dir.axis) so a retro-reflected double pass CANCELS
+        # (natural optical activity is reciprocal, unlike Faraday rotation).
+        self._apply_optical_activity(batch, med, seg)
 
         # ---- pulsed-optics Phase P8: Kerr thin-element bulk phase -------
         # Delta_opl = n2 * I(r) * L added directly to opl (L = this ray's
@@ -1103,9 +1126,40 @@ class Tracer:
                                 float(np.sum(grp.power[entering])))
 
         # ---- uniaxial birefringence: dedicated o/e split path ----
+        # Gyrotropic crystals near the optic axis are the exception: there the
+        # o/e indices are degenerate, so the ONLY birefringence is the
+        # circular (optical-activity) rotation. Route those near-axis rays
+        # through the isotropic n_o path (single child, full Jones) and let
+        # Tracer.step() rotate the polarization plane by rho*ds; the exact
+        # o/e machinery would split a degenerate, ARBITRARY transverse pair
+        # and never apply gyration. Off-axis rays keep the o/e split.
+        gyro_extra = None
         if body.birefringent:
-            return self._birefringent_children(fid, grp, entering, n_hat,
-                                               cos_i)
+            if body.gyration is None:
+                return self._birefringent_children(fid, grp, entering, n_hat,
+                                                   cos_i)
+            cos_ax = np.abs(np.sum(grp.dir * body.crystal_axis, axis=-1))
+            near = (cos_ax >= GYRO_AXIS_COS) & (grp.pol_mode == 0)
+            if not np.any(near):
+                return self._birefringent_children(fid, grp, entering, n_hat,
+                                                   cos_i)
+            if not np.all(near):
+                # mixed group: peel the off-axis rays off through the exact
+                # o/e path, then continue this handler on the near-axis rays
+                # only. _birefringent_children books its own flux_out; merge
+                # its children in at the final return (after this handler's
+                # own _flux_out_children), so nothing is double-counted.
+                off = ~near
+                gyro_extra = self._birefringent_children(
+                    fid, grp.select(off), entering[off], n_hat[off],
+                    cos_i[off])
+                sel = np.where(near)[0]
+                grp = grp.select(near)
+                entering = entering[sel]
+                n_hat = n_hat[sel]
+                cos_i = cos_i[sel]
+                m = len(grp)
+            # fall through: near-axis rays take the isotropic n_o path below
         # ---- biaxial: dedicated slow/fast two-sheet split path ----
         if body.biaxial:
             return self._biaxial_children(fid, grp, entering, n_hat, cos_i)
@@ -1621,7 +1675,11 @@ class Tracer:
             self.ledger.credit("absorbed_surface", grp.source_id, absorbed,
                                where=body.label)
         self._flux_out_children(body, out)
-        return RayBatch.concatenate(out) if out else None
+        result = RayBatch.concatenate(out) if out else None
+        if gyro_extra is not None:
+            merged = [b for b in (result, gyro_extra) if b is not None]
+            result = RayBatch.concatenate(merged) if merged else None
+        return result
 
     # ------------------------------------------------------------------
     def _apply_polarizer(self, body, trans, mask):
@@ -1684,6 +1742,49 @@ class Tracer:
         trans.Es[idx] = Et
         trans.Ep[idx] = Ep_
         trans.s_hat[idx] = t_hat
+
+    # ------------------------------------------------------------------
+    def _apply_optical_activity(self, batch, med, seg):
+        """Natural optical activity: rotate the polarization plane of rays
+        inside a gyrotropic uniaxial crystal by rho*ds over this segment.
+        In place, per medium; unitary (energy-conserving). No-op unless the
+        current medium is a gyrotropic body AND the ray is on the isotropic
+        (pol_mode 0, near-axis) path the gyro gate in _optic_children routes
+        here. See that call site in step() for the physics rationale."""
+        scene = self.scene
+        for mm in np.unique(med):
+            if mm < 0:
+                continue
+            body = scene.bodies[int(mm)]
+            if body.gyration is None:
+                continue
+            sel = (med == mm) & (batch.pol_mode == 0) & (seg > 0.0)
+            idx = np.where(sel)[0]
+            if len(idx) == 0:
+                continue
+            rho_deg_per_mm = body.gyration[0]
+            seg_mm = seg[idx] * 1e3                 # path length in mm
+            # right-handed about +axis for rho>0; reverse with propagation
+            # so a retro double-pass cancels (natural activity is reciprocal)
+            sense = np.sign(np.sum(batch.dir[idx] * body.crystal_axis,
+                                   axis=-1))
+            delta = np.deg2rad(rho_deg_per_mm * seg_mm) * sense
+            c = np.cos(delta)
+            s = np.sin(delta)
+            Es = batch.Es[idx]
+            Ep = batch.Ep[idx]
+            # rotate the field vector by +delta about +dir in the right-handed
+            # (s_hat, p_hat = dir x s_hat, dir) frame -> Es/Ep mix, |E| kept
+            batch.Es[idx] = c * Es - s * Ep
+            batch.Ep[idx] = s * Es + c * Ep
+            if batch.Jmat is not None:
+                R = np.zeros((len(idx), 2, 2), dtype=np.complex128)
+                R[:, 0, 0] = c
+                R[:, 0, 1] = -s
+                R[:, 1, 0] = s
+                R[:, 1, 1] = c
+                batch.Jmat[idx] = np.einsum('nij,njk->nik', R,
+                                            batch.Jmat[idx])
 
     # ------------------------------------------------------------------
     def _birefringent_children(self, fid, grp, entering, n_hat, cos_i):

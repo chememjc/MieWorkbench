@@ -1,0 +1,13 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "Forward.Forward_pad.Face2": {
+   "peak_irradiance_W_m2": 38.26194401503601,
+   "power_seed_std_W": 4.0150229827088686e-06,
+   "profile_visibility": 0.9988788066305629,
+   "total_power_W": 0.0035682616404492124
+  }
+ },
+ "seeds": 3
+}

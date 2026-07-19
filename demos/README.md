@@ -1,9 +1,11 @@
 # MieWorkbench demo gallery
 
-Thirty-four optical systems (eleven classic instruments, five
+Forty-two optical systems (eleven classic instruments, five
 single-physics benches, four analysis/scattering benches, four
-physics-showcase benches, the telephoto pair, a folded periscope, and
-seven pulsed-optics/time-domain benches),
+physics-showcase benches, the telephoto pair, a folded periscope,
+seven pulsed-optics/time-domain benches, two optimize/tolerance
+showcase objectives, and four "beyond sequential codes" showcase
+benches),
 each a self-contained `.MieWB` workbench archive (double-click-open in
 the GUI, or run headlessly) plus the bare `.FCStd` scene. All are assembled as **optical trains** by
 `scripts/make_demos.py` (the GUI's own Project/chain op path): every
@@ -27,6 +29,66 @@ oracles live in `demos/baselines/`). `demos/UXNOTES.md` and
 `demos/UXNOTES_ROUND2.md` record the friction found while building these
 through the interface (and the real bugs each exercise caught).
 
+## Optimization & tolerancing
+
+Every demo now **ships pre-configured** for the Optimize and Tolerance
+panes — open either pane on a demo and its tables are already populated
+(nothing has been *run*; the gallery ships configured but unoptimized).
+`scripts/make_demos.py` attaches the configs through the same
+`Project.set_optimize_config` / `set_tolerance_config` the GUI uses (they
+persist as JSON on the `miewb_vars` sheet):
+
+- **Optimize** — where a merit is meaningful, each demo's own global
+  variables (air gaps, spacings, working distances — qualified
+  `miewb_vars.<name>`, bounds = their sweep min/max) drive a merit:
+  `spot_rms` for imagers, `detected_power` for coupling/throughput,
+  `mtf50` where the imaging-analysis products run. The
+  pattern-characterization benches (`airy_singleslit`, `bladed_iris_star`,
+  `gaussian_bench`, `diffuser_speckle`, `aerosol_mie`) and the pure
+  no-variable scenes ship no optimize config (optimization is meaningless
+  there). Airspace optimization runs on the deterministic sequential
+  (Optiland) backend; power/MTF merits on the Monte-Carlo worker backend.
+- **Tolerance** — `Demo.auto_tolerances()` walks each demo's chained
+  elements and emits **commercial-precision** rows (the quoted ± are 2σ;
+  the stored `normal` band is 1σ = half): despace ±0.1 mm on every chained
+  element, decenter ±0.05 mm on refractive elements / apertures /
+  detectors / fibers, tilt ±0.1° on mirrors / beamsplitters / gratings /
+  prisms / lenses, surface-radius ±0.1 % and center-thickness ±0.1 mm on
+  lenses. Sources get no tilt/decenter (symmetric + the first element is
+  fixed). Tolerance studies run on the **worker (MC) backend**: the
+  sequential Optiland backend models an axisymmetric system and reports
+  decenter/tilt impact as identically zero — only the 3D MC trace honours
+  the actual perturbed geometry.
+
+**Showcase stories** (the four `SHOWCASE` demos the gate smoke-runs):
+
+- **`camera_triplet`** — the two air gaps optimize against `spot_rms`; the
+  full tolerance table ranks per-element decenter/despace/tilt. The
+  *idealized* Cooke-triplet lesson is that the middle element's decenter
+  dominates — but the as-built **broadband** triplet is aberration/
+  stray-ray limited (its geometric `spot_rms` is unstable — a few
+  far-landing rays dominate the RMS), so the measured decenter ranking
+  does **not** reproduce that cleanly (the middle element measures *least*
+  sensitive at high ray counts). The gate reports the ranking rather than
+  asserting it; a re-corrected monochromatic triplet or a wavefront
+  (encircled-energy) merit would be needed for the textbook result.
+- **`schmidt_cassegrain`** — the primary→secondary separation `sct_sep`
+  optimizes against `spot_rms`; the tolerance table features the secondary
+  mirror's despace and tilt (the despace-to-focus magnification is the
+  story).
+- **`double_gauss`** — the two symmetric central airspaces optimize
+  against `spot_rms`; the story is that symmetry-breaking decenters
+  dominate a fast near-symmetric objective.
+- **`fiber_coupling_doublet`** — the entry gap + working distance optimize
+  against the coupled `detected_power`; the story is that a lateral
+  decenter of the doublet kills coupling far faster than the same despace.
+
+> Note: variant scratch-directory names for many-parameter studies are
+> hash-shortened past 140 chars (`common.shorten_variant`), so a full
+> auto-generated tolerance table (~15–30 rows) runs end-to-end without
+> hitting the filesystem's 255-char name limit. The gate's showcase smoke
+> runs use trimmed row subsets purely to keep the gate fast.
+
 | Demo | System | What it shows | Detected (of 5 mW, quick preset) |
 |---|---|---|---|
 | `beam_expander` | 3× Keplerian expander: BK7 PCX f=50 + f=150, spacing f1+f2, convex sides out | Collimation preserved, 3× beam diameter; loss = the four uncoated Fresnel surfaces (0.96⁴ ≈ 0.85) | **4.23 mW** |
@@ -40,6 +102,8 @@ through the interface (and the real bugs each exercise caught).
 | `microscope_objective` | Lister-type: two air-spaced achromats (f=25 + f=50, 10 mm apart), finite conjugates, white-light point source | Aberration-corrected imaging of a point source | **2.79 mW** |
 | `fiber_coupler` | 650 nm laser → 2 mm BK7 ball lens (BFL 0.47 mm) → 75 mm of 200 µm/0.22 NA fiber | TIR guiding down the fiber core (~60 bounces; `max_reflections` simparam) | **3.95 mW** at the exit face |
 | `schmidt_cassegrain` | C8-class 203 mm f/10: quartic Schmidt corrector (hand-authored asphere), perforated spherical primary R 812.8, spherical secondary R 231.07, white-light star | Catadioptric folding: corrector → primary → secondary → focus through the primary's hole; loss ≈ two Al bounces + 11 % obstruction | **3.42 mW** |
+| `double_gauss` | Symmetric six-element double-Gauss-form objective (~53 mm focus, f/2.6): outer positive meniscus + cemented BK7/SF5 achromat, iris stop, second achromat + outer meniscus, white-light scene (486–656 nm) | The canonical four-group double-Gauss stack built through the chain; the two central airspaces are optimize variables; symmetry-breaking decenters dominate its tolerance table | **2.24 mW** |
+| `fiber_coupling_doublet` | 660 nm collimated laser → cemented BK7/SF5 f=30 achromat doublet (f/5.6, NA≈0.09) → 200 µm/0.22 NA fiber → exit detector | Doublet coupling into a step-index fiber (TIR-guided); entry gap + working distance optimize the coupled power; decenter kills coupling faster than defocus | **~3 mW** at the exit face |
 
 ### New-physics benches (Phase 12)
 
@@ -231,6 +295,89 @@ the detected power 0.6% where sin² predicts 61%. The transverse
 Pockels physics is pinned instead by the engine oracle
 (test_nlo_elements: sin²(πV/2V_π) at 1% on a beat-length cell).
 
+### Beyond sequential codes (WP7)
+
+Four benches whose physics a **sequential ray tracer** (Zemax OpticStudio and
+kin) cannot render from first principles — coherent multipath interference,
+time-domain + nonlinear optics, statistical coherent scattering, and
+gyrotropic optical activity. A sequential code propagates one chief/marginal
+bundle per field through an ordered surface list; it has no coherent detector,
+no pulse/GDD, no participating medium, and no polarization transport, so each
+demo below lands squarely outside its model. Gated by
+`run_demo_equivalence.py` (bespoke physics gate + the placement/power
+baselines); every run closes the energy ledger <1e-3.
+
+**`fizeau_flats`** — two BK7 flats bound a thin wedged air gap, read in
+reflection at a 6° oblique fold with a 633 nm coherent Ø3 mm beam. The
+surface reflections recombine in the coherent Huygens gather into a
+high-visibility multi-fringe interferogram — the coherent superposition of
+multiply-reflected beam paths at the detector. *Why sequential can't:* there
+is no coherent detector in a sequential trace; Fizeau/Twyman-Green analysis in
+Zemax is a separate wavefront-difference post-step, not a traced intensity
+pattern. *Prescription:* laser → reference flat (`tilt_ry` 6°) → test flat
+(gap 0.05 mm, +wedge) → screen ⊥ to the mean reflected beam, 5e5 rays /
+`nlambda=1`, `max_reflections=8`. *Gate:* fringe **visibility** (0.83
+lit-region) + **count** (13 fringes) — the robust michelson-style observables.
+*Honest limit (measured, reported):* at this bench scale the coherent gather
+sits near the `phase_step≈π` edge and a ~9-fringe detector-alignment/4-surface
+pedestal confounds a clean λ/(2α) **pitch** (the pitch does not cleanly track
+the set wedge), so pitch is NOT gated — the same gallery-scale phase-noise
+limit that retired the `pockels_switch` bench above. Cite: Malacara, *Optical
+Shop Testing* (Fizeau/wedge fringes).
+
+**`fs_shg_spectrogram`** — a Mai Tai 800 nm / 100 fs pulse is stretched in a
+60 mm SF11 rod (GDD = 189.6 fs²/mm × 60 = 11 376 fs²) then doubled to 400 nm in
+a 5 mm BBO crystal; the detector's `pulse,spectrogram,streak` products show
+the stretched fundamental in time AND the harmonic band in wavelength — the
+joint time-frequency signature a FROG measures. *Why sequential can't:* a
+sequential trace carries no arrival time / GDD accumulation and no χ² child —
+both the stretch and the harmonic are absent from its model. *Prescription:*
+`laser_maitai_800` (coherent=False, `--ray-differentials`) → SF11 rod → BBO
+(`nonlinear=bbo_shg_800_type1`, optic axis along the beam) → screen; tight
+±ps time window so the 512 bins resolve the pulse. *Gate:* 400 nm harmonic band
+present (**1.0%** of the fundamental) AND fundamental FWHM **328 fs** within
+±30% of the analytic chirped-Gaussian τ(GDD) = **331 fs** (0.99×). *Deviation
+(reported):* the crystal is **BBO**, not KTP — the KTP `ktp_shg_1064_type2` row
+is phase-matched at 1064 nm, so its collinear Δk drives sinc²(ΔkL/2)→0 at an
+800 nm pump (no conversion); the 800-matched row shipped is BBO. Cite: Boyd,
+*Nonlinear Optics*; Trebino, *Frequency-Resolved Optical Gating*.
+
+**`speckle_mie_combo`** — a 532 nm coherent Ø4 mm beam through a 600-grit
+ground-glass diffuser (`@dg_600`) and then a Mie aerosol cloud (log-normal
+water droplets, 2 µm median, `--particles` continuum box) onto a forward
+screen. Two irreducibly statistical/coherent effects stack: the diffuser's
+random phase screen makes a fully-developed **speckle** field, and the droplet
+cloud **extinguishes** the forward beam by Beer-Lambert. *Why sequential
+can't:* speckle is the coherent sum of a random-phase ensemble (a Huygens
+gather) and the aerosol is a volumetric Mie continuum — neither exists in a
+sequential geometric tracer. *Prescription:* coherent probe → diffuser → cloud
+box straddling the diffuser-to-screen gap → forward screen, 3e5 rays /
+`nlambda=1`. *Gate (3-seed):* speckle contrast σ/⟨I⟩ = **0.555** in [0.5, 1.1]
+AND the cloud's analytic Mie optical depth τ = **0.564** (ballistic
+transmission 0.57, 43% extinction) in [0.3, 1.5]. The extinction reference is
+ANALYTIC (a phi≈0 no-cloud trace is a pathological continuum edge case that
+runs many minutes). Cite: Goodman, *Speckle Phenomena in Optics*; Bohren &
+Huffman, *Absorption and Scattering of Light by Small Particles*.
+
+**`quartz_rotator`** — a 2 mm z-cut α-quartz slab (optic axis along the beam)
+between crossed polarizers in 589.3 nm light. Quartz is gyrotropic: its
+circular eigenmodes have different indices, so a linear input should rotate by
+ρ·d with ρ = 21.77°/mm, and a crossed analyzer should pass sin²(ρ·d) =
+sin²(43.5°) = **0.475** of the parallel throughput. *Why sequential can't:*
+circular birefringence / optical rotation is a bulk polarization-transport
+effect; a scalar/geometric sequential tracer has no polarization state to
+rotate. *STATUS — HONEST LIMIT:* the gyration physics is implemented and
+validated at the MODULE level (`raytracer.berreman.add_gyration`;
+`test_berreman.py` ORACLE 3 reproduces 21.77°/mm), but it is **not wired into
+the scene tracer** — a `material=quartz` body routes through the uniaxial o/e
+double-refraction path (`tracer._birefringent_children`), which models LINEAR
+birefringence only and never calls `add_gyration`. So the scene as traced does
+NOT rotate the polarization, and the measured crossed-analyzer power is
+**0 W** (extinction floor) instead of 0.475. The demo ships as the ready bench
+for when scene-level gyrotropy lands (engine3 P9 seam); its rotation gate is
+therefore **documented, not asserted**. Cite: Kaminsky, *Rep. Prog. Phys.* 63,
+1575 (2000) (α-quartz rotatory power — the registry row citation).
+
 ### Virtual instrument bench (P2.5)
 
 One demo exercising the virtual instrument layer (engine3.md §9): the
@@ -336,6 +483,22 @@ reflections cost 21% — set `ideal_folds` to 1 to see the difference).
   table, uniformly rescaled to 50 mm EFL (scale-invariant optics); crowns
   as BK7, flint as SF5 (nearest shipped glasses), sensor plane re-solved
   paraxially for those indices.
+- **Double-Gauss**: design family from W. J. Smith, *Modern Lens Design*
+  (2nd ed., McGraw-Hill 2005), ch. 22 "Double-Gauss / Biotar" — the
+  classic Mandler f/2 50 mm symmetric six-element layout (positive
+  meniscus + cemented crown/flint doublet, stop, doublet + meniscus). The
+  `double_gauss` demo is a **representative construction** to that form
+  (BK7/SF5 doublets from `wizards.solve_achromat`, plausible outer-meniscus
+  radii; not a verbatim patent copy): a symmetric focusing objective whose
+  sensor sits at the offline paraxial focus. A teaching model for the
+  symmetry-breaking-decenter tolerance story, not a corrected commercial
+  prescription.
+- **Fiber-coupling doublet** (`fiber_coupling_doublet`): a cemented BK7/SF5
+  f = 30 mm achromat (`wizards.solve_achromat`, the standard V-number power
+  split) focusing a 6 mm collimated 660 nm beam (f/5.6, cone NA ≈ 0.09)
+  into a 200 µm / 0.22 NA step-index fiber; working distance = the paraxial
+  back focus from the doublet exit vertex. Fiber core index as
+  `fiber_core_na22` (below). A coupling-tolerance teaching model.
 - **Schmidt-Cassegrain**: R. Suiter, "Design of the Schmidt-Cassegrain"
   (bay-astronomers.org), C8-class table; corrector uses the classic
   single-wavelength profile z = K[r⁴ − (3/2)a²r²], K = 1/(4(n−1)R_m³),

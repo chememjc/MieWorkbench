@@ -222,6 +222,26 @@ def _build(geometry_dir, out_path, pattern_spec, only_bodies,
         system = ob.load_sequential_system(geometry_dir, wavelength_nm=lam_nm,
                                            model_stop=True)
         opt = ob.build_optic(system, optprops_dir=optical_properties)
+        # Per-segment real refractive index for the cumulative optical path
+        # (opl = Σ n·ds, metres; beadanim/preview_rays contract: t = opl/c).
+        # The traced polyline vertices are V0=source, V1..VS=system.surfaces
+        # (in axial order), V_{S+1}=image plane (trace_pupil_world_path). The
+        # medium of segment k (V[k]->V[k+1]) is the material DOWNSTREAM of the
+        # segment's start vertex: ambient for the source->first-surface leg,
+        # then each surface's material_after (glass after an entry face,
+        # system.ambient after an exit face / mirror / stop). n_seg therefore
+        # has exactly S+1 entries, one per segment, aligned to seq[k]->seq[k+1].
+        _idx_cache = {}
+
+        def _seg_index(material):
+            n = _idx_cache.get(material)
+            if n is None:
+                n = float(ob.resolve_index(material, lam_nm, optical_properties))
+                _idx_cache[material] = n
+            return n
+
+        n_seg = [_seg_index(system.ambient)] + [
+            _seg_index(s.material_after) for s in system.surfaces]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             epd_mm = float(opt.paraxial.EPD())
@@ -234,12 +254,18 @@ def _build(geometry_dir, out_path, pattern_spec, only_bodies,
             if not valid[i]:
                 continue
             seq = path[i]
+            opl = 0.0        # cumulative optical path Σ n·ds at seq[k], metres
             for k in range(seq.shape[0] - 1):
+                seg_len = float(np.linalg.norm(seq[k + 1] - seq[k]))
+                opl0 = opl
+                opl1 = opl + n_seg[k] * seg_len
+                opl = opl1
                 rows.append([
                     float(sid_col[i]), lam_m, float(power_col[i]),
                     seq[k, 0], seq[k, 1], seq[k, 2],
                     seq[k + 1, 0], seq[k + 1, 1], seq[k + 1, 2],
-                    0.0, 1.0])       # pol_mode=0 (ordinary), rel_power=1.0
+                    0.0, 1.0,        # pol_mode=0 (ordinary), rel_power=1.0
+                    opl0, opl1])     # cumulative optical path, metres (13-col)
 
     if not rows:
         raise ob.BridgeUnsupported(

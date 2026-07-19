@@ -270,6 +270,29 @@ class SettingsDialog(QDialog):
             "an honest render cap on busy run overlays, not a trace cap")
         form.addRow("Bead cap / source:", self.anim_cap_spin)
 
+        self.anim_opacity_combo = QComboBox()
+        for label in ("Opaque", "By power"):
+            self.anim_opacity_combo.addItem(label)
+        opacity_modes = ("off", "power")
+        cur_opacity = self.settings.get("anim_bead_opacity_mode", "off")
+        self.anim_opacity_combo.setCurrentIndex(
+            opacity_modes.index(cur_opacity)
+            if cur_opacity in opacity_modes else 0)
+        self.anim_opacity_combo.setToolTip(
+            "Fade tracer beads by optical power (leading-wavefront beads "
+            "stay solid); Opaque = today's always-solid beads")
+        form.addRow("Bead opacity:", self.anim_opacity_combo)
+
+        self.anim_opacity_db_spin = QDoubleSpinBox()
+        self.anim_opacity_db_spin.setRange(10.0, 60.0)
+        self.anim_opacity_db_spin.setDecimals(0)
+        self.anim_opacity_db_spin.setSuffix(" dB")
+        self.anim_opacity_db_spin.setValue(
+            self._num("anim_bead_opacity_db", 30.0))
+        self.anim_opacity_db_spin.setToolTip(
+            "Dynamic range of the power-to-opacity map (power mode only)")
+        form.addRow("Opacity range:", self.anim_opacity_db_spin)
+
         note = QLabel(
             "These are the persisted values every session starts from — "
             "the toolbar and View-menu controls edit the same settings.")
@@ -305,6 +328,11 @@ class SettingsDialog(QDialog):
                           str(self.anim_speed_spin.value()))
         self.settings.set("anim_fps", str(self.anim_fps_spin.value()))
         self.settings.set("anim_ray_cap", str(self.anim_cap_spin.value()))
+        opacity_modes = ("off", "power")
+        opacity_mode = opacity_modes[self.anim_opacity_combo.currentIndex()]
+        self.settings.set("anim_bead_opacity_mode", opacity_mode)
+        self.settings.set("anim_bead_opacity_db",
+                          str(self.anim_opacity_db_spin.value()))
 
         # push into the open session (parent is the MainWindow at the
         # only call site; guarded so the dialog stays usable standalone)
@@ -317,7 +345,9 @@ class SettingsDialog(QDialog):
                 bead_size_mm=self.anim_size_spin.value(),
                 speed_mm_s=self.anim_speed_spin.value(),
                 fps=self.anim_fps_spin.value(),
-                ray_cap=self.anim_cap_spin.value())
+                ray_cap=self.anim_cap_spin.value(),
+                bead_opacity_mode=opacity_mode,
+                bead_opacity_range_db=self.anim_opacity_db_spin.value())
             # route enabled through the shared action so menu/toolbar
             # check-state follows
             parent.anim_enable_action.setChecked(
@@ -327,4 +357,9 @@ class SettingsDialog(QDialog):
             parent.anim_speed_spin.setValue(self.anim_speed_spin.value())
             parent.anim_fps_combo.setCurrentText(
                 str(self.anim_fps_spin.value()))
+            if hasattr(parent, "anim_opacity_combo"):
+                parent.anim_opacity_combo.setCurrentIndex(
+                    self.anim_opacity_combo.currentIndex())
+                parent.anim_opacity_db_spin.setValue(
+                    self.anim_opacity_db_spin.value())
         self.accept()

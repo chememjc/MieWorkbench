@@ -195,3 +195,75 @@ def test_open_document_reports_divergence_and_never_writes(tmp_path):
 
     assert hashlib.sha256(open(model, "rb").read()).hexdigest() == before
     assert os.path.getmtime(model) == mtime
+
+
+# ---------------------------------------------------------------------------
+# Optimize/tolerance pane config persistence (real FreeCAD save/reopen)
+# ---------------------------------------------------------------------------
+@pytest.mark.freecad
+def test_optimize_tolerance_config_persists_across_save_reopen(tmp_path):
+    """Project.set_optimize_config/set_tolerance_config stash their JSON
+    on the miewb_vars sheet; a save + reopen round-trips it, and undo
+    after a set restores the prior (unset) state. Also covers the
+    create-the-sheet-on-first-use path (no miewb_vars sheet exists
+    before the first set_*_config call) and the no-op-when-unchanged
+    contract (re-setting an identical config pushes no new undo step)."""
+    project = Project()
+    try:
+        path = str(tmp_path / "scene.FCStd")
+        project.new_document(path)
+        assert project.variables_sheet() is None
+        assert project.get_optimize_config() is None
+        assert project.get_tolerance_config() is None
+
+        opt_cfg = {"var": ["miewb_vars.gap:5:0:10"],
+                   "operand": ["spot_rms:0:1"], "algorithm": "local",
+                   "budget": 40, "tol": 1e-3, "preset": "quick",
+                   "eval_backend": "worker", "no_final_coherent": False}
+        tol_cfg = {"tolerance": ["miewb_vars.gap:5:normal:0.5"],
+                   "operand": ["spot_rms:0:1"], "draws": 50,
+                   "mc_seed": 42, "sens_delta": 1.0,
+                   "skip_sensitivity": False, "hist_bins": 20,
+                   "preset": "quick", "eval_backend": "worker"}
+
+        # set_*_config creates the miewb_vars sheet on first use
+        project.set_optimize_config(opt_cfg)
+        assert project.variables_sheet() is not None
+        project.set_tolerance_config(tol_cfg)
+        assert project.get_optimize_config() == opt_cfg
+        assert project.get_tolerance_config() == tol_cfg
+
+        # no-op when unchanged: re-setting an identical config pushes no
+        # new undo step (the undo text stays that of the last REAL change)
+        undo_text_before = project.undo_stack.undo_text()
+        project.set_optimize_config(opt_cfg)
+        assert project.undo_stack.undo_text() == undo_text_before
+
+        # undo unwinds one real change at a time: tolerance, then optimize
+        assert project.undo()
+        assert project.get_tolerance_config() is None
+        assert project.get_optimize_config() == opt_cfg
+        assert project.undo()
+        assert project.get_optimize_config() is None
+
+        # redo back to the tip for the rest of the test
+        assert project.redo()
+        assert project.redo()
+        assert project.get_optimize_config() == opt_cfg
+        assert project.get_tolerance_config() == tol_cfg
+
+        # undo restores the PRIOR value, not just "unset"
+        opt_cfg2 = dict(opt_cfg, budget=99)
+        project.set_optimize_config(opt_cfg2)
+        assert project.get_optimize_config() == opt_cfg2
+        assert project.undo()
+        assert project.get_optimize_config() == opt_cfg
+
+        # travels through a real save + reopen
+        project.save()
+        project.close()
+        project.open_fcstd(path)
+        assert project.get_optimize_config() == opt_cfg
+        assert project.get_tolerance_config() == tol_cfg
+    finally:
+        project.shutdown()

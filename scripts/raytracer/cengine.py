@@ -154,6 +154,13 @@ def detect_features(args, scene):
             # route to Python. Under --biref-approx both engines agree, so
             # emit the ported "birefringence" token (C stays available).
             feats.add("birefringence" if biref_approx else "biref_exact")
+            # natural optical activity (gyrotropic crystals) is a Python-only
+            # bulk polarization-transport effect (tracer._apply_optical_
+            # activity) with NO C counterpart -- force Python even under
+            # --biref-approx so a gyrotropic scene never silently loses its
+            # rotation to the C engine.
+            if body.gyration is not None:
+                feats.add("gyration")
         if body.biaxial:
             feats.add("biaxial")
             # P9: exact biaxial interface amplitudes ride the Berreman 4x4

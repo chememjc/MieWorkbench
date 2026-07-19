@@ -20,6 +20,8 @@ core/optimize_controller.py's job, mirroring the ConsolePane/RunController
 split.
 """
 
+import argparse
+import re
 import sys
 from os.path import dirname, join, normpath
 
@@ -29,12 +31,41 @@ import cli_specs  # noqa: E402  (stdlib-only; OPTIMIZE_OPERANDS + parsers)
 import common     # noqa: E402  (stdlib-only; PRESETS)
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QTableWidgetItem, QToolTip, QVBoxLayout, QWidget,
 )
+
+from ..core.variables import qualify_var_name  # noqa: E402
+from .plot_inspect import (  # noqa: E402
+    DataTableDialog, build_plot_menu, dense_ranks, format_point_tooltip,
+    nearest_point_index,
+)
+
+# Backend error lines worth surfacing on the pane's failure banner. The
+# PermuteError "alias '<x>' not found on spreadsheet 'dim'" (the classic
+# unqualified-variable failure) is the first-class case; the rest catch
+# generic tracebacks/exceptions so a run that dies for any reason still
+# gets its first substantive line pulled up out of the console.
+_ERROR_LINE_RE = re.compile(
+    r"alias '.*?' not found on spreadsheet"
+    r"|not found on spreadsheet"
+    r"|PermuteError"
+    r"|Traceback \(most recent call last\)"
+    r"|\bError\b|\bERROR\b|\bException\b|\bFAILED\b")
+
+# tooltip shared by the variable name combos of both panes — spells out
+# how permute_model.split_var resolves each name form
+NAME_COMBO_TOOLTIP = (
+    "Design variable name. Resolution (permute_model.split_var):\n"
+    "  bare 'alias'          -> the per-element `dim` sheet\n"
+    "  'sheetlabel.alias'    -> that named sheet (e.g. dim_Lens1.ct)\n"
+    "  'miewb_vars.<name>'   -> a global variable\n"
+    "Names listed in this dropdown are miewb_vars globals; they are "
+    "emitted sheet-qualified (miewb_vars.<name>) automatically. Type "
+    "any other spreadsheet cell alias for a per-element parameter.")
 
 try:
     from PySide6.QtCharts import (QChart, QChartView, QLineSeries,
@@ -71,18 +102,45 @@ def variable_bounds(varrow):
     return value, lo, hi
 
 
+def match_error_line(text):
+    """The line `text` verbatim if it looks like a substantive backend
+    error worth surfacing (matches _ERROR_LINE_RE), else None. Shared by
+    both panes' on_line() so the pattern lives in one place."""
+    return text if _ERROR_LINE_RE.search(text or "") else None
+
+
+def _make_error_banner():
+    """A styled, word-wrapped, hidden-by-default QLabel used by both
+    panes to surface the first backend error prominently (NOT a modal —
+    offscreen-test discipline, see CLAUDE.md)."""
+    banner = QLabel()
+    banner.setWordWrap(True)
+    banner.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    banner.setStyleSheet(
+        "QLabel { background: #7f1d1d; color: #fee2e2; border: 1px solid "
+        "#f87171; border-radius: 4px; padding: 6px 8px; }")
+    banner.setVisible(False)
+    return banner
+
+
 # =============================================================================
 # Convergence plot (QtCharts when available, QPainter fallback)
 # =============================================================================
 class ConvergencePlot(QWidget):
     """Per-eval merit points + a best-so-far line. add_point()/clear();
-    the data lives on this wrapper so tests are backend-agnostic."""
+    the data lives on this wrapper so tests are backend-agnostic. Each
+    point remembers its params (add_point(..., params=)) so hover shows
+    a per-eval tooltip and right-click -> "Show data…" opens a
+    DataTableDialog. Penalized evaluations are counted (small overlay
+    label) but kept out of the merit series/axis scaling."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._evals = []
         self._merits = []
         self._bests = []
+        self._params = []
+        self._data_dialog = None
         self.setMinimumHeight(160)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -106,6 +164,7 @@ class ConvergencePlot(QWidget):
             for s in (self._merit_series, self._best_series):
                 s.attachAxis(self._ax_x)
                 s.attachAxis(self._ax_y)
+            self._merit_series.hovered.connect(self._on_series_hover)
             view = QChartView(self._chart)
             view.setRenderHint(QPainter.RenderHint.Antialiasing)
             layout.addWidget(view)
@@ -113,11 +172,23 @@ class ConvergencePlot(QWidget):
             self._canvas = _PainterPlot(self)
             layout.addWidget(self._canvas)
 
+        # small overlay showing the penalized-eval count (kept off the
+        # merit series so autoscale works)
+        self._pen_label = QLabel(self)
+        self._pen_label.setStyleSheet(
+            "QLabel { color: #f87171; background: transparent; }")
+        self._pen_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._pen_label.hide()
+
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
+
     # -- data API ----------------------------------------------------------------
-    def add_point(self, eval_i, merit, best):
+    def add_point(self, eval_i, merit, best, params=None):
         self._evals.append(int(eval_i))
         self._merits.append(float(merit))
         self._bests.append(None if best is None else float(best))
+        self._params.append(dict(params) if params else {})
         if HAVE_QTCHARTS:
             if merit < PENALTY_FLOOR:
                 self._merit_series.append(QPointF(eval_i, merit))
@@ -126,14 +197,17 @@ class ConvergencePlot(QWidget):
             self._rescale()
         else:
             self._canvas.update()
+        self._update_penalty_label()
 
     def clear(self):
         self._evals, self._merits, self._bests = [], [], []
+        self._params = []
         if HAVE_QTCHARTS:
             self._merit_series.clear()
             self._best_series.clear()
         else:
             self._canvas.update()
+        self._update_penalty_label()
 
     def point_count(self):
         return len(self._evals)
@@ -142,6 +216,75 @@ class ConvergencePlot(QWidget):
         """The merits that participate in the plot/axis scaling (penalty
         sentinels excluded)."""
         return [m for m in self._merits if m < PENALTY_FLOOR]
+
+    def penalized_count(self):
+        """How many recorded evaluations were penalty sentinels (merit >=
+        PENALTY_FLOOR) — kept out of the merit series so autoscale still
+        works, surfaced instead as a count."""
+        return sum(1 for m in self._merits if m >= PENALTY_FLOOR)
+
+    def history(self):
+        """Per-eval records [{"eval", "merit", "best", "params"}] in
+        arrival order — the DataTableDialog / table source."""
+        return [{"eval": e, "merit": m, "best": b, "params": dict(p)}
+                for e, m, b, p in zip(self._evals, self._merits,
+                                      self._bests, self._params)]
+
+    def var_names(self):
+        """Insertion-ordered union of every point's param keys."""
+        seen = []
+        for params in self._params:
+            for key in params:
+                if key not in seen:
+                    seen.append(key)
+        return seen
+
+    # -- hover / context menu ------------------------------------------------------
+    def _tooltip_for(self, idx):
+        """The hover-tooltip string for the point at history index `idx`
+        (rank computed densely over all recorded merits)."""
+        ranks = dense_ranks(self._merits)
+        return format_point_tooltip("eval %d" % self._evals[idx],
+                                    self._params[idx], self._merits[idx],
+                                    ranks[idx])
+
+    def _on_series_hover(self, point, state):   # QtCharts merit series
+        if not state:
+            QToolTip.hideText()
+            return
+        target = int(round(point.x()))
+        for idx, ev in enumerate(self._evals):
+            if ev == target and self._merits[idx] < PENALTY_FLOOR:
+                QToolTip.showText(QCursor.pos(), self._tooltip_for(idx))
+                return
+
+    def _on_context_menu(self, pos):
+        menu = build_plot_menu([("Show data…", self._show_data_dialog)],
+                               self)
+        menu.exec(self.mapToGlobal(pos))
+
+    def _show_data_dialog(self):
+        # kept on self so the non-modal dialog is not GC'd
+        self._data_dialog = DataTableDialog(
+            self.history(), "optimize", "Optimization history", self)
+        self._data_dialog.show()
+        self._data_dialog.raise_()
+
+    def _update_penalty_label(self):
+        n = self.penalized_count()
+        if n:
+            self._pen_label.setText("%d penalized" % n)
+            self._pen_label.adjustSize()
+            self._pen_label.move(
+                max(0, self.width() - self._pen_label.width() - 8), 6)
+            self._pen_label.show()
+            self._pen_label.raise_()
+        else:
+            self._pen_label.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_penalty_label()
 
     # -- QtCharts axis upkeep ------------------------------------------------------
     def _rescale(self):
@@ -158,32 +301,35 @@ class ConvergencePlot(QWidget):
 
 
 class _PainterPlot(QWidget):
-    """Dependency-free fallback: axes + merit dots + best-so-far line."""
+    """Dependency-free fallback: axes + merit dots + best-so-far line,
+    with hover tooltips (setMouseTracking + nearest_point_index)."""
 
     def __init__(self, plot):
         super().__init__(plot)
         self._plot = plot
         self.setMinimumHeight(150)
+        self.setMouseTracking(True)
 
-    def paintEvent(self, _event):    # pragma: no cover - fallback backend
-        p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#1e1e1e"))
+    def _plot_area(self):
         margin = 28
-        area = QRectF(margin, 8, self.width() - margin - 8,
+        return QRectF(margin, 8, self.width() - margin - 8,
                       self.height() - margin - 8)
-        p.setPen(QPen(QColor("#6b7280")))
-        p.drawRect(area)
+
+    def _screen_points(self):
+        """(merit_pts, line_pts, y_lo, y_hi) where merit_pts is
+        [(QPointF, history_index)] and line_pts is [QPointF]. Empty
+        merit_pts/line_pts (and None bounds) when nothing is plottable."""
+        area = self._plot_area()
         evals = self._plot._evals
         merits = self._plot._merits
         bests = self._plot._bests
-        pts = [(e, m) for e, m in zip(evals, merits) if m < PENALTY_FLOOR]
-        line = [(e, b) for e, b in zip(evals, bests)
-                if b is not None and b < PENALTY_FLOOR]
-        ys = [m for _, m in pts] + [b for _, b in line]
+        pts = [(i, evals[i], merits[i]) for i in range(len(evals))
+               if merits[i] < PENALTY_FLOOR]
+        line = [(evals[i], bests[i]) for i in range(len(evals))
+                if bests[i] is not None and bests[i] < PENALTY_FLOOR]
+        ys = [m for _, _, m in pts] + [b for _, b in line]
         if not ys:
-            p.drawText(area, Qt.AlignmentFlag.AlignCenter,
-                       "no evaluations yet")
-            return
+            return [], [], None, None
         x_hi = max(evals) + 1.0
         lo, hi = min(ys), max(ys)
         pad = (hi - lo) * 0.08 or (abs(hi) * 0.1 + 1e-12)
@@ -194,19 +340,46 @@ class _PainterPlot(QWidget):
             fy = area.bottom() - area.height() * ((y - lo) / (hi - lo))
             return QPointF(fx, fy)
 
+        merit_pts = [(to_xy(e, m), i) for i, e, m in pts]
+        line_pts = [to_xy(e, b) for e, b in line]
+        return merit_pts, line_pts, lo, hi
+
+    def paintEvent(self, _event):    # pragma: no cover - fallback backend
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#1e1e1e"))
+        area = self._plot_area()
+        p.setPen(QPen(QColor("#6b7280")))
+        p.drawRect(area)
+        merit_pts, line_pts, lo, hi = self._screen_points()
+        if lo is None:
+            p.drawText(area, Qt.AlignmentFlag.AlignCenter,
+                       "no evaluations yet")
+            return
         p.setPen(QPen(QColor("#22d3ee"), 2))
         prev = None
-        for e, b in line:
-            cur = to_xy(e, b)
+        for cur in line_pts:
             if prev is not None:
                 p.drawLine(prev, cur)
             prev = cur
         p.setPen(QPen(QColor("#e879f9"), 5))
-        for e, m in pts:
-            p.drawPoint(to_xy(e, m))
+        for pt, _idx in merit_pts:
+            p.drawPoint(pt)
         p.setPen(QPen(QColor("#9ca3af")))
         p.drawText(4, int(area.top()) + 10, "%.3g" % hi)
         p.drawText(4, int(area.bottom()), "%.3g" % lo)
+
+    def mouseMoveEvent(self, event):    # pragma: no cover - fallback backend
+        merit_pts, _line, _lo, _hi = self._screen_points()
+        if merit_pts:
+            pts_px = [(pt.x(), pt.y()) for pt, _ in merit_pts]
+            pos = event.position()
+            hit = nearest_point_index(pts_px, (pos.x(), pos.y()))
+            if hit is not None:
+                idx = merit_pts[hit][1]
+                QToolTip.showText(event.globalPosition().toPoint(),
+                                  self._plot._tooltip_for(idx), self)
+                return
+        QToolTip.hideText()
 
 
 # =============================================================================
@@ -219,12 +392,19 @@ OPERAND_HEADERS = ["Operand", "Detector (optional)", "Target", "Weight"]
 class OptimizePane(QWidget):
     runRequested = Signal()
     stopRequested = Signal()
+    applyRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._varrows = {}     # {name: core.variables.VarRow} from the scene
+        self._first_error = None   # first backend error line this run
+        self._best_merit = None    # best-so-far this run (Apply optimum)
+        self._best_params = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+
+        self.error_banner = _make_error_banner()
+        layout.addWidget(self.error_banner)
 
         tables_row = QHBoxLayout()
         tables_row.addWidget(self._build_var_group(), 1)
@@ -247,8 +427,9 @@ class OptimizePane(QWidget):
             0, QHeaderView.ResizeMode.Stretch)
         self.var_table.setToolTip(
             "Design variables: spreadsheet cell aliases (bare 'alias' on "
-            "the dim sheet, or 'sheetlabel.alias'), with the start value "
-            "and bounds in mm")
+            "the dim sheet, 'sheetlabel.alias', or a global picked from "
+            "the dropdown = emitted miewb_vars.<name>), with the start "
+            "value and bounds in mm")
         v.addWidget(self.var_table)
         row = QHBoxLayout()
         self.var_add_btn = QPushButton("Add")
@@ -365,10 +546,17 @@ class OptimizePane(QWidget):
         self.stop_btn.setEnabled(False)
         self.stop_btn.setToolTip("Stop the running optimization")
         self.stop_btn.clicked.connect(self.stopRequested.emit)
+        self.apply_btn = QPushButton("Apply optimum")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.setToolTip(
+            "Write the best-found parameter values back into the scene "
+            "(one undo step)")
+        self.apply_btn.clicked.connect(self.applyRequested.emit)
         self.best_label = QLabel("No optimization run yet")
         self.best_label.setToolTip("Best merit and parameters so far")
         row.addWidget(self.run_btn)
         row.addWidget(self.stop_btn)
+        row.addWidget(self.apply_btn)
         row.addWidget(self.best_label, 1)
         return row
 
@@ -400,9 +588,7 @@ class OptimizePane(QWidget):
         combo = QComboBox()
         combo.setEditable(True)      # names outside miewb_vars are typed
         combo.addItems(list(self._varrows))
-        combo.setToolTip(
-            "Pick a miewb_vars variable (auto-fills start/bounds from "
-            "the sheet), or type any spreadsheet cell alias")
+        combo.setToolTip(NAME_COMBO_TOOLTIP)
         if name:      # blank keeps Qt's default: the first scene variable
             combo.setCurrentText(name)
         return combo
@@ -507,8 +693,9 @@ class OptimizePane(QWidget):
                     raise ValueError(
                         "variable row %d (%s): %r is not a number"
                         % (row + 1, name, text))
-            out.append("%s:%s:%s:%s" % (name, "%g" % nums[0],
-                                        "%g" % nums[1], "%g" % nums[2]))
+            out.append("%s:%s:%s:%s" % (
+                qualify_var_name(name, self._varrows), "%g" % nums[0],
+                "%g" % nums[1], "%g" % nums[2]))
         return out
 
     def operands(self):
@@ -550,11 +737,99 @@ class OptimizePane(QWidget):
             cfg["rays"] = float(self.rays_spin.value())
         return cfg
 
+    def apply_config(self, cfg):
+        """Rebuild the variable/operand tables and settings from a
+        config() dict (as persisted by Project.set_optimize_config /
+        returned by get_optimize_config). Spec strings that fail to
+        parse are skipped defensively -- a hand-edited or stale document
+        must never block opening the scene. Round-trips: config() ->
+        apply_config() -> config() reproduces the same dict."""
+        if not cfg:
+            return
+        self.var_table.setRowCount(0)
+        for spec in cfg.get("var") or []:
+            try:
+                v = cli_specs.parse_var_spec(spec)
+            except argparse.ArgumentTypeError:
+                continue
+            self.add_variable(v["name"], v["start"], v["lo"], v["hi"])
+        self.operand_table.setRowCount(0)
+        for spec in cfg.get("operand") or []:
+            try:
+                o = cli_specs.parse_operand_spec(spec)
+            except argparse.ArgumentTypeError:
+                continue
+            self.add_operand(o["operand"], o["detector"] or "",
+                             o["target"], o["weight"])
+        if "algorithm" in cfg:
+            self.algorithm_combo.setCurrentText(str(cfg["algorithm"]))
+        if "budget" in cfg:
+            self.budget_spin.setValue(int(cfg["budget"]))
+        if "tol" in cfg:
+            self.tol_spin.setValue(float(cfg["tol"]))
+        if "preset" in cfg:
+            self.preset_combo.setCurrentText(str(cfg["preset"]))
+        if "eval_backend" in cfg:
+            self.backend_combo.setCurrentText(str(cfg["eval_backend"]))
+        self.final_coherent_check.setChecked(
+            not cfg.get("no_final_coherent", False))
+        self.rays_spin.setValue(float(cfg.get("rays") or 0.0))
+
     # -- run-state / progress slots ----------------------------------------------------
+    # -- Apply optimum (best-found params -> scene) --------------------------------
+    def best_params(self):
+        """The best-found parameters this run ({} when none)."""
+        return dict(self._best_params) if self._best_params else {}
+
+    def best_merit(self):
+        """The best-found merit this run (None when none)."""
+        return self._best_merit
+
+    def reset_best(self):
+        """Forget the best-so-far and disable Apply (scene load / new
+        run). Keeps the config() valid — touches nothing else."""
+        self._best_merit = None
+        self._best_params = None
+        self.apply_btn.setEnabled(False)
+
+    def set_start_values(self, params):
+        """Rewrite the Start cell of each variable row whose name (bare
+        or miewb_vars-qualified) matches a key in `params`. config() stays
+        valid — only the Start column is touched."""
+        if not params:
+            return
+        for row in range(self.var_table.rowCount()):
+            name = self._row_name(self.var_table, row)
+            if not name:
+                continue
+            qual = qualify_var_name(name, self._varrows)
+            if name in params:
+                val = params[name]
+            elif qual in params:
+                val = params[qual]
+            else:
+                continue
+            self.var_table.setItem(row, 1,
+                                   QTableWidgetItem("%g" % float(val)))
+
     def on_started(self):
         self.plot.clear()
+        self._first_error = None
+        self.reset_best()
+        self.error_banner.setVisible(False)
+        self.error_banner.clear()
         self.best_label.setText("Optimizing…")
         self.set_running(True)
+
+    def on_line(self, text):
+        """A raw stdout/stderr line from the optimizer process (wired
+        alongside the console feed). Latches the FIRST substantive error
+        line so on_finished can surface it on the banner even though the
+        merit stream itself only carries penalty sentinels."""
+        if self._first_error is None:
+            hit = match_error_line(text)
+            if hit is not None:
+                self._first_error = hit.strip()
 
     def on_progress(self, event):
         if event.get("stage") != "optimize" or "eval" not in event:
@@ -563,9 +838,12 @@ class OptimizePane(QWidget):
         best = event.get("best")
         if merit is None:
             return
-        self.plot.add_point(event["eval"], merit, best)
+        self.plot.add_point(event["eval"], merit, best,
+                            params=event.get("params"))
         if best is not None:
             params = event.get("best_params") or {}
+            self._best_merit = best
+            self._best_params = dict(params)
             ptxt = "  ".join("%s=%.6g" % (k, v)
                              for k, v in sorted(params.items()))
             self.best_label.setText(
@@ -574,10 +852,45 @@ class OptimizePane(QWidget):
 
     def on_finished(self, exit_code):
         self.set_running(False)
+        # Apply optimum: only a clean run with a real (non-penalized)
+        # best AND recorded params is applyable
+        self.apply_btn.setEnabled(
+            exit_code == 0 and self._best_merit is not None
+            and self._best_merit < PENALTY_FLOOR
+            and bool(self._best_params))
+        n_pen = self.plot.penalized_count()
+        n_ok = len(self.plot.plotted_merits())
         if exit_code != 0:
             self.best_label.setText(
                 "%s (exit %d — see console)"
                 % (self.best_label.text(), exit_code))
+        # surface a failure banner when the run failed OR produced no
+        # usable merit (every evaluation penalized) — the silent-empty-
+        # graph case the bare-name bug used to hit
+        if exit_code != 0 or (n_pen and n_ok == 0):
+            self._show_error_banner(exit_code, n_pen)
+        else:
+            self.error_banner.setVisible(False)
+
+    def _show_error_banner(self, exit_code, n_pen):
+        parts = []
+        if self._first_error:
+            parts.append(self._first_error)
+        elif exit_code != 0:
+            parts.append("Optimization failed (exit %d)." % exit_code)
+        else:
+            parts.append("No evaluation produced a usable merit.")
+        if n_pen:
+            parts.append(
+                "%d evaluation%s penalized (failed / no usable merit)."
+                % (n_pen, "" if n_pen == 1 else "s"))
+        if self._first_error and "not found on spreadsheet" in self._first_error:
+            parts.append(
+                "Hint: a global variable must be addressed miewb_vars.<name>; "
+                "a bare name resolves against the per-element `dim` sheet.")
+        parts.append("See the Console tab for the full log.")
+        self.error_banner.setText("  ".join(parts))
+        self.error_banner.setVisible(True)
 
     def set_running(self, running):
         self.run_btn.setEnabled(not running)

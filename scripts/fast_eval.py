@@ -413,7 +413,7 @@ class Evaluator:
         stem = self.model_path.stem
         for name in self._param_names:
             stem = common.variant_name(stem, name, params[name])
-        return stem
+        return common.shorten_variant(stem)
 
     def _log_path(self, variant, stage):
         return self.workdir / "logs" / ("%s.%s.log" % (variant, stage))

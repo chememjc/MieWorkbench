@@ -1,6 +1,7 @@
 """prop_editor.py -- PropEditorPane: the "editor mode" for the optical
 property library (materials / coatings / polarizers / filters / gratings /
-birefringence).
+uniaxial + biaxial birefringence / figure errors / nonlinear (chi2/pockels/
+saturable/Kerr) / BSDF scatter / instruments).
 
 One QTabWidget, one tab per registry. Each tab (_CategoryEditor) shows the
 registry's rows in a QTableWidget (columns = the registry csv's own header,
@@ -37,22 +38,30 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QBrush, QColor, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
+from ..core import libschema
 from ..core.proplib import CATEGORY_INFO, LibraryWriteError, Transaction, \
     validate_and_commit
 
 REQUIRED_COLUMN = "reference"
 MISSING_REFERENCE_COLOR = QColor(120, 30, 30)
+INVALID_CELL_COLOR = QColor(140, 90, 0)
 
 # Registry -> (tab label, table-file schema for Import-table / plotting).
 # Schema is None for categories whose rows don't reference a spectral table
-# (birefringence rows reference other materials.csv rows, not a file).
+# (birefringence rows reference other materials.csv rows, not a file) OR
+# whose referenced table shape varies by row (instruments: camera/
+# spectrometer rows point at a "qe" table, powermeter rows at a
+# "responsivity_a_w" table -- one fixed required_cols tuple can't cover
+# both, so Import-table stays off for that tab; the chart still plots
+# whatever the selected row's actual table file contains, since
+# _render_chart reads real headers, not TABLE_SCHEMA).
 CATEGORY_TABS = (
     ("materials", "Materials", ("wavelength_nm", "n", "k")),
     ("coatings", "Coatings", ("wavelength_nm", "Rs", "Rp", "Ts", "Tp")),
@@ -61,6 +70,11 @@ CATEGORY_TABS = (
     ("filters", "Filters", ("wavelength_nm", "transmittance_internal")),
     ("gratings", "Gratings", ("wavelength_nm", "order", "eta_s", "eta_p")),
     ("uniaxial", "Birefringence", None),
+    ("biaxial", "Biaxial", None),
+    ("figures", "Figure Errors", None),
+    ("nonlinear", "Nonlinear", None),
+    ("scatter", "BSDF", None),
+    ("instruments", "Instruments", None),
 )
 TABLE_SCHEMA = {cat: schema for cat, _, schema in CATEGORY_TABS}
 
@@ -101,11 +115,39 @@ def apply_column_mapping(src_headers, src_rows, mapping, required_cols):
     return dest_headers, dest_rows
 
 
-def _atomic_write_registry(path, fieldnames, rows):
+def _leading_comment_lines(path, prefix):
+    """Full-line comments at the START of `path` (before the csv header),
+    verbatim including their trailing newline -- or [] if the file doesn't
+    exist yet or has none. Only nonlinear/nonlinear.mienlo uses this today
+    (CATEGORY_INFO["nonlinear"]["comment_prefix"] = "#"): its header block
+    documents the d_il_pm_V/r_coeffs_pm_V packing grammar, which a plain
+    csv.DictWriter rewrite would otherwise silently drop."""
+    path = Path(path)
+    if not prefix or not path.exists():
+        return []
+    lines = []
+    with open(path, newline="") as fh:
+        for line in fh:
+            if not line.lstrip().startswith(prefix):
+                break
+            lines.append(line)
+    return lines
+
+
+def _atomic_write_registry(path, fieldnames, rows, comment_prefix=None):
+    """Atomic (tmp + os.replace) full rewrite of a registry csv. When
+    `comment_prefix` is set, any leading full-line comment block already in
+    the file is preserved verbatim ahead of the rewritten header+rows (see
+    _leading_comment_lines) -- registry_rows()/registry_fieldnames() in
+    core.proplib already strip these lines before DictReader, so they never
+    show up as a spurious "column" in the editor; this is the write-side
+    half of that same contract."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    header_lines = _leading_comment_lines(path, comment_prefix)
     tmp = str(path) + ".tmp"
     with open(tmp, "w", newline="") as fh:
+        fh.writelines(header_lines)
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
@@ -127,6 +169,10 @@ class _CategoryEditor(QWidget):
     QtCharts plot of the selected row's spectral table, if any."""
 
     rowCommitted = Signal()
+    # emits the libschema status-line text for the column under the mouse
+    # (header hover) or the current cell ("" when neither applies -- no
+    # selection, no hover, or a column outside the schema).
+    columnStatusChanged = Signal(str)
 
     def __init__(self, category, manager, parent=None):
         super().__init__(parent)
@@ -139,6 +185,11 @@ class _CategoryEditor(QWidget):
         self.table = QTableWidget()
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.table.currentCellChanged.connect(self._on_current_cell_changed)
+        self.table.itemChanged.connect(self._on_item_changed)
+        header = self.table.horizontalHeader()
+        header.setMouseTracking(True)
+        header.sectionEntered.connect(self._on_header_section_entered)
 
         self.edit_toggle = QToolButton()
         self.edit_toggle.setText("Edit")
@@ -205,6 +256,11 @@ class _CategoryEditor(QWidget):
         self.table.blockSignals(True)
         self.table.setColumnCount(len(self._fieldnames))
         self.table.setHorizontalHeaderLabels(self._fieldnames)
+        for c, col in enumerate(self._fieldnames):
+            header_item = self.table.horizontalHeaderItem(c)
+            if header_item is not None:
+                header_item.setToolTip(
+                    libschema.tooltip_text(self.category, col))
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             for c, col in enumerate(self._fieldnames):
@@ -216,12 +272,56 @@ class _CategoryEditor(QWidget):
                         "reference (citation) is required -- every "
                         "registry row must name its data source before it "
                         "can be saved")
+                elif col != REQUIRED_COLUMN:
+                    ok, msg = libschema.validate_cell(self.category, col,
+                                                      value)
+                    if not ok:
+                        item.setBackground(INVALID_CELL_COLOR)
+                        item.setToolTip("%s\n\n%s" % (
+                            msg, libschema.tooltip_text(self.category, col)))
                 if not self._edit_mode:
                     item.setFlags(item.flags()
                                  & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(r, c, item)
         self.table.blockSignals(False)
         self.chart_view.setChart(QChart())
+
+    # -- header/status-line guidance (advisory, never blocks anything) ----
+    def _column_status(self, col):
+        if col is None or col < 0 or col >= len(self._fieldnames):
+            return ""
+        colname = self._fieldnames[col]
+        text = libschema.status_text(self.category, colname)
+        return text or "%s -- no schema entry (undocumented column)" % colname
+
+    def _on_header_section_entered(self, logical_index):
+        self.columnStatusChanged.emit(self._column_status(logical_index))
+
+    def _on_current_cell_changed(self, cur_row, cur_col, prev_row, prev_col):
+        self.columnStatusChanged.emit(self._column_status(cur_col))
+
+    # -- advisory per-cell validation on edit ------------------------------
+    def _on_item_changed(self, item):
+        col = item.column()
+        if col < 0 or col >= len(self._fieldnames):
+            return
+        colname = self._fieldnames[col]
+        if colname == REQUIRED_COLUMN:
+            return   # the blank-reference rule owns this column's styling
+        ok, msg = libschema.validate_cell(self.category, colname,
+                                          item.text())
+        self.table.blockSignals(True)
+        try:
+            if ok:
+                item.setBackground(QBrush())
+                item.setToolTip(libschema.tooltip_text(self.category,
+                                                        colname))
+            else:
+                item.setBackground(INVALID_CELL_COLOR)
+                item.setToolTip("%s\n\n%s" % (
+                    msg, libschema.tooltip_text(self.category, colname)))
+        finally:
+            self.table.blockSignals(False)
 
     def set_edit_mode(self, on):
         self._edit_mode = bool(on)
@@ -288,7 +388,10 @@ class _CategoryEditor(QWidget):
         txn = Transaction()
         txn.track(path)
         try:
-            _atomic_write_registry(path, self._fieldnames, rows)
+            _atomic_write_registry(
+                path, self._fieldnames, rows,
+                comment_prefix=CATEGORY_INFO[self.category].get(
+                    "comment_prefix"))
             validate_and_commit(lib, txn)
         except LibraryWriteError:
             raise
@@ -400,7 +503,10 @@ class _CategoryEditor(QWidget):
                 writer.writerow(dest_headers)
                 writer.writerows(dest_rows)
             target[info["file_cols"][0]] = dest_path.name
-            _atomic_write_registry(reg_path, self._fieldnames, rows)
+            _atomic_write_registry(
+                reg_path, self._fieldnames, rows,
+                comment_prefix=CATEGORY_INFO[self.category].get(
+                    "comment_prefix"))
             validate_and_commit(lib, txn)
         except Exception:
             txn.rollback()
@@ -529,11 +635,28 @@ class PropEditorPane(QWidget):
         for category, label, _schema in CATEGORY_TABS:
             editor = _CategoryEditor(category, manager)
             self._editors[category] = editor
+            editor.columnStatusChanged.connect(self._on_column_status_changed)
             self.tabs.addTab(editor, label)
+
+        # bottom status line: per-column units/format guidance, updated on
+        # header hover and on cell selection (libschema.status_text) --
+        # empty when nothing applicable (no hover/selection, or a column
+        # outside the schema gets its own "no schema entry" fallback).
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        self.tabs.currentChanged.connect(
+            lambda _i: self.status_label.setText(""))
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(self.tabs)
+        layout.addWidget(self.status_label)
+
+    def _on_column_status_changed(self, text):
+        editor = self.sender()
+        if self.tabs.currentWidget() is not editor:
+            return
+        self.status_label.setText(text)
 
     def editor(self, category):
         return self._editors[category]

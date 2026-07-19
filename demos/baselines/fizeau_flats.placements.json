@@ -1,0 +1,113 @@
+{
+ "bodies": {
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -40.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Reference": {
+   "group": "Reference",
+   "label": "Reference",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.052335956242942495,
+     0.9986295347545739
+    ]
+   },
+   "primitive": "window"
+  },
+  "Screen": {
+   "group": "Screen",
+   "label": "Screen",
+   "placement": {
+    "pos_mm": [
+     -146.72214011007085,
+     -31.1867536226639,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     -0.9945218953682733,
+     0.10452846326765346
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Test": {
+   "group": "Test",
+   "label": "Test",
+   "placement": {
+    "pos_mm": [
+     4.0720331182540646,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.05249398871086719,
+     0.9986212400851603
+    ]
+   },
+   "primitive": "window"
+  }
+ },
+ "demo": "fizeau_flats",
+ "sheets": {
+  "dim": {},
+  "dim_Laser": {
+   "diameter": "=3 mm",
+   "length": "=8 mm",
+   "round_flag": "1"
+  },
+  "dim_Reference": {
+   "round_flag": "1",
+   "thickness": "=4 mm",
+   "width": "=12 mm"
+  },
+  "dim_Screen": {
+   "height": "=20 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=20 mm"
+  },
+  "dim_Test": {
+   "round_flag": "1",
+   "thickness": "=4 mm",
+   "width": "=12 mm"
+  },
+  "miewb_vars": {
+   "gap": "0.05",
+   "gap__max": "0.2",
+   "gap__min": "0.02",
+   "gap__n": "5",
+   "gap__on": "0",
+   "wedge": "0.01813411422",
+   "wedge__max": "0.1",
+   "wedge__min": "0.005",
+   "wedge__n": "6",
+   "wedge__on": "0"
+  }
+ }
+}

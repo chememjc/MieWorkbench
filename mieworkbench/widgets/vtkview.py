@@ -19,9 +19,11 @@ source-tagging convention, see scripts/extract_geometry.py's header); a
 is an "optic". Sources render red-ish and fully lit (boosted ambient/
 diffuse standing in for "emissive" -- VTK's fixed-function pipeline has no
 true emission term); detectors gray-blue translucent; optics glassy light
-blue translucent. A selected face is highlighted solid orange, overriding
-the body's role color on just that face's actor (one actor per face makes
-this a simple property swap, no shaders needed).
+blue translucent -- EXCEPT an absorbing aperture-stop plate (see
+body_style), which renders opaque dark instead of glassy blue. A selected
+face is highlighted solid orange, overriding the body's role color on just
+that face's actor (one actor per face makes this a simple property swap,
+no shaders needed).
 
 Offscreen safety: building this widget (actors/mappers/readers/the
 orientation marker) never touches the GPU -- only vtkRenderWindow-level
@@ -78,6 +80,14 @@ _ROLE_STYLE = {
     "optic":    ((0.58, 0.80, 0.96), 0.45),
 }
 _SELECTED_COLOR = (1.00, 0.55, 0.00)
+
+# -- opaque override for absorbing aperture stops (WP5), see body_style ----
+# iris/iris_bladed/pinhole/slit discs carry a body-level 'absorbance'
+# derived from their 'blackness' sheet param (scripts/primitivelib.py); at
+# blackness>=0.95 the classic glassy-blue "optic" look reads wrong -- these
+# are opaque blackened metal, not a transmissive element.
+_ABSORBER_STYLE = ((0.12, 0.12, 0.13), 1.00)
+_ABSORBER_THRESHOLD = 0.5
 
 # -- ghosted (train-excluded) style, see set_excluded_bodies ---------------
 _GHOST_OPACITY = 0.25
@@ -168,6 +178,44 @@ def role_for_body(body):
     return "optic"
 
 
+def body_style(body):
+    """(RGB 0..1, opacity) render style for a body: the opaque
+    _ABSORBER_STYLE override for absorbing aperture-stop plates (iris,
+    iris_bladed, pinhole, slit -- see primitivelib.py), else the plain
+    role-based _ROLE_STYLE. Pure function so re-tessellation
+    (_build_body_actors) and the tests can exercise the rule without VTK.
+
+    The override applies only when ALL hold:
+      - role_for_body(body) == 'optic' (sources/detectors never darken)
+      - body property 'absorbance' parses as a float >= _ABSORBER_THRESHOLD
+        (non-numeric/absent -> not an absorber, e.g. edge_blackened lenses,
+        which only carry a bool 'edge_blackened' prop -- the per-face
+        absorbance they derive is extract-time-only, never a body prop)
+      - body property 'material' is not (case/whitespace-insensitively)
+        'air' (excludes the aperture's own clear-opening 'plug' body)
+      - body property 'mirror' is absent (a reflective element must stay
+        its normal role color even if it also happens to carry a high
+        absorbance -- this is a user-facing requirement, not inferred from
+        current primitives: no shipped kind currently stamps both)
+    """
+    role = role_for_body(body)
+    if role != "optic":
+        return _ROLE_STYLE[role]
+    props = body.get("properties") or {}
+    if "mirror" in props:
+        return _ROLE_STYLE[role]
+    material = (props.get("material") or {}).get("value")
+    if isinstance(material, str) and material.strip().lower() == "air":
+        return _ROLE_STYLE[role]
+    try:
+        absorbance = float((props.get("absorbance") or {}).get("value"))
+    except (TypeError, ValueError):
+        return _ROLE_STYLE[role]
+    if absorbance >= _ABSORBER_THRESHOLD:
+        return _ABSORBER_STYLE
+    return _ROLE_STYLE[role]
+
+
 # ---------------------------------------------------------------------------
 # scale bar -- pure math, no VTK objects touched, so the test suite can
 # exercise it offscreen with plain floats (see VtkSceneView._update_scale_bar
@@ -254,10 +302,14 @@ class BeadLayer:
     """Tracer-bead glyphs (owned by VtkSceneView, driven per frame by
     core/beadanim.AnimationController): one sphere per active ray
     segment, positioned by the animation clock, colored by the segment's
-    wavelength rgb. Always fully opaque (ForceOpaque) -- attenuation
-    dimming applies to the ray LINES, never to the beads, so a bead stays
-    findable even on a nearly-faded ray. Construction is GPU-free
-    (offscreen-safe, same rationale as FaceIndicatorLayer)."""
+    wavelength rgb. Opaque by default (ForceOpaque) -- attenuation dimming
+    applies to the ray LINES, never to the beads, so a bead stays findable
+    even on a nearly-faded ray. The opt-in "power" bead-opacity mode
+    passes a per-bead alpha to update_beads: the scalar array becomes a
+    4-component RGBA uchar (DirectScalars routes the 4th component to the
+    translucent pass) and ForceOpaque is lifted for that actor; alpha=None
+    restores the opaque default. Construction is GPU-free (offscreen-safe,
+    same rationale as FaceIndicatorLayer)."""
 
     def __init__(self, renderer):
         self.renderer = renderer
@@ -291,16 +343,34 @@ class BeadLayer:
         self.actor.SetVisibility(False)       # off until animation enabled
         self.renderer.AddActor(self.actor)
 
-    def update_beads(self, points_m, rgb):
-        """points_m (M,3) float metres; rgb (M,3) uint8."""
+    def update_beads(self, points_m, rgb, alpha=None):
+        """points_m (M,3) float metres; rgb (M,3) uint8. `alpha` (M,) float
+        in [0,1] switches the beads to a 4-component RGBA scalar (opt-in
+        "power" opacity mode); alpha=None keeps the opaque 3-component path
+        bit-identical to the default."""
+        from vtkmodules.util.numpy_support import numpy_to_vtk
+        pts = np.asarray(points_m, dtype=float).reshape(-1, 3)
+        rgb = np.asarray(rgb, dtype=np.uint8).reshape(-1, 3)
         self._points.Reset()
-        self._rgb.Reset()
-        for i in range(len(points_m)):
-            self._points.InsertNextPoint(*(float(c) for c in points_m[i]))
-            self._rgb.InsertNextTuple3(int(rgb[i][0]), int(rgb[i][1]),
-                                       int(rgb[i][2]))
+        for i in range(len(pts)):
+            self._points.InsertNextPoint(*(float(c) for c in pts[i]))
         self._points.Modified()
-        self._rgb.Modified()
+
+        if alpha is None:
+            scalars = np.ascontiguousarray(rgb)
+            self.actor.GetProperty().SetOpacity(1.0)
+            self.actor.ForceOpaqueOn()
+        else:
+            a = np.clip(np.round(255.0 * np.asarray(alpha, dtype=float)),
+                        0, 255).astype(np.uint8)
+            rgba = np.empty((len(rgb), 4), dtype=np.uint8)
+            rgba[:, :3] = rgb
+            rgba[:, 3] = a
+            scalars = np.ascontiguousarray(rgba)
+            self.actor.ForceOpaqueOff()
+        self._rgb = numpy_to_vtk(scalars, deep=1)   # keep a ref alive
+        self._rgb.SetName("rgb")
+        self._poly.GetPointData().SetScalars(self._rgb)
         self._poly.Modified()
 
     def set_radius_m(self, radius_m):
@@ -656,7 +726,7 @@ class VtkSceneView(QWidget):
         transform = placement_to_vtk_transform(body.get("placement", {}))
         self._body_transforms[name] = transform
         role = role_for_body(body)
-        color, opacity = _ROLE_STYLE[role]
+        color, opacity = body_style(body)
 
         face_entries = (faces_dict.get(name) or {}).get("faces", [])
         actors = []

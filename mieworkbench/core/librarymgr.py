@@ -56,12 +56,35 @@ def _find_row(rows, name):
     return None
 
 
-def _write_registry_rows(path, fieldnames, rows):
-    """Atomic (tmp + os.replace) full rewrite of a registry csv."""
+def _leading_comment_lines(path, prefix):
+    """Full-line comments at the START of `path` (before the csv header),
+    verbatim including their trailing newline -- [] if the file doesn't
+    exist yet or has none. Mirrors panes.prop_editor's helper of the same
+    name: only nonlinear/nonlinear.mienlo sets a comment_prefix today (its
+    header block documents the d_il_pm_V/r_coeffs_pm_V packing grammar), and
+    a full-registry rewrite (promote_to_system) must not silently drop it."""
+    path = Path(path)
+    if not prefix or not path.exists():
+        return []
+    lines = []
+    with open(path, newline="") as fh:
+        for line in fh:
+            if not line.lstrip().startswith(prefix):
+                break
+            lines.append(line)
+    return lines
+
+
+def _write_registry_rows(path, fieldnames, rows, comment_prefix=None):
+    """Atomic (tmp + os.replace) full rewrite of a registry csv, preserving
+    any leading full-line comment block already in the file when
+    `comment_prefix` is given."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    header_lines = _leading_comment_lines(path, comment_prefix)
     tmp = str(path) + ".tmp"
     with open(tmp, "w", newline="") as fh:
+        fh.writelines(header_lines)
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
@@ -362,7 +385,9 @@ class LibraryManager:
                     break
             if not replaced:
                 rows.append(proj_row)
-            _write_registry_rows(sys_path, fieldnames, rows)
+            _write_registry_rows(
+                sys_path, fieldnames, rows,
+                comment_prefix=info.get("comment_prefix"))
             written.append(sys_path)
 
             if info["file_dir"]:
