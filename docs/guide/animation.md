@@ -66,17 +66,42 @@ regenerate it (any manual or auto preview overwrites the cache).
 
 ## Ray Preview configuration
 
-The pattern used both by self-sufficient enable above and by **Live ray
-preview…** is one `--viz-pattern` spec, edited on **Simulation Settings ▸
-Ray Preview** tab (`PreviewConfigWidget`): a **Fan** (rays per source,
-`fan:n=<K>`) or **Rings** (spacing / rays-per-ring / ring count,
-`rings:dr=<mm>:nper=<N>[:nrings=<K>]`) form. It persists **per document**
+All preview settings live in one **Preview Configuration** dialog
+(`PreviewConfigDialog`), opened by **Live ray preview…** (Rays toolbar
+button) or from **Simulation Settings ▸ Ray Preview** / **Settings ▸
+Defaults**. Its sections:
+
+- **Ray pattern** — a **Fan** (rays per source, `fan:n=<K>`) or
+  **Rings** (spacing / rays-per-ring / ring count,
+  `rings:dr=<mm>:nper=<N>[:nrings=<K>]`) form (`PreviewConfigWidget`).
+- **Trace engine** — **Sequential (fast, no reflections)**: the on-axis
+  Optiland fast path, exact bead timing, primary transmitted chain only;
+  or **Full trace (shows reflections)**: the real Monte-Carlo preview
+  subprocess with Fresnel ghost children (6-bounce engine cap, standard
+  weak-ray power floor). The default is **Full trace** so reflections
+  are visible out of the box; switching to Full trace while extinction
+  is Off auto-selects **Logarithmic** extinction (an explicitly chosen
+  Linear/Perceptual mode is left alone).
+- **Overlay display** — the ray-extinction mode (Off / Linear /
+  Perceptual / **Logarithmic (dB)**) with the log mode's dynamic range
+  (30/40/60 dB presets or a custom 1–120 dB value) and the opacity
+  floor — the same settings as the Extinction toolbar combo and
+  **View ▸ Ray Dimming** menu. In log mode a segment R dB below the
+  source renders at `opacity = 1 − R/range`: an uncoated-glass ghost
+  (~14 dB per reflection) stays clearly visible at 40 dB.
+- **Tracer-bead animation** — the bead enable/size/speed/FPS/cap/opacity
+  keys (formerly on the Settings "Defaults" tab).
+- **Advanced** — the composed `--viz-pattern` spec string, editable and
+  kept in sync with the pattern fields both ways; a bare integer is
+  shorthand for `fan:n=<int>`, and invalid text shows an inline error
+  without disturbing the fields (OK always applies a valid spec).
+
+Pattern **and engine** persist **per document**
 (`Project.set_preview_config`/`get_preview_config`, document property
 `miewb_preview_config`, travels with the `.FCStd`/`.MieWB`); with no
-document config it falls back to this install's last-used spec
-(QSettings), then the app default `fan:n=5`. The manual **Live ray
-preview…** dialog pre-fills its text field with the resolved spec, and
-accepts a bare integer as shorthand for `fan:n=<int>`.
+document config they fall back to this install's last-used values
+(QSettings `preview_pattern_spec`/`preview_engine_mode`), then the app
+defaults `fan:n=5` / full trace.
 
 ## Bead opacity ("By power" mode)
 

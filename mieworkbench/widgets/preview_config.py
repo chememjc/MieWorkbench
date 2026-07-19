@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "scripts")))
 import common  # noqa: E402  (stdlib-only shared contract hub)
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFormLayout, QSpinBox, QStackedWidget,
     QVBoxLayout, QWidget,
@@ -60,7 +61,12 @@ def fields_from_spec(spec):
 class PreviewConfigWidget(QWidget):
     """Kind combo + stacked param editors for a single --viz-pattern
     spec. spec()/set_spec() are the whole API; the widget holds no
-    project/document reference of its own."""
+    project/document reference of its own. specChanged fires with the
+    freshly composed spec on every user edit (and, incidentally, during
+    set_spec -- listeners that echo the spec elsewhere guard reentrancy
+    themselves)."""
+
+    specChanged = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,6 +113,14 @@ class PreviewConfigWidget(QWidget):
 
         self.kind_combo.currentIndexChanged.connect(
             self.stack.setCurrentIndex)
+
+        self.kind_combo.currentIndexChanged.connect(self._emit_spec)
+        for spin in (self.fan_n_spin, self.rings_dr_spin,
+                     self.rings_nper_spin, self.rings_nrings_spin):
+            spin.valueChanged.connect(self._emit_spec)
+
+    def _emit_spec(self, *_args):
+        self.specChanged.emit(self.spec())
 
     # -- API --------------------------------------------------------------------
     def spec(self):

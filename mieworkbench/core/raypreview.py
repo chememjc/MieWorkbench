@@ -57,6 +57,10 @@ STOP_GRACE_MS = 5000
 # raypreview.py and run the fallback-only chain.
 ENGINE_FALLBACK = "engine fan"
 
+# Status-hint label for an explicitly-forced full Monte-Carlo preview (the
+# user asked for the real ray tracer via engine="full" -- see start()).
+ENGINE_FULL = "full trace"
+
 
 def default_freecad_appimage():
     return os.environ.get("MIEWB_FREECAD", common.FREECAD_APPIMAGE)
@@ -102,6 +106,7 @@ class RayPreviewController(QObject):
         self._pattern = None
         self._only_bodies = None
         self._rays_path = None
+        self._engine = "sequential"
         self._output = ""
 
     # -- state ----------------------------------------------------------------
@@ -111,7 +116,7 @@ class RayPreviewController(QObject):
 
     # -- lifecycle --------------------------------------------------------------
     def start(self, project, workspace_dir, pattern="fan:n=5",
-             only_bodies=None, optical_properties=None):
+             only_bodies=None, optical_properties=None, engine="sequential"):
         """Kick off the save_copy -> extract -> preview_rays chain.
 
         project: the GUI's core.project.Project (must have an open
@@ -126,6 +131,12 @@ class RayPreviewController(QObject):
         kept by that script regardless).
         optical_properties: opticalproperties/ root dir; defaults to
         common.OPTPROPS_DIR (same default the pipeline scripts use).
+        engine: "sequential" (default) keeps the current auto behavior —
+        the in-process sequential fast path when the scene qualifies,
+        falling back to the full Monte-Carlo preview subprocess otherwise.
+        "full" forces the full Monte-Carlo preview subprocess (real
+        Fresnel reflection children, 6-bounce engine default) and never
+        consults the sequential bridge.
 
         Returns True if the chain was launched, False if a preview was
         already running (refused, no-op; call cancel() first).
@@ -147,6 +158,7 @@ class RayPreviewController(QObject):
             optical_properties if optical_properties is not None
             else common.OPTPROPS_DIR)
         self._geometry_dir = str(geometry_root / model_copy.stem)
+        self._engine = "full" if engine == "full" else "sequential"
 
         self.progress.emit("saving model copy")
         try:
@@ -199,12 +211,18 @@ class RayPreviewController(QObject):
     # -- stage 2 (trace), fast path: in-process Optiland sequential trace -------
     def _start_trace(self):
         """Geometry is fresh (extract just completed successfully, right
-        above). Try the sequential fast path IN-PROCESS first — no
-        subprocess, no QProcess bookkeeping; engine3.md Sec.15 P4b "preview
-        unified". Any failure (BridgeUnsupported for an out-of-scope scene,
-        or any unexpected error — sequential_preview.build() never raises)
-        falls straight through to the original preview_rays.py subprocess
-        stage, so this method NEVER re-runs the FreeCAD extract above."""
+        above). If the caller forced engine="full" on start(), skip the
+        fast path entirely and go straight to the full Monte-Carlo preview
+        subprocess. Otherwise try the sequential fast path IN-PROCESS first
+        — no subprocess, no QProcess bookkeeping; engine3.md Sec.15 P4b
+        "preview unified". Any failure (BridgeUnsupported for an
+        out-of-scope scene, or any unexpected error — sequential_preview.
+        build() never raises) falls straight through to the original
+        preview_rays.py subprocess stage, so this method NEVER re-runs the
+        FreeCAD extract above."""
+        if self._engine == "full":
+            self._start_preview()
+            return
         self._stage = "trace"
         build_fn = default_sequential_build()
         if build_fn is not None:
@@ -243,7 +261,8 @@ class RayPreviewController(QObject):
             self.failed.emit("preview_rays.py failed (exit %d): %s"
                              % (exit_code, self._tail()))
             return
-        self.finished.emit(self._rays_path, ENGINE_FALLBACK)
+        label = ENGINE_FULL if self._engine == "full" else ENGINE_FALLBACK
+        self.finished.emit(self._rays_path, label)
 
     # -- shared QProcess plumbing -------------------------------------------------
     def _make_process(self, argv):

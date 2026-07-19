@@ -418,3 +418,60 @@ def test_ray_dimming_stale_cycle_restores_dimmed_coloring(qtbot, tmp_path):
     import math
     assert _dim_alphas(view) == pytest.approx(
         [255.0, round(255.0 * math.sqrt(0.5))])
+
+
+def test_ray_dimming_log_mode_range_db_30(qtbot, tmp_path):
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True,
+                     rel_power=[1.0, 0.1, 1e-3, 1e-6])
+
+    view.set_ray_dimming("log", range_db=30.0)
+    view.load_vtp_overlay(path)
+    fracs = [1.0, 2.0 / 3.0, 0.0, 0.0]
+    assert _dim_alphas(view) == pytest.approx(
+        [round(255.0 * f) for f in fracs])
+
+
+def test_ray_dimming_log_mode_range_db_60(qtbot, tmp_path):
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True,
+                     rel_power=[1.0, 0.1, 1e-3, 1e-6])
+
+    view.set_ray_dimming("log", range_db=60.0)
+    view.load_vtp_overlay(path)
+    fracs = [1.0, 5.0 / 6.0, 0.5, 0.0]
+    assert _dim_alphas(view) == pytest.approx(
+        [round(255.0 * f) for f in fracs])
+
+
+def test_ray_dimming_log_mode_floor_clamps_zero_alphas(qtbot, tmp_path):
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True,
+                     rel_power=[1.0, 0.1, 1e-3, 1e-6])
+
+    view.set_ray_dimming("log", floor_pct=10.0, range_db=30.0)
+    view.load_vtp_overlay(path)
+    assert _dim_alphas(view) == pytest.approx([255.0, 170.0, 26.0, 26.0])
+
+
+def test_ray_dimming_log_mode_exact_zero_rel_power_no_warning(qtbot, tmp_path):
+    # rel_power == 0.0 exactly (a fully absorbed segment) must floor to 0
+    # opacity through the log10 without a numpy divide-by-zero warning or
+    # a NaN -- the pre-log clip in _compose_dim_rgba is what guards this.
+    view = VtkSceneView()
+    qtbot.addWidget(view)
+    path = tmp_path / "rays.vtp"
+    write_simple_vtp(path, with_rgb=True, rel_power=[1.0, 0.0])
+
+    view.set_ray_dimming("log", range_db=30.0)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        view.load_vtp_overlay(path)
+    assert _dim_alphas(view) == pytest.approx([255.0, 0.0])

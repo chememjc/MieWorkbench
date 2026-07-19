@@ -1096,21 +1096,28 @@ class Project(QObject):
     PREVIEW_CONFIG_PROP = "miewb_preview_config"
 
     def get_preview_config(self):
-        """The last-saved ray-preview config ({"spec": "<viz-pattern>"}),
-        or None."""
+        """The last-saved ray-preview config ({"spec": "<viz-pattern>"[,
+        "engine": "sequential"|"full"]}), or None."""
         return self._get_config(self.PREVIEW_CONFIG_PROP, "preview")
 
     def set_preview_config(self, cfg):
-        """Persist (cfg dict, e.g. {"spec": "fan:n=5"}) or clear (cfg=None)
-        the ray-preview pattern on the miewb_vars sheet. The spec is
-        validated with common.parse_viz_pattern_spec BEFORE anything is
-        written -- an invalid spec raises ProjectError and touches no
-        state. Undoable; no-op when unchanged."""
+        """Persist (cfg dict, e.g. {"spec": "fan:n=5"[, "engine":
+        "sequential"|"full"]}) or clear (cfg=None) the ray-preview
+        pattern on the miewb_vars sheet. The spec is validated with
+        common.parse_viz_pattern_spec BEFORE anything is written; if the
+        optional "engine" key is present it must be exactly "sequential"
+        or "full" -- either check failing raises ProjectError and touches
+        no state. Old {"spec": ...} dicts with no "engine" key remain
+        valid (MainWindow._resolve_preview_cfg fills in its "full"
+        default). Undoable; no-op when unchanged."""
         if cfg is not None:
             try:
                 common.parse_viz_pattern_spec(cfg.get("spec"))
             except (ValueError, TypeError) as exc:
                 raise ProjectError("invalid ray-preview pattern: %s" % exc)
+            if "engine" in cfg and cfg["engine"] not in ("sequential", "full"):
+                raise ProjectError("invalid ray-preview engine: %r"
+                                   % (cfg["engine"],))
         self._set_config(self.PREVIEW_CONFIG_PROP, "preview", cfg,
                          "Save ray-preview configuration")
 

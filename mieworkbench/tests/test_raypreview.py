@@ -383,3 +383,59 @@ def test_sequential_build_can_be_disabled_via_monkeypatch(
 
     _rays_path, engine = blocker.args
     assert engine == "engine fan"
+
+
+# =============================================================================
+# user-selectable preview engine (engine="sequential"|"full" on start()):
+# same stub harness as the P4b block above, reusing the lens_dcx bridgeable
+# geometry cache and the "STUB_OPTICS_FAIL proves the fallback didn't run"
+# trick where applicable.
+# =============================================================================
+def test_engine_full_forces_fallback_subprocess_and_skips_the_bridge(
+        qtbot, tmp_path, monkeypatch):
+    """engine="full" must skip the sequential bridge entirely -- even for
+    a scene that WOULD bridge (lens_dcx) -- and always take the full
+    Monte-Carlo preview_rays.py subprocess, reporting the honest 'full
+    trace' label."""
+    _skip_if_no_geometry("lens_dcx")
+    _patch_stubs(monkeypatch, tmp_path, STUB_APPIMAGE_COPY, STUB_OPTICS_OK)
+
+    def _boom():
+        raise AssertionError("sequential bridge must not be consulted "
+                             "when engine='full'")
+    monkeypatch.setattr(raypreview, "default_sequential_build", _boom)
+    controller = RayPreviewController()
+    project = FakeProject()
+    workspace = tmp_path / "workspace"
+
+    with qtbot.waitSignal(controller.finished, timeout=15000) as blocker:
+        started = controller.start(project, workspace, pattern="fan:n=5",
+                                   engine="full")
+        assert started
+
+    rays_path, engine = blocker.args
+    assert engine == raypreview.ENGINE_FULL
+    assert os.path.exists(rays_path)
+
+
+def test_explicit_engine_sequential_matches_default_auto_behavior(
+        qtbot, tmp_path, monkeypatch):
+    """engine="sequential" passed explicitly is just the current default
+    auto behavior spelled out: the sequential fast path is used on a
+    bridgeable scene, the fallback subprocess never launches (STUB_OPTICS_
+    FAIL would fail the test if it ran), and the label stays 'sequential
+    (exact)'."""
+    _skip_if_no_geometry("lens_dcx")
+    _patch_stubs(monkeypatch, tmp_path, STUB_APPIMAGE_COPY, STUB_OPTICS_FAIL)
+    controller = RayPreviewController()
+    project = FakeProject()
+    workspace = tmp_path / "workspace"
+
+    with qtbot.waitSignal(controller.finished, timeout=15000) as blocker:
+        started = controller.start(project, workspace, pattern="fan:n=5",
+                                   engine="sequential")
+        assert started
+
+    rays_path, engine = blocker.args
+    assert engine == "sequential (exact)"
+    assert os.path.exists(rays_path)

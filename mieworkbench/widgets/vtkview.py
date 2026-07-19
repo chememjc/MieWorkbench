@@ -477,8 +477,9 @@ class VtkSceneView(QWidget):
         self._rays_actor = None
         self._rays_polydata = None
         self._overlay_stale = False
-        self._dim_mode = "off"         # 'off' | 'linear' | 'sqrt'
+        self._dim_mode = "off"         # 'off' | 'linear' | 'sqrt' | 'log'
         self._dim_floor = 0.0          # minimum opacity, percent 0-100
+        self._dim_range_db = 30.0      # 'log' mode dynamic range, dB
 
         self.picker = FacePicker(
             self.interactor, self.renderer, self._actor_face_map,
@@ -1030,9 +1031,11 @@ class VtkSceneView(QWidget):
         """Build (or refresh) the per-cell 'rgba_dim' uchar array on
         `polydata`: the 'rgb' wavelength triple plus alpha from
         'rel_power' (each segment's power relative to its ray's power at
-        the source) through the current dimming curve and floor. Returns
-        True when the array was (re)built, False when the polydata lacks
-        the inputs (legacy rays.vtp predating rel_power)."""
+        the source) through the current dimming curve and floor -- 'linear'
+        (alpha = rel), 'sqrt' (perceptual, sqrt of that), or 'log'
+        (dB-mapped over self._dim_range_db). Returns True when the array
+        was (re)built, False when the polydata lacks the inputs (legacy
+        rays.vtp predating rel_power)."""
         from vtkmodules.util.numpy_support import (numpy_to_vtk,
                                                    vtk_to_numpy)
         cell_data = polydata.GetCellData()
@@ -1042,7 +1045,16 @@ class VtkSceneView(QWidget):
             return False
         rgb = vtk_to_numpy(rgb_array).reshape(-1, 3)
         rel = np.clip(vtk_to_numpy(rel_array), 0.0, 1.0)
-        a = np.sqrt(rel) if self._dim_mode == "sqrt" else rel
+        if self._dim_mode == "sqrt":
+            a = np.sqrt(rel)
+        elif self._dim_mode == "log":
+            # rel is already P/P0 (no frame normalization needed, unlike
+            # beadanim._power_alpha's per-frame pmax) -- straight dB below
+            # full power, clamped to [0, 1] over the configured range.
+            db = -10.0 * np.log10(np.clip(rel, 1e-30, 1.0))
+            a = np.clip(1.0 - db / max(1e-6, self._dim_range_db), 0.0, 1.0)
+        else:
+            a = rel
         a = np.maximum(a, self._dim_floor / 100.0)
         rgba = np.empty((rgb.shape[0], 4), dtype=np.uint8)
         rgba[:, :3] = rgb
@@ -1093,15 +1105,18 @@ class VtkSceneView(QWidget):
         return (cell_data.GetArray("rgb") is not None
                 and cell_data.GetArray("rel_power") is None)
 
-    def set_ray_dimming(self, mode, floor_pct=0.0):
+    def set_ray_dimming(self, mode, floor_pct=0.0, range_db=30.0):
         """Attenuation dimming for the ray overlay. mode: 'off' | 'linear'
-        (opacity = P/P_birth) | 'sqrt' (perceptual, sqrt of that);
-        floor_pct: minimum opacity in percent. Applies immediately to a
-        loaded overlay and to every overlay loaded later; a stale (greyed)
-        overlay just stores the state -- un-staling re-runs
-        _apply_overlay_coloring, which reads it."""
+        (opacity = P/P_birth) | 'sqrt' (perceptual, sqrt of that) | 'log'
+        (opacity = 1 - dB(P0/P)/range_db, clamped [0,1]); floor_pct:
+        minimum opacity in percent; range_db: 'log' mode's dynamic range in
+        dB (ignored by the other modes). Applies immediately to a loaded
+        overlay and to every overlay loaded later; a stale (greyed) overlay
+        just stores the state -- un-staling re-runs _apply_overlay_coloring,
+        which reads it."""
         self._dim_mode = str(mode)
         self._dim_floor = float(floor_pct)
+        self._dim_range_db = float(range_db)
         if self._rays_actor is not None and not self._overlay_stale:
             self._apply_overlay_coloring(self._rays_actor,
                                          self._rays_polydata)

@@ -480,28 +480,103 @@ def scenario_preview_config(ctx, window):
 
     spec = "rings:dr=2:nper=8:nrings=3"
 
-    ctx.step("project.set_preview_config(rings spec)")
-    window.project.set_preview_config({"spec": spec})
+    ctx.step("project.set_preview_config(rings spec + sequential engine)")
+    window.project.set_preview_config({"spec": spec,
+                                       "engine": "sequential"})
 
     ctx.step("assert get_preview_config round-trip")
     cfg = window.project.get_preview_config()
-    ctx.check(cfg is not None and cfg.get("spec") == spec,
-              "get_preview_config()=%r, expected spec=%r" % (cfg, spec))
+    ctx.check(cfg is not None and cfg.get("spec") == spec
+              and cfg.get("engine") == "sequential",
+              "get_preview_config()=%r, expected spec=%r engine=sequential"
+              % (cfg, spec))
 
-    ctx.step("set the Ray-Preview widget spec")
-    window.preview_config.set_spec(spec)
+    ctx.step("open the Preview Configuration dialog (launch=False)")
+    dialog = window._open_preview_dialog(launch=False, exec_dialog=False)
+    dialog.show()
     QApplication.processEvents()
-    got = window.preview_config.spec()
-    ctx.check(got == spec,
-              "preview_config.spec()=%r after set_spec(%r)" % (got, spec))
+    got = dialog.values()
+    ctx.check(got["spec"] == spec and got["engine"] == "sequential",
+              "dialog prefill=%r, expected spec=%r engine=sequential"
+              % (got, spec))
 
-    ctx.step("assert _preview_pattern_spec() returns it")
-    resolved = window._preview_pattern_spec()
-    ctx.check(resolved == spec,
-              "_preview_pattern_spec()=%r, expected %r" % (resolved, spec))
+    ctx.step("screenshot the dialog as opened")
+    ctx.shot(dialog, "01-preview-dialog.png")
 
-    ctx.step("screenshot the Ray Preview tab widget standalone")
-    ctx.shot(window.preview_config, "01-preview-config-widget.png")
+    ctx.step("drive engine=Full trace; extinction Off auto-flips to log")
+    off_idx = dialog.dim_mode_combo.findData("off")
+    dialog.dim_mode_combo.setCurrentIndex(off_idx)
+    dialog.engine_combo.setCurrentIndex(
+        dialog.engine_combo.findData("full"))
+    QApplication.processEvents()
+    ctx.check(dialog.dim_mode_combo.currentData() == "log",
+              "dim mode=%r after switching to full trace, expected "
+              "auto-log" % dialog.dim_mode_combo.currentData())
+
+    ctx.step("advanced text row round-trips a bare integer")
+    dialog._on_spec_text_edited("9")
+    ctx.check(dialog.values()["spec"] == "fan:n=9",
+              "advanced '9' gave spec=%r, expected fan:n=9"
+              % dialog.values()["spec"])
+
+    ctx.step("screenshot the dialog after the edits")
+    ctx.shot(dialog, "02-preview-dialog-full-trace.png")
+    dialog.reject()
+
+
+# ===========================================================================
+# Scenario 4b: full-trace-ghosts -- the engine=full preview shows Fresnel
+# ghost reflections under log extinction
+# ===========================================================================
+def scenario_full_trace_ghosts(ctx, window):
+    ctx.step("open demos/telephoto_zoom.MieWB")
+    ctx.check(os.path.isfile(TELEPHOTO), "fixture missing: %s" % TELEPHOTO)
+    window.open_model(TELEPHOTO)
+    pump(2.0)
+    ctx.check(window.project.is_open(), "project failed to open telephoto_zoom")
+
+    ctx.step("persist engine=full into the project; log extinction 40 dB")
+    window.project.set_preview_config({"spec": "fan:n=5",
+                                       "engine": "full"})
+    window._on_ray_dimming_mode("log")
+    window._set_ray_dimming_range_db(40.0)
+
+    ctx.step("launch the preview through _start_scene_preview (the "
+             "resolved-config path every launcher shares)")
+    box = {}
+    window.raypreview.finished.connect(
+        lambda path, label: box.setdefault("label", label))
+    window.raypreview.failed.connect(
+        lambda msg: box.setdefault("fail", msg))
+    ctx.check(window._start_scene_preview(),
+              "_start_scene_preview() did not launch")
+
+    ctx.step("wait for completion; label must be 'full trace'")
+    pump_until(lambda: box, timeout_s=180.0)
+    ctx.check("fail" not in box, "preview failed: %s" % box.get("fail"))
+    ctx.check(box.get("label") == "full trace",
+              "engine label=%r, expected 'full trace'" % box.get("label"))
+
+    ctx.step("overlay carries reflection children (rel_power well "
+             "below the transmitted chain)")
+    from vtkmodules.util.numpy_support import vtk_to_numpy
+    polydata = window.scene3d.view._rays_polydata
+    ctx.check(polydata is not None, "no rays polydata loaded")
+    rel_arr = polydata.GetCellData().GetArray("rel_power")
+    ctx.check(rel_arr is not None, "overlay lacks rel_power")
+    rel = vtk_to_numpy(rel_arr)
+    n_weak = int((rel < 0.5).sum())
+    ctx.check(n_weak > 0,
+              "no segment with rel_power < 0.5 among %d -- the full "
+              "trace produced no visible reflection branches" % rel.size)
+
+    ctx.step("log extinction composed an RGBA (alpha) array")
+    ctx.check(polydata.GetCellData().GetArray("rgba_dim") is not None,
+              "rgba_dim missing -- log dimming did not compose")
+
+    ctx.step("screenshot the 3D view with ghost branches")
+    ctx.shot(window.scene3d, "01-full-trace-ghosts.png",
+             vtk_view=window.scene3d.view)
 
 
 # ===========================================================================
@@ -630,6 +705,7 @@ SCENARIOS = [
     ("selection", scenario_selection),
     ("absorbing-stop", scenario_absorbing_stop),
     ("preview-config", scenario_preview_config),
+    ("full-trace-ghosts", scenario_full_trace_ghosts),
     ("plot-inspect", scenario_plot_inspect),
     ("toolbar-contrast", scenario_toolbar_contrast),
 ]

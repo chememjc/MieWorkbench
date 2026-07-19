@@ -183,6 +183,14 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   grey the ACTORS via `VtkSceneView.set_overlay_stale`. PySide6 trap:
   never retrieve a submenu via `QAction.menu()` (ownership transfers to
   Python and the GC deletes the C++ menu — use `menu.property_submenus`).
+  Preview config is ONE dialog (`panes/previewdialog.py`, opened by
+  "Live ray preview…"/Settings pointers): pattern (fan/rings widget +
+  synced advanced spec text), trace ENGINE (`sequential` fast path vs
+  `full` = forced MC subprocess with Fresnel ghosts; per-document
+  `{"spec","engine"}` via `Project.set_preview_config`, QSettings
+  fallback, default `full`), extinction (incl. `log` dB mode,
+  `ray_dimming_range_db`; full-trace + Off auto-selects log), and the
+  bead-anim keys (the old Settings Defaults tab is a pointer page).
 
 ## Body-tagging contract (details docs/RAYTRACER.md §5)
 

@@ -200,12 +200,13 @@ def test_anim_enable_starts_preview_with_configured_pattern(window,
     monkeypatch.setattr(window.project, "is_open", lambda: True)
     monkeypatch.setattr(window.runner, "is_running", lambda: False)
     monkeypatch.setattr(window.raypreview, "is_running", lambda: False)
-    monkeypatch.setattr(window, "_preview_pattern_spec",
-                        lambda: "rings:dr=2:nper=6")
+    monkeypatch.setattr(window, "_resolve_preview_cfg",
+                        lambda: {"spec": "rings:dr=2:nper=6",
+                                 "engine": "sequential"})
 
-    def fake_start(project, workspace, pattern=None, only_bodies=None,
-                   optical_properties=None):
-        calls.append(pattern)
+    def fake_start(project, workspace, pattern=None, engine=None,
+                   only_bodies=None, optical_properties=None):
+        calls.append((pattern, engine))
         return True
 
     monkeypatch.setattr(window.raypreview, "start", fake_start)
@@ -214,7 +215,7 @@ def test_anim_enable_starts_preview_with_configured_pattern(window,
     assert not window.anim_controller.has_segments()
     window._on_anim_enabled_toggled(True)
 
-    assert calls == ["rings:dr=2:nper=6"]
+    assert calls == [("rings:dr=2:nper=6", "sequential")]
 
 
 def test_anim_enable_does_not_double_start_when_busy(window, monkeypatch):
@@ -245,60 +246,148 @@ def test_anim_enable_noop_when_segments_already_fresh(window, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Manual "Live ray preview…" dialog
+# Manual "Live ray preview…" -> Preview Configuration dialog
 # ---------------------------------------------------------------------------
-def test_manual_dialog_prefilled_with_resolved_spec(window, monkeypatch):
-    monkeypatch.setattr(window.project, "is_open", lambda: True)
-    monkeypatch.setattr(window.raypreview, "is_running", lambda: False)
-    monkeypatch.setattr(window, "_preview_pattern_spec",
-                        lambda: "rings:dr=1:nper=8")
+_DISPLAY_KEYS = ("ray_dimming_mode", "ray_dimming_floor",
+                 "ray_dimming_range_db", "anim_enabled", "anim_bead_size",
+                 "anim_speed_mm_s", "anim_fps", "anim_ray_cap",
+                 "anim_bead_opacity_mode", "anim_bead_opacity_db",
+                 "preview_pattern_spec", "preview_engine_mode")
 
-    seen = {}
 
-    def fake_get_text(*args, **kwargs):
-        seen["text"] = kwargs.get("text")
-        return kwargs.get("text"), True
-
-    monkeypatch.setattr(QInputDialog, "getText", fake_get_text)
-
+def _drive_preview_dialog(window, monkeypatch, edit_fn=None):
+    """Open the (never exec'd -- the window is hidden) dialog via
+    _on_ray_preview, optionally edit it, accept, and return the
+    raypreview.start calls. Saves/restores every key the accept path
+    persists."""
+    saved = {k: window.settings._qs.value(k, None) for k in _DISPLAY_KEYS}
     calls = []
     monkeypatch.setattr(window.raypreview, "start",
-                        lambda *a, pattern=None, **kw:
-                            calls.append(pattern) or True)
+                        lambda *a, pattern=None, engine=None, **kw:
+                            calls.append((pattern, engine)) or True)
+    # the accept path persists a changed cfg into the project; these
+    # tests fake is_open on a workerless Project, so stub the write
+    monkeypatch.setattr(window.project, "set_preview_config",
+                        lambda cfg: None)
+    try:
+        window._on_ray_preview()
+        dialog = window._last_preview_dialog
+        if edit_fn is not None:
+            edit_fn(dialog)
+        dialog.accept()      # fires accepted -> _apply_preview_dialog
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                window.settings._qs.remove(k)
+            else:
+                window.settings._qs.setValue(k, v)
+        window.settings._qs.sync()
+    return dialog, calls
 
-    window._on_ray_preview()
 
-    assert seen["text"] == "rings:dr=1:nper=8"
-    assert calls == ["rings:dr=1:nper=8"]
+def test_manual_dialog_prefilled_with_resolved_cfg(window, monkeypatch):
+    monkeypatch.setattr(window.project, "is_open", lambda: True)
+    monkeypatch.setattr(window.raypreview, "is_running", lambda: False)
+    monkeypatch.setattr(window, "_resolve_preview_cfg",
+                        lambda: {"spec": "rings:dr=1:nper=8",
+                                 "engine": "sequential"})
+
+    dialog, calls = _drive_preview_dialog(window, monkeypatch)
+
+    assert dialog.values()["spec"] == "rings:dr=1:nper=8"
+    assert dialog.values()["engine"] == "sequential"
+    assert calls == [("rings:dr=1:nper=8", "sequential")]
 
 
 def test_manual_dialog_accepts_bare_integer(window, monkeypatch):
     monkeypatch.setattr(window.project, "is_open", lambda: True)
     monkeypatch.setattr(window.raypreview, "is_running", lambda: False)
-    monkeypatch.setattr(QInputDialog, "getText",
-                        lambda *a, **kw: ("8", True))
 
-    calls = []
-    monkeypatch.setattr(window.raypreview, "start",
-                        lambda *a, pattern=None, **kw:
-                            calls.append(pattern) or True)
+    dialog, calls = _drive_preview_dialog(
+        window, monkeypatch,
+        edit_fn=lambda d: d._on_spec_text_edited("8"))
 
-    window._on_ray_preview()
-
-    assert calls == ["fan:n=8"]
+    assert dialog.values()["spec"] == "fan:n=8"
+    assert [c[0] for c in calls] == ["fan:n=8"]
 
 
-def test_manual_dialog_invalid_spec_shows_status_no_start(window,
-                                                           monkeypatch):
+def test_manual_dialog_invalid_text_keeps_last_valid_spec(window,
+                                                          monkeypatch):
+    """Garbage in the Advanced row shows the inline error and leaves the
+    pattern fields (= the accepted spec) at their last valid state --
+    the dialog can never launch an invalid pattern."""
     monkeypatch.setattr(window.project, "is_open", lambda: True)
     monkeypatch.setattr(window.raypreview, "is_running", lambda: False)
-    monkeypatch.setattr(QInputDialog, "getText",
-                        lambda *a, **kw: ("not a pattern", True))
+    monkeypatch.setattr(window, "_resolve_preview_cfg",
+                        lambda: {"spec": "fan:n=7", "engine": "full"})
 
-    calls = []
-    monkeypatch.setattr(window.raypreview, "start",
-                        lambda *a, **kw: calls.append(1) or True)
+    def edit(dialog):
+        dialog._on_spec_text_edited("not a pattern")
+        assert dialog.spec_error_label.text()
 
-    window._on_ray_preview()
+    dialog, calls = _drive_preview_dialog(window, monkeypatch,
+                                          edit_fn=edit)
 
-    assert calls == []
+    assert [c[0] for c in calls] == ["fan:n=7"]
+
+
+def test_manual_dialog_engine_reaches_start(window, monkeypatch):
+    monkeypatch.setattr(window.project, "is_open", lambda: True)
+    monkeypatch.setattr(window.raypreview, "is_running", lambda: False)
+    monkeypatch.setattr(window, "_resolve_preview_cfg",
+                        lambda: {"spec": "fan:n=5",
+                                 "engine": "sequential"})
+
+    def edit(dialog):
+        idx = dialog.engine_combo.findData("full")
+        dialog.engine_combo.setCurrentIndex(idx)
+
+    _dialog, calls = _drive_preview_dialog(window, monkeypatch,
+                                           edit_fn=edit)
+
+    assert calls == [("fan:n=5", "full")]
+
+
+# ---------------------------------------------------------------------------
+# {"spec", "engine"} resolution (project -> QSettings -> defaults)
+# ---------------------------------------------------------------------------
+def test_resolve_cfg_defaults_engine_full(window, monkeypatch):
+    """No stored engine anywhere resolves to "full" (reflections visible
+    out of the box -- the owner default), incl. for old {"spec"} dicts."""
+    monkeypatch.setattr(window.project, "is_open", lambda: True)
+    monkeypatch.setattr(window.project, "get_preview_config",
+                        lambda: {"spec": "fan:n=9"})   # old-style dict
+    window.settings.set("preview_engine_mode", "")
+    assert window._resolve_preview_cfg() == {"spec": "fan:n=9",
+                                             "engine": "full"}
+
+
+def test_resolve_cfg_project_engine_wins(window, monkeypatch):
+    monkeypatch.setattr(window.project, "is_open", lambda: True)
+    monkeypatch.setattr(window.project, "get_preview_config",
+                        lambda: {"spec": "fan:n=9",
+                                 "engine": "sequential"})
+    assert window._resolve_preview_cfg()["engine"] == "sequential"
+
+
+def test_resolve_cfg_settings_engine_fallback(window, monkeypatch):
+    monkeypatch.setattr(window.project, "is_open", lambda: False)
+    saved = window.settings._qs.value("preview_engine_mode", None)
+    try:
+        window.settings.set("preview_engine_mode", "sequential")
+        assert window._resolve_preview_cfg()["engine"] == "sequential"
+        window.settings.set("preview_engine_mode", "bogus")
+        assert window._resolve_preview_cfg()["engine"] == "full"
+    finally:
+        if saved is None:
+            window.settings._qs.remove("preview_engine_mode")
+        else:
+            window.settings._qs.setValue("preview_engine_mode", saved)
+        window.settings._qs.sync()
+
+
+def test_set_preview_config_rejects_bad_engine(window, monkeypatch):
+    from mieworkbench.core.project import ProjectError
+    with pytest.raises(ProjectError):
+        window.project.set_preview_config({"spec": "fan:n=5",
+                                           "engine": "warp"})

@@ -275,10 +275,14 @@ def test_extinction_combo_syncs_menu(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
     saved_mode = window.settings._qs.value("ray_dimming_mode", None)
-    calls = []
-    original = window._apply_ray_dimming
-    window._apply_ray_dimming = lambda: calls.append(1) or original()
     try:
+        # normalize whatever mode the machine's QSettings persisted --
+        # the assertions below rely on starting from Off
+        window._on_ray_dimming_mode("off")
+        calls = []
+        original = window._apply_ray_dimming
+        window._apply_ray_dimming = lambda: calls.append(1) or original()
+
         # combo -> menu
         window.ray_dim_combo.setCurrentIndex(1)   # Linear
         assert window._ray_dim_mode == "linear"
@@ -291,13 +295,43 @@ def test_extinction_combo_syncs_menu(qtbot):
         assert window.ray_dim_combo.currentIndex() == 2
         assert len(calls) == 2
 
+        # log mode: combo -> menu and menu -> combo
+        window.ray_dim_combo.setCurrentIndex(3)   # Logarithmic
+        assert window._ray_dim_mode == "log"
+        assert window.ray_dim_log_action.isChecked()
+        assert len(calls) == 3
         window.ray_dim_off_action.trigger()
         assert window.ray_dim_combo.currentIndex() == 0
+        window.ray_dim_log_action.trigger()
+        assert window._ray_dim_mode == "log"
+        assert window.ray_dim_combo.currentIndex() == 3
     finally:
         if saved_mode is None:
             window.settings._qs.remove("ray_dimming_mode")
         else:
             window.settings._qs.setValue("ray_dimming_mode", saved_mode)
+        window.settings._qs.sync()
+
+
+def test_log_mode_and_range_persist_across_reload(qtbot):
+    """'log' + its dB range survive a MainWindow rebuild (guards the
+    three mode-keyed structures + validation tuple all knowing 'log')."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    saved = {k: window.settings._qs.value(k, None)
+             for k in ("ray_dimming_mode", "ray_dimming_range_db")}
+    try:
+        window._on_ray_dimming_mode("log")
+        window._set_ray_dimming_range_db(45.0)
+        reloaded = MainWindow()
+        qtbot.addWidget(reloaded)
+        assert reloaded._ray_dim_mode == "log"
+        assert reloaded._ray_dim_range_db == 45.0
+        assert reloaded.ray_dim_log_action.isChecked()
+        assert reloaded.ray_dim_combo.currentIndex() == 3
+    finally:
+        for k, v in saved.items():
+            _restore_key(window, k, v)
         window.settings._qs.sync()
 
 
@@ -446,36 +480,60 @@ def test_animation_step_updates_readout_and_beads(qtbot, tmp_path):
         window.settings._qs.sync()
 
 
-def test_settings_defaults_tab_round_trip(qtbot):
-    from mieworkbench.core.settings import SettingsDialog
+def test_apply_display_settings_round_trip(qtbot):
+    """_apply_display_settings (the Preview Configuration dialog's accept
+    path -- the one implementation the old Settings Defaults tab used to
+    duplicate) persists every key and pushes the live session + toolbar
+    editors."""
     window = MainWindow()
     qtbot.addWidget(window)
-    keys = ("ray_dimming_mode", "ray_dimming_floor", "anim_enabled",
-            "anim_bead_size", "anim_speed_mm_s", "anim_fps",
-            "anim_ray_cap")
+    keys = ("ray_dimming_mode", "ray_dimming_floor",
+            "ray_dimming_range_db", "anim_enabled", "anim_bead_size",
+            "anim_speed_mm_s", "anim_fps", "anim_ray_cap",
+            "anim_bead_opacity_mode", "anim_bead_opacity_db")
     saved = {k: window.settings._qs.value(k, None) for k in keys}
     try:
-        dialog = SettingsDialog(window.settings, window)
-        qtbot.addWidget(dialog)
-        dialog.dim_mode_combo.setCurrentIndex(1)      # Linear
-        dialog.dim_floor_spin.setValue(7.5)
-        dialog.anim_speed_spin.setValue(4.0)
-        dialog.anim_fps_spin.setValue(30)
-        dialog.anim_cap_spin.setValue(50)
-        dialog._on_accept()                            # dialog-free path
+        window._apply_display_settings({
+            "dim_mode": "linear", "dim_floor": 7.5, "dim_range_db": 42.0,
+            "anim_enabled": False, "anim_bead_size": 2.0,
+            "anim_speed_mm_s": 4.0, "anim_fps": 30, "anim_ray_cap": 50,
+            "anim_bead_opacity_mode": "power",
+            "anim_bead_opacity_db": 25.0})
 
         assert window.settings.get("ray_dimming_mode") == "linear"
         assert float(window.settings.get("ray_dimming_floor")) == 7.5
+        assert float(window.settings.get("ray_dimming_range_db")) == 42.0
         assert float(window.settings.get("anim_speed_mm_s")) == 4.0
+        assert window.settings.get("anim_bead_opacity_mode") == "power"
         # pushed live into the open session, both editors synced
         assert window._ray_dim_mode == "linear"
         assert window.ray_dim_combo.currentIndex() == 1
+        assert window._ray_dim_range_db == 42.0
         assert window.anim_controller.speed_mm_s == 4.0
         assert window.anim_controller.fps == 30
         assert window.anim_controller.ray_cap == 50
         assert window.anim_speed_spin.value() == 4.0
         assert window.anim_fps_combo.currentText() == "30"
+        assert window.anim_opacity_combo.currentIndex() == 1
+        assert window.anim_opacity_db_spin.value() == 25.0
     finally:
         for k, v in saved.items():
             _restore_key(window, k, v)
         window.settings._qs.sync()
+
+
+def test_settings_defaults_tab_is_pointer_page(qtbot):
+    """The Settings 'Defaults' tab no longer hosts its own editors --
+    just the pointer button to the Preview Configuration dialog (enabled
+    only with a MainWindow parent that exposes _open_preview_dialog)."""
+    from mieworkbench.core.settings import SettingsDialog
+    window = MainWindow()
+    qtbot.addWidget(window)
+    dialog = SettingsDialog(window.settings, window)
+    qtbot.addWidget(dialog)
+    assert not hasattr(dialog, "dim_mode_combo")
+    assert not hasattr(dialog, "anim_speed_spin")
+    assert dialog.preview_config_button.isEnabled()
+    standalone = SettingsDialog(window.settings)
+    qtbot.addWidget(standalone)
+    assert not standalone.preview_config_button.isEnabled()

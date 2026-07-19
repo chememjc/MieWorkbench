@@ -38,8 +38,8 @@ from PySide6.QtGui import QActionGroup, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
     QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
-    QMessageBox, QProgressBar, QSpinBox, QStyle, QTabWidget, QToolButton,
-    QVBoxLayout, QWidget,
+    QMessageBox, QProgressBar, QPushButton, QSpinBox, QStyle, QTabWidget,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from .core import checkpointinfo
@@ -71,6 +71,7 @@ from .panes.problems import ProblemsPane
 from .panes.prop_editor import PropEditorPane
 from .panes.py_console import PyConsolePane
 from .panes.results import ResultsPane
+from .panes.previewdialog import PreviewConfigDialog
 from .panes.rundialog import RunDialog
 from .panes.scene3d import Scene3DPane
 from .panes.train_editor import TrainEditorPane
@@ -78,7 +79,6 @@ from .panes.transform_panel import TransformPanel
 from .panes.element_wizard import TypeChooserDialog
 from .panes.wizard_dialog import (ElementWizardDialog, FieldFanDialog,
                                   ZoomPairDialog)
-from .widgets.preview_config import PreviewConfigWidget
 from .widgets.style import checked_toolbutton_stylesheet
 
 try:
@@ -105,7 +105,7 @@ _CHIP_COLORS = {
 _CHIP_DEFAULT = "#6b7280"
 
 # ray extinction modes, in the toolbar combo's index order
-_RAY_DIM_MODES = ("off", "linear", "sqrt")
+_RAY_DIM_MODES = ("off", "linear", "sqrt", "log")
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -198,10 +198,6 @@ class MainWindow(QMainWindow):
         self.tolerance_ctl = ToleranceController(self.settings, self)
         self.config_matrix = ConfigMatrix()
         self.config_matrix.estimateRequested.connect(self._show_estimate)
-        # persistent Ray Preview tab of the Simulation Settings dialog
-        # (WP2) -- one instance, reparented into the dialog on demand,
-        # same pattern as config_matrix above.
-        self.preview_config = PreviewConfigWidget()
         self.library_manager = LibraryManager(
             os.path.join(REPO, "opticalproperties"),
             os.path.join(REPO, "primitives"))
@@ -659,6 +655,11 @@ class MainWindow(QMainWindow):
             "Square-root curve: compensates the eye's nonlinearity so a "
             "50/50 split looks half as bright instead of nearly gone "
             "after a few bounces")
+        self.ray_dim_log_action = dim_action(
+            "Lo&garithmic (dB)", "log",
+            "Opacity falls linearly in dB below the source over the "
+            "configured dynamic range -- keeps weak Fresnel ghost "
+            "reflections (20-40 dB down) visible in full-trace previews")
         self.ray_dimming_menu.addSeparator()
         self.ray_dim_floor_action = self.ray_dimming_menu.addAction(
             "&Minimum Opacity…")
@@ -670,17 +671,19 @@ class MainWindow(QMainWindow):
             self._on_ray_dimming_floor)
 
         self._ray_dim_mode = self.settings.get("ray_dimming_mode", "off")
-        if self._ray_dim_mode not in ("off", "linear", "sqrt"):
+        if self._ray_dim_mode not in _RAY_DIM_MODES:
             self._ray_dim_mode = "off"
         try:
             self._ray_dim_floor = float(
                 self.settings.get("ray_dimming_floor", "0") or 0)
         except (TypeError, ValueError):
             self._ray_dim_floor = 0.0
-        {"off": self.ray_dim_off_action,
-         "linear": self.ray_dim_linear_action,
-         "sqrt": self.ray_dim_sqrt_action}[self._ray_dim_mode].setChecked(
-            True)
+        try:
+            self._ray_dim_range_db = float(
+                self.settings.get("ray_dimming_range_db", "30") or 30)
+        except (TypeError, ValueError):
+            self._ray_dim_range_db = 30.0
+        self._ray_dim_actions()[self._ray_dim_mode].setChecked(True)
         self._apply_ray_dimming()
 
         # tracer-bead animation on/off: ONE checkable action shared by
@@ -822,9 +825,9 @@ class MainWindow(QMainWindow):
         act = rays_menu.addAction("Load last run's rays")
         act.triggered.connect(self._load_case_rays)
         act = rays_menu.addAction("Live ray preview…")
-        act.setToolTip("Trace a small deterministic fan from each source "
-                       "(center + top/bottom/left/right of the emit face) "
-                       "through the current scene")
+        act.setToolTip("Configure (pattern, engine, extinction, beads) "
+                       "and trace a deterministic ray preview from each "
+                       "source through the current scene")
         act.triggered.connect(self._on_ray_preview)
         rays_btn.setMenu(rays_menu)
         toolbar.addWidget(rays_btn)
@@ -841,12 +844,14 @@ class MainWindow(QMainWindow):
                              "ray segments by remaining power")
         toolbar.addWidget(ext_label)
         self.ray_dim_combo = QComboBox()
-        for label in ("Off", "Linear", "Perceptual"):
+        for label in ("Off", "Linear", "Perceptual", "Logarithmic"):
             self.ray_dim_combo.addItem(label)
         self.ray_dim_combo.setToolTip(
             "Ray extinction: Off = full opacity; Linear = opacity is each "
             "segment's remaining power relative to its ray's power at the "
-            "source (P/P₀); Perceptual = √(P/P₀). Same setting as "
+            "source (P/P₀); Perceptual = √(P/P₀); Logarithmic = falls "
+            "linearly in dB over the configured dynamic range (keeps "
+            "weak Fresnel ghosts visible). Same setting as "
             "View ▸ Ray Dimming; applies live to loaded rays. Dims ray "
             "LINES only -- animation bead opacity is a separate control "
             "on the Animation toolbar.")
@@ -907,60 +912,163 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Ray preview already running…",
                                          4000)
             return
-        text, ok = QInputDialog.getText(
-            self, "Live ray preview",
-            "Pattern (--viz-pattern spec, e.g. 'fan:n=5' or "
-            "'rings:dr=1:nper=12[:nrings=K]'; a bare integer means "
-            "fan:n=<int>):",
-            text=self._preview_pattern_spec())
-        if not ok:
+        self._open_preview_dialog(launch=True, only_bodies=only_bodies,
+                                  target=target)
+
+    def _open_preview_dialog(self, launch, only_bodies=None,
+                             target="scene", exec_dialog=None):
+        """Build and show the all-in-one Preview Configuration dialog,
+        prefilled from the resolved project/QSettings state plus the live
+        dimming/animation values. launch=True (the "Live ray preview…"
+        action) starts a preview on accept; launch=False (the Settings
+        entry points) only persists/applies. exec() is isVisible-guarded
+        (offscreen tests drive the returned dialog directly); scripted
+        callers on a VISIBLE window (gui_verify) pass exec_dialog=False
+        to drive the returned dialog without blocking on the modal."""
+        cfg = self._resolve_preview_cfg()
+        values = {
+            "spec": cfg["spec"],
+            "engine": cfg["engine"],
+            "dim_mode": self._ray_dim_mode,
+            "dim_floor": self._ray_dim_floor,
+            "dim_range_db": self._ray_dim_range_db,
+            "anim_enabled": self.anim_controller.enabled,
+            "anim_bead_size": self._settings_num("anim_bead_size", 1.0),
+            "anim_speed_mm_s": self._settings_num("anim_speed_mm_s", 2.0),
+            "anim_fps": int(self._settings_num("anim_fps", 15)),
+            "anim_ray_cap": int(self._settings_num("anim_ray_cap", 300)),
+            "anim_bead_opacity_mode": self.settings.get(
+                "anim_bead_opacity_mode", "off"),
+            "anim_bead_opacity_db": self._settings_num(
+                "anim_bead_opacity_db", 30.0),
+        }
+        dialog = PreviewConfigDialog(values, parent=self)
+        self._last_preview_dialog = dialog      # test hook
+        dialog.accepted.connect(
+            lambda: self._apply_preview_dialog(dialog, launch,
+                                               only_bodies, target))
+        if exec_dialog is None:
+            exec_dialog = self.isVisible()
+        if exec_dialog:
+            dialog.exec()
+        return dialog
+
+    def _settings_num(self, key, default):
+        try:
+            return float(self.settings.get(key, str(default)) or default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _apply_preview_dialog(self, dialog, launch, only_bodies, target):
+        """Accept handler for the Preview Configuration dialog: persist
+        spec+engine (project + QSettings), push display/animation state
+        through the shared live setters, then optionally launch the
+        preview."""
+        v = dialog.values()
+        cfg = {"spec": v["spec"], "engine": v["engine"]}
+        if self.project.is_open() and cfg != self._resolve_preview_cfg():
+            try:
+                self.project.set_preview_config(cfg)
+            except ProjectError as exc:
+                self.statusBar().showMessage(
+                    "Could not save ray-preview config: %s" % exc, 8000)
+        self.settings.set("preview_pattern_spec", v["spec"])
+        self.settings.set("preview_engine_mode", v["engine"])
+        self._apply_display_settings(v)
+        if not launch:
             return
-        spec = text.strip()
-        try:
-            spec = "fan:n=%d" % int(spec)
-        except ValueError:
-            pass   # not a bare integer -- use the typed spec as-is
-        try:
-            common.parse_viz_pattern_spec(spec)
-        except ValueError as exc:
-            self.statusBar().showMessage(
-                "Invalid ray-preview pattern: %s" % exc, 6000)
+        if self.raypreview.is_running():
+            self.statusBar().showMessage("Ray preview already running…",
+                                         4000)
             return
         self._preview_target = target
         started = self.raypreview.start(
             self.project, self._preview_workspace(),
-            pattern=spec, only_bodies=only_bodies,
+            pattern=v["spec"], engine=v["engine"],
+            only_bodies=only_bodies,
             optical_properties=self._workspace_optprops())
         if started:
             self.statusBar().showMessage(
-                "Tracing preview rays (%s)…" % spec)
+                "Tracing preview rays (%s, %s)…" % (v["spec"], v["engine"]))
 
-    def _preview_pattern_spec(self):
-        """Resolve the ray-preview pattern spec: the open project's
-        stored spec (Project.get_preview_config, re-validated -- a
-        hand-edited or stale document must never surface a broken
-        pattern) -> the last spec used this install (QSettings) ->
-        the "fan:n=5" default. Never raises."""
+    def _apply_display_settings(self, v):
+        """Push the dialog's display/animation values into the live
+        session via the SAME setters the menus/toolbars use (so every
+        editor stays in sync) and persist the anim_* keys. The one
+        implementation shared by the Preview Configuration dialog --
+        the old SettingsDialog Defaults tab used to duplicate this."""
+        self._on_ray_dimming_mode(v["dim_mode"])
+        self._set_ray_dimming_floor(v["dim_floor"])
+        self._set_ray_dimming_range_db(v["dim_range_db"])
+        self.settings.set_bool("anim_enabled", bool(v["anim_enabled"]))
+        self.settings.set("anim_bead_size", str(v["anim_bead_size"]))
+        self.settings.set("anim_speed_mm_s", str(v["anim_speed_mm_s"]))
+        self.settings.set("anim_fps", str(int(v["anim_fps"])))
+        self.settings.set("anim_ray_cap", str(int(v["anim_ray_cap"])))
+        self.settings.set("anim_bead_opacity_mode",
+                          v["anim_bead_opacity_mode"])
+        self.settings.set("anim_bead_opacity_db",
+                          str(v["anim_bead_opacity_db"]))
+        self.anim_controller.apply_settings(
+            bead_size_mm=v["anim_bead_size"],
+            speed_mm_s=v["anim_speed_mm_s"],
+            fps=int(v["anim_fps"]),
+            ray_cap=int(v["anim_ray_cap"]),
+            bead_opacity_mode=v["anim_bead_opacity_mode"],
+            bead_opacity_range_db=v["anim_bead_opacity_db"])
+        # route enabled through the shared action so menu/toolbar
+        # check-state follows, then sync the toolbar editors
+        self.anim_enable_action.setChecked(bool(v["anim_enabled"]))
+        self.anim_size_spin.setValue(v["anim_bead_size"])
+        self.anim_speed_spin.setValue(v["anim_speed_mm_s"])
+        self.anim_fps_combo.setCurrentText(str(int(v["anim_fps"])))
+        if hasattr(self, "anim_opacity_combo"):
+            self.anim_opacity_combo.setCurrentIndex(
+                0 if v["anim_bead_opacity_mode"] == "off" else 1)
+            self.anim_opacity_db_spin.setValue(v["anim_bead_opacity_db"])
+
+    def _resolve_preview_cfg(self):
+        """Resolve {"spec", "engine"} for the ray preview, per field:
+        the open project's stored config (re-validated -- a hand-edited
+        or stale document must never surface a broken pattern) -> the
+        last values used this install (QSettings) -> the defaults
+        ("fan:n=5", "full" -- reflections visible out of the box, the
+        owner default). Never raises."""
+        spec = None
+        engine = None
         if self.project.is_open():
             try:
                 cfg = self.project.get_preview_config()
             except Exception:
                 cfg = None
-            spec = (cfg or {}).get("spec") if cfg else None
-            if spec:
+            if cfg:
+                stored = cfg.get("spec")
+                if stored:
+                    try:
+                        common.parse_viz_pattern_spec(stored)
+                        spec = stored
+                    except ValueError:
+                        pass
+                if cfg.get("engine") in ("sequential", "full"):
+                    engine = cfg["engine"]
+        if spec is None:
+            stored = self.settings.get("preview_pattern_spec", None)
+            if stored:
                 try:
-                    common.parse_viz_pattern_spec(spec)
-                    return spec
+                    common.parse_viz_pattern_spec(stored)
+                    spec = stored
                 except ValueError:
                     pass
-        stored = self.settings.get("preview_pattern_spec", None)
-        if stored:
-            try:
-                common.parse_viz_pattern_spec(stored)
-                return stored
-            except ValueError:
-                pass
-        return "fan:n=5"
+        if engine is None:
+            stored = self.settings.get("preview_engine_mode", None)
+            if stored in ("sequential", "full"):
+                engine = stored
+        return {"spec": spec or "fan:n=5", "engine": engine or "full"}
+
+    def _preview_pattern_spec(self):
+        """The resolved ray-preview pattern spec (thin wrapper kept for
+        the existing call sites/tests; see _resolve_preview_cfg)."""
+        return self._resolve_preview_cfg()["spec"]
 
     def _on_scene_rays_requested(self):
         """Rays toggle checked with no overlay: load the last run's rays
@@ -998,8 +1106,10 @@ class MainWindow(QMainWindow):
                 self.inspector.load_rays_vtp(vtp_path)
         # engine hint (P4b preview unification): which trace engine produced
         # this overlay -- "sequential (exact)" (Optiland, deterministic, no
-        # MC noise) vs "engine fan" (the general Python-engine viz trace,
-        # the fallback for scenes outside the sequential bridge's scope).
+        # MC noise), "engine fan" (the general Python-engine viz trace, the
+        # fallback for scenes outside the sequential bridge's scope), or
+        # "full trace" (the same MC engine forced by the user's engine
+        # choice -- Fresnel ghost reflections included).
         self.statusBar().showMessage("Ray preview ready — %s" % engine, 5000)
         self._warn_if_dim_data_missing()
 
@@ -1037,9 +1147,10 @@ class MainWindow(QMainWindow):
             self.preview_scheduler.notify_change()
             return False
         self._preview_target = "scene"
+        cfg = self._resolve_preview_cfg()
         started = self.raypreview.start(
             self.project, self._preview_workspace(),
-            pattern=self._preview_pattern_spec(),
+            pattern=cfg["spec"], engine=cfg["engine"],
             optical_properties=self._workspace_optprops())
         if started:
             self.preview_scheduler.notify_busy(True)
@@ -1055,11 +1166,22 @@ class MainWindow(QMainWindow):
         self.settings.set_bool("auto_preview_rays", checked)
 
     # -- ray dimming -----------------------------------------------------------
+    def _ray_dim_actions(self):
+        """mode -> View-menu radio action, covering every _RAY_DIM_MODES
+        entry (a new mode that misses this map fails loudly at menu
+        build, not silently at the first mode switch)."""
+        return {"off": self.ray_dim_off_action,
+                "linear": self.ray_dim_linear_action,
+                "sqrt": self.ray_dim_sqrt_action,
+                "log": self.ray_dim_log_action}
+
     def _apply_ray_dimming(self):
         self.scene3d.view.set_ray_dimming(self._ray_dim_mode,
-                                          self._ray_dim_floor)
+                                          self._ray_dim_floor,
+                                          self._ray_dim_range_db)
         self.inspector.view.set_ray_dimming(self._ray_dim_mode,
-                                            self._ray_dim_floor)
+                                            self._ray_dim_floor,
+                                            self._ray_dim_range_db)
         self._warn_if_dim_data_missing()
 
     def _warn_if_dim_data_missing(self):
@@ -1074,15 +1196,11 @@ class MainWindow(QMainWindow):
         """Sync BOTH extinction editors (View-menu radio group + toolbar
         combo) to `mode` with signals blocked, so neither re-triggers the
         handler. The combo may not exist yet during _build_menus."""
-        action = {"off": self.ray_dim_off_action,
-                  "linear": self.ray_dim_linear_action,
-                  "sqrt": self.ray_dim_sqrt_action}[mode]
-        for act in (self.ray_dim_off_action, self.ray_dim_linear_action,
-                    self.ray_dim_sqrt_action):
+        actions = self._ray_dim_actions()
+        for act in actions.values():
             act.blockSignals(True)
-        action.setChecked(True)
-        for act in (self.ray_dim_off_action, self.ray_dim_linear_action,
-                    self.ray_dim_sqrt_action):
+        actions[mode].setChecked(True)
+        for act in actions.values():
             act.blockSignals(False)
         combo = getattr(self, "ray_dim_combo", None)
         if combo is not None:
@@ -1105,6 +1223,13 @@ class MainWindow(QMainWindow):
         self._ray_dim_floor = max(0.0, min(100.0, float(floor_pct)))
         self._apply_ray_dimming()
         self.settings.set("ray_dimming_floor", str(self._ray_dim_floor))
+
+    def _set_ray_dimming_range_db(self, range_db):
+        """Dialog-free setter for the log-mode dynamic range (dB)."""
+        self._ray_dim_range_db = max(1.0, min(120.0, float(range_db)))
+        self._apply_ray_dimming()
+        self.settings.set("ray_dimming_range_db",
+                          str(self._ray_dim_range_db))
 
     def _on_ray_dimming_floor(self):
         value, ok = QInputDialog.getDouble(
@@ -1546,10 +1671,6 @@ class MainWindow(QMainWindow):
                 self.tolerance_pane.apply_config(tol_cfg)
             except Exception:
                 pass
-        try:
-            self.preview_config.set_spec(self._preview_pattern_spec())
-        except Exception:
-            pass
 
     def _on_scene_loaded(self):
         has_doc = self.project.is_open()
@@ -3345,27 +3466,34 @@ class MainWindow(QMainWindow):
         WITHOUT running. Tabbed: "Simulation" is the shared ConfigMatrix
         widget (reparenting/OK/apply semantics UNCHANGED from before —
         deliberately NOT routed through _config_matrix_dialog, which
-        Run Pipeline… still uses standalone); "Ray Preview" is the
-        persistent per-document preview-pattern editor (WP2). OK persists
-        simparams into the open .MieWB exactly as before, and (if the
-        pattern changed) the preview spec into the project + QSettings;
-        Cancel leaves both widgets' state as-is (shared instances, so
-        edits made before Cancel remain visible next time but are not
-        written anywhere)."""
+        Run Pipeline… still uses standalone); "Ray Preview" is a pointer
+        page opening the consolidated Preview Configuration dialog
+        (which owns pattern/engine/display/animation settings and their
+        persistence). OK persists simparams into the open .MieWB exactly
+        as before; Cancel leaves the widget state as-is."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Simulation Settings")
         layout = QVBoxLayout(dialog)
 
+        preview_page = QWidget()
+        preview_lay = QVBoxLayout(preview_page)
+        note = QLabel(
+            "Ray-preview pattern, trace engine, extinction and "
+            "tracer-bead settings live in the Preview Configuration "
+            "dialog (also reachable via the Rays toolbar button's "
+            "\"Live ray preview…\").")
+        note.setWordWrap(True)
+        preview_lay.addWidget(note)
+        preview_btn = QPushButton("Preview configuration…")
+        preview_btn.clicked.connect(
+            lambda: self._open_preview_dialog(launch=False))
+        preview_lay.addWidget(preview_btn)
+        preview_lay.addStretch(1)
+
         tabs = QTabWidget()
         tabs.addTab(self.config_matrix, "Simulation")
-        tabs.addTab(self.preview_config, "Ray Preview")
+        tabs.addTab(preview_page, "Ray Preview")
         layout.addWidget(tabs)
-
-        original_spec = self._preview_pattern_spec()
-        try:
-            self.preview_config.set_spec(original_spec)
-        except ValueError:
-            pass
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -3381,15 +3509,6 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(
                     "Settings applied for this session (open/save a "
                     ".MieWB to store them with the project)", 8000)
-            spec = self.preview_config.spec()
-            if spec != original_spec and self.project.is_open():
-                try:
-                    self.project.set_preview_config({"spec": spec})
-                except ProjectError as exc:
-                    self.statusBar().showMessage(
-                        "Could not save ray-preview pattern: %s" % exc,
-                        8000)
-            self.settings.set("preview_pattern_spec", spec)
             dialog.accept()
 
         buttons.accepted.connect(on_ok)
