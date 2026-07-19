@@ -654,6 +654,15 @@ def test_routing_reasons(tmp_path):
     assert r["case"]["engine"] == "c"
     assert "ported" in r["case"]["engine_reason"]
 
+    # gyrotropic scenes reference-route: quartz carries gyration data, the C
+    # engine has no optical-activity term, so auto must pick python and say so
+    # (the retarder C-parity coverage lives in waveplate_mgf2 instead).
+    quartz_json = REPO / "geometry" / "waveplate_quartz" / "model.json"
+    if quartz_json.exists():
+        rq = run_engine(quartz_json, tmp_path / "case_quartz", "auto")
+        assert rq["case"]["engine"] == "python"
+        assert "gyration" in rq["case"]["engine_reason"]
+
 
 # ---------------------------------------------------------------------------
 # P7 tranche 1: pulsed-optics time domain
