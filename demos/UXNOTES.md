@@ -1,167 +1,81 @@
-# UX friction log — building the demo gallery through the interface
+# UX friction log — consolidated open items
 
-Every demo in this folder was assembled with the exact op sequence the GUI
-issues (`scripts/make_demos.py` drives `mieworkbench.core.fcclient`:
-import_primitive → set_spreadsheet → rebuild_primitive → set_placement →
-set_property → save). This file records what was easy, what hurt, and what
-should change — the raw material for the round-2 UX proposal.
+Consolidated 2026-07-19 (docs round). This file supersedes the four
+per-round shakedown logs (round-1 `UXNOTES.md`, `UXNOTES_ROUND2.md`,
+`UXNOTES_ROUND3.md`, `UXNOTES_PULSED.md`): every observation in those
+files was re-verified against the current code; everything not listed
+below was confirmed FIXED (with the fixing code located), obsolete, or
+non-actionable historical color, and was dropped. Git history keeps the
+originals.
 
-## What worked well
+## Placement / transform panel
 
-- **Type-first add + parameter sheets.** Every element except the Schmidt
-  corrector came straight from the catalog; setting prescription radii/
-  thicknesses through the `dim` sheet aliases was exactly the "element
-  parameters box" experience — no typing beyond numbers.
-- **`solve_achromat` / lens wizards.** The microscope objective's two
-  doublets were one function call each (f=20/f=40, scaled BK7/SF5 design).
-- **Multi-body elements move rigidly by group.** Placing the iris, fiber,
-  achromats and BS cube (all 2-body elements) needed one set_placement.
-- **`max_reflections` as a per-demo simparam.** The fiber's ~60-bounce TIR
-  guiding needed one line in simparams.json once the pipeline exposed it.
-- **The aperture contract.** iris/slit plugs (material=air) came built-in;
-  no manual plug bodies anywhere.
+1. **No axis+angle rotation readout.** The Absolute-pose group in
+   `transform_panel.py` only shows intrinsic XYZ Euler angles at 2
+   decimal places — a sub-mrad tilt (e.g. a Michelson fringe-tilt of
+   0.158 mrad ≈ 0.009°) rounds away and can't be visually verified.
+   Wants an axis+angle display with 4+ decimals.
+2. **Anchored (absolute) placement fields are literal-only.** "Set
+   position"/"Set orientation" in the Absolute group are plain
+   `QDoubleSpinBox`es — no expression/variable support, unlike the chain
+   edge cells and the newer polar "Place about point" tool (which DOES
+   support expressions and a genuine polar form). A side-scatter
+   detector or field-source fan still can't be swept parametrically
+   from an anchored pose.
+3. **`--particles` clouds are not chain-referenceable.** No way to say
+   "detector 40 mm at 90° from the cloud center" (nephelometer-ring
+   authoring) without hand-computed literals — needs a lightweight
+   region-anchor/virtual element the reference resolver can target.
+4. **Co-located transparent detectors overlap-fail extraction.** No
+   authoring path exists for "measure the same plane two ways."
 
-## Friction points (ranked by how much time they cost)
+## Catalog / wizard gaps
 
-1. **No "aim this element at that one".** Every folded system needed hand
-   trig for rotation quaternions: the Newtonian/Dobsonian diagonal
-   (-135° about z), the Czerny-Turner's four aimed bodies (mirror-law
-   bisector normals computed offline), the Michelson's M2/detector, the
-   prism-spectrometer camera arm. This was BY FAR the largest cost of
-   building the gallery. A transform-panel "point local -x at element E /
-   at world point P" action (plus "reflect A onto B" for mirrors) would
-   have removed ~80 lines of layout math.
-2. **No system-level focus readout.** The camera triplet and microscope
-   needed an offline paraxial solver to place the sensor (the engine knows
-   the answer, but only after a full run). An on-demand "paraxial trace
-   through the current train" readout (EFL/BFL/image plane) would remove
-   the round-trip. The thick-lens wizard solves single elements only.
-3. **No "flip element" affordance.** Orienting a PCX lens convex-out, the
-   SCT secondary convex-toward-primary, etc. means knowing the primitive's
-   local axis convention and applying a 180° rotation. A one-click "flip
-   about local y/z" (or an orientation indicator — now added in this
-   round: the blue +x dot helps diagnose, but not fix) would be quicker.
-4. **Min-deviation prism setup is trig homework.** `prism.rotation` is the
-   right knob, but the value (30° − (A+Dmin)/2) had to be derived offline
-   from the glass index. A tiny wizard ("orient for minimum deviation at
-   λ") fits the existing wizard registry pattern.
-5. **Tiny angles are invisible.** The Michelson's 0.158 mrad tilt (5
-   fringes across the detector) can't be verified visually in the 3D view;
-   trust-the-number only. The transform panel showing the rotation as
-   axis+angle (not just a quaternion) with 4+ decimals would help.
-6. **D-shaped mirror default clips an on-axis cone.** `mirror_d_shaped`
-   with cut_offset=0 is a half-disc — correct for beam packing, wrong as a
-   Newtonian diagonal for an on-axis bundle (half the cone misses). The
-   demos use a round flat instead; a `cut_offset` preset note (or an
-   elliptical-diagonal primitive) would prevent the trap.
-7. **Achromat aperture vs scaled radii.** `solve_achromat(20)` yields
-   |R_iface| = 8.8 mm; leaving the default aperture (18 mm) makes the
-   builder fail with a bare "math domain error". The wizard knows both
-   numbers — it should clamp/warn instead of letting the build die.
-8. **Diverging broadband source is a property recipe, not a type.** A
-   "slit lamp" (divergent + lambdamin/lambdamax) is laser_divergent plus
-   two hand-added properties. Worth a catalog preset.
-9. **A reflection grating is three separate switches.** The catalog
-   `grating_plate` is a bk7 TRANSMISSION grating; making it reflective
-   for a Czerny-Turner needed `mirror=1.0` (the engine's reflect/transmit
-   switch — the aluminum material alone does nothing), an explicit
-   `0,1,0` periodicity vector (`v` = the face-frame t2 tangent = out of
-   the layout plane here), and a face pin (see the FaceN instability
-   above). A `grating_mirror` catalog primitive with in-plane defaults
-   would make this one click.
+5. **Achromat wizard can build an unbuildable lens.** `solve_achromat`/
+   `design_lens("achromat", …)` never maps or clamps `aperture` against
+   the solved interface radius — a small-f solve against the default
+   18 mm aperture still dies with a bare "math domain error" instead of
+   a clamp or warning.
+6. **No "slit lamp" catalog preset.** A divergent+broadband source is
+   still assembled by hand from `laser_divergent` + two properties.
+7. **No `grating_mirror` catalog primitive.** A reflective grating
+   (Czerny-Turner-style) still needs three manual switches on
+   `grating_plate` (`mirror=1.0`, explicit periodicity vector, face
+   pin).
 
-## Real bugs the shakedown caught (fixed immediately)
+## Rebuild-on-edit
 
-- **Multi-body elements tore apart on placement.** `set_placement` looked
-  a body up by label BEFORE trying the element-group match, and an
-  imported multi-body element's primary body carries the element label
-  itself — so moving "Slit"/"Stop"/"Fiber"/"BS" moved only the first body
-  and left the plug/cladding/second prism at the origin (extraction then
-  failed on overlapping solids, or the Michelson silently traced garbage).
-  Group match now wins; the GUI inherits the fix.
-- **Rebuild-on-edit kept stale `surface_override` strings.** Editing a
-  `mirror_parabolic`'s focal length rebuilt the geometry but re-applied
-  the OLD override via the extra-prop preservation path, so extraction
-  died on the <1 µm asphere verification. `surface_override` is now in
-  `derived_props` for the asphere-backed primitives (same mechanism as
-  the iris `blackness` → `absorbance` fix).
-- **The prism's `rotation` param silently vanished on rebuild.** The
-  builder baked it into the body *Placement*, which rebuild_element
-  rightly preserves from before the rebuild — so setting rotation via the
-  sheet did nothing (the spectrometer beam came out 12° instead of 54°).
-  The builder now bakes rotation into the sketch vertices. Rule of thumb:
-  a sheet param must never live in the Placement.
-- **Rebuilding renumbers faces, orphaning face-mapped properties.** A
-  `grating_plate` resized through the sheet gets fresh FaceN indices, and
-  the preserved `Face1=600:v` grating property can silently land on an
-  edge face (0 diffracted power). The Czerny-Turner demo imports the
-  shipped geometry un-rebuilt; the real fix (round 2) is re-resolving
-  face-map indices geometrically after every rebuild.
+8. **Face-map re-resolution after rebuild is unimplemented.**
+   Rebuilding a primitive still renumbers `FaceN` indices with no
+   geometric old→new matching, silently orphaning coating/grating/
+   surface_override face-map properties. The Czerny-Turner demo still
+   works around this by importing un-rebuilt geometry.
 
-## Detector-face gotcha (engine contract, worth a round-2 look)
+## Pulsed-optics round
 
-The emit/detector face auto-pick is "face centroid closest to the world
-origin". On a rotated, off-axis detector (a folded telescope's eyepiece)
-that is a thin EDGE face — the run completes and detects 0 mW with no
-warning. The folded demos pin `detector_face` in simparams, resolved at
-build time from tessellation normals (`Demo.detector_face()`) because
-FaceN numbering is not even stable across rebuilds. A `detector_face`
-BODY PROPERTY (part of the authoring contract, set once in the GUI)
-would remove the whole failure class.
+9. **`pockels_switch` demo is still dropped.** The coherent o/e-gather
+   recombination that would turn EO retardance into an observable
+   detected-power modulation is phase-noise-dominated at gallery scale
+   (0.6% observed vs 61% predicted by sin²); needs either a much larger
+   coherent ray budget or a new incoherent-path observable (e.g. a
+   Stokes/DOP readout between circular polarizers). Not currently
+   tracked in future.md.
+10. **Auto time-window sizing covers echo-train ghosts** instead of
+    clustering around the dominant pulse (e.g. a ~1 ns window for a
+    100 fs pulse when a double-bounce ghost arrives ~60 ps later).
+    Tracked in future.md as "Dominant-cluster auto time window" but
+    still unimplemented.
+11. **Transmission-grating truncated diffraction orders leak ~8%** past
+    the closure gate — only the reflective/aluminum booking branch
+    accounts for the truncated remainder correctly. Tracked in
+    future.md as "Transmission-grating truncated-order booking" but
+    still open.
 
-## Round-2 proposal (prioritized)
+## Minor / unverified
 
-1. **"Aim at" transform action** — point an element's local −x (or a
-   chosen axis) at another element / a world point; "reflect A onto B"
-   variant that sets a mirror's normal to the bisector. Removes the hand
-   trig that dominated gallery construction. (transform_panel + a pure
-   solver in core/transforms.py)
-2. **`detector_face`/`emit_face` as body properties** — extractor-level
-   support so the recording face is authored once in the GUI (with the
-   indicator glyph showing it) instead of pinned per-run; kills the
-   0-mW-edge-face failure class AND the FaceN instability, if stored as
-   a geometric rule (e.g. `facing:+y` or `local:-x`) rather than an index.
-3. **Paraxial system readout** — EFL/BFL/image-plane of the current train
-   along an axis, computed from the extracted surfaces (a pure-python
-   paraxial chain; make_demos.py already contains the 25-line prototype).
-4. **Face-map re-resolution after rebuild** — match old→new faces
-   geometrically (centroid/normal/area) and rewrite FaceN indices in
-   coating/grating/override strings; warn when unmatched.
-5. **"Flip element" button** (180° about local y/z) in the transform
-   panel, paired with the orientation indicators.
-6. **Prism min-deviation wizard** (given glass + λ, set `rotation`) and a
-   **slit-lamp source preset** (divergent + λ band) in the catalog.
-7. **Transform panel shows axis+angle** with enough digits for mrad-scale
-   alignment (Michelson fringe tilts are invisible otherwise).
-
-## Fixed in round 2 (this round)
-
-- **BS/PBS cubes**: rebuilt as a single cube with a thin coated plate
-  NESTED inside (glass-glass split interface). The investigation showed
-  no coating can rescue the old air-gap build — 45° internal incidence is
-  past BK7's critical angle, so the gap TIR'd the transmitted arm; the
-  fix rode on a new extraction-contract allowance for properly nested
-  solids. Validated 46.7/43.4 % (bs), 91 %/0.04 % s-pol + 2.3 %/89 %
-  p-pol (pbs), zero seam loss.
-- **Self-crossing trim loops** (extractor): every multi-edge planar wire
-  emitted a bow-tie polyline, killing ~half of each pad rectangle face
-  repo-wide — dead half-faces, phantom transmission, the wollaston
-  anomaly, and the prism demo's missing 85 % of power (0.60 → 3.74 mW
-  after the fix). Table coatings past the critical angle now TIR
-  honestly instead of emitting grazing ghost rays.
-- **White rays in the GUI**: rays.vtp never marked `rgb` as the active
-  scalars and the GUI mapper only colored by active scalars — flat white
-  fallback. Fixed on both sides; broadband sources now preview an
-  R/G/B bundle per fan point and traced overlays carry per-λ colors.
-- **File lifecycle**: File ▸ Close, Revert to Saved (confirmed), Save/
-  Discard/Cancel prompts on Open/New, and a session-view reset that
-  stops old ray overlays from leaking into a newly opened model.
-
-## Fixed in round C (feedback already applied)
-
-- `detector_plane` grew a `height` param (36×24 CMOS sensor demo).
-- `--max-reflections` is now a first-class pipeline/simparams option.
-- `fiber_optic` and `mirror_annular` became catalog primitives.
-- Face-orientation indicators now show emit/detector/+x faces in both 3D
-  views (the "which way is this facing" questions that motivated several
-  of the flips above are at least *visible* now).
+12. **Small doc/naming gaps** (open-unverified): `particle_threshold`'s
+    "explicit if count ≤ threshold" direction reads backwards;
+    `laser_collimated` divergence semantics aren't documented on the
+    params; LED primitive name suffixes are bin nicknames while the
+    actual CWL is in `lambdac`; `model.json`/`rays_full.npz` units are
+    metres (a 1000× foot-gun) with no doc callout.
