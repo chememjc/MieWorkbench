@@ -17,6 +17,9 @@ property entries).
 
 ---
 
+Screenshot:
+![Main Window](docs/guide/img/mainwindow.png)
+
 ## 1. What this is
 
 The engine is a four-stage pipeline (permute → extract → trace → post →
