@@ -5,7 +5,7 @@ existing FreeCAD-driven, physically-based coherent Monte-Carlo optical ray
 tracer (referred to below as **the engine**). The engine itself — the
 authoring contract for tagged `.FCStd` scenes, the physics model and its
 honest limits, the optical-property CSV schemas, the full stage-by-stage
-command reference, the 24-scene validation catalog, and troubleshooting —
+command reference, the 33-scene validation catalog, and troubleshooting —
 is documented in **[docs/RAYTRACER.md](docs/RAYTRACER.md)**. This README
 covers the workbench built on top of it: the desktop GUI, the headless
 tools, the file formats it introduces (`.MieWB` / `.MieSim`), and how the
@@ -108,6 +108,13 @@ library-validation template scenes (`coated_plate_*`, `crystal_waveplate`,
 with an automated sweep runner (`python3 scripts/run_library_tests.py`) for
 end-to-end validation of every newly-added optical property (materials,
 coatings, filters, polarizers, gratings, uniaxial crystals, detector QE curves).
+
+Four more demos (`fizeau_flats`, `fs_shg_spectrogram`, `speckle_mie_combo`,
+`quartz_rotator`) exist specifically to showcase physics a sequential ray
+tracer cannot model at all — coherent multi-surface interferometry,
+pulsed-SHG time-frequency dynamics, diffuser speckle + Mie-continuum
+extinction, and gyrotropic optical activity; see the introduction to
+`demos/README.md` for why each is out of reach of a sequential engine.
 
 From the GUI: **File → Open…** and pick `example.FCStd` (a
 divergent+collimated two-laser bench with a BK7 lens, a glass sphere, and
@@ -227,11 +234,16 @@ and scenes with no detector yet, where preview_rays injects a synthetic transpar
 far-field detector behind the scenes so the trace can still run. Simply **checking the
 Rays toggle** with nothing currently shown does something useful too: it loads the last
 run's `viz/rays.vtp` if a finished case is open, and otherwise offers the live preview
-directly. The preview pattern itself — **Fan** (rays per source) or
-**Rings** (spacing/rays-per-ring/ring count) — is configured on the
-**Ray Preview** tab of **Simulation → Simulation Settings…**, persists
-per document, and falls back to this install's last-used pattern, then a
-5-ray fan.
+directly. The preview pattern — **Fan** (rays per source) or **Rings**
+(spacing/rays-per-ring/ring count) — and which **trace engine** runs it
+(below) are both set in the consolidated **Preview Configuration** dialog
+(`panes/previewdialog.py`), opened from **Live ray preview…** itself, or
+from **Simulation → Simulation Settings… ▸ Ray Preview** / **File →
+Settings… ▸ Defaults** (both are now pointer pages into the same dialog).
+Pattern and engine persist **per document** (`Project.set_preview_config`,
+travels with the `.FCStd`/`.MieWB`); with no per-document config they
+fall back to this install's last-used values (QSettings), then the app
+defaults of a 5-ray fan on the Full-trace engine.
 
 Both preview and rendered rays are **colored by wavelength** (each segment
 carries a CIE-derived RGB from its source λ), so chromatic dispersion and
@@ -239,20 +251,44 @@ diffraction orders read directly off the overlay. Edits that affect the
 optics grey the ray ACTORS out (low-opacity gray, plus a "Rays (stale)"
 button label) until fresh rays load.
 
-**Ray dimming** (View ▸ *Ray Dimming*, off by default, persisted): fades
-each ray segment by attenuation — opacity is the segment's remaining
-power relative to its own ray's power at the source (P/P₀), so
-absorption, coatings, and Fresnel splits all dim the trace consistently
-(a 50/50 beamsplitter yields two half-opacity arms). Choose **Linear**
-(opacity = P/P₀, fading fully to invisible at zero power), **Perceptual**
-(√(P/P₀), compensating the eye's nonlinearity), or set a **Minimum
-Opacity…** floor so heavily attenuated rays stay faintly traceable.
-Applies to the live preview and loaded run overlays in both 3D views;
-rays.vtp files from runs predating the feature simply render undimmed.
-The rendered pipeline outputs have the equivalent `--dim-rays`
-{off,linear,sqrt} / `--dim-rays-floor PCT` options (in the run config
-panel and `run_pipeline.py`), covering `rays_xy.png` and the 3D viz
-renders.
+**Ray extinction / dimming** (View ▸ *Ray Dimming*, the toolbar's
+**Extinction:** combo, or the Preview Configuration dialog's *Overlay
+display* section — all three drive the same state, off by default,
+persisted): fades each ray segment by attenuation — for Linear/
+Perceptual, opacity is the segment's remaining power relative to its own
+ray's power at the source (P/P₀), so absorption, coatings, and Fresnel
+splits all dim the trace consistently (a 50/50 beamsplitter yields two
+half-opacity arms). Four modes: **Off**; **Linear** (opacity = P/P₀,
+fading fully to invisible at zero power); **Perceptual** (√(P/P₀),
+compensating the eye's nonlinearity); and **Logarithmic (dB)** (default
+dynamic range 30 dB, presets 30/40/60 dB or a custom 1–120 dB value — a
+segment R dB below the source renders at opacity = 1 − R/range, so a
+~14 dB/reflection uncoated Fresnel ghost stays visible at 40 dB). A
+**Minimum Opacity…** floor keeps heavily attenuated rays faintly
+traceable in any mode.
+
+**Trace engine** (also in the Preview Configuration dialog): **Sequential**
+runs the on-axis Optiland fast path (primary transmitted chain only, no
+reflections, exact bead timing) — the same interactive/paraxial engine
+used for on-axis preview and, via `--eval-backend sequential`, for
+Optimize/Tolerance evaluation (§5.14/§5.15); **Full trace** (the default)
+forces the real Monte-Carlo preview subprocess with Fresnel ghost
+children (6-bounce cap, standard weak-ray power floor). Switching to
+Full trace while extinction is Off auto-selects Logarithmic, since Full
+trace's 20–40 dB-down ghosts would otherwise render at full opacity; an
+explicitly chosen Linear/Perceptual mode is left alone. The nonsequential
+coherent Monte-Carlo trace is the engine every real run and result is
+computed with — Sequential/Optiland is a preview and optimizer-evaluation
+convenience, never a substitute analysis path.
+
+Both preview and rendered rays are dimmed identically in both 3D views;
+`rays.vtp` files from runs predating the feature simply render undimmed.
+The rendered pipeline outputs (`rays_xy.png`, the 3D viz renders) have
+the equivalent `--dim-rays {off,linear,sqrt}` / `--dim-rays-floor PCT`
+options in the run config panel and `run_pipeline.py` — the Logarithmic
+mode is currently GUI-preview-only, not a rendered-output option.
+
+*Guide: [animation.md](docs/guide/animation.md)*
 
 **Tracer-bead animation** (View ▸ *Tracer Bead Animation*, off by
 default, persisted): rides a photon-bunch bead along each ray at its true
@@ -276,9 +312,10 @@ if there's nothing to animate yet (no overlay, or a stale one), it
 generates a fresh ray preview automatically and parks the beads paused
 at t = 0 the instant it lands — including on on-axis (sequential/
 Optiland) systems, whose preview path now carries the same per-segment
-optical-path timing data as a full run. The tabbed File ▸
-Settings… dialog's **Defaults** tab edits these same enabled/bead-size/
-speed/fps/cap values and pushes changes live into the open session.
+optical-path timing data as a full run. These same enabled/bead-size/
+speed/fps/cap values live in the **Preview Configuration** dialog
+(above); the tabbed **File ▸ Settings…** dialog's **Defaults** tab is now
+a pointer page that opens it, rather than editing them directly.
 
 **Auto-updating preview** (View ▸ *Auto-update Ray Preview*, on by
 default, persisted): about a second after the last optics-affecting edit
@@ -504,7 +541,7 @@ Dock **"Library"**, three tabs:
   double-click) opens the **element wizard** on the selected primitive
   (below) instead of just prompting for a label.
 - **Project library** / **System library** — summary tabs showing category titles
-  with entry counts (e.g., "Coatings (14)", "Gratings (3)"); **double-click**
+  with entry counts (e.g., "Coatings (39)", "Gratings (9)"); **double-click**
   a row opens the Property Library Editor at that category (CUSTOMIZE.md).
 
 Two libraries live on disk: the **system library** is `<repo>/opticalproperties/`
@@ -553,7 +590,7 @@ it configures the whole element, not just its geometry:
   fall back to focusing the Element Properties pane, since there's no
   primitive spec to drive a wizard from.
 
-### 3.6.2 Primitive catalog (54 elements)
+### 3.6.2 Primitive catalog (70 elements)
 
 Every entry below is one `primitives/*.FCStd` + `.meta.json` pair, built by
 `scripts/primitivelib.py`'s `PRIMITIVES` registry (CUSTOMIZE.md §§1–3).
@@ -569,7 +606,12 @@ round_flag: convex spherical emit cap so rays diverge from a virtual
 point — round form only, the rectangular form is a flat emitter and roc
 doesn't apply); `source_broadband` (diameter, length, round_flag:
 incoherent broadband disc/box emitter, set `lambdamin`/`lambdamax` in the
-properties).
+properties), plus 8 monochromatic LEDs (`led_deep_red_660`/`led_red_630`/
+`led_amber_590`/`led_green_525`/`led_blue_470`/`led_royal_blue_450`/
+`led_uv_365`/`led_uv_385`) and a `led_white`, and 6 pulsed/supercontinuum
+sources for the time-domain/NLO demo group (`laser_pulsed`,
+`laser_maitai_800`, `laser_erfiber_1560`, `laser_ndyag_1064`, `sc_superk`,
+`fiber_nonlinear_output`).
 
 **Detectors** — `detector_plane` (width, height, thickness, round_flag:
 thin transparent screen, its −x face records irradiance; height 0 = the
@@ -670,7 +712,10 @@ hole_diameter, blackness: opaque annular disc + a `material=air` plug
 filling the opening); `pinhole` (width, height, thickness, hole_diameter,
 blackness: small circular pinhole in a blackened rectangular plate + air
 plug); `slit` (width, height, thickness, slit_width, slit_height,
-blackness: rectangular slit opening + air plug). All three follow the
+blackness: rectangular slit opening + air plug); `iris_bladed`
+(outer_diameter, thickness, aperture_diameter, n_blades, blackness:
+N-blade true-polygon iris — the polygonal opening produces an N-fold
+coherent diffraction star instead of an Airy ring). All four follow the
 air-filler aperture contract (docs/RAYTRACER.md §5.10); `blackness` drives
 the plate/disc's `absorbance` property directly through the
 `derived_props` mechanism (CUSTOMIZE.md §1) — it is re-derived on every
@@ -1152,7 +1197,12 @@ values; `--var`/`--min`/`--max`/`--n` counts must match (repeatable,
 paired in order). If a swept sheet is a `dim_*` primitive sheet, every
 `PartDesign::Body` tagged with the matching `miewb_group` is rebuilt from
 its primitive builder afterward (topology-changing edits can't be done by
-FreeCAD expressions alone — see CUSTOMIZE.md).
+FreeCAD expressions alone — see CUSTOMIZE.md). A third form,
+`train.<ElementLabel>.<field>` (field one of distance/decenter_x/
+decenter_y/tilt_rx/tilt_ry/tilt_rz/fold_deviation/fold_azimuth),
+addresses a CHAINED element's optical-train pose directly instead of a
+spreadsheet cell — the same three forms `optimize.py --var` and
+`tolerance.py --tolerance` accept.
 
 ### 5.5 `post_process.py` — rendering/analysis (optics env python)
 
@@ -1286,7 +1336,7 @@ Builds `primitives/*.FCStd` + `.meta.json` sidecars from
     [--outdir DIR] [--scene NAME|all] < /dev/null
 ```
 
-Authors the 24+ FreeCAD validation scenes cataloged in docs/RAYTRACER.md
+Authors the 33 FreeCAD validation scenes cataloged in docs/RAYTRACER.md
 §10 (polarizers, birefringent crystals, filters, coatings, aspheres, a
 deliberately non-analytic mesh face, `doubleslit.FCStd`, …); also supplies
 the geometry-helper functions (`lens_meridian`, `revolve_body`,
@@ -1339,10 +1389,10 @@ them onto every pipeline subprocess it launches):
 ```
 optimize.py --model FCSTD --var NAME:START:LO:HI [--var ...] \
             --operand OPERAND[@DETECTOR]:TARGET:WEIGHT [--operand ...] \
-            [--algorithm {local,global}] [--budget N] [--tol X] \
+            [--algorithm {local,simplex,dls,global}] [--budget N] [--tol X] \
             [--optimizer-seed N] [--preset {quick,normal,detailed}] \
-            [--rays R] [--resolution N] [--nlambda N] [--seeds N] \
-            [--eval-backend {worker,full}] [--out DIR] [--workdir DIR] \
+            [--rays R] [--resolution N] [--nlambda N] [--seeds N] [--seed0 N] \
+            [--eval-backend {worker,full,sequential}] [--out DIR] [--workdir DIR] \
             [--no-final-coherent] [--config JSON]
 ```
 
@@ -1368,6 +1418,14 @@ A failed/incomplete evaluation is penalized, never fatal. Output:
 final best design; `--config JSON` mirrors the CLI (explicit flags win).
 This is the engine behind the GUI's Optimize pane (§3.7b).
 
+`local` is promoted to `dls` (Optiland damped least-squares over the
+operand residuals) automatically when `--eval-backend sequential` makes a
+deterministic trace valid; `simplex` forces Nelder-Mead anyway.
+`--eval-backend sequential` evaluates spot_rms/focus/encircled_energy on
+the noise-free Optiland trace instead of an MC pass (microseconds-class;
+MC-only operands like mtf50/detected_power error out) — not yet exposed
+in the GUI's Optimize pane (§3.7b), CLI-only.
+
 ### 5.15 `tolerance.py` — sensitivity + Monte-Carlo tolerancing (optics env python)
 *Guide: [tolerance.md](docs/guide/tolerance.md)*
 
@@ -1378,7 +1436,8 @@ tolerance.py --model FCSTD --tolerance NAME:NOMINAL:DIST:BAND [--tolerance ...] 
              [--draws N] [--merit-threshold X] [--compensator VAR:LO:HI] \
              [--comp-budget N] [--sens-delta FRAC] [--skip-sensitivity] \
              [--hist-bins N] [--mc-seed N] [--preset {quick,normal,detailed}] \
-             [--eval-backend {worker,full}] [--out DIR] [--workdir DIR] \
+             [--rays R] [--resolution N] [--nlambda N] [--seeds N] [--seed0 N] \
+             [--eval-backend {worker,full,sequential}] [--out DIR] [--workdir DIR] \
              [--config JSON]
 ```
 
@@ -1400,6 +1459,10 @@ sensitivity table, per-draw detail, and the aggregated Monte-Carlo
 block (including a `--hist-bins`-bin histogram). This is the engine
 behind the GUI's Tolerance pane (§3.7c).
 
+`--eval-backend sequential` makes sensitivity probes and Monte-Carlo
+draws microseconds-class on the deterministic Optiland trace, restricted
+to spot_rms/focus/encircled_energy operands.
+
 ### 5.16 `fast_eval.py` — the shared fast merit evaluator (optics env python)
 
 The inner-loop evaluator both `optimize.py` and `tolerance.py` share:
@@ -1417,7 +1480,7 @@ has crash recovery (a dead/hung worker relaunches and replays the
 cumulative parameter state). Also runnable standalone for diagnostics:
 
 ```
-fast_eval.py --model FCSTD --backend {worker,full} \
+fast_eval.py --model FCSTD --backend {worker,full,sequential} \
              --eval k=v,k=v [--eval ...] [--preset {quick,normal,detailed}] \
              [--rays R] [--resolution N] [--nlambda N] [--seeds N] \
              [--keep-coherent] [--workdir DIR]
@@ -1497,5 +1560,6 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
 GUI tests marked `@pytest.mark.freecad` are auto-skipped unless
 `MIEWB_RUN_FREECAD=1` is set (`mieworkbench/tests/conftest.py`); tests
 marked `needs_gl` are skipped when running offscreen (no real OpenGL
-context). Both suites currently collect on the order of 200+ tests each;
-run with `--collect-only -q` to see the current count on your checkout.
+context). Both suites currently collect 900+ (engine) and 1200+ (GUI)
+tests; run with `--collect-only -q` to see the exact count on your
+checkout.

@@ -53,7 +53,7 @@ results/<stem>/<case>/**  everything the pipeline wrote (never .lock.json)
 A successful rerun **replaces** `input.MieWB` and every result member of
 the same `.MieSim` in place. A live-locked case opens read-only in
 [monitor mode](results.md). `--purge-intermediates` drops
-`rays.npy`/`viz/*`/logs/per-face STLs while keeping `detectors/*.h5`,
+`rays.npy`/`viz/*`/per-stage `log.*` files/per-face STLs while keeping `detectors/*.h5`,
 `case.json`, `model.json`.
 
 ```bash

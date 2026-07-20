@@ -222,8 +222,20 @@ Python engine on synthetic feature scenes) plus the C unit tests.
 | E | gratings (lamellar/dammann/table pre-resolved, Kogelnik per-ray), Beckmann roughness + diffusers, ABg scatter (g=2) | **done** |
 | F | uniaxial birefringence (o/e split, walk-off, mode-preserving internal reflections); biaxial stays Python-routed | **done** |
 | G | continuum-mode particle clouds (Mie ensemble tables pre-resolved); explicit realizations stay Python-routed | **done** |
-| H | export-rays, ghost analysis (refl_hist), viz-pattern (glue-level Python overlay pass; C physics bit-identical with/without) | **done** — `--ray-differentials` deliberately stays Python-routed (auto fallback) |
+| H | export-rays, ghost analysis (refl_hist), viz-pattern (glue-level Python overlay pass; C physics bit-identical with/without) | **done** |
 | I | --importance-aim (opt-in, unbiased birth-culling with candidate reweighting) | **done** |
+| P7 | pulsed-optics/NLO transport: GDD budget, time-of-flight/group-delay products, ray differentials (Igehy, kernels/diffk.h), saturable absorption, TPA, Kerr bulk phase | **done** |
+| P8+ | χ² nonlinear frequency conversion (SHG/Pockels) | **Python-only** — `nonlinear` token; C port not started |
+
+Python-only tokens (current set, routed to the Python engine under
+`auto`): `figure_error`, `beam`, `apodization`, `biref_exact`, `gyration`,
+`biaxial`, `berreman`, `nonlinear`, `temperature`, `grating_table_v2`,
+`time_directional_index`, `curved_detector`, `extra_detector_faces`,
+`scatter_g_ne_2`, `scatter_btdf`, `scatter_importance`, `coating_phase`,
+`particles_explicit`, `pol_transport`, `rough_fresnel_macro`,
+`surface:qforbes`, `surface:perturbedsurface`. `cengine.py::PORTED` is the
+single source of truth — this list is a convenience snapshot, not
+authoritative.
 
 ## Sunset roadmap (documented per project decision)
 

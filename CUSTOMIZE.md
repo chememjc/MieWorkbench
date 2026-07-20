@@ -172,7 +172,14 @@ checkbox for free. Follow the existing **width-as-diameter/edge-length**
 wording in every `round_flag` primitive's `width`/`diameter` help text
 (the v2 rename retired `radius`/`half-size` params in favor of full
 diameters and widths — see `LEGACY_ALIASES` in `primitivelib.py` for how
-old saved scenes built with the old params keep rebuilding).
+old saved scenes built with the old params keep rebuilding). The mapping
+is a small inline dict, `{"diameter": ("radius", 2.0), "width": ("half",
+2.0)}` (new-alias → (old-alias, scale-factor-to-new)), read by both
+`read_params()` (rebuilding a body saved under the old param name) and
+`port_frames()`'s `_port_params()` helper (§3b below, same fallback so
+chain placement works on an old scene too). Adding a new legacy alias
+means one new dict entry; a brand-new param with no legacy predecessor
+needs no entry at all — it just falls back to the spec default.
 
 For a plate primitive that needs a per-face property set on a
 dynamically-located face (a coating on the front cap, a diffuser on the
@@ -255,6 +262,21 @@ verification (this is exactly how the Newtonian demo first died). If your
 builder writes `surface_override` (or any face-map string tied to
 geometry), list it here.
 
+Two more shipped examples follow the same pattern with a different
+recomputed property: the **cube-beamsplitter primitives** (`pbs_cube`,
+`bs_cube`) derive their `coating` string (`'Face<N>=<row>'`) from the
+splitter-diagonal plate's own freshly-built face index — `derived_props:
+("coating",)` — so a rebuild after resizing the cube can't leave the
+coating pointing at a stale/renumbered `FaceN`. The **simple-lens
+family**'s `edge_blackened` flag (`lens_pcx`/`lens_dcx`/`lens_pcv`/
+`lens_dcv`/`lens_meniscus`) is `derived_props: ("edge_blackened",)` for a
+subtler reason: the builder just sets the bool itself (the *extractor*,
+not the builder, turns a truthy flag into per-face absorbance on the
+cylindrical barrel at extract time), but it still needs the derived-prop
+escape hatch so toggling `edge_blackened` in the sheet and rebuilding
+doesn't have the generic prop-preservation path restore the old value
+over the new one.
+
 ---
 
 ## 3b. Port frames — make a new primitive chain-able
@@ -285,6 +307,12 @@ math and cross-check against the shipped `.FCStd` bbox (see the
 verification notes in `port_frames`'s docstring). Hand-authored bodies
 can instead carry a `miewb_train_ports` JSON property with the same
 dict.
+
+As of this writing, `lens_cyl`, `lens_fresnel`, `retro_corner_cube`, the
+right-angle/dove/penta/rhomboid prisms, `anamorphic_pair`, and the
+Glan-Taylor polarizer still fall back to the bbox heuristic (thin-element,
+center-to-center chaining) instead of a real `port_frames` formula —
+contributing one for any of these is a good first authoring task.
 
 ---
 
@@ -335,9 +363,13 @@ exact required-column table per category, and docs/RAYTRACER.md §7 for
 full physical-model semantics of each column. Loaders:
 `scripts/raytracer/optprops.py` (polarizer/filter/grating/birefringence
 — both uniaxial and biaxial, §10 below — plus diffusers as of B6 and
-scatter, §9 below, as of the `lowhanging-improvements` round) and
-`scripts/raytracer/materials.py` (materials/coatings, since those two
-predate the others and have their own loader path).
+scatter, §9 below, as of the `lowhanging-improvements` round; and, from
+later rounds, detector QE curves (§7 below), emission SPDs (§8b below),
+figure error (§11b below), nonlinear/EO rows (§11 below), and virtual
+instruments (§7b below) — see each section's own `load_*` docstring for
+its exact column set) and `scripts/raytracer/materials.py` (materials/
+coatings, since those two predate the others and have their own loader
+path).
 
 The newest category, `diffuser/diffusers.miedif`, has no `tables/`
 subdirectory — its rows are flat, `name,grit,slope_rms,reference`. Each
@@ -572,6 +604,74 @@ staged-but-unshipped CMOS rows in `library_data/staged/detector_qe.csv`.
 
 ---
 
+## 7b. Adding a virtual instrument (camera / powermeter / spectrometer)
+
+Detector bodies can also carry an `instrument` property (string, `'row'`
+or `'row:mode'`, mode `ideal`\|`full`, default `full`) naming a row in
+`instrument/instruments.mieinst`. Where `qe_curve` (§7 above) is a fixed
+responsivity weighting folded into the plain power report, `instrument`
+drives a full **post-process response model of a real bench instrument**
+over the SAME already-computed ideal spectral cube —
+`post_process.py`'s `render_instrument` dispatcher writes an
+`instrument` block into that detector's `report.json` entry (`ideal`
+mode: deterministic response only; `full` mode: additionally draws a
+reproducible noise chain seeded from the run's own seed). See
+docs/RAYTRACER.md §7.11 for the full output/report-field reference.
+
+`instrument/instruments.mieinst` is one WIDE CSV — a single header row
+covers every `class`, and a given row only fills the columns its own
+class uses (blank elsewhere), the same sparse-row shape as
+`nonlinear/nonlinear.mienlo` (§11 below). `class` discriminates the
+schema: `camera`, `powermeter`, `spectrometer` ship rows today;
+`polarimeter`, `wavefront_sensor`, `autocorrelator` are schema-defined
+**placeholder classes** (fully validated, no shipped rows — bench gear
+the project doesn't own yet). Don't remove their validation branches just
+because `len(instruments)` shows none of them.
+
+To add a new instrument row:
+
+1. **Append a row to `instrument/instruments.mieinst`** with `name`,
+   `class`, `reference` (required citation — a real datasheet), optional
+   `notes`, plus your class's own columns (`optprops.load_instruments`'s
+   docstring is the source of truth; verify against it before authoring):
+   - `camera`: `pixel_pitch_um`, `width_px`/`height_px` (int, >0),
+     `fill_factor` (0,1], `qe_table` (→ a `wavelength_nm,qe` table, values
+     in (0,1]), `full_well_e`, `read_noise_e` (>=0),
+     `dark_current_e_per_s` (>=0), `bit_depth` (int>0),
+     `adc_gain_e_per_dn`, `integration_time_s_default`.
+   - `powermeter`: EXACTLY ONE of `responsivity_table` (→ a
+     `wavelength_nm,responsivity_a_w` table, values >0) or
+     `flat_responsivity_a_w` (a single float) — leave the other column
+     blank — plus `aperture_mm`, `nep_w_per_sqrthz`, `bandwidth_hz` (>0),
+     `display_digits` (int>=1).
+   - `spectrometer`: `lam_lo_nm` < `lam_hi_nm`, `resolution_fwhm_nm`
+     (>0), `slit_um` (>0), `stray_light_floor` ([0,1)),
+     `detector_qe_table` (→ a `wavelength_nm,qe` table, values in (0,1]).
+   - `polarimeter`/`wavefront_sensor`/`autocorrelator` (placeholder,
+     validated but no shipped consumer in `post_process.py` yet):
+     `analyzer_states` (int>=2)/`extinction_ratio`/`retarder_error_deg`;
+     `opd_sampling_um`/`reference_arm_model`; `shg_crystal`/
+     `delay_range_fs` respectively — author one only alongside the render
+     path that would consume it.
+
+2. **Create any referenced table(s)** under `instrument/tables/<file>` in
+   the two-column shape named above (header row, strictly increasing
+   wavelength, minimum 2 rows — the same `_read_table` convention as
+   every other tabulated registry).
+
+3. **Tag a detector body:** in the GUI's **Properties** pane, set the
+   body's `instrument` property to `<row>` or `<row>:ideal`/`<row>:full`.
+   On run, the Results pane's "Instrument" tab shows the rendered
+   output; `--instruments off` on the CLI skips the layer even when a
+   detector carries the property.
+
+See `opticalproperties/instrument/instruments.mieinst` for the three
+shipped rows (`camera_generic`, `powermeter_generic`,
+`spectrometer_generic`, each citing a real datasheet) and
+docs/RAYTRACER.md §7.11 for the full report-field reference.
+
+---
+
 ## 8. LED monochromatic source presets
 
 Eight LED monochromatic-source primitives ship as `led_*` entries in
@@ -589,11 +689,11 @@ The eight presets are:
 - `led_deep_red_660`: 660 nm, FWHM 20 nm
 - `led_red_630`: 625 nm, FWHM 20 nm
 - `led_amber_590`: 590 nm, FWHM 20 nm
-- `led_green_525`: 525 nm, FWHM 25 nm
-- `led_blue_470`: 470 nm, FWHM 25 nm
-- `led_royal_blue_450`: 450 nm, FWHM 25 nm
-- `led_uv_365`: 365 nm, FWHM 12 nm
-- `led_uv_385`: 385 nm, FWHM 12 nm
+- `led_green_525`: 527 nm, FWHM 30 nm
+- `led_blue_470`: 472 nm, FWHM 20 nm
+- `led_royal_blue_450`: 452 nm, FWHM 20 nm
+- `led_uv_365`: 365 nm, FWHM 9.0 nm
+- `led_uv_385`: 385 nm, FWHM 11 nm
 
 To add a new LED preset:
 
@@ -622,32 +722,93 @@ the CSV header. Treat any non-datasheet source as UNVERIFIED and flag it accordi
 
 ---
 
+## 8b. Adding an emission spectrum (SPD) registry entry
+
+A source body's `spectrum` property (string) names a row in
+`emission/emitters.miesrc` — a tabulated relative spectral power density
+that **supersedes** `lambdamin`/`lambdamax` (the sampler in
+`sources.wavelength_strata` normalizes the table to a PDF and draws
+equal-power inverse-CDF wavelength strata, so only the table's SHAPE
+matters, not its absolute scale). This is how a source gets a realistic
+digitized/tabulated spectral profile instead of the LED presets' (§8
+above) Gaussian approximation.
+
+Only `kind=continuous` (piecewise-linear PDF) is supported this round —
+`blackbody` and `line` are staged kinds the loader REJECTS by name; don't
+author a row with either yet.
+
+To add a new emission spectrum:
+
+1. **Append a row to `emission/emitters.miesrc`:**
+   - `name`: registry key (e.g., `my_source_spd`)
+   - `kind`: `continuous` (the only value the loader accepts today)
+   - `table_csv`: filename reference (e.g., `my_source_spd.mietab`)
+   - `reference`: required citation (datasheet spectral plot, published
+     measurement, etc.)
+   - `notes`: optional — state digitization confidence/error bars if the
+     table was read off a plot rather than a tabulated dataset
+
+2. **Create the table as `emission/tables/<name>.mietab`:**
+   - Two columns: `wavelength_nm, relative_power` (arbitrary units — only
+     the SHAPE matters), strictly increasing wavelength, minimum 2 rows
+   - Validation: `relative_power >= 0` everywhere; the table's integral
+     over wavelength must be `> 0` (an all-zero table carries no power
+     and is rejected)
+
+3. **Tag a source body:** set the body's `spectrum` property to your
+   registry name. `spectrum` supersedes `lambdamin`/`lambdamax` — leave
+   them as-authored (ignored once `spectrum` is set) or drop them for
+   clarity.
+
+See `opticalproperties/emission/emitters.miesrc` for the two shipped rows
+(`led_white_2733k` — CIE 015:2018 std illuminant LED-B1; `sc_superk` —
+NKT SuperK EXTREME datasheet SPD, digitized with a noted ±20–30%
+visual-digitization caveat and a clipped 1064 nm residual pump spike) and
+§11 below for how a supercontinuum-style pulsed-source primitive pairs
+`spectrum=<row>` with its own emission table.
+
+---
+
 ## 9. Adding a measured-scatter (BSDF/ABg) registry entry
 
 `opticalproperties/scatter/bsdf.miebsdf` (loader: `optprops.load_scatter()`,
 docs/RAYTRACER.md §7.9/§5.4.2) is the ABg-model measured-scatter registry
-consumed by a body's `scatter` property. **v1 scope: reflected-side (BRDF)
-only, isotropic** — there is no transmitted-side (BTDF) support and no
-per-azimuth anisotropy, so don't try to model a grooved/turned surface's
-directional lobe with this schema yet.
+consumed by a body's `scatter` property. **Scope: reflected-side (BRDF)
+always; an optional transmitted-side (BTDF) lobe** via the `btdf`,
+`btdf_A`, `btdf_B`, `btdf_g`, `btdf_tis_cap` columns (each `btdf_*` column
+defaults to its reflected-side `A`/`B`/`g` counterpart when left blank —
+see the shipped `lightly_ground_glass_window` row for a worked BTDF
+example). No per-azimuth anisotropy is modeled on either side, so don't
+try to model a grooved/turned surface's directional lobe with this schema.
 
 1. **Append a row to `scatter/bsdf.miebsdf`:**
    - `name`: registry key (e.g., `my_ground_aluminum`)
    - `model`: `abg` (the only supported value today)
-   - `A`, `B`, `g`: the ABg fit coefficients (`BSDF(u) = A/(B + u^g)`, `u`
-     the direction-cosine offset from specular) — all three **must be
-     `> 0`**. `g` is typically close to 2 for polished surfaces (2 gives a
-     closed-form radial CDF, so sampling needs no per-call tabulation;
-     other `g` values fall back to a numeric inverse-CDF, which works but
-     costs more per gather call).
+   - `A`, `B`, `g`: the reflected-side (BRDF) ABg fit coefficients
+     (`BSDF(u) = A/(B + u^g)`, `u` the direction-cosine offset from
+     specular) — all three **must be `> 0`**. `g` is typically close to 2
+     for polished surfaces (2 gives a closed-form radial CDF, so sampling
+     needs no per-call tabulation; other `g` values fall back to a
+     numeric inverse-CDF, which works but costs more per gather call).
    - `tis_cap` (optional): a ceiling in `(0, 1]` on the total integrated
      scatter the loader computes from `A`/`B`/`g` at normal incidence —
      use this when a measured total-scatter number is known but the raw
      ABg fit would over-integrate it (see the shipped
      `diamond_turned_aluminum` row, capped at 0.1).
+   - `btdf`, `btdf_A`, `btdf_B`, `btdf_g`, `btdf_tis_cap` (optional, all
+     five): set `btdf` truthy (`1`/`true`/`yes`/`on`) to add a
+     transmitted-side lobe about the refracted direction, split from the
+     specular transmitted remainder the same way the BRDF splits the
+     reflected one. Each `btdf_A`/`btdf_B`/`btdf_g` defaults to the
+     row's own reflected `A`/`B`/`g` when left blank, so a symmetric
+     scatterer needs only `btdf=1`; an asymmetric one (e.g. a rougher
+     transmissive side) overrides the ones that differ. `btdf_tis_cap`
+     is the BTDF's own optional TIS ceiling, independent of the
+     reflected-side `tis_cap`. Leave all five blank for reflected-only
+     scatter (the pre-BTDF row shape still works unchanged).
    - `reference`: **required** citation — cite the actual goniophotometer
      measurement or published ABg fit if you have one. If you are only
-     approximating a "representative" surface (as the three shipped rows
+     approximating a "representative" surface (as the four shipped rows
      currently do, per Pfisterer's general ABg methodology rather than a
      specific measured curve), say so explicitly and flag the row
      **UNVERIFIED** in `notes` — do not present an engineering guess as a
@@ -670,9 +831,10 @@ directional lobe with this schema yet.
    `ValueError` naming the face) — they are alternative models of one
    surface; pick one.
 
-See `opticalproperties/scatter/bsdf.miebsdf` for the three shipped rows
-(`polished_fused_silica`, `polished_bk7_glass`, `diamond_turned_aluminum`)
-and `scripts/raytracer/scatter.py`'s module header for the full ABg
+See `opticalproperties/scatter/bsdf.miebsdf` for the four shipped rows
+(`polished_fused_silica`, `polished_bk7_glass`, `diamond_turned_aluminum`,
+and `lightly_ground_glass_window` — the BTDF-column worked example) and
+`scripts/raytracer/scatter.py`'s module header for the full ABg
 energy/sampling derivation.
 
 ---
@@ -731,7 +893,9 @@ rows and `library.md` §3.2 for the citation/confidence notes (the 5
 mineral-placeholder rows there are UNVERIFIED and not yet promoted —
 promoting one means clearing that flag against a real source first).
 
-## 10. Nonlinear registry rows + pulsed-source primitives (pulsed round)
+---
+
+## 11. Nonlinear registry rows + pulsed-source primitives (pulsed round)
 
 **χ²/EO/Kerr/saturable rows** live in
 `opticalproperties/nonlinear/nonlinear.mienlo` (plain CSV, full-line `#`
@@ -760,7 +924,51 @@ personality lives in the catalog entry's `props` dict
 docs/RAYTRACER.md §5.2.1). Datasheet provenance goes in the tooltip
 (these ship with citations: Mai Tai HP, FemtoFiber pro, Q-smart 850,
 SuperK EXR-20). A supercontinuum-style source pairs `spectrum=<row>`
-with a digitized SPD table in `emission/tables/*.mietab` (§5 above);
+with a digitized SPD table in `emission/tables/*.mietab` (§8b above);
 an SPM-broadened source sets `spm='gamma:<W⁻¹km⁻¹>:length:<m>'`.
 Regenerate with
 `/home3/freecad/FreeCAD.AppImage -c scripts/make_primitives.py -- --kind <name> < /dev/null`.
+
+---
+
+## 11b. Adding a surface figure-error (Zernike) registry entry
+
+An optic body's `figure_error` property (string) names a row in
+`figure/figures.miefig` — a Noll-indexed Zernike coefficient set
+describing how a real polished surface's sag DEVIATES from its nominal
+(CAD) shape, applied at scene-build time as a
+`raytracer.surfaces.PerturbedSurface` sag perturbation over the
+transverse pupil. Like `coating`/`roughness`/`grating` it accepts either
+a whole-body value or a per-face map (`'FaceN=name;FaceM=name'`) —
+though it is not yet one of the six properties the GUI's per-face
+"Active Properties" editor exposes (§4 above: `coating`/`roughness`/
+`diffuser`/`scatter`/`grating`/`surface_override`), so author a per-face
+`figure_error` value directly on the `App::PropertyString`. Because the
+CAD body stays the UNPERTURBED nominal shape by design, the extractor's
+<1 µm asphere/override verification (§3.1 above) checks base-vs-CAD only
+and never sees the perturbation. **This feature is Python-routed** —
+`figure_error` is not in the C engine's `PORTED` token set
+(`scripts/raytracer/cengine.py`), so any scene using it falls back to
+the Python engine under `--engine auto`.
+
+To add a new figure-error entry:
+
+1. **Append a row to `figure/figures.miefig`:**
+   - `name`: registry key (e.g., `my_mirror_figure`)
+   - `coeffs`: `;`-separated `j:rms_nm` terms (Noll index `j`, SURFACE
+     sag RMS in nm — a mirror's WAVEFRONT error is 2× this and falls out
+     of the tracer's OPL naturally, no separate accounting needed). Noll
+     `j >= 2` — `j=1` (piston) is a meaningless constant offset and is
+     rejected; a duplicate `j` within one row is rejected.
+   - `r_norm_mm`: pupil radius (mm) the coefficients are referenced to,
+     must be `> 0`
+   - `reference`: required citation (interferometer report, a spec sheet
+     stating a fringe/RMS figure spec, etc.)
+   - `notes`: optional
+
+2. **Tag a body:** set the optic's `figure_error` property to your
+   registry name (whole-body or per-face, per the note above).
+
+See `opticalproperties/figure/figures.miefig` for the four shipped rows
+(`fig_lambda4_defocus_633`, `fig_astig_633`, `fig_lambda10_typical`,
+`fig_trefoil_633`) and docs/RAYTRACER.md §5.8b for the physics model.

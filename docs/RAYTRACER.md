@@ -18,7 +18,7 @@ two-laser bench with a BK7 lens, a glass sphere, and three detector
 screens) and `doubleslit.FCStd` (a Young's double-slit wave-optics
 validation scene) ship in the repo root with completed runs under
 `results/` that this README's "measured" numbers are drawn from;
-`scripts/make_test_scenes.py` can additionally author 24 more FreeCAD test
+`scripts/make_test_scenes.py` can additionally author 32 more FreeCAD test
 scenes on demand (§10) covering polarizers, birefringent crystals, filters,
 coatings, aspheres, and a deliberately non-analytic mesh face.
 
@@ -45,7 +45,7 @@ chained by `scripts/run_pipeline.py`:
 |---|---|---|---|---|
 | permute (optional) | `permute_model.py` | FreeCAD AppImage (`-c`) | `<model>.FCStd` | `basemodels/<stem>-<var><val>....FCStd` |
 | extract | `extract_geometry.py` | FreeCAD AppImage (`-c`) | `<model>.FCStd` | `geometry/<stem>/model.json` + `geometry/<stem>/faces/*.stl` |
-| trace | `run_trace.py` | optics env python | `geometry/<stem>/model.json`, `opticalproperties/*.csv` | `results/<stem>/<case>/{case.json,audit.json,rays.npy,detectors/*.h5}` |
+| trace | `run_trace.py` | optics env python | `geometry/<stem>/model.json`, `opticalproperties/*.mie*` (+ `*/tables/*.mietab`) | `results/<stem>/<case>/{case.json,audit.json,rays.npy,detectors/*.h5}` |
 | post | `post_process.py` | optics env python | the trace outputs above + `model.json` | `results/<stem>/<case>/{images,spectra,plots}/*.png` + `report.json` |
 | viz | `make_viz.py` | ParaView pvpython | `rays.npy`/`detectors/*.h5` (via a `raytracer.vtkexport` sub-step under the optics env) + body STLs | `results/<stem>/<case>/viz/*.png` + `<case>.pvsm` |
 
@@ -72,12 +72,20 @@ approximation.
 | FreeCAD | `/home3/freecad/FreeCAD.AppImage` | FreeCAD 1.1.1, headless `-c` console mode |
 | optics env python | `/home3/optics/env/bin/python` | numpy/scipy/torch/miepython/h5py/matplotlib |
 | ParaView / pvpython | `/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython` | ParaView 6.1.1 |
+| GUI venv python | `env/bin/python` | PySide6 GUI + the Optiland *sequential* preview/optimizer-evaluation bridge (not a pipeline stage) |
 | orchestrators (`run_pipeline.py`, `sweep_variants.py`) | system `python3` | stdlib only — never imports FreeCAD/numpy/paraview |
 
-These paths are hardcoded in `scripts/common.py`
-(`FREECAD_APPIMAGE`, `OPTICS_PYTHON`, `PVPYTHON`). Run `python3
-scripts/common.py` for a self-check (verifies the three interpreter paths
-exist, `opticalproperties/materials.csv` exists, and a battery of
+These paths are the **env-overridable defaults** in `scripts/common.py`:
+`FREECAD_APPIMAGE` (`MIEWB_FREECAD`), `OPTICS_PYTHON`
+(`MIEWB_OPTICS_PYTHON`), `PVPYTHON` (`MIEWB_PVPYTHON`), and `GUI_PYTHON`
+(`MIEWB_GUI_PYTHON`, default `env/bin/python`) — each reads its
+environment variable and falls back to this machine's pin. `GUI_PYTHON`
+hosts the PySide6 workbench and its Optiland sequential engine (used for
+the interactive ray preview and as the optimizer's paraxial evaluator);
+it is **not** one of the four pipeline stages — the nonsequential coherent
+Monte-Carlo trace above is the physics engine for every run. Run `python3
+scripts/common.py` for a self-check (verifies the interpreter paths
+exist, `opticalproperties/materials.miemat` exists, and a battery of
 pure-math invariants — sweep semantics, face/grating/roughness/
 polarization/axis/particle spec parsing, the runtime estimator).
 **Always use the pinned interpreter for each stage** — the three stacks
@@ -98,19 +106,22 @@ Gitea remote); nothing about that changes how the pipeline is invoked.
 opticalraytracer/
 ├── example.FCStd, doubleslit.FCStd     # example tagged models (§5)
 ├── opticalproperties/                  # editable optical component library (§7)
-│   ├── materials.csv                   #   bulk n(lambda)/k(lambda) database
-│   ├── nk/*.csv                        #   tabulated n,k spectra (metals, water, TiO2)
-│   ├── coating/coatings.csv (+tables/) #   TMM stacks AND measured Rs/Rp/Ts/Tp tables
-│   ├── polarizer/polarizers.csv (+tables/)  # linear/circular diattenuator tables
-│   ├── filter/filters.csv (+tables/)   #   bulk spectral filters (Beer-Lambert)
-│   ├── grating/gratings.csv (+tables/) #   lamellar/Kogelnik/Dammann/table registry
-│   └── birefringence/uniaxial.csv      #   calcite/quartz/sapphire o/e crystal pairs
+│   ├── materials.miemat                #   bulk n(lambda)/k(lambda) database
+│   ├── nk/*.mienk                      #   tabulated n,k spectra (metals, water, TiO2)
+│   ├── coating/coatings.miecoat (+tables/*.mietab) # TMM stacks AND measured Rs/Rp/Ts/Tp tables
+│   ├── polarizer/polarizers.miepol (+tables/)  # linear/circular diattenuator tables
+│   ├── filter/filters.miefilt (+tables/)   #   bulk spectral filters (Beer-Lambert)
+│   ├── grating/gratings.miegrat (+tables/) #   lamellar/Kogelnik/Dammann/table registry
+│   ├── birefringence/uniaxial.miebrf   #   uniaxial o/e crystal pairs (§5.6)
+│   └── birefringence/biaxial.mibiax    #   biaxial n_x/n_y/n_z crystal triples (§5.6b)
+│   (content is still plain CSV under self-describing extensions; a legacy
+│    all-.csv library loads unchanged via the same-stem fallback, §7)
 ├── scripts/
 │   ├── common.py            # paths, PRESETS, CLI spec parsers, model.json validator,
 │   │                        #   sweep semantics, runtime/memory estimator
 │   ├── extract_geometry.py  # FreeCAD headless: .FCStd -> geometry/<stem>/model.json + STLs
 │   ├── permute_model.py     # FreeCAD headless: sweep spreadsheet alias(es) -> basemodels/*.FCStd
-│   ├── make_test_scenes.py  # FreeCAD headless: authors 25 validation FCStd scenes (§10)
+│   ├── make_test_scenes.py  # FreeCAD headless: authors 33 validation FCStd scenes (§10)
 │   ├── run_trace.py         # optics env: model.json -> rays.npy + detectors/*.h5 (the solver)
 │   ├── post_process.py      # optics env: trace outputs -> images/spectra/plots + report.json
 │   ├── run_pipeline.py      # system python3: orchestrates permute/extract/trace/post/viz
@@ -246,10 +257,14 @@ This is the user-facing contract every `.FCStd` model must follow for
 `extract_geometry.py` to accept it (enforced by
 `common.validate_model()`, called both at extract time and by every
 downstream stage that loads `model.json`). The extractor always emits
-`schema_version: 2`, which adds `polarizer`/`polarizer_axis`/`filter`/
-`crystal_axis`/per-face `coating`+`roughness`+`grating` maps/`asphere`
-surfaces on top of the v1 contract; `validate_model()` accepts both
-versions.
+`schema_version: 2`, which adds — on top of the v1 contract —
+`polarizer`/`polarizer_axis`/`filter`/`crystal_axis`(+`crystal_axis2` for
+biaxial)/per-face `coating`+`roughness`+`grating`+`scatter`+`figure_error`
+maps/`diffuser`/`asphere` surfaces, the detector extras
+`detector_face`/`qe_curve`/`instrument`, the per-body `temperature`, and
+the source extras `spectrum`/`apodization`/`beam_waist`+`m2` plus the
+pulsed-optics `pulse_energy`/`rep_rate`/`pulse_duration`/`spm` blocks;
+`validate_model()` accepts both versions.
 
 ### 5.1 Body tagging (group "Base" custom properties)
 
@@ -258,15 +273,19 @@ fields on each `PartDesign::Body`:
 
 | Property | Type | Meaning |
 |---|---|---|
-| `power` (mW) + `lambdac` (nm) | Float | presence of **both** marks the body a **source** (checked first, before `material`) |
-| `material` | String | a row name in `opticalproperties/materials.csv`, a crystal name in `birefringence/uniaxial.csv` (§5.6) or `birefringence/biaxial.csv` (§5.6b), `"detector"`, or `"none"`/absent |
+| `lambdac` (nm) + (`power` (mW) XOR `pulse_energy`) | Float | `lambdac` present **and** at least one of `power`/`pulse_energy` present marks the body a **source** (checked first, before `material`; `scene.py` then enforces the `power`/`pulse_energy` XOR) |
+| `pulse_energy` (µJ) + `rep_rate` (Hz) | Float | source-only, pulsed optics: energy-specified pulse train (alternative to `power`; needs `rep_rate`). Derived {P_pk=0.94·E/τ, κ} echoed in `case.json` `source_pulse` (§5.2) |
+| `pulse_duration` (ps FWHM) | Float, optional | source-only: pulse FWHM; on a `power`-only source it authors a *virtual* pulse (§5.2). Auto-enables the `pulse,spectrogram` time products (§8.1) |
+| `spm` | String, optional | source-only self-phase modulation: `'phimax:<rad>'` or `'gamma:<W⁻¹km⁻¹>:length:<m>'` — installs the exact-FFT SPM spectrum as the source SPD plus an S-curve chirp via stratum birth-time offsets (§5.2). Python-engine-routed |
+| `material` | String | a row name in `opticalproperties/materials.miemat`, a crystal name in `birefringence/uniaxial.miebrf` (§5.6) or `birefringence/biaxial.mibiax` (§5.6b), `"detector"`, or `"none"`/absent |
 | `coating` | String, optional | a coating name (whole-body) or a per-face map `'Face3=MgF2;Face5=x'` (§5.3) |
-| `polarizer` | String, optional | a row name in `opticalproperties/polarizer/polarizers.csv` (§5.3) |
+| `polarizer` | String, optional | a row name in `opticalproperties/polarizer/polarizers.miepol` (§5.3) |
 | `polarizer_axis` | String `'x,y,z'`, optional | body-local transmission-axis vector, default `0,0,1` (§5.3) |
-| `filter` | String, optional | a row name in `opticalproperties/filter/filters.csv` (§5.3) |
+| `filter` | String, optional | a row name in `opticalproperties/filter/filters.miefilt` (§5.3) |
 | `crystal_axis` | String `'x,y,z'`, optional | body-local optic-axis vector for a uniaxial birefringent `material` (§5.6), default `+x`; the X principal axis for a biaxial `material` (§5.6b) |
 | `crystal_axis2` | String `'x,y,z'`, optional | body-local Y principal axis; REQUIRED alongside `crystal_axis` when `material` is a biaxial crystal (§5.6b), otherwise ignored with a warning |
 | `scatter` | String, optional | a per-face map (or whole-body) of `opticalproperties/scatter/bsdf.miebsdf` registry names (§5.4.2) — mutually exclusive with `roughness`/`diffuser` on the same face |
+| `scatter_targets` | String, optional | comma-separated detector labels this body's measured scatter aims at under `--importance-scatter` (§8.1; absent → every detector). Names only, resolved at trace; never affects the physics, only variance reduction |
 | `surface_override` | String, optional | per-face `'FaceN=asphere:R=..;k=..;A4=..;...;r_max=..'` (§5.7) |
 | `mirror` | Float, optional, [0,1] | achromatic partial-reflector fraction (§5.3 precedence) |
 | `absorbance` | Float, optional, [0,1] | fraction of the physical (non-mirror) remainder absorbed (whole-body). Per-face absorbance is set indirectly by `edge_blackened` |
@@ -291,14 +310,17 @@ Classification (`classify_body`, in this priority order):
    in the document — it is invisible to the physics only. All other
    `miewb_*` properties (the GUI's optical-train metadata, group
    `MieTrain`) are never read by the extractor at all.
-1. `power` **and** `lambdac` both present → **source**.
+1. `lambdac` present **and** at least one of `power`/`pulse_energy`
+   present → **source** (`scene.py` then enforces the `power`/`pulse_energy`
+   XOR the OR-gate deliberately lets through).
 2. `material` missing/empty or `"none"` (case-insensitive) → **ignored**
    (skipped entirely; extractor logs `"[Label] is ignored"`).
 3. `material == "detector"` (case-insensitive) → **detector**.
 4. Otherwise → **optic**, and `material` must be a row in
-   `opticalproperties/materials.csv` **or** a crystal name in
-   `opticalproperties/birefringence/uniaxial.csv` (a name that resolves to
-   neither is a hard error at trace time when the `Scene` is built).
+   `opticalproperties/materials.miemat` **or** a crystal name in
+   `opticalproperties/birefringence/uniaxial.miebrf` (or
+   `birefringence/biaxial.mibiax`; a name that resolves to none is a hard
+   error at trace time when the `Scene` is built).
 
 `mirror`/`absorbance` values outside [0,1] are **not** rejected — they are
 capped to [0,1] with a loud warning (`capped01()`), and `model.json`
@@ -543,7 +565,7 @@ that bypass the ordinary optic path entirely — see §5.5/§5.6):
    context at extract time, fully-qualified `Body.Feature.FaceN=value`
    passes straight through). Each named coating resolves to **either** a
    TMM layer stack **or** a measured `Rs/Rp/Ts/Tp` table (exactly one of
-   `layers`/`table` may be set per `coatings.csv` row, §7.3): TMM stacks
+   `layers`/`table` may be set per `coatings.miecoat` row, §7.3): TMM stacks
    carry real phase from the characteristic-matrix method; tabulated
    coatings carry **no phase** — their amplitude coefficients borrow the
    bare-interface Fresnel phase (a documented approximation: use a TMM
@@ -741,7 +763,7 @@ faces (`FaceN=...`), never a whole-body value:
 Body.Feature.FaceN:<same grammar>` (CLI, repeatable) is the fully
 face-qualified equivalent and takes precedence over the body property.
 A registry name (`@name`) is resolved against `opticalproperties/
-grating/gratings.csv` (§7.5) at scene-build time; an unrecognized name is
+grating/gratings.miegrat` (§7.5) at scene-build time; an unrecognized name is
 a hard error naming every loaded registry entry.
 
 Diffraction directions always come from the exact vector grating equation
@@ -795,9 +817,11 @@ emits the `grating_table_v2` feature token and routes to the Python engine.
 ### 5.6 Uniaxial birefringence (`crystal_axis`)
 
 Setting `material` to a crystal name in `opticalproperties/birefringence/
-uniaxial.csv` (currently `calcite`, `quartz`, `sapphire` — **not** the
-underlying `<name>_o`/`<name>_e` materials.csv row names, which the
-registry resolves internally) marks a body birefringent
+uniaxial.miebrf` (13 crystals: `calcite`, `quartz`, `sapphire`, `linbo3`,
+`litao3`, `yvo4`, `bbo`, `alpha_bbo`, `kdp`, `adp`, `rutile`, `teo2`,
+`mgf2` — **not** the underlying `<name>_o`/`<name>_e` `materials.miemat`
+row names, which the registry resolves internally) marks a body
+birefringent
 (`MaterialDB.is_birefringent`). `crystal_axis` (body-local `x,y,z`,
 default `+x`, normalized, rotated to global by the Placement) sets the
 optic axis. `birefringence.py`'s model (Born & Wolf / Yariv):
@@ -875,14 +899,25 @@ when the optic axis lies in the interface plane).
 Honest limits: absorbing crystals are out of scope (`Im(n_o)`/`Im(n_e)`
 are ignored; geometry uses real indices only, and the o-ray's index is
 used for bulk absorption of both modes — a documented approximation);
-optical activity and gyrotropy are not modeled ON THE UNIAXIAL LEKNER PATH,
-but the **Berreman 4×4** (§5.6b, `berreman.py`) DOES model natural optical
-activity (reciprocal gyrotropy, McClain-1993 frozen `g = G·k̂`; α-quartz
-carries a cited rotatory-power datum in `uniaxial.miebrf`, reproduced at
-21.77 deg/mm @589.3 nm) and absorbing/dichroic anisotropic media (complex
-principal permittivities; the `.mibiax` registry accepts optional `k_x/k_y/k_z`
-extinction columns) — these route through the Berreman tier, not the Lekner
-uniaxial path; biaxial crystals **are**
+natural optical activity of a gyrotropic uniaxial crystal **is** modeled
+on the uniaxial run path (α-quartz carries a cited rotatory-power datum,
+`gyration_deg_per_mm = 21.77 @589.3 nm`, in `uniaxial.miebrf`): near the
+optic axis, where the o/e indices are degenerate and circular
+birefringence is the sole anisotropy, rays route through the isotropic
+n_o path and `Tracer._apply_optical_activity` rotates the polarization
+plane by ρ·ds per bulk segment (§6.12b) — reciprocal (a retro
+double-pass cancels, unlike Faraday rotation) and unitary. A gyrotropic
+scene emits the unported `gyration` feature token and honestly routes
+`--engine auto` to Python. The **Berreman 4×4** (§5.6b, `berreman.py`,
+McClain-1993 frozen `g = G·k̂`) is the exact ORACLE validating that
+rotation (`test_berreman.py`) and the formulation that also covers
+absorbing/dichroic anisotropic media (complex principal permittivities;
+the `.mibiax` registry accepts optional `k_x/k_y/k_z` extinction
+columns) — those remain module-level only, never invoked in a scene
+trace. Off-axis (&gt;5° from the optic axis) rays keep the exact o/e
+Lekner split with gyration neglected — the general gyrotropic Lekner
+amplitudes are unmodeled, and there is no continuous ρ(θ) crossover.
+Biaxial crystals **are**
 now modeled — §5.6b); an e-mode ray that hits a **non-birefringent** face
 (e.g. a body nested inside a crystal) is silently downgraded to ordinary-index propagation
 with a one-time warning ("documented approximation"); ray differentials
@@ -976,7 +1011,9 @@ Honest limits (mirror the uniaxial ones, plus two biaxial-specific ones):
   interface Fresnel above). A ray with no same-sheet returning root (a
   conical-corner case) drops its reflected share into `absorbed_surface`.
 - Absorbing crystals (`Im(n_x)`/`Im(n_y)`/`Im(n_z)`), optical activity,
-  and χ² nonlinear conversion are out of scope, exactly as for uniaxial.
+  and χ² nonlinear conversion are out of scope for biaxial crystals —
+  unlike uniaxial, which now models near-axis natural optical activity
+  (§5.6, §6.12b).
 - Coating and roughness/scatter are not modeled on a biaxial face (bare
   Fresnel used instead, one-time warning) — same restriction as uniaxial.
 
@@ -1284,16 +1321,21 @@ Two-part model, in `scripts/raytracer/`:
 - **Tabulated (measured) coatings carry no phase.** Their amplitude
   coefficients borrow the bare-interface Fresnel phase; only TMM layer
   stacks carry real coherent coating phase (§5.3).
-- **Effective-index Fresnel approximation for birefringent interfaces.**
-  Uniaxial o/e (§5.6) and biaxial slow/fast (§5.6b) Fresnel amplitudes both
-  use isotropic Fresnel formulas with each channel's own phase index rather
-  than the true anisotropic-boundary solution; energy still closes exactly
-  via the ledger, but per-channel phase/amplitude near-normal vs. grazing
-  incidence is not claimed exact. Absorbing (dichroic) uniaxial/biaxial
-  crystals, optical activity, and gyrotropy (e.g. quartz's rotary power
-  along its own optic axis) are **not modeled at all**; biaxial conical
-  refraction and cross-sheet internal-reflection coupling are also not
-  modeled (§5.6b).
+- **Effective-index Fresnel is the legacy `--biref-approx` path, not the
+  default.** By default the uniaxial interface uses the exact Lekner-1991
+  amplitudes (entry AND exit, including the r_sp/r_ps cross terms,
+  flux-normalized) and the biaxial ENTRY uses the exact Berreman 4×4; the
+  biaxial EXIT is still effective-index (documented follow-on, §5.6b).
+  Under `--biref-approx` both crystal classes fall back to isotropic
+  Fresnel formulas with each channel's own phase index — the dropped
+  cross-terms/flux land in `absorbed_surface` so energy still closes
+  exactly, but per-channel phase/amplitude off principal alignment is not
+  claimed exact on that path. Natural optical activity of a gyrotropic
+  uniaxial crystal (quartz's rotary power along its own optic axis) IS
+  modeled as a near-axis bulk ρ·ds polarization rotation (§5.6, §6.12b);
+  absorbing (dichroic) uniaxial/biaxial crystals are not modeled in a
+  scene trace (Berreman-oracle-only), and biaxial conical refraction and
+  cross-sheet internal-reflection coupling are also not modeled (§5.6b).
 - **Measured scatter (`scatter`, §5.4.2) is reflected-side (BRDF) only,
   single-scatter, isotropic.** The transmitted child at a scattering face
   is untouched; multiple-bounce lobe transport and azimuthal anisotropy
@@ -1659,8 +1701,39 @@ source has κ = 1.
   shows the self-focusing (oracle `f_K = w²/(4n₂I₀L)` at 5%). Coherent
   benches only (warned otherwise).
 
-Every NLO element forces the Python engine (feature tokens
-`nonlinear/saturable/tpa/kerr` — the C engine has none of this).
+`saturable`/`tpa`/`kerr` are PORTED to the C engine (P7 tranche 2:
+intensity-dependent bulk alpha on the `alpha_add` hook + Kerr opl phase,
+per-ray intensity from the ported differentials' dA). Only the χ² token
+`nonlinear` (SHG harmonic-child strata + the Pockels index-shift split)
+still forces the Python engine (§13).
+
+### 6.12b Natural optical activity (gyrotropic uniaxial crystals)
+
+A uniaxial crystal whose `uniaxial.miebrf` row carries
+`gyration_deg_per_mm`/`gyration_ref_nm` (currently α-quartz,
+ρ = 21.77 deg/mm @589.3 nm, citation required by the loader) is flagged
+gyrotropic (`body.gyration`, `scene.py`). Rays within 5° of the optic
+axis (`GYRO_AXIS_COS`) — where n_o = n_e and circular birefringence is
+the sole remaining anisotropy — are routed as a single full-Jones
+isotropic-n_o child instead of an o/e split, and their polarization
+plane is rotated in bulk by δ = ρ·ds per segment
+(`Tracer._apply_optical_activity`), a UNITARY Jones step: R+T are
+unchanged and energy closure holds with no new ledger bucket. The
+rotation sense is right-handed about +k and flips with `sign(k·axis)`,
+so a retro double-pass CANCELS — natural activity is reciprocal, unlike
+Faraday rotation. The scene-level gate is asserted end-to-end by the
+`quartz_rotator` demo (crossed analyzer at 43.5°, measured
+sin²(43.5°) = 0.475).
+
+Honest limits: (i) off-axis (&gt;5°) rays keep the exact o/e Lekner split
+with gyration neglected — there is no continuous ρ(θ) crossover;
+(ii) dispersion of ρ is not modeled (single registry datum at its
+reference λ); (iii) the Berreman 4×4 `g = G·k̂` formulation
+(`berreman.py`, McClain-1993) is the validating oracle only, never
+invoked in a scene trace; (iv) biaxial and absorbing-anisotropic
+activity remain out of scene scope. The `gyration` feature token is
+deliberately unported — a gyrotropic scene routes `--engine auto` to
+Python (§13).
 
 ---
 
@@ -1672,7 +1745,7 @@ materials.py` (materials + coatings) load the whole tree in one call,
 individual `load_*` functions are importable directly for tests. Every
 registry hard-validates its referenced table CSVs at load time and
 requires a non-empty `reference` citation column — the same policy as
-`materials.csv` — and table interpolation **never extrapolates**
+`materials.miemat` — and table interpolation **never extrapolates**
 (`interp_hard()` raises `MaterialError` outside the tabulated range).
 Coatings/polarizers/filters/gratings/birefringence (uniaxial and biaxial)/
 scatter are all **optional**: a trimmed library missing any of these CSVs
@@ -1683,7 +1756,7 @@ accessor beyond indexing the loaded dicts directly (e.g.
 `MaterialDB.get(name)` (case-insensitive, `KeyError` listing every
 available name).
 
-### 7.1 `materials.csv`
+### 7.1 `materials.miemat`
 
 One row per material. Columns: `name, class, model, p1..p6, nk_file,
 density_kg_m3, transmission_um_min, transmission_um_max, notes,
@@ -1758,14 +1831,14 @@ n(lambda)=X vs target Y, matches within Z" (e.g. `calcite_o`'s row:
 "verified n(590nm)=1.65830 vs target 1.658"). This is the project's
 **spot-check policy**: every parametric fit should be validated against
 at least one literature/catalog reference point, and that check should be
-pinned in `scripts/raytracer/tests/test_materials.py` (21 tests spot-
+pinned in `scripts/raytracer/tests/test_materials.py` (22 tests spot-
 check bk7, fused_silica, mgf2, water — including its ~975nm absorption
 shoulder — sapphire, polystyrene, aluminum's visible-range n/k and its
 monotonic-into-IR k rise, plus hard-error behavior for out-of-range
 tabulated lookups, unknown materials, malformed CSV rows, and missing
 references).
 
-### 7.2 `coating/coatings.csv` (+ `coating/tables/*.csv`)
+### 7.2 `coating/coatings.miecoat` (+ `coating/tables/*.mietab`)
 
 Columns `name, layers, table, aoi_deg, reference` — **exactly one** of
 `layers`/`table` must be set per row. `layers` is a `;`-separated ordered
@@ -1777,7 +1850,7 @@ design wavelength, resolved dispersively at trace time via `n(lambda0)` —
 thickness genuinely depends on which wavelength you design for). `table`
 names a measured `wavelength_nm,Rs,Rp,Ts,Tp` CSV in `coating/tables/`
 (hard-validated: strictly increasing wavelength, values in [0,1], and
-**`Rs+Ts<=1`, `Rp+Tp<=1` per row**). 38 coatings ship (expanded from 10):
+**`Rs+Ts<=1`, `Rp+Tp<=1` per row**). 39 coatings ship (expanded from 10):
 TMM stacks (AR: MgF2 at 550/633/1064nm, quarter-quarter V-coats at 532/633/1064nm,
 3-layer QHQ W-coats at 550nm; HR: dielectric 11–15 layer stacks at 532/633/1064nm),
 measured table models (protected mirrors, dichroic/laser elements, standard
@@ -1786,7 +1859,7 @@ characteristic-matrix method (any number of layers, any angle, complex indices);
 zero layers reduces identically to bare Fresnel (tested to 1e-12). See §5.3
 for the phase caveat on measured tables.
 
-### 7.3 `polarizer/polarizers.csv` (+ `polarizer/tables/*.csv`)
+### 7.3 `polarizer/polarizers.miepol` (+ `polarizer/tables/*.mietab`)
 
 Columns `name, type, table_csv, retardance_waves, reference`, `type` ∈
 `{linear, circular_left, circular_right}`. Tables are
@@ -1817,7 +1890,7 @@ Columns `name, model, lines_per_mm, params, table_csv, reference`,
 `model` ∈ `{lamellar, bragg_kogelnik, dammann, table}`. `params` is a
 `;`-separated `key=value` field (e.g. `thickness_um=3000;dn=0.0005;
 slant_deg=0` for `bragg_kogelnik`, `transitions=0.03863,0.39084` for
-`dammann` — validated strictly increasing, each in `(0,1)`). 8 gratings ship
+`dammann` — validated strictly increasing, each in `(0,1)`). 9 gratings ship
 (expanded from 3): lamellar ruled gratings (1200 l/mm first entry exercising
 the `lamellar` model), Bragg/VPH (volume Bragg grating, VPH Kogelnik, ESO)
 Dammann diffractive optics, transmission gratings, echelle, and ruled
@@ -1847,12 +1920,18 @@ See §5.5 for the model formulas and the RCWA-table contract.
 
 ### 7.6 `birefringence/uniaxial.miebrf`
 
-Columns `name, n_o_material, n_e_material, reference, notes`. 13 uniaxial
+Columns `name, n_o_material, n_e_material, reference, notes` plus the
+OPTIONAL natural-optical-activity triple `gyration_deg_per_mm,
+gyration_ref_nm, gyration_reference` (P9). 13 uniaxial
 crystals ship (expanded from 3): calcite, quartz, sapphire, plus LiNbO3,
 LiTaO3, YVO4, β-BBO, α-BBO, KDP, ADP, rutile TiO2, TeO2, MgF2 (e-ray
 addition enabling waveplate/Rochon prism designs), each pointing at a
 `materials.miemat` o/e pair (§7.1) with spot-checked birefringence values.
-See §5.6 for the physics model.
+When `gyration_deg_per_mm` is present the row carries the measured rotatory
+power (deg/mm) at `gyration_ref_nm` and REQUIRES a `gyration_reference`
+citation; absent → non-gyrotropic (backward compatible). α-quartz ships the
+datum (ρ = 21.77 deg/mm at 589.3 nm) that drives the scene-level activity
+model of §5.6/§6.12b. See §5.6 for the physics model.
 
 ### 7.7 `birefringence/biaxial.mibiax`
 
@@ -1882,17 +1961,27 @@ CIE Ȳ=V(λ) table in `raytracer/detector.py`.
 
 ### 7.9 `scatter/bsdf.miebsdf` (+ measured ABg surfaces)
 
-Columns `name, model, A, B, g, tis_cap, reference, notes`; `model` is
+Columns `name, model, A, B, g, tis_cap, reference, notes` plus the
+OPTIONAL transmitted-side (BTDF) block `btdf, btdf_A, btdf_B, btdf_g,
+btdf_tis_cap`. `model` is
 always `abg` today (`SCATTER_MODELS = ("abg",)`). `A`, `B`, `g` must each
-be `> 0`; `tis_cap` is optional and, if given, must lie in `(0, 1]`. Every
+be `> 0`; `tis_cap` is optional and, if given, must lie in `(0, 1]`. When
+the `btdf` flag column is truthy (`1`/`true`/`yes`/`on`) the transmitted
+child is ALSO split into a specular remainder + a scattered lobe about the
+REFRACTED direction using the `btdf_*` ABg triple (each `btdf_*` field
+defaults to the corresponding reflected `A`/`B`/`g` when left blank; a row
+with no `btdf` column — or a falsey one — is reflected-side only, exactly
+as before). Every
 row is validated at load time: `scatter.abg_tis(A, B, g, cos_i=1)` (the
 widest, normal-incidence total-integrated-scatter integral) must not
 exceed 1 — a fit that would scatter more power than it receives is a
 load-time `MaterialError`, not a silent energy leak discovered at trace
-time. 3 surfaces ship: `polished_fused_silica` (TIS ~0.09% near normal),
-`polished_bk7_glass` (TIS ~2.2%, standard 60-40 scratch-dig polish), and
+time. 4 surfaces ship: `polished_fused_silica` (TIS ~0.09% near normal),
+`polished_bk7_glass` (TIS ~2.2%, standard 60-40 scratch-dig polish),
 `diamond_turned_aluminum` (raw TIS ~11.6%, `tis_cap=0.1` pins the split to
-a plausible measured 10% total scatter) — all three rows are flagged
+a plausible measured 10% total scatter), and `lightly_ground_glass_window`
+(a combined BRDF+BTDF demo surface — a transmitted scatter lobe with
+`btdf_tis_cap=0.3`) — all rows are flagged
 **UNVERIFIED** in `notes` (representative ABg fits per Pfisterer 2011's
 form, not transcribed from a specific vendor/published measurement); spot
 this before citing a scatter result as measured. See §5.4.2 for the
@@ -1961,6 +2050,69 @@ flattens the report block into a table above a thumbnail gallery of
 existing Spectra tab, prefixed `instrument_`, rather than duplicating
 into a second gallery).
 
+### 7.12 `emission/emitters.miesrc` (+ `emission/tables/*.mietab`)
+
+Columns `name, kind, table_csv, reference, notes`; `kind` is `continuous`
+only this round (staged `blackbody`/`line` kinds are rejected naming the
+kind). Each row references a per-emitter table `wavelength_nm,
+relative_power` giving the RELATIVE spectral power density of a source's
+emission — only the SHAPE matters (`sources.wavelength_strata` normalizes
+it to a PDF and places equal-power quantile strata). Validated:
+`relative_power >= 0` everywhere, positive integral, `>= 2` rows. 2
+emitters ship: `led_white_2733k` (phosphor-converted white LED SPD,
+CCT ~2733 K, CIE 015:2018 illuminant LED-B1) and `sc_superk` (NKT SuperK
+EXTREME supercontinuum SPD, 400–2400 nm). A source body's `spectrum`
+property (§5.1/§5.2) names one; the tabulated SPD supersedes
+`lambdamin`/`lambdamax`.
+
+### 7.13 `figure/figures.miefig`
+
+Zernike SURFACE-figure-error registry (P8). Columns `name, coeffs,
+r_norm_mm, reference, notes`. `coeffs` is a `;`-separated set of Noll
+`j:rms_nm` terms (SURFACE sag RMS in nm — a mirror's WAVEFRONT error is 2×
+this and falls out of the traced OPL; piston `j=1` is rejected as a
+meaningless constant offset). `r_norm_mm` (`> 0`) is the pupil radius the
+coefficients are referenced to. Applied at scene-build time as a
+`raytracer.surfaces.PerturbedSurface` sag perturbation over the transverse
+pupil (the CAD carries the UNPERTURBED shape by design, so the <1 µm
+asphere gate checks base-vs-CAD only; Python-engine-routed, §13). 4 sets
+ship: `fig_lambda4_defocus_633`, `fig_astig_633`, `fig_trefoil_633`,
+`fig_lambda10_typical`. Named by a body's `figure_error` property
+(§5.1/§5.9).
+
+### 7.14 `diffuser/diffusers.miedif`
+
+Ground-glass diffuser registry. Columns `name, grit, slope_rms,
+reference`. Each row supplies EITHER a catalog `grit` number (mapped to an
+RMS microfacet slope by `roughness.slope_for_grit` at scene build) or an
+explicit `slope_rms` in `(0, 1)`; if BOTH are present they must agree with
+the mapping to within 20 % (a mislabeled row fails loudly at load). 4
+diffusers ship: `dg_120`, `dg_220`, `dg_600`, `dg_1500` (approximate
+Thorlabs DG-series grits, ~12/9/5/2.5° FWHM at 633 nm). Referenced by a
+body's `diffuser` property as `@dg_600` (§5.1/§5.4.1).
+
+### 7.15 `nonlinear/nonlinear.mienlo` (pulsed-optics NLO registry)
+
+One wide sparse CSV (the same shape as `instruments.mieinst`, §7.11) whose
+leading `kind` column discriminates row types; every row also carries a
+required `reference` and optional `notes`, and full-line `#` comments are
+allowed and skipped. 14 rows ship across five kinds:
+
+| `kind` | key columns | use |
+|---|---|---|
+| `chi2_tensor` | `crystal, point_group, d_il_pm_V` ((3,6) `d`-tensor), `kleinman`, `lam_ref_nm` | authoring-only reference tensors (5 rows: linbo3/bbo/ktp/lbo/kdp) — a hard error if set as a body's `nonlinear` |
+| `chi2_process` | `crystal, process, lam_pump_nm, theta_deg, phi_deg, d_eff_pm_V` | phase-matched SHG per-segment transfer (2 rows: ktp type-II @1064, bbo type-I @800) |
+| `pockels` | `crystal, r_coeffs_pm_V, geometry` | transverse EO index shift via `pockels_voltage`/`pockels_gap_mm` (2 rows: kdp Q-switch, linbo3 EO) |
+| `n2` | `material, n2_m2_W, lam_ref_nm` | Kerr `kerr_n2` (`@row`) self-phase index (4 rows: fused_silica/sapphire/yag/bk7) |
+| `saturable` | `I_sat_W_cm2, T0, tau_recovery_s, alpha0_per_mm` (optional) | saturable-absorber bulk α (1 row: sam_1550_16_2ps SESAM) |
+
+`crystal` names on `chi2_*`/`pockels` rows are cross-checked against the
+uniaxial/biaxial registries when loaded via `load_optical_properties`;
+`n2` `material` is resolved LAZILY at Kerr use time (staged rows may
+precede their `materials.miemat` index row). See §5.1's NLO extras and
+§6.12/§6.12b for the physics; `nonlinear`/`pockels` are Python-routed
+(§13).
+
 ---
 
 ## 8. Command reference
@@ -1975,10 +2127,15 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--preset {quick,normal,detailed}] [--tag TAG]
     [--steps extract,trace,post,viz]
     [--var ALIAS --min F --max F --n N]...   (repeatable group, paired positionally)
-    [--dry-run] [--seeds N] [--rays F] [--resolution N] [--nlambda N]
+    [--sweep-mode {product,zip}]
+    [--dry-run] [--resume] [--extend RAYS] [--seeds N] [--rays F]
+    [--resolution N] [--nlambda N]
     [--spectral-bins N] [--max-reflections N]
-    [--viz-rays N] [--viz-density F] [--backend {auto,torch,numpy}]
-    [--rough-fresnel {micro,macro}] [--ray-differentials] [--gather-occlusion]
+    [--viz-rays N] [--viz-density F] [--viz-pattern SPEC]
+    [--backend {auto,torch,numpy}] [--engine {auto,python,c}]
+    [--importance-aim] [--importance-scatter] [--importance-limit FRAC]
+    [--rough-fresnel {micro,macro}] [--biref-approx]
+    [--ray-differentials] [--gather-occlusion] [--gather-exact] [--gather-nufft]
     [--no-pol-scatter] [--mesh-flat-normals] [--temperature DEG_C]
     [--save-fields]
     [--save-fields-detectors LABEL[,LABEL...]] [--strict-analytic]
@@ -1992,7 +2149,8 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--gdd-budget]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--emit-csv] [--export-rays] [--export-rays-max N] [--ghost-analysis]
-    [--wavefront-point X,Y]
+    [--pol-transport] [--wavefront-point X,Y]
+    [--wavefront-pupil {source,exit_pupil}] [--imaging-products LIST]
     [--image-sim PATH] [--image-sim-coherence {incoherent,coherent,partial}]
     [--image-sim-sigma F]
     [--viz-generations N] [--views v1,v2,...] [--smoke]
@@ -2009,6 +2167,37 @@ Any active product tracks per-ray group delay and forces the Python
 engine. `--gdd-budget` emits the per-element dispersion table (§6.11)
 into `case.json`/`report.json` + `images/gdd_budget.png`; on a CW scene
 it forces group-delay tracking (Python engine).
+
+**Engine / sweep / variance-reduction flags** (forwarded to **trace**
+except `--sweep-mode`): `--engine {auto,python,c}` selects the trace
+engine (default `auto` = C when the binary exists and every scene feature
+is ported, else Python; §13). `--sweep-mode {product,zip}` sets how
+multiple `--var` groups combine (`product` cartesian default, `zip`
+advances them together; `common.sweep_combos`, §5.9). `--resume` restarts
+an interrupted C-engine trace from its checkpoint and `--extend RAYS`
+raises a COMPLETED C-engine case to `RAYS` and continues (both C-engine
+only; the stateful numpy RNG makes them refuse on the Python engine, §14).
+`--importance-aim` birth-culls source samples that would immediately
+escape (unbiased, C engine); `--importance-scatter` aims measured-scatter
+(ABg) children at the detectors' solid angles with `--importance-limit
+FRAC` the bias/variance knob (default 1.0; §5.4.2). `--biref-approx`
+selects the legacy isotropic effective-index Fresnel at uniaxial
+interfaces instead of the default exact Lekner amplitudes (§6.1).
+`--gather-exact` forces the bit-exact fp64 gather kernel and
+`--gather-nufft` opts into the EXPERIMENTAL NUFFT angular-spectrum fast
+path (both C engine only; §12). `--viz-pattern SPEC` lays out viz rays
+deterministically (`rings:dr=<mm>:nper=<N>[:nrings=<K>]` or `fan[:n=<K>]`
+— visualization only, physics unaffected). `--pol-transport` (forwarded
+to **trace**, implies `--export-rays`, seed 0 only, Python engine)
+parallel-transports each ray's geometric frame + cumulative Jones matrix
+so **post** renders honest per-detector retardance/diattenuation/fast-axis
+maps. `--wavefront-pupil {source,exit_pupil}` (forwarded to **post**)
+picks render_wavefront's pupil model (default `source`; `exit_pupil` runs
+the chief-ray/exit-pupil search, falling back with a note when it
+degenerates). `--imaging-products LIST` (forwarded to **post**, requires
+`--export-rays` and a multi-source field fan) renders
+`distortion,vignetting,field_curves,telecentricity` (or `all`) analysis
+PNGs + `report.json` `imaging` blocks.
 
 `--models` accepts globs and multiple files (bare names also resolve
 under `basemodels/`). `--steps` always executes in the fixed canonical
@@ -2084,9 +2273,13 @@ trace can already saturate every core/GPU). Logs: `results/log.extract`
     [--rays F=1e5] [--nlambda N=5] [--resolution N=512] [--spectral-bins N=16]
     [--max-reflections N=6] [--power-floor F=1e-4]
     [--seeds N=1] [--seed0 N=42] [--backend {auto,torch,numpy}=auto]
+    [--engine {auto,python,c}=auto]
+    [--importance-aim] [--importance-scatter] [--importance-limit FRAC=1.0]
     [--workers N=auto]
     [--viz-rays N] [--viz-density F=1.0] [--viz-rays-max N=20000]
+    [--viz-pattern SPEC]
     [--ray-differentials] [--no-pol-scatter] [--rough-fresnel {micro,macro}=micro]
+    [--biref-approx]
     [--temperature DEG_C]
     [--source-face SPEC]... [--detector-face SPEC]...
     [--grating SPEC]... [--rough SPEC]...
@@ -2094,12 +2287,15 @@ trace can already saturate every core/GPU). Logs: `results/log.extract`
     [--suppress-body NAME]...
     [--min-eff-samples F=1000.0] [--no-gather-gate]
     [--save-fields] [--save-fields-detectors LABEL[,LABEL...]]
-    [--gather-occlusion] [--optical-properties PATH]
+    [--gather-occlusion] [--gather-exact] [--gather-nufft]
+    [--optical-properties PATH]
     [--strict-analytic] [--mesh-flat-normals] [--dry-run]
+    [--resume] [--extend RAYS]
     [--time-products LIST] [--time-bins N=256] [--time-window T0,T1]
     [--time-cube-res N=256] [--time-envelope {analytic,histogram}=analytic]
     [--gdd-budget]
     [--export-rays] [--export-rays-max N=2000000] [--ghost-analysis]
+    [--pol-transport]
 ```
 
 `--rays` is primary rays **per source**. `--seeds N` re-traces with
@@ -2168,6 +2364,7 @@ without reconstructing the scene. Both flags are **seed 0 only**, like
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--photometric] [--spectrometer] [--instruments {on,off}]
     [--emit-csv] [--wavefront-point X_MM,Y_MM]
+    [--wavefront-pupil {source,exit_pupil}] [--imaging-products LIST]
     [--image-sim PATH] [--image-sim-coherence {incoherent,coherent,partial}]
     [--image-sim-sigma F]
 ```
@@ -2231,7 +2428,16 @@ bar chart) and `report.json`'s `detectors.<label>.wavefront` block;
 `--wavefront-point X_MM,Y_MM` overrides its default power-weighted
 landing-centroid image point (detector-grid-frame mm, same `u=pos.xhat,
 v=pos.yhat` convention as the spot/fan renders); ignored without
-`rays_full.npz`. See §6.10 for the physics.
+`rays_full.npz`. `--wavefront-pupil {source,exit_pupil}` picks the pupil
+model — `source` (default, normalized birth position on the emitting face)
+or `exit_pupil` (an `analysis_imaging.py` chief-ray/exit-pupil search over
+the field bundles, falling back to `source` with a report note when the
+solve degenerates on a single field point / telecentric image side).
+`--imaging-products LIST` (`distortion,vignetting,field_curves,
+telecentricity`, or `all`) **hard-requires** `rays_full.npz` and a
+multi-source field fan (e.g. the field-angle fan wizard): each writes
+`analysis/imaging_*.png` + `report.json` `detectors.<label>.imaging`
+blocks (+ `data/*.csv` under `--emit-csv`). See §6.10 for the physics.
 
 **`--save-fields` follow-on** (no-op per-detector unless that `.h5` has a
 populated `fields/` group, §6.7): `render_field_analysis()` writes
@@ -2258,6 +2464,18 @@ position, consistent across every plot), plus a single `compare.csv`
 and a printed summary table. `--out` defaults to
 `results/comparisons/<case1>_vs_<case2>...` (or `<first>_vs_N_more` if
 that name would exceed 120 characters).
+
+```
+/home3/optics/env/bin/python scripts/compare_sweep.py \
+    (--manifest PATH | --cases DIR [DIR ...]) [--out DIR] [--ref REF]
+```
+The sweep-comparison companion to `compare_runs.py`. `--manifest`
+consumes a `results/<model>/sweep-<case>.manifest.json` (written by the
+GUI's sweep controller, §5.9) to plot metric-vs-variable curves over the
+swept axis; `--cases` instead takes arbitrary case directories with no
+variable axis (exactly like `compare_runs.py`). `--ref` names the
+reference variant stem / case label (default: the first variant/case),
+and `--out` defaults per mode.
 
 ```
 pvpython make_viz.py --case-dir DIR --model-json PATH
@@ -2404,8 +2622,16 @@ CLI dests; explicit flags win over the file).
 
 `--particles` spec (`common.parse_particles_spec`):
 ```
-box=x0,y0,z0:dx,dy,dz;material=NAME;phi=F;median_um=F;gsd=F[;seed=N]
+box=x0,y0,z0:dx,dy,dz;material=NAME;(phi=F|tau=F);median_um=F;gsd=F[;seed=N]
 ```
+`phi` (mass fraction, below) and `tau` (target Beer–Lambert optical depth
+along the box's along-beam length `dx`) are **mutually exclusive — supply
+exactly one**. `tau` is only *parsed* by the stdlib-only `common.py`; it
+is resolved to an equivalent `phi` inside
+`raytracer.particles.ParticleCloud` (which needs the material's `Qext`,
+hence numpy/scipy), and the resolved `phi` plus the `tau` it came from are
+echoed back through `ParticleCloud.diagnostics()['tau_resolved']` into
+`case.json`.
 `box` corner+size are in **project CAD units (mm)**, converted to SI
 internally; omit `box=` for the default `10×20×20 mm` box centered on the
 x-axis just before the origin (`corner=(-12,-10,-10)mm`,
@@ -2480,12 +2706,14 @@ with cited prescriptions, built by `scripts/make_demos.py`. The scenes
 below stay single-element by design: they are the physics validation
 fixtures.)
 
-25 buildable scenes total: `doubleslit` (the original scene, documented
+33 buildable scenes total: `doubleslit` (the original scene, documented
 in §5.10, still built with unchanged parameters — d=0.5mm slit
 separation, 633nm, L=99mm plate-to-screen gap, fringe pitch λL/d=125.3µm)
-plus 24 more registered in the `SCENES` metadata dict, spanning lenses,
-polarization, birefringence, gratings, filters/coatings, and a
-deliberately non-analytic mesh face:
+plus 32 more registered in the `SCENES` metadata dict, spanning lenses,
+polarization, birefringence (uniaxial + biaxial), gratings,
+filters/coatings, Gaussian beams, Fresnel ghosts, measured scatter, curved
+detectors, optimizer/tolerancing demos, and a deliberately non-analytic
+mesh face:
 
 | Scene | Setup | Validates | Expected value |
 |---|---|---|---|
@@ -2507,11 +2735,19 @@ deliberately non-analytic mesh face:
 | `pol_crossed` | Two `ideal_linear` polarizers, crossed axes, unpolarized 550nm | crossed-polarizer leakage (finite extinction ratio) | transmission ≈5e-7 |
 | `pol_circular` | Thorlabs CP1L532 left-handed circular polarizer, BK7 substrate, 532nm | circular-polarization GENERATION (linear-then-retarder stage order) | output is circular with the stated handedness; handedness *analysis* needs a waveplate+linear stack (see §5.3 note; xfail documents this in `test_scenes_e2e.py`) |
 | `waveplate_quartz` | Multi-order (m=30) half-wave quartz plate (589nm) between crossed `ideal_linear` polarizers at ±45° | birefringent retardance / waveplate action | n_o=1.54422, n_e=1.55332, thickness=1.9740mm, retardance=30.5 waves, transmission factor 1.0 |
+| `waveplate_mgf2` | Multi-order (m=30) half-wave MgF2 plate (589nm) between crossed `ideal_linear` polarizers at ±45°, `crystal_axis '0,0,1'` | uniaxial retardance with C-ENGINE PARITY — MgF2 carries no gyration data (unlike gyrotropic quartz, which reference-routes), so the scene stays C-routable | n_o=1.37772, n_e=1.38953, Δn=0.011812, t=1.5209mm, retardance=30.5 waves, transmission factor 1.0 |
 | `pbs_cube` | 20mm BK7 PBS cube from two 45° prisms, `pbs_visible_45` coating on the hypotenuse, unpolarized 550nm | coated-interface polarization splitting (s/p separation) | qualitative: transmitted arm ~p-pol, reflected arm ~s-pol |
 | `calcite_displacer` | 10mm calcite slab, `crystal_axis` at 45° in x-z, unpolarized 590nm Ø0.5mm beam | birefringent walk-off (o/e spatial displacement) | n_o=1.65830, n_e=1.48611, walk-off=6.232°, displacement=1.0919mm |
 | `wollaston` | Two 30° calcite wedges, orthogonal optic axes, 5µm air gap, 590nm unpolarized | birefringent-wedge polarization beam-splitting angle | split angle = 2(n_o−n_e)tan(30°) = 11.392° |
 | `filter_bandpass` | `bp_550_40` bandpass filter on a 3.5mm BK7 slab, broadband 450-650nm source | wavelength-dependent filter transmission | qualitative (center 550nm, band 450-650nm) |
 | `hot_mirror` | BK7 plate at 45° AOI, `hot_mirror_45` coating, broadband 450-1000nm, two detectors | angle-dependent dichroic spectral splitting | qualitative visible/IR split (center 700nm) |
+| `ktp_walkoff` | 15mm KTP biaxial plate, X principal axis at 45° in x-z (`'0.70711,0,0.70711'`), Y principal = global y; 633nm unpolarized Ø0.3 beam in the X-Z principal plane (max walk-off) | biaxial walk-off (y-sheet straight at n=n_y, in-plane sheet walks off in z → two spots) | two-spot separation = solver-predicted in-plane-sheet transverse displacement (`biaxial_ray_from_k`; `test_biaxial._expected_walkoff_dz`) |
+| `gaussian_bench` | Gaussian-beam source (`beam_waist` 50µm at the face, M²=1.0) propagating 62mm (=5 Rayleigh ranges) through air to a screen | Gaussian-beam expansion, incoherent direct-deposit beam mode (`coherent=False`) | w(z)=w0·√(1+(z/zR)²), zR=πw0²/λ≈12.4mm → ~5× waist |
+| `ghost_doublet` | Two uncoated N-BK7 flat windows (4mm thick, 8mm gap) in a collimated 633nm incoherent beam; downstream screen | Fresnel ghost enumeration | dominant gen-2 ghost power = direct·R² (normal-incidence air/BK7 Fresnel product) |
+| `scatter_plate` | Flat BK7 window at 45° with measured ABg scatter (`scatter=polished_bk7_glass`) on its front face; collimated 633nm | measured-scatter specular+diffuse split (reflected side conserves R; scattered rays flagged `scattered=True`) | qualitative: specular spot + diffuse lobe on the +y screen |
+| `curved_focal` | Collimated 633nm Ø10 → plano-convex BK7 lens (R=25, f≈48.5) → CONCAVE cylindrical detector hugging the focus at x≈50mm | curved-detector irradiance (per-pixel metric-area division, §5.12) | EFL=48.536mm, BFL=45.236mm; curved screen catches >90% of focused power |
+| `auto_designed_lens` | `lens_pcx` singlet with spreadsheet-driven axial position (`dim.lenspos`, expression-bound Placement); detector 4mm past the lenspos=0 focal plane | optimizer demo: spot-minimizing lens position | expected focus at lenspos=+4mm (collimated: focus translates 1:1 with the lens) |
+| `tolerance_lens` | The `auto_designed_lens` singlet with THREE spreadsheet DOFs — `dim.lenspos` (axial), `dim.lensdy` (decenter), `dim.detpos` (detector axial); nominal design in focus | tolerancing demo | lenspos defocuses 1:1, lensdy mostly translates the spot (RMS first-order insensitive), detpos is the refocus compensator |
 | `mesh_freeform` | Prolate ellipsoid of revolution (revolved BSpline meridian) — deliberately non-canonicalizable | mesh-fallback code path (extractor WARN, `--strict` incompatible) | `expects_mesh_fallback: True` |
 
 Usage is the same one-liner as any other model:
@@ -2526,7 +2762,7 @@ physics modules against a real extracted FreeCAD geometry.
 
 ## 11. Validation
 
-`scripts/raytracer/tests/` (906 tests total — see the actual count with
+`scripts/raytracer/tests/` (935 tests total — see the actual count with
 `--collect-only -q`; the table below covers the physics-pinning core, not
 every file; run with
 `/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -v`;
@@ -2536,15 +2772,15 @@ every file; run with
 |---|---|---|
 | `test_kernels.py` (18) | Snell angles; Fresnel energy conservation; Brewster angle; TIR magnitude + Fresnel-rhomb phase; absorbing-metal Fresnel branch; reflect/pol-basis unitarity + Jones-rotation energy conservation; TMM reduces to bare Fresnel at 0 layers; quarter-wave MgF2-on-BK7 TMM reflectance; half-wave "absentee" layer; TMM energy conservation (oblique, 2-layer stack); sphere/cylinder/cone exact intersection; torus intersection vs `np.roots` reference; trimmed spherical cap, full-sphere-untrimmed, polar-cap-band, plane+hole trim, face exclude/eps guard | 1e-9 to 1e-12 (closed-form); torus vs `np.roots` 1e-7 |
 | `test_asphere.py` (7) | Asphere reduces to a tangent sphere (k=0, no coeffs); parabola (k=-1) closed form; general polynomial asphere vs independent `scipy.brentq` root; analytic normal vs finite-difference; shape-operator (`normal_derivative`) vs finite difference for every analytic primitive; miss/grazing cases produce no NaN; trimmed asphere cap containment | <1e-10 (sphere/parabola reduction); <1e-10 (brentq); <1e-7 (normal FD); <1e-5 relative (shape operator, curved primitives) |
-| `test_birefringence.py` (14) | Uniaxial `n(theta)` endpoints/monotonicity; eigenbasis orthonormality; isotropic limit reduces to Fresnel; **calcite walk-off at 45° internal incidence, 590nm, matches 6.23° to <0.05°**; quartz's opposite (positive-uniaxial) walk-off sign; e-wave normal-surface residual; tangential wavevector continuity at an interface; exit refraction reduces to Fresnel for the o-mode; beam-displacer normal-incidence walk-off + displacement; Wollaston geometry (c in interface plane -> zero walk-off); plane-parallel slab o/e roundtrip; internal e-ray TIR; exact `ray_from_k`/`k_from_ray` inversion | 1e-12 (closed-form); **0.05° (calcite/quartz walk-off vs literature)**; <0.5% (displacement) |
-| `test_grating_models.py` (10) | Kogelnik efficiency formula (exact Bragg `nu=pi/2` gives `eta=1`, `nu=pi/4` gives `eta=0.5`); full geometric Bragg-peak construction with energy conservation; Dammann Parseval sum + symmetry; Dammann reduces to lamellar duty=0.5; a real 1x5 equal-intensity Dammann design vs its published transition points; table-model exact interpolation roundtrip + out-of-range hard error + missing-order zero; polarized table dispatch (pure s/p stays pure, exact `eta_s`/`eta_p` power, energy-exact children+absorbed); m=0 lamellar still reduces to Snell | 1e-9 to 1e-12 (closed-form Kogelnik/energy); <0.1% (Dammann 1x5 uniformity, published tol 2%) |
+| `test_birefringence.py` (21) | Uniaxial `n(theta)` endpoints/monotonicity; eigenbasis orthonormality; isotropic limit reduces to Fresnel; **calcite walk-off at 45° internal incidence, 590nm, matches 6.23° to <0.05°**; quartz's opposite (positive-uniaxial) walk-off sign; e-wave normal-surface residual; tangential wavevector continuity at an interface; exit refraction reduces to Fresnel for the o-mode; beam-displacer normal-incidence walk-off + displacement; Wollaston geometry (c in interface plane -> zero walk-off); plane-parallel slab o/e roundtrip; internal e-ray TIR; exact `ray_from_k`/`k_from_ray` inversion | 1e-12 (closed-form); **0.05° (calcite/quartz walk-off vs literature)**; <0.5% (displacement) |
+| `test_grating_models.py` (11) | Kogelnik efficiency formula (exact Bragg `nu=pi/2` gives `eta=1`, `nu=pi/4` gives `eta=0.5`); full geometric Bragg-peak construction with energy conservation; Dammann Parseval sum + symmetry; Dammann reduces to lamellar duty=0.5; a real 1x5 equal-intensity Dammann design vs its published transition points; table-model exact interpolation roundtrip + out-of-range hard error + missing-order zero; polarized table dispatch (pure s/p stays pure, exact `eta_s`/`eta_p` power, energy-exact children+absorbed); m=0 lamellar still reduces to Snell | 1e-9 to 1e-12 (closed-form Kogelnik/energy); <0.1% (Dammann 1x5 uniformity, published tol 2%) |
 | `test_grating_roughness.py` (10) | Vector grating equation angles; m=0 reduces exactly to Snell/Fresnel (any incidence, conical mount, groove component invariance); lamellar efficiency closed form + energy partition; roughness TIS closed form; Beckmann slope statistics + reflected-energy clustering; groove-vector frame construction | 1e-9 to 1e-15 (closed-form); Beckmann RMS slope within 3%, reflected energy clustering >0.99 mean/>0.9 min |
-| `test_mie_particles.py` (11) | Mie efficiencies vs Wiscombe MIEV0 canonical values (m=1.5, x=10 → Qext=2.8820; x=100 → Qext=2.0944); extinction-paradox limit (Qext→2); Rayleigh limit closed form; absorbing-particle albedo; phase-function normalization + forward-peaking + CDF sampling fidelity; monodisperse number-density/mu_ext exact closed forms; log-normal mean volume vs Monte Carlo; continuum Beer-Lambert energy split; explicit-mode non-overlapping placement + energy conservation | abs 2e-3 (MIEV0); rel 1–5% (statistical); exact to 1e-9/1e-12 (closed-form) |
+| `test_mie_particles.py` (13) | Mie efficiencies vs Wiscombe MIEV0 canonical values (m=1.5, x=10 → Qext=2.8820; x=100 → Qext=2.0944); extinction-paradox limit (Qext→2); Rayleigh limit closed form; absorbing-particle albedo; phase-function normalization + forward-peaking + CDF sampling fidelity; monodisperse number-density/mu_ext exact closed forms; log-normal mean volume vs Monte Carlo; continuum Beer-Lambert energy split; explicit-mode non-overlapping placement + energy conservation | abs 2e-3 (MIEV0); rel 1–5% (statistical); exact to 1e-9/1e-12 (closed-form) |
 | `test_pol_scatter.py` (7) | Polarized-azimuth Mie sampler: theta-marginal invariance (analytic + numeric) between polarized and legacy uniform-azimuth sampling; chi-squared goodness-of-fit for linear-polarized and circular/unpolarized incidence; per-scattering-event energy exactness; legacy `--no-pol-scatter` uniform-azimuth mode still available; general sampler-vs-PDF agreement | chi2 goodness-of-fit; exact energy per event |
 | `test_polarization.py` (9) | Reference-frame (`e_ref`,`e_perp`) orthonormality + z-axis fallback to y; unit power for every polarization kind/stratum; `linear:0/90/45` Jones values; unpolarized strata orthogonality; elliptical limits (chi=0 -> linear, chi=45 -> circular); circular handedness matches the Hecht convention numerically; polarization strata do not interfere in the gather (same-stratum fringes >0.7 visibility, cross-stratum <0.35); end-to-end `sample_source` polarization states (skipped unless `doubleslit` is extracted) | exact (Jones unit power); numeric handedness check; visibility >0.7 same-stratum / <0.35 cross-stratum |
-| `test_polarizer_filter.py` (7) | Malus's law through an ideal linear polarizer; crossed-polarizer floor + `polarizer_absorbed` bucket (>0.85 of power parked there); unpolarized half-transmission; bulk filter Beer-Lambert thickness scaling (`T^(d/d_ref)`); calcite double-spot separation + polarization-selected single spot; circular-polarizer output handedness | Malus 1% or better; energy-exact bucket accounting |
-| `test_opticalproperties.py` (24) | Full opticalproperties tree loading; birefringence/coating/polarizer/filter/grating registry schema validation (each hard-error path: bad type, swapped T_par/T_perp axes, zero transmittance, over-unity order efficiencies, R+T>1, missing reference, unknown crystal material); trimmed-library optional-category handling; per-face/polarization/axis/grating-value spec parsers (`common.py`); schema-v2 `validate_model()` additions (polarizer/crystal_axis/coating-dict/roughness_faces/grating/polarization) and their rejections; asphere surface-dict schema validation | hard MaterialError/ContractError on every malformed input |
-| `test_materials.py` (21) | Dispersion spot-checks (bk7, fused_silica, mgf2, water, sapphire, polystyrene, aluminum n/k incl. IR k rise and water's ~975nm absorption shoulder); tabulated-range hard error; unknown-material error message; vectorized evaluation; coating quarter-wave resolution; malformed-CSV rejections (bad model, non-positive Sellmeier C, missing reference); coating-references-unknown-material rejection; detector/vacuum sentinels; case-insensitive lookup | abs 1e-4 to 2e-4 vs literature/refractiveindex.info |
+| `test_polarizer_filter.py` (9) | Malus's law through an ideal linear polarizer; crossed-polarizer floor + `polarizer_absorbed` bucket (>0.85 of power parked there); unpolarized half-transmission; bulk filter Beer-Lambert thickness scaling (`T^(d/d_ref)`); calcite double-spot separation + polarization-selected single spot; circular-polarizer output handedness | Malus 1% or better; energy-exact bucket accounting |
+| `test_opticalproperties.py` (53) | Full opticalproperties tree loading; birefringence/coating/polarizer/filter/grating registry schema validation (each hard-error path: bad type, swapped T_par/T_perp axes, zero transmittance, over-unity order efficiencies, R+T>1, missing reference, unknown crystal material); trimmed-library optional-category handling; per-face/polarization/axis/grating-value spec parsers (`common.py`); schema-v2 `validate_model()` additions (polarizer/crystal_axis/coating-dict/roughness_faces/grating/polarization) and their rejections; asphere surface-dict schema validation | hard MaterialError/ContractError on every malformed input |
+| `test_materials.py` (22) | Dispersion spot-checks (bk7, fused_silica, mgf2, water, sapphire, polystyrene, aluminum n/k incl. IR k rise and water's ~975nm absorption shoulder); tabulated-range hard error; unknown-material error message; vectorized evaluation; coating quarter-wave resolution; malformed-CSV rejections (bad model, non-positive Sellmeier C, missing reference); coating-references-unknown-material rejection; detector/vacuum sentinels; case-insensitive lookup | abs 1e-4 to 2e-4 vs literature/refractiveindex.info |
 | `test_mesh_bvh.py` (6) | MeshFace intersection vs analytic Sphere (tessellation-sag error bound); smoothed vs flat normal modes; BVH traversal bit-identical to brute-force Möller–Trumbore; binary/ASCII STL reader agreement; self-hit `t_eps` guard; degenerate (zero-area) triangles dropped with a warning | >98% hit/miss agreement away from silhouette; bit-identical BVH-vs-bruteforce |
 | `test_ray_differentials.py` (9) | Free-space spherical-wave patch area grows as r²; collimated patch area invariant; `init_curved` direction derivative vs finite difference; reflect/refract differentials vs finite-difference oracle for sphere/cylinder/asphere; concave-mirror patch area minimizes at f=R/2; single-surface refraction patch area minimizes at f=n2 R/(n2-n1); TIR/grazing produces NaN cleanly (no exception) | <1e-5 relative (finite-difference cross-checks) |
 | `test_gather_occlusion.py` (7) | `occlusion=None` bit-identical to omitting the argument; empty-faces identity; an opaque plate fully shadows the geometrically blocked half (<1% of unoccluded peak) while leaving the rest exactly rescaled; an off-axis plate is culled by the Level-1 AABB prefilter; a detector's own face never self-occludes; torch/numpy backends apply an identical mask; rendered shadow-edge position within `tile+1.5` px of the geometric projection | <1% leakage; bit-identical torch/numpy mask; shadow edge within `tile+1.5` px |
@@ -2554,12 +2790,12 @@ every file; run with
 | `test_dispersion.py` | Group index / GDD / TOD derivative API vs literature: fused silica n_g(800nm)=1.467145, GVD 36.16 fs²/mm; BK7 @1064; stencil clamping at table edges | 1e-4 (n_g), 1% (GVD) |
 | `test_time_core.py` | Slab group delay `(n_g−1)L/c`; CW impulse response; calcite o/e group split; **bit-identity of opl + detector cubes with time tracking on vs off**; per-body path tally | closed-form/bit-identical |
 | `test_pulsed_source.py` | Power XOR pulse_energy contract (all error paths); derived pulse block (P_pk=0.94E/τ, κ); case.json `source_pulse` echo | exact |
-| `test_time_products.py` (24) | ∫I(t)dt == detected power for every product × both envelopes (coherent population via geometric power); marginal consistency (spectrogram/streak/cube vs profile); auto vs explicit window + clipped-kernel conservation; analytic smoother than histogram; CW delta at d/c; **traced FWHM vs τ(φ₂) broadening through 20mm fused silica**; auto-enable rule; engine routing; sub-bin-kernel splat regression (fs kernels on ns windows stayed finite) | conservation 1e-12; broadening 5% (products), 2% (the locked `test_gdd_budget` gate) |
+| `test_time_products.py` (21) | ∫I(t)dt == detected power for every product × both envelopes (coherent population via geometric power); marginal consistency (spectrogram/streak/cube vs profile); auto vs explicit window + clipped-kernel conservation; analytic smoother than histogram; CW delta at d/c; **traced FWHM vs τ(φ₂) broadening through 20mm fused silica**; auto-enable rule; engine routing; sub-bin-kernel splat regression (fs kernels on ns windows stayed finite) | conservation 1e-12; broadening 5% (products), 2% (the locked `test_gdd_budget` gate) |
 | `test_gdd_budget.py` (5) | Budget GDD == `gdd_per_length·L̄` (the table's own numbers, 1e-3); τ_out formula exactness; **traced FWHM matches the budget's τ_out at 2% (THE locked gate)**; CW `--gdd-budget` forces tracking + Python routing; pipeline forwarding | 1e-3 / 2% |
-| `test_spm.py` (12) | SPM RMS spectral broadening vs Agrawal `√(1+(4/3√3)φ_max²)`; multi-peak count ≈ φ_max/π+1; chirp tilt sign (red first) + monotonic t0; SPD normalization/supersession; grammar + γ·P_pk·L_eff derivation; sc_superk registry row | 10% (RMS); exact peak windows |
+| `test_spm.py` (8) | SPM RMS spectral broadening vs Agrawal `√(1+(4/3√3)φ_max²)`; multi-peak count ≈ φ_max/π+1; chirp tilt sign (red first) + monotonic t0; SPD normalization/supersession; grammar + γ·P_pk·L_eff derivation; sc_superk registry row | 10% (RMS); exact peak windows |
 | `test_nlo.py` | d_eff tensor contraction (3m closed form 7e-16); KTP II 3.246 pm/V vs published 3.2; BBO θ_pm=29.211° vs 29.2°; registry load/validation | closed-form to 7e-16; published values 1–2% |
-| `test_nlo_elements.py` (23) | Pockels crossed-polarizer `sin²(πV/2V_π)`; saturable α(I) curve + TPA law vs `exp(-α(I_in)L)`; Kerr focal shift vs `f_K=w²/(4n₂I₀L)`; chi2_process→shg_spec resolution; chi2_tensor rejection | sin² 1%; Kerr 5% |
-| `test_shg_event.py` (6) | Vectorized η == scalar (incl. clamp); **η ∝ I·L² at Δk=0**; sinc² detuning sweep vs closed form; transfer closure (harmonic ≤ tally, total detected conserved); harmonic at λ/2 in the right spectral bin + `harmonic_strata` map; **child gopl continuity** (harmonic arrival rides the pump group delay); NLO bodies force Python routing | 1e-12 (vec); 1–2% (scaling/detuning); closure <1e-3 |
+| `test_nlo_elements.py` (21) | Pockels crossed-polarizer `sin²(πV/2V_π)`; saturable α(I) curve + TPA law vs `exp(-α(I_in)L)`; Kerr focal shift vs `f_K=w²/(4n₂I₀L)`; chi2_process→shg_spec resolution; chi2_tensor rejection | sin² 1%; Kerr 5% |
+| `test_shg_event.py` (7) | Vectorized η == scalar (incl. clamp); **η ∝ I·L² at Δk=0**; sinc² detuning sweep vs closed form; transfer closure (harmonic ≤ tally, total detected conserved); harmonic at λ/2 in the right spectral bin + `harmonic_strata` map; **child gopl continuity** (harmonic arrival rides the pump group delay); NLO bodies force Python routing | 1e-12 (vec); 1–2% (scaling/detuning); closure <1e-3 |
 | `test_imaging.py` | Exit pupil vs paraxial stop image; singlet distortion; clipped-stop vignetting; Petzval field curvature; telecentric CRA≈0; Strehl PSF-peak vs Maréchal | per-product gates (see file header) |
 
 **Measured double-slit result** (real completed run,
@@ -2599,10 +2835,15 @@ any of `--rays`/`--resolution`/etc.) fills these; any of `--rays`,
 explicitly overrides just that one field.
 
 **The dominant cost is the coherent gather, not the trace**, and it scales
-roughly as `rays * resolution^2 * n_coherent_sources * nlambda *
-n_pol_strata` (`common.estimate()`'s `gather_ops`) — `n_pol_strata` is 2
-for any scene containing an unpolarized source (the default), 1 if every
-source declares an explicit polarization (§5.2). A real `--dry-run`
+roughly as `rays * resolution^2 * spr` (surviving coherent samples per
+primary ray) — `common.estimate()`'s `gather_pairs`. The gather bills one
+pass over (detector pixels × surviving samples) and PARTITIONS the
+survivors across the (source, λ-stratum, pol-stratum) keys, so `nlambda`,
+`n_pol_strata`, and `n_coherent_sources` do NOT multiply the gather cost —
+they do multiply the accumulator/field MEMORY (§6.7) and, via the
+per-key `M_eff` floor, the ray budget you need (§6.3; `n_pol_strata` is 2
+for any scene containing an unpolarized source, 1 if every source
+declares an explicit polarization, §5.2). A real `--dry-run`
 estimate for `example.FCStd` at `normal` (1e6 rays, 2048², 9 wavelengths,
 2 coherent sources) predicted **trace ≈ 306 s + gather ≈ 22,176 s (≈6.2
 hours)** — `results/example/normal/case.json` (status stuck at
@@ -2622,15 +2863,16 @@ extra headroom when either flag is on.
 machine's GPU accelerates the gather step; both backends compute
 `r`/phase in **float64** and reduce phase mod 2π before any float32 trig,
 accumulating the field itself in **complex64** (fp32) — precision notes
-in §6.6. `results/.calibration.json` in this repo shows real recorded
-`gather_torch` throughput of roughly **6e8–9e8 gather-ops/s**, alongside
-recorded `trace` throughput ranging from ~500 to ~36,000 rays/s
-(the wide spread reflects very different scene/particle/roughness
-configurations across the recorded runs, not a single stable number —
-`common.calibrated_rate()` takes the **median** of all recorded entries
-of a given `kind`, falling back to `FALLBACK_TRACE_RAYS_PER_S=2e5` or
-`FALLBACK_GATHER_OPS_PER_S={"torch": 2e10, "numpy": 1e9}` before any real
-run has completed).
+in §6.6. `results/.calibration.json` in this repo records per-backend
+`gather_pairs_per_s_<backend>` entries (recent medians: c_cuda ≈ 1.5e9,
+torch and c_cpu ≈ 1.5e8, numpy ≈ 4e6 pairs/s) alongside per-scene
+`trace_rps_*` throughput spanning ~2e4–1.5e5 rays/s (the wide spread
+reflects very different scene/particle/roughness configurations, not a
+single stable number — `common.calibrated_rate()` takes the **median**
+of recorded entries of a given kind, falling back to
+`FALLBACK_TRACE_RAYS_PER_S=2e5` or `FALLBACK_GATHER_PAIRS_PER_S=
+{"torch": 1.1e9, "numpy": 5e7, "c_cuda": 6.7e9, "c_cpu": 3.3e8}` before
+any real run has completed).
 
 **Disk**: `detectors/*.h5` dominates a case's disk footprint — a single
 512×512×16-bin detector cube in this repo's `results/example/devsmoke/`
@@ -2677,18 +2919,47 @@ cengine.py`): all analytic surfaces + mesh faces, trimmed geometry, the
 scene-wide BVH (an acceleration the Python engine lacks), Fresnel,
 TMM/table coatings, polarizers, spectral filters, the medium stack,
 gratings (all models), Beckmann roughness + diffusers, ABg scatter
-(g = 2), uniaxial birefringence, continuum-mode particle clouds, the
+(g = 2), uniaxial birefringence (the effective-index kernel — used only
+under `--biref-approx`; the default exact Lekner amplitudes route to
+Python, §5.6), continuum-mode particle clouds, the
 coherent Huygens gather (fused CUDA kernel + CPU twin; same fp64-phase
 precision contract as the torch backend), gather occlusion, save-fields
 (every detector — `--save-fields-detectors` is a Python-engine-only
 subset restriction, §8.2), export-rays, ghost analysis, viz-pattern
-overlays, multi-seed, and the opt-in `--importance-aim` variance
-reduction (unbiased birth culling).
+overlays, multi-seed, the opt-in `--importance-aim` variance
+reduction (unbiased birth culling), time products + the GDD budget
+(P7 tranche 1), Igehy ray differentials (P7 tranche 2, oracle-pinned
+1e-5 vs finite differences), and the intensity-dependent bulk NLO trio
+saturable/TPA/Kerr (P7 tranche 2).
 
-Still Python-routed (auto fallback; candidates for later porting):
-biaxial crystals, explicit-realization particles, beam/apodization
-sources, `--ray-differentials`, curved detectors, extra CLI detector
-faces, `rough_fresnel=macro`, ABg g != 2.
+Still Python-routed (auto fallback; every token `detect_features()` can
+emit that is absent from `PORTED`):
+
+- **exact uniaxial birefringence** (`biref_exact`) — the DEFAULT
+  Lekner-1991 amplitudes; the ported kernel serves only `--biref-approx`
+- **natural optical activity** (`gyration`, e.g. the quartz rotator,
+  §6.12b) and **biaxial crystals** (`biaxial`) with their exact
+  **Berreman 4×4** entry (`berreman`)
+- **χ² nonlinear optics** — SHG / Pockels (`nonlinear`, §6.12)
+- **thermo-optic index shift** (`temperature` — any body off its
+  material's reference temperature with a dn/dT model)
+- **RCWA v2 grating tables** (`grating_table_v2`, complex per-order
+  (λ,θ,φ) amplitudes)
+- **Forbes Q-type aspheres** (`surface:qforbes`) and **Zernike
+  figure-error surfaces** (`surface:perturbedsurface`, `figure_error`) —
+  and any other `surface:*` token not in `PORTED`
+- **beam / apodization sources** (`beam`, `apodization`)
+- **scatter variants**: ABg g ≠ 2 (`scatter_g_ne_2`), transmissive BTDF
+  (`scatter_btdf`), importance-sampled scatter (`scatter_importance`)
+- **phase-carrying table coatings** (`coating_phase`)
+- **extra CLI detector faces** (`--detector-face` →
+  `extra_detector_faces`; the `detector_face` BODY property stays
+  C-routable, §5.2) and **curved detectors** (`curved_detector`)
+- **explicit-realization particle clouds** (`particles_explicit`)
+- **parallel-transport polarization analysis** (`--pol-transport`)
+- **time products through a crystal** (`time_directional_index`,
+  directional group index)
+- **legacy macro-angle rough Fresnel** (`rough_fresnel_macro`)
 
 Determinism: the C engine's RNG is counter-based Philox4x32-10 (C-engine-only) keyed by
 ray lineage — results are bit-identical across thread counts; the Python engine uses
@@ -2744,10 +3015,11 @@ segfaults: every failure carries context, a log
 - **`unknown polarizer %r` / `unknown filter %r` / `unknown coating %r` /
   grating `unknown registry entry %r`**: the name in the body's
   `polarizer`/`filter`/`coating`/`grating` property doesn't match any row
-  in the corresponding `opticalproperties/*/*.csv`. These checks fire at
+  in the corresponding `opticalproperties/` registry (`.miepol`/`.miefilt`/
+  `.miecoat`/`.miegrat`). These checks fire at
   **trace time** (`Scene.__init__`), not at extract time — the error
   message lists every name the registry actually loaded, so diff it
-  against your body property string and against the CSV (§7).
+  against your body property string and against the registry file (§7).
 - **Asphere `surface_override` declaration mismatch dies at extract
   time**: `surface_override=asphere declaration does not match the
   actual face geometry (max residual ... tolerance 1.0 um)` means the
@@ -2808,6 +3080,12 @@ segfaults: every failure carries context, a log
   crossed-polarizer or narrow-band filter scene will legitimately park
   most power in `polarizer_absorbed`/`absorbed_bulk` rather than
   indicating a bug.
+- **`[trace] REFUSED: … .lock.json` (exit code `4`)**: a second writer on
+  a case that already has a live run is refused rather than corrupting it
+  (one writer per case, `common.acquire_case_lock()`). Rerun when the
+  first run finishes, or remove `<case>/.lock.json` if its owner is dead;
+  `--resume`/`--extend` steal only a dead-owner lock. The GUI opens live
+  cases read-only in monitor mode instead of writing.
 - **Particle count surprises**: remember **`phi` is a MASS fraction**
   (§9) — "too few particles" or a `ValueError: particle cloud is empty`
   almost always means `phi` needs to go up, especially for dense

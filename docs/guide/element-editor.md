@@ -82,9 +82,6 @@ normal single-body state for it. Face picking for property assignment
   grating plate's `Face1=...`) can land on a different (even wrong) face
   after a size edit that changes the tessellation. Face indices are only
   trustworthy for the geometry they were authored against.
-- `roughness` and `diffuser` must never both be set on the same face
-  (deep-rough Beckmann limit) — the Active Properties menu does not stop
-  you from doing this by hand; validate the scene ([run-and-validate.md](run-and-validate.md))
-  before running.
+- `roughness`, `diffuser`, and `scatter` are pairwise mutually exclusive on the same face (deep-rough Beckmann limit) — the Active Properties menu doesn't stop you from combining them by hand; scatter+roughness and scatter+diffuser are engine hard-errors, diffuser+roughness is only GUI-checked. Validate the scene ([run-and-validate.md](run-and-validate.md)) before running.
 
 ![Element editor — Active Properties table](img/element-editor-1.png)

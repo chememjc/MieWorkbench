@@ -1,4 +1,4 @@
-# PRESCRIPTION.md — the prescription-primary data model (engine3.md §3, P5)
+# PRESCRIPTION.md — the prescription-primary data model (docs/archive/engine3.md §3, P5)
 
 **The optical prescription is the truth; the CAD is a view of it.**
 
@@ -13,7 +13,7 @@ surfaces. Those surfaces become the recorded truth; the CAD is verified against
 them and the `model.json` optical surface is emitted **from the prescription**.
 
 This document is the schema + contract. See `docs/RAYTRACER.md` §5 for the
-body-tagging contract, and `engine3.md` §3 for the design rationale.
+body-tagging contract, and `docs/archive/engine3.md` §3 for the design rationale.
 
 ---
 

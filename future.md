@@ -58,7 +58,13 @@ narrative + code seams.
   (Kogelnik thin-hologram transmission, polarization-resolved), `dammann`
   (exact Fourier-order), `table` (measured per-order eta_s/eta_p), plus a
   registry (`opticalproperties/grating/gratings.miegrat`, `@name` syntax).
-  RCWA is still explicitly out of scope (README §5.5).
+  RCWA landed as a **precompute-and-interpolate** path:
+  `scripts/tools/gen_rcwa_table.py` tabulates complex per-order amplitudes
+  via meent (Li inverse-rule RCWA) on a (λ,θ,φ) grid with
+  Rayleigh/Wood-anomaly-aware refinement, interpolated at trace time
+  (`grating._v2_amplitudes`, `grating_table_v2` feature — Python-routed,
+  not yet C-ported). A true per-ray RCWA solve remains out of scope
+  (README §5.5).
 - **Aspheres** — shipped: `surface_override='FaceN=asphere:...'`,
   extract-time verification against the real FreeCAD face to 1um,
   bracket-guarded Newton intersection (README §5.7).
@@ -307,8 +313,9 @@ Backlog/§ below (or `features.md` §7).
 
 ### (a2) Placement/authoring affordances (design-usability round findings)
 
-From `demos/UXNOTES_ROUND3.md` — the pain points too large for that
-round's fix loop (each names its seam):
+From the design-usability-round shakedown (now consolidated into
+`demos/UXNOTES.md`) — the pain points too large for that round's fix
+loop (each names its seam):
 
 - **Expressions/variables for ANCHORED placements.** Chain edges accept
   the full expression grammar; anchored poses are literal xyz/quat only
@@ -362,9 +369,15 @@ round's fix loop (each names its seam):
   reflected-mode split are not propagated). The full-anisotropy Berreman
   4×4 (biaxial/absorbing/gyrotropic) remains the final option (§7.4-2).
 - **Optical activity / chiral media (e.g. quartz's rotary power along its
-  own optic axis).** Not modeled at all today — `birefringence.py`'s
-  header explicitly scopes this out. Needed for a physically complete
-  quartz-along-axis scene (Babinet-Soleil compensators, saccharimetry).
+  own optic axis).** **PARTIALLY LANDED**: near-axis scene-level rotation
+  is wired (`tracer._apply_optical_activity`: a gyrotropic uniaxial body
+  on its isotropic n_o path rotates the Jones vector by ρ·ds; validated by
+  `quartz_rotator`, sin²(ρd) to 0.0% error) and the full-anisotropy
+  Berreman 4×4 module (`berreman.py`) independently reproduces
+  ρ=21.77°/mm (ORACLE 3). Still open: off-axis/elliptical-eigenmode
+  gyration, C-engine port (`gyration` is a Python-only routing token), and
+  scene-level coupling of Berreman's full tensor beyond the near-axis
+  uniaxial case.
 - **Biaxial crystals — conical refraction only.** Biaxial birefringence
   itself LANDED 2026-07-10 (`raytracer/birefringence.py`
   `refract_in_biaxial()`/`biaxial_modes_for_k()`, quartic normal-surface
@@ -522,7 +535,7 @@ narrative + exact code seam for each stays in its own section above (or in
 | Item | Effort | Impact | Note |
 |--|:--:|:--:|--|
 |Exact uniaxial Fresnel at a birefringent interface|✅|—|**LANDED (P6, Python):** Lekner-1991 4×4 boundary-match; C-engine port + exit mode-conversion remain|
-|Optical activity / chiral media|L|Low|**no competitor here has it** (`features.md` C6); research-only|
+|Optical activity / chiral media (off-axis/elliptical + full-tensor scene coupling)|M|Low|**partially landed** — near-axis scene-level rotation + Berreman module both ship; remaining scope is off-axis gyration and a C-engine port|
 |Biaxial conical refraction|M|Low|corner-case of a MieWorkbench-unique win (C5)|
 |Absorbing (dichroic) uniaxial crystals|M|Low|`Im(n_o)/Im(n_e)` currently ignored|
 |Reflection-geometry Kogelnik gratings|M|Low|tanh/sinh reflection VBG solution|
@@ -569,7 +582,7 @@ narrative + exact code seam for each stays in its own section above (or in
 |Harmonic walk-off / exact uniaxial SHG|L|Med|type-I/II e/o geometry; needs exact-uniaxial Fresnel (b)|
 |Cascaded/coherent harmonics|L|Low|THG via cascade, phase-sensitive pump-harmonic interplay|
 |Raman / fluorescence inelastic transfer|M|Low|Stokes-shift bulk event reusing the SHG plumbing|
-|C-engine port of pulsed tokens|M|Med|time_products/gdd_budget/nonlinear currently Python-route|
+|C-engine port of nonlinear (χ²) tokens|M|Med|`nonlinear` (SHG/Pockels) is the only pulsed/NLO token still Python-routed — `time_products`/`gdd_budget`/`ray_differentials`/`saturable`/`tpa`/`kerr` are C-ported (P7)|
 |Fringe-resolved timing|L|Low|per-record complex amplitudes at ~100× record cost|
 |Angular-dispersion group-index term|M|Low|e-ray group delay neglects dθ/dλ|
 |Per-source time cubes|S|Low|cube currently bins all sources together|
@@ -626,11 +639,11 @@ Backlog above are cross-referenced, not repeated.)
 |**Nestable assemblies / grouping**|O7|M|Low|first-class assembly object over `miewb_group`; QUADOA-style|
 |**Cross-platform (Windows/Mac) packaging**|N7/R3|L|Med|PySide6+VTK are portable; blocker is the FreeCAD/optics-env/ParaView stack — bundle as installer/container|
 
-**Deliberate non-goals** (documented, not chased — `features.md` §7.15): RCWA (Zemax-only
-here), Mueller-matrix formalism (only QUADOA claims it), optical activity (nobody here has
-it), coating needle-synthesis (nobody here has it), native cloud compute (conflicts with
-the data-locality/ITAR value proposition), a macro *language* (redundant given a Python
-console).
+**Deliberate non-goals** (documented, not chased — `features.md` §7.15): full per-ray RCWA
+solve (Zemax-only here), Mueller-matrix formalism (only QUADOA claims it), off-axis/elliptical
+gyration + C-engine gyration port, coating needle-synthesis (nobody here has it), native cloud
+compute (conflicts with the data-locality/ITAR value proposition), a macro *language*
+(redundant given a Python console).
 
 ## Partial features — behavioral differences vs commercial tools
 
@@ -680,7 +693,7 @@ the legend above.
 | Opportunity | Effort | Impact | Where / why |
 |--|:--:|:--:|--|
 |**Optimizer/tolerancer inner-loop evaluator** (design tools)|L|**High**|The dominant new cost is a full FreeCAD rebuild + extract + trace *per evaluation*. First mitigation is the persistent-worker + fingerprint-cache fast evaluator (`scripts/fast_eval.py`, planned); the next step is a **resident C incoherent trace-only evaluator** that skips subprocess spawn + JSON round-trip per eval (compute the merit scalar directly from the in-memory trace result). This is the single biggest win for making optimization/tolerancing interactive.|
-|**C-port the pulsed/time-domain + NLO tokens**|M|Med|`time_products`, `gdd_budget`, `nonlinear`, `saturable`, `tpa`, `kerr` all Python-route today (`cengine.detect_features`; see the Pulsed-optics follow-ups below). The arrival-record buffer + per-segment α hooks are the natural first ports; the SHG child-spawn needs the C children queue to learn stratum extension.|
+|**C-port the remaining NLO token**|S|Med|Only `nonlinear` (χ² SHG/Pockels) still Python-routes; the rest shipped in P7 (`cengine.PORTED`). The SHG child-spawn needs the C children queue to learn stratum extension.|
 |**C-port the remaining unported trace features**|M-L|Med|Per `cengine.py`, these force Python and could each be ported: **biaxial birefringence**, **explicit-realization particle clouds** (numba DDA/uniform-grid traversal removes the 200k cap too — Backlog (c)), **`--ray-differentials`** transport, **curved detectors**, **ABg `g≠2`**, **`rough_fresnel=macro`**, extra CLI detector faces. Each shrinks the "Python-routed" scene set.|
 |**Thermo-optic index term in the C index path**|S-M|Med|The planned dn/dT feature routes any `--temperature≠T0` run to Python (temperature deliberately kept out of `PORTED`). Replicating the `n(λ,T)` thermo-optic term in the C engine's `n_complex`/`medium_index` mirror keeps thermal scenes C-routable.|
 |**FFT-heavy post-process (PSF/MTF/image-sim)**|M|Med|`analysis_field`/`analysis_imaging`/`post_process` PSF/MTF/Zernike + the planned partial-coherence/image-sim convolution are pure numpy; large grids would benefit from FFTW/`cupy`/a C-CUDA FFT pass. Post-process only, engine-agnostic — a self-contained accel target.|
@@ -790,11 +803,11 @@ documented as an honest limit in docs/RAYTRACER.md §5.2.1/§6.11/§6.12):
 - **Raman / fluorescence-style inelastic transfer**: the SHG event is the
   template (stratum id extension + ledger transfer); a Stokes-shift bulk
   event would reuse the same plumbing with a gain spectrum row.
-- **C-engine port of the round's tokens**: `time_products`, `gdd_budget`,
-  `nonlinear`, `saturable`, `tpa`, `kerr` all Python-route today
-  (`cengine.detect_features`). The arrival-record buffer + per-segment
-  alpha hooks are the natural first ports; the SHG child spawn needs the
-  C children queue to learn stratum extension.
+- **C-engine port of the remaining NLO token**: `nonlinear` (χ² SHG/Pockels)
+  is the last Python-only token from the pulsed/NLO round —
+  `time_products`, `gdd_budget`, `ray_differentials`, `saturable`, `tpa`,
+  `kerr` shipped as C registrations in P7 (`cengine.PORTED`). The SHG
+  child-spawn needs the C children queue to learn stratum extension.
 - **Fringe-resolved timing**: the coherent population records its
   GEOMETRIC arrival power — interference within a time bin is not
   resolved (a coherent time-domain gather would need per-record complex
@@ -821,7 +834,7 @@ documented as an honest limit in docs/RAYTRACER.md §5.2.1/§6.11/§6.12):
   `grating_plate` with `orders=-1..1` leaks the truncated lamellar
   orders (~8% at 800 nm/600 g/mm) past the closure gate — the
   REFLECTIVE branch books the remainder into absorbed_surface exactly
-  (see UXNOTES_PULSED.md #8). The transmission branch needs the same
+  (see `demos/UXNOTES.md` #11). The transmission branch needs the same
   remainder credit.
 - **Dominant-cluster auto time window**: the auto window spans ALL
   arrivals incl. double-bounce ghost echoes ~60 ps out — a 100 fs pulse

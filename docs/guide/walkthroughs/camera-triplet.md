@@ -33,7 +33,7 @@ Opening the demo auto-populates both panes from configs baked into the
   (the pane's Backend combo itself only lists worker/full and does not
   reflect this — the actual routing is automatic, see
   [optimize.md](../optimize.md)).
-- **Tolerance**: 29 rows spanning every chained element (`L1`, `L2`,
+- **Tolerance**: 30 rows spanning every chained element (`L1`, `L2`,
   `Stop`, `L3`, `Sensor`) — despace, decenter, tilt (mirrors/lenses/
   apertures/detectors per the demo's `auto_tolerances()` conventions) —
   plus each lens's `R_front`/`R_back`/`ct` radius and thickness rows;

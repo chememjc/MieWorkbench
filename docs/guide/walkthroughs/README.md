@@ -21,5 +21,5 @@ Every page's optimize/tolerance step mirrors exactly what
 on [optimize.md](../optimize.md)/[tolerance.md](../tolerance.md) and on
 `camera-triplet.md` are real output from that exact smoke study, not a
 mockup. See [`../demo-gallery.md`](../demo-gallery.md) for the full
-38-demo gallery this sits inside, and `demos/README.md` for every demo's
+42-demo gallery this sits inside, and `demos/README.md` for every demo's
 prescription + citation.

@@ -4,7 +4,7 @@
 > `docs/RAYTRACER.md`; for the GUI architecture map see the top-level
 > `CLAUDE.md`.
 
-`mieworkbench/tests/` (405 tests as of this writing) runs under the **GUI
+`mieworkbench/tests/` (1219 `def test_` functions — ~1550 collected after parametrization; see `--collect-only -q` for the exact count) runs under the **GUI
 venv** interpreter (`env/bin/python`, PySide6 6.11 + vtk 9.6), never the
 optics env or system python3 — see CLAUDE.md's interpreter table. Almost
 everything runs **offscreen** (no real X server, no GPU): Qt's `offscreen`
@@ -35,7 +35,7 @@ it directly (`window._on_progress(...)`, `window._on_dry_run()`,
 the same `pytest` invocation, just a slower-to-construct fixture (one full
 `MainWindow` per test).
 
-Both (a) and (b) together: **~380 passed, 25 skipped in ~6 s** on this
+Both (a) and (b) together: **~1490 passed, 57 skipped in ~150 s** on this
 machine (the skips are `needs_gl` + `freecad`-marked tests, see below).
 Run this tier on every change to `mieworkbench/`; it's cheap enough to run
 before every commit.
@@ -247,54 +247,74 @@ touches rendering, the ray-preview pipeline, or session lifecycle:
    re-fade the currently loaded rays live, with no reload needed.
 5. The toolbar Extinction/dimming combo (if present) stays in sync with
    the View menu's checked state in both directions.
-6. Edit geometry: overlay rays grey out (stale) immediately; re-running
+6. Rays menu ▸ "Live ray preview…" opens the **Preview Configuration**
+   dialog; confirm all five section groups appear (Ray pattern, Trace
+   engine, Overlay display, Tracer-bead animation, Advanced) and that the
+   Advanced "Pattern spec" text field stays in sync with the Ray pattern
+   widget's Fan/Rings controls in BOTH directions (edit one, watch the
+   other update; an invalid typed spec shows an inline error and leaves
+   the widget at its last valid state).
+7. In the same dialog: with Trace engine on "Sequential (fast, no
+   reflections)" and Ray extinction Off, accept and launch — the preview
+   shows only the primary transmitted chain (no reflection/Fresnel
+   ghosts). Reopen, switch Trace engine to "Full trace (shows
+   reflections)" — Ray extinction auto-jumps to Logarithmic (dB). Reopen
+   again, explicitly set Ray extinction to Linear or Perceptual, then
+   flip the engine Sequential→Full again — the explicit choice is NOT
+   overridden this time. Launch on Full — reflection/ghost rays appear
+   that Sequential didn't show.
+8. Per-document persistence round-trip: accept the Preview Configuration
+   dialog with a non-default engine/pattern, then File ▸ Open the same
+   model again (or reload) — reopening the dialog shows the SAME
+   engine/pattern it was left in, not the QSettings/app default.
+9. Edit geometry: overlay rays grey out (stale) immediately; re-running
    the preview (or the sim) restores full color.
-7. Run a quick simulation (Simulation ▸ Run, `quick` preset) and confirm
-   the Results pane populates (lightbox galleries, per-element Power
-   tab).
-8. File ▸ Open a second model: confirm Results pane, console, stage
-   chips, ray overlay, AND run config all reset to the new model's state
-   (no stale rays/results bleeding across models).
-9. Scale bar updates to the new model's extent; face-indicator toggles
-   (View menu) show/hide the emit/detector red half-discs and +x
-   blue/green dots.
-10. View ▸ Tracer Bead Animation, then Play: beads ride the loaded rays,
+10. Run a quick simulation (Simulation ▸ Run, `quick` preset) and confirm
+    the Results pane populates (lightbox galleries, per-element Power
+    tab).
+11. File ▸ Open a second model: confirm Results pane, console, stage
+    chips, ray overlay, AND run config all reset to the new model's state
+    (no stale rays/results bleeding across models).
+12. Scale bar updates to the new model's extent; face-indicator toggles
+    (View menu) show/hide the emit/detector red half-discs and +x
+    blue/green dots.
+13. View ▸ Tracer Bead Animation, then Play: beads ride the loaded rays,
     visibly slower inside glass than in air/vacuum; Pause holds them in
     place, Step advances exactly one frame, Stop rewinds to the sources;
     the `t = ...` / path readout advances during Play and the animation
     loops at the last arrival instead of stopping dead.
-11. File ▸ Settings ▸ Defaults tab: change the bead speed and the
+14. File ▸ Settings ▸ Defaults tab: change the bead speed and the
     extinction (ray dimming) mode, then OK — the Animation toolbar and
     View menu update live to match, and both values survive an app
     restart.
-12. Position / Orientation ▸ Absolute: select an element; the world
+15. Position / Orientation ▸ Absolute: select an element; the world
     X/Y/Z and Rx/Ry/Rz fields show its live pose and follow it as it
     moves. Type a new position and **Set position** (then **Set
     orientation**) — the element jumps to exactly that pose. The
     **Relative to:** readout tracks the optical-center offset from the
     chosen reference.
-13. Snap-to-axis (open the `prism_spectrometer` demo): select the iris,
+16. Snap-to-axis (open the `prism_spectrometer` demo): select the iris,
     **Pick target face…**, click the Camera lens — the iris rotates onto
     the deviated-beam axis and centers on it. Drag along the axis in the
     3D view (Esc cancels; a click commits), or type an offset and **Apply
     offset**. A single **Undo** restores the iris to where it started
     (the validated pain case that used to need offline trigonometry).
-14. Optical train round-trip (open the `michelson_folded` demo): in the
+17. Optical train round-trip (open the `michelson_folded` demo): in the
     **Optical Train** dock, uncheck FoldA's and FoldB's fold boxes — the
     M1 arm re-collinearizes onto the straight michelson layout, both fold
     mirrors ghost in the 3D view and gain "(excluded)" badges in the
     outliner, and the ray preview straightens. Re-check both — the folded
     layout restores EXACTLY. One **Undo** per toggle.
-15. Chain ripple: still in michelson_folded, edit M1's Distance cell
+18. Chain ripple: still in michelson_folded, edit M1's Distance cell
     (e.g. `arm1 - fold_in - fold_up` → a plain number) — downstream
     stays consistent and ONE Undo restores. Drag M2 in the 3D view — the
     Screen follows rigidly and M2's chain fields re-derive to literals.
-16. Variables + sweep: in the **Variables** dock, tick `arm2`'s Sweep
+19. Variables + sweep: in the **Variables** dock, tick `arm2`'s Sweep
     box, then **Run Pipeline** — the pre-sweep summary dialog shows the
     run count and time estimate (Cancel aborts cleanly). Run it; when
     the sweep finishes the **Compare** dock populates (metric-vs-arm2
     plots, per-variant gallery, signed difference maps, scrub slider).
-17. Export: **File → Export FCStd…** writes a standalone copy in the
+20. Export: **File → Export FCStd…** writes a standalone copy in the
     CURRENT fold state; open it in plain FreeCAD — bodies, dim sheets,
     the miewb_vars sheet and the MieTrain property group are all
     visible/editable there.

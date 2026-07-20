@@ -145,5 +145,9 @@ ordering "off" mode uses.
   (dialog-free-setter idiom).
 - The readout shows the simulation clock (auto unit) and the
   vacuum-equivalent optical path c·t travelled so far.
+- The dialog's FPS field is a free 1–120 spin box (unlike the toolbar's
+  fixed 5/10/15/24/30 combo); an off-list value applies correctly to
+  playback but leaves the toolbar's FPS readout unmatched
+  (`setCurrentText` is a no-op on that non-editable combo).
 
 ![Animation toolbar](img/animation-1.png)

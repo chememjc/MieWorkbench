@@ -17,6 +17,8 @@ automatically. A library selector at the top switches every tab between
 the **system library** and the **project library** (disabled when no
 project root is set).
 
+Three registries with a GUI-picker combo elsewhere have **no tab here**: `qe_curve` → detector/detectors.miedet, `spectrum` → emission/emitters.miesrc, `diffuser` → diffuser/diffusers.miedif. Add/edit those rows by hand-editing the registry file directly (see [file-formats.md](file-formats.md)).
+
 ## Editing
 
 Cells are read-only until **Edit** is toggled on. Commit path: gather the

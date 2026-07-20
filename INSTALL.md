@@ -131,6 +131,16 @@ project needs. This machine uses ParaView 6.1.1
 (`ParaView-6.1.1-MPI-Linux-Python3.12-x86_64`). Extract it anywhere and
 point `MIEWB_PVPYTHON` (or Settings) at `<extracted>/bin/pvpython`.
 
+When invoking `pvpython` directly for `scripts/make_viz.py` (outside the
+GUI, which always adds this flag itself), pass
+`--force-offscreen-rendering` — see the module docstring:
+
+```bash
+/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython \
+    --force-offscreen-rendering scripts/make_viz.py \
+    --case-dir results/example/quick --model-json geometry/example/model.json
+```
+
 ---
 
 ## 4. The GUI virtualenv
@@ -180,7 +190,7 @@ no-op skip, not a failure, when prysm isn't installed.
 ### 4.2 Optional: the Optiland parity oracle (P4a)
 
 `mieworkbench/tests/test_optiland_oracle.py` is the **P4a parity oracle**
-(engine3.md §5 / §15 P4a): it cross-checks the MieWorkbench C ray-tracer
+(docs/archive/engine3.md §5 / §15 P4a): it cross-checks the MieWorkbench C ray-tracer
 against [Optiland](https://github.com/optiland/optiland) (MIT), an
 independent sequential ray tracer, on the shared `geometry/` scenes —
 best-focus position, per-ray landing across the pupil fan, and spot RMS
@@ -216,7 +226,7 @@ docstring.
 ### 4.3 Optional: the meent RCWA table generator (P6 grating tables only)
 
 `scripts/tools/gen_rcwa_table.py` generates v2 RCWA grating tables (complex
-per-order amplitudes over a `(lambda, theta, phi)` grid; engine3.md §7.5,
+per-order amplitudes over a `(lambda, theta, phi)` grid; docs/archive/engine3.md §7.5,
 docs/RAYTRACER.md §5.5/§7.5) using [meent](https://github.com/kc-ml2/meent)
 (MIT), a rigorous coupled-wave (RCWA) solver. Like the oracles above it is
 installed into the SAME `env/` GUI venv — never into `/home3/optics/env` —
@@ -319,8 +329,8 @@ given. See README.md §4 and §5.9 for the full format/CLI reference.
 ## 7. Verification
 
 ```bash
-# engine suite (~906 tests currently; grows over time — see the actual
-# count with --collect-only -q)
+# engine suite (~935 tests currently; see the actual count with
+# --collect-only -q)
 /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q
 
 # GUI suite, headless

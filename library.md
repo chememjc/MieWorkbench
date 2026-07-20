@@ -51,13 +51,13 @@ From the live library (exact counts): **847 materials** — by class: 728 glass,
 18 tabulated, 17 cauchy. **679 Schott+Ohara glasses were bulk-imported from Zemax AGF**
 (`scripts/tools/import_agf.py`, raw catalogs `library_data/agf/{schott,ohara}.agf`, 366+417 records;
 byte-preservation guardrail `scripts/tools/verify_miemat_preserved.py`); 758 rows carry TIE-19 dn/dT
-in the `thermo_*` columns · **18 n/k tables** · **38 coatings**
+in the `thermo_*` columns · **18 n/k tables** · **39 coatings**
 (TMM stacks: AR at 550/633/1064nm, V-coats, W-coats, HR dielectric; measured tables: protected mirrors,
 dichroic/laser elements, standard 45°-AOI) · **17 polarizers** (Glan variants, Polaroid sheets, wire-grids,
-circular types) · **56 filters** (Schott colored-glass series, interference bandpass) · **8 gratings**
+circular types) · **56 filters** (Schott colored-glass series, interference bandpass) · **9 gratings**
 (lamellar, Bragg/VPH, Dammann, echelle, ruled blazed) · **13 uniaxial crystals** (calcite, quartz, sapphire,
 LiNbO3, LiTaO3, YVO4, BBO isomers, KDP, ADP, rutile, TeO2, MgF2) · **1 detector QE curve** (hamamatsu_s1223)
-· **62 primitives** (8 LED monochromatic sources). Every entry is cited. The **`lamellar`** grating model now
+· **70 primitives** (8 LED monochromatic sources + 1 white-LED source). Every entry is cited. The **`lamellar`** grating model now
 has its first registry entry; the **`cauchy`** dispersion model is exercised by polymer/liquid/gas materials.
 
 Existing materials (sample): vacuum, air, bk7, fused_silica, sapphire_o/e, water, glass, polystyrene, latex,
@@ -259,7 +259,7 @@ Today: only `detector_plane` (planar, wavelength-independent). Missing types, ra
 
 # 6. Primitives / elements
 
-Current: 54 catalog elements. Missing element types, by build difficulty:
+Current: 70 catalog elements. Missing element types, by build difficulty:
 
 **Tier A — buildable now (catalog/wizard work only):**
 - **Toroidal lens** — `Torus` surface class already exists in `surfaces.py`; needs a builder.
@@ -315,8 +315,8 @@ promoted), emission sources (blackbody/solar/LED spectral forms, needs spectral-
 coherent gather on curved detectors (incoherent path DONE, §5 item 7).
 
 **Net library growth (landed):** materials 25→847 (168 after the first library-expansion round,
-then +679 AGF-imported Schott/Ohara glasses — see the AGF subsection in §1), coatings 23→38, filters 16→56, polarizers 5→17,
-gratings 3→8 (first `lamellar` entry), uniaxial crystals 3→13, n/k tables 5→18, detector QE curves
+then +679 AGF-imported Schott/Ohara glasses — see the AGF subsection in §1), coatings 23→39, filters 16→56, polarizers 5→17,
+gratings 3→9 (first `lamellar` entry), uniaxial crystals 3→13, n/k tables 5→18, detector QE curves
 (1 entry + infrastructure), LED presets (8), photometric lux mapping, spectrometer λ-profiles,
 biaxial crystals 0→4 (`birefringence/biaxial.mibiax`, new registry), scatter surfaces 0→3
 (`scatter/bsdf.miebsdf`, new registry), curved (sphere/cylinder) detector support (incoherent).

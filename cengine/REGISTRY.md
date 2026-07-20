@@ -1,6 +1,8 @@
 # REGISTRY.md — the P3 interaction registry (core-v3)
 
-Status: **binding spec** for the core-v3 round (engine3.md §4.2–4.4, §15 P3).
+Status: binding spec (SHIPPED — see `cengine/src/registry.c`/`registry.h`;
+this document is now the as-built architecture record, not a forward plan)
+for the core-v3 round (docs/archive/engine3.md §4.2–4.4, §15 P3).
 The goal: every physics feature becomes a self-contained registration instead
 of a branch in a hardcoded chain, and **no scene feature can ever route
 without an implementation** — the failure mode of the `PORTED` token set
@@ -11,8 +13,8 @@ structurally eliminated.
 
 ### 1.1 Surface interactions
 
-What happens when a ray meets a face. Today: `trace.c::process_ray`'s
-if-chain (mirroring `tracer.py:525-555` + `_optic_children`). Becomes:
+What happens when a ray meets a face. Was: `trace.c::process_ray`'s
+if-chain (mirroring `tracer.py:525-555` + `_optic_children`). Is now:
 
 ```c
 typedef struct {
@@ -35,8 +37,8 @@ typedef struct {
 
 ### 1.2 Volume propagators
 
-What happens to a ray BETWEEN hits. Today implicit (straight line, fp64 OPL
-accumulation, bulk absorption via the medium stack). Becomes dispatchable so
+What happens to a ray BETWEEN hits. Was implicit (straight line, fp64 OPL
+accumulation, bulk absorption via the medium stack). Is now dispatchable so
 GRIN / fluorescence / time-dependent media are fill-in work:
 
 ```c
@@ -125,6 +127,6 @@ per-case results byte-identical to one-shot invocations.
 
 ## 7. Gate for the P3 merge (unchanged from engine3 §15)
 
-Functional equivalence: all 34 demos, parity 1e-9/2%, every invariant,
+Functional equivalence: all 42 demos, parity 1e-9/2%, every invariant,
 closure everywhere, thread invariance, CPU and GPU builds agree; then
 core-v3 merges to master.

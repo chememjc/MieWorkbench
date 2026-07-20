@@ -27,8 +27,8 @@ below 1e-3; the train rebuild is gated against a pre-train baseline by
 `scripts/run_demo_equivalence.py` (placements ≤1 µm/0.01°, detected power
 within Monte-Carlo bounds — committed oracles in `demos/baselines/`).
 `demos/README.md` is the authoritative per-demo prescription + citation
-list; `demos/UXNOTES.md`/`UXNOTES_ROUND2.md` record the friction (and
-real bugs) found building these through the interface.
+list; `demos/UXNOTES.md` is the consolidated open-UX-friction list
+(per-round shakedown logs pruned into it 2026-07-19).
 [`demos/gallery/`](../../demos/gallery/) has representative detector
 renders (irradiance/PSF/Stokes/etc. — not 3D scene views, see
 [viewport-3d.md](viewport-3d.md)'s screenshot note) for eleven of the
@@ -44,8 +44,7 @@ imaging system:
   between two flats.
 - **`fs_shg_spectrogram`** — femtosecond SHG plus dispersion time
   products (a Mai Tai pulse, stretched then frequency-doubled).
-- **`quartz_rotator`** — gyrotropic polarization rotation through a
-  z-cut crystal, resolved via the full-anisotropy Berreman 4×4 solver.
+- **`quartz_rotator`** — gyrotropic polarization rotation through a z-cut crystal; the shipped scene traces the near-axis ρ·d isotropic rotation (`tracer._apply_optical_activity`, gated to the on-axis `pol_mode==0` path), using the same registry rotatory power ρ that the module-level Berreman 4×4 oracle (`raytracer.berreman.add_gyration`, validated by `test_berreman.py` ORACLE 3) reproduces off-scene.
 - **`speckle_mie_combo`** — coherent laser speckle formed by exact Mie
   scattering off a ground-glass diffuser.
 

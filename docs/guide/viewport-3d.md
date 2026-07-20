@@ -52,10 +52,8 @@ actor.
   +x face. Visual only, never traced — uses tessellation-time
   `normal_hint` (FreeCAD's `normalAt()`), **not** the physics contract's
   `orientation_outward`.
-- **Absorbing aperture stops** render **opaque near-black** instead of
-  the usual glassy-blue optic look: an iris/bladed-iris/pinhole/slit body
-  with `absorbance >= 0.5`, `material` not `air`, and no `mirror`
-  property (`widgets/vtkview.body_style`/`_ABSORBER_STYLE`). Sources and
+- Absorbing aperture stops render opaque near-black instead of the usual glassy-blue optic look: any **optic**-role body (not primitive-kind-gated — iris/bladed-iris/pinhole/slit are just the shipped primitives that trigger it by default) with `absorbance >= 0.5`, `material` not `air`, and no `mirror` property
+  (`widgets/vtkview.body_style`/`_ABSORBER_STYLE`). Sources and
   detectors never darken this way regardless of `absorbance`.
 - **Scale bar**: adaptive mm/µm bottom-right overlay, toggleable via
   `set_scale_bar_visible`.

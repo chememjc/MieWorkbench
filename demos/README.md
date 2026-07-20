@@ -1,11 +1,11 @@
 # MieWorkbench demo gallery
 
 Forty-two optical systems (eleven classic instruments, five
-single-physics benches, four analysis/scattering benches, four
+single-physics benches, five analysis/scattering benches, four
 physics-showcase benches, the telephoto pair, a folded periscope,
 seven pulsed-optics/time-domain benches, two optimize/tolerance
-showcase objectives, and four "beyond sequential codes" showcase
-benches),
+showcase objectives, four "beyond sequential codes" showcase
+benches, and the virtual-instrument bench),
 each a self-contained `.MieWB` workbench archive (double-click-open in
 the GUI, or run headlessly) plus the bare `.FCStd` scene. All are assembled as **optical trains** by
 `scripts/make_demos.py` (the GUI's own Project/chain op path): every
@@ -25,9 +25,9 @@ Every demo completes on the `quick` preset (1e5 rays, 512², 5λ) with the
 energy ledger closing below 1e-3, and the train rebuild is gated against
 the pre-train gallery by `scripts/run_demo_equivalence.py` (placements
 ≤1 µm / 0.01°, detected power within Monte-Carlo bounds — the committed
-oracles live in `demos/baselines/`). `demos/UXNOTES.md` and
-`demos/UXNOTES_ROUND2.md` record the friction found while building these
-through the interface (and the real bugs each exercise caught).
+oracles live in `demos/baselines/`). `demos/UXNOTES.md` is the consolidated
+open-UX-friction list (the per-round shakedown logs were verified and
+pruned into it 2026-07-19; the originals live in git history).
 
 ## Optimization & tolerancing
 
@@ -122,9 +122,10 @@ physically real": solids with real materials, one source, one screen.
 
 ### Analysis & scattering benches (design-usability round)
 
-Four demos exercising the exact-Mie particle clouds, ground-glass
-diffuser/speckle, coherent aperture diffraction, and the named
-imaging-analysis products (PSF/MTF/Strehl/Zernike/EE/spot/fans). All four
+Five demos exercising the exact-Mie particle clouds, ground-glass
+diffuser/speckle, coherent aperture diffraction, N-blade aperture-star
+diffraction, and the named imaging-analysis products
+(PSF/MTF/Strehl/Zernike/EE/spot/fans). All five
 route to the **C engine** on the quick preset and close the energy ledger
 (<1e-3). Several carry deliberate deviations from the original
 `demosystems.md §3` prescription so the physics is actually visible at the
@@ -241,7 +242,8 @@ plots in `gallery/telephoto_*_sweep.png`):
   constant at 41.4 / 41.5 / 41.5 µm across the zoom, detected power ≈ 3.3 mW
   throughout.
 
-Hard-won notes baked into these three (full log: `UXNOTES_ROUND3.md`):
+Hard-won notes baked into these three (from the design-usability-round
+shakedown, since consolidated into `UXNOTES.md`):
 - **Never anchor a source at the world origin** — emit directions choose
   the "toward the origin" hemisphere, which degenerates AT the origin
   (rays spray backwards; the telephoto detected 0 mW until Star moved to
@@ -260,10 +262,9 @@ contract, source-side SPM, the χ² SHG transfer, and the transverse
 Pockels cell. Every number below is measured from the shipped
 `var/evaluation/*.MieSim` run (quick preset unless noted); every run
 closes the energy ledger <1e-3. Time/NLO features route to the PYTHON
-engine by design (feature tokens). The shakedown log is
-`UXNOTES_PULSED.md` — it includes the two engine bugs these demos
-caught (the grating child polarization-frame leak and the absorbed-path
-tally bias).
+engine by design (feature tokens). The pulsed-round shakedown caught two real engine bugs through these
+demos (the grating child polarization-frame leak and the absorbed-path
+tally bias — both fixed); its still-open items live in `UXNOTES.md`.
 
 | Demo | System | What it shows | Verified numbers |
 |---|---|---|---|
@@ -366,21 +367,24 @@ circular eigenmodes have different indices, so a linear input should rotate by
 sin²(43.5°) = **0.475** of the parallel throughput. *Why sequential can't:*
 circular birefringence / optical rotation is a bulk polarization-transport
 effect; a scalar/geometric sequential tracer has no polarization state to
-rotate. *STATUS — HONEST LIMIT:* the gyration physics is implemented and
-validated at the MODULE level (`raytracer.berreman.add_gyration`;
-`test_berreman.py` ORACLE 3 reproduces 21.77°/mm), but it is **not wired into
-the scene tracer** — a `material=quartz` body routes through the uniaxial o/e
-double-refraction path (`tracer._birefringent_children`), which models LINEAR
-birefringence only and never calls `add_gyration`. So the scene as traced does
-NOT rotate the polarization, and the measured crossed-analyzer power is
-**0 W** (extinction floor) instead of 0.475. The demo ships as the ready bench
-for when scene-level gyrotropy lands (engine3 P9 seam); its rotation gate is
-therefore **documented, not asserted**. Cite: Kaminsky, *Rep. Prog. Phys.* 63,
+rotate. *STATUS:* scene-level gyration is wired into the tracer
+(`tracer._apply_optical_activity`): near-axis rays through a gyrotropic
+uniaxial body take the isotropic n_o path and the polarization Jones vector
+rotates by ρ·ds per segment, with ρ read from the same `materials.gyration()`
+datum the Berreman module oracle validates at 21.77°/mm (`test_berreman.py`
+ORACLE 3). The scene as traced DOES rotate the polarization: the measured
+crossed-analyzer throughput is **0.475** — sin²(43.5°) to 0.0% error — so the
+rotation gate is **ASSERTED** (`run_demo_equivalence.gate_quartz`). Gyrotropic
+media have no C-engine term, so `quartz_rotator` auto-routes to the Python
+engine (reason `gyration`, pinned by `test_routing_reasons`); off-axis
+gyration (elliptical eigenmodes away from the optic axis) stays a documented
+limit — there the exact o/e linear-birefringence split is kept and gyration
+neglected (engine3 P9 seam). Cite: Kaminsky, *Rep. Prog. Phys.* 63,
 1575 (2000) (α-quartz rotatory power — the registry row citation).
 
 ### Virtual instrument bench (P2.5)
 
-One demo exercising the virtual instrument layer (engine3.md §9): the
+One demo exercising the virtual instrument layer (docs/archive/engine3.md §9): the
 same 5 mW/633 nm collimated source split by a 50:50 plate beamsplitter
 onto two DIFFERENT instrument classes, so a bench comparison against
 real gear compares like-for-like from day one. Authored entirely through
@@ -415,7 +419,7 @@ telephoto verification sweeps
 
 ## Feature-coverage matrix
 
-The gallery + the 25 validation scenes as a *covering set* over every
+The gallery + the 33 validation scenes as a *covering set* over every
 shipped capability (absorbed from the retired `demosystems.md` working
 document, 2026-07-11). ✅ = exercised by a runnable demo/scene today;
 ⏳ = the capability exists but its demo waits on the named backlog item;

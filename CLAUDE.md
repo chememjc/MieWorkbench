@@ -24,15 +24,16 @@ FreeCAD worker · `mieworkbench/` the GUI package (`core/` logic, `panes/`
 dock widgets, `widgets/` VTK, `tests/`) · `opticalproperties/` property
 library · `primitives/` parametric element library · `basemodels/` test
 scenes · `demos/` 42 classic-system `.MieWB` galleries — benchmark set is
-11 scenes, 15 designs have committed baselines (coherent-diffraction
+11 scenes, 21 designs have committed baselines (coherent-diffraction
 characterization demos like `airy_singleslit`/`bladed_iris_star` are gated
 by their pattern tests, not the placement/power oracle) — incl.
 `fizeau_flats`/`fs_shg_spectrogram`/`quartz_rotator`/`speckle_mie_combo`
-(coherent ghost fringes / fs SHG+dispersion time products / gyrotropic
-Berreman rotation / coherent Mie speckle) — (built by
+(coherent ghost fringes / fs SHG+dispersion time products / asserted
+natural optical-activity rotation / coherent Mie speckle) — (built by
 `scripts/make_demos.py` through the Project/chain op path; `demos/README.md`
-has prescriptions+citations, `demos/UXNOTES.md` + `demos/UXNOTES_ROUND2.md`
-the shakedown logs; `demos/baselines/` committed placement+power oracles
+has prescriptions+citations, `demos/UXNOTES.md` the consolidated
+open-UX-friction list (per-round shakedown logs pruned into it 2026-07-19);
+`demos/baselines/` committed placement+power oracles
 for `scripts/run_demo_equivalence.py`) · `demos/library_tests/`
 nine library-validation template scenes + automated sweep runner
 (`scripts/make_library_tests.py`, `scripts/run_library_tests.py`) ·
@@ -93,7 +94,7 @@ python3 scripts/miewb_tool.py run X.MieWB -o X.MieSim    # unpack→pipeline→p
 
 Tests:
 ```bash
-/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q   # engine (~250; -m "not slow" for loops)
+/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q   # engine (~935; -m "not slow" for loops)
 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbench/tests -q          # GUI, fast
 MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbench/tests -q  # + FreeCAD integration
 ```
@@ -309,10 +310,14 @@ symmetric element's own axis allowed+reported) and 3-seed power
 ## Optical component library
 
 `opticalproperties/` uses self-describing extensions (content is still CSV):
-`materials.miemat` (168 rows), `nk/*.mienk` (18 tables), `coating/coatings.miecoat`
-(38), `polarizer/polarizers.miepol` (17), `filter/filters.miefilt` (56),
-`grating/gratings.miegrat` (8), `birefringence/uniaxial.miebrf` (13 uniaxial
-crystals), `detector/detectors.miedet` (detector QE curves, 1 entry: hamamatsu_s1223),
+`materials.miemat` (847 rows), `nk/*.mienk` (18 tables), `coating/coatings.miecoat`
+(39), `polarizer/polarizers.miepol` (17), `filter/filters.miefilt` (56),
+`grating/gratings.miegrat` (9), `birefringence/uniaxial.miebrf` (13 uniaxial
+crystals) + `birefringence/biaxial.mibiax` (4 biaxial),
+`nonlinear/nonlinear.mienlo` (14: chi2 tensors/processes, pockels, n2,
+saturable), `diffuser/diffusers.miedif` (4), `scatter/bsdf.miebsdf` (4),
+`instrument/instruments.mieinst` (3),
+`detector/detectors.miedet` (detector QE curves, 1 entry: hamamatsu_s1223),
 `emission/emitters.miesrc` (tabulated source emission spectra, 2 entries:
 led_white_2733k + sc_superk supercontinuum SPD; continuous kind only),
 `figure/figures.miefig` (P8: Zernike SURFACE figure-error sets — Noll
@@ -470,5 +475,13 @@ physics model + honest limits, schemas, CLI, 24-scene catalog + validation
 table, troubleshooting). `README.md`: workbench/GUI tour + scripts +
 formats. `INSTALL.md`: 22.04/24.04 setup from a clone + headless-server
 install. `CUSTOMIZE.md`: authoring new primitives and property entries.
-`future.md`: engine roadmap seams (exact uniaxial Fresnel, optical contact,
-RCWA, curved detectors, GRIN, fluorescence).
+`future.md`: engine roadmap seams — open items only (optical contact,
+curved detectors, GRIN, fluorescence, off-axis gyration, χ² C-port;
+landed items are pruned each docs pass). `CHANGELOG.md`: per-round
+changelog (c-engine round onward). `docs/README.md`: reader-facing doc
+map. `docs/archive/`: historical design ledgers
+(engine.md/engine2.md/engine3.md, UI_COORDINATE_PROPOSAL.md) — cited
+for provenance, not maintained.
+
+**Doc hygiene**: every round updates `CHANGELOG.md` (one per-round entry)
+and the affected docs BEFORE merging — doc drift is a bug.

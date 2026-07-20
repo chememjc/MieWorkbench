@@ -29,6 +29,8 @@ energy-closure audit outcome, and thumbnail galleries of `images/`,
   streak/cube products).
 - **Imaging** — `imaging/image_sim_*.png`, the `--image-sim`
   partial-coherence output.
+- **Images / Spectra / Plots / Viz** — one thumbnail-gallery tab each (the directories named above).
+- **Instrument** — the virtual-instrument layer's per-detector metrics table (Detector/Metric/Value: camera row/class/mode/seed/saturation/counts/SNR, power-meter reading, spectrometer resolution/floor) over an `instrument/*.png` gallery (camera counts images only — spectrometer PNGs live in Spectra); empty on a scene with no instrument-class detector.
 
 Every thumbnail/table supports right-click → **Save image as…** /
 **Export CSV…**, paired through the same `data/index.csv` convention the

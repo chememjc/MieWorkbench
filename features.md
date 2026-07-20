@@ -254,7 +254,11 @@ Organised by the shared taxonomy (A–S). Line-item ratings are consolidated in 
 - **A Ray-tracing core:** non-sequential, stratified Monte-Carlo, coherent **and** incoherent
   simultaneously (per gather key), reflection-generation cap (default 6, adjustable to ~200),
   scene-wide TLAS + mesh BLAS in the C engine (Python uses mesh BVH), exact analytic intersection
-  for canonical surfaces. No sequential mode.
+  for canonical surfaces. No sequential AUTHORING mode (no Lens-Data-Editor-style surface-by-surface
+  entry) — a bundled Optiland sequential evaluator drives the live ray-preview fast path and the
+  optimizer/paraxial-solver backends for rotationally-symmetric on-axis trains, selectable in the
+  Preview Configuration dialog; it is an interactive/evaluation aid, not a co-equal analysis engine
+  to the non-sequential MC tracer.
 - **B Physical optics:** the differentiator — a full coherent Huygens/Rayleigh–Sommerfeld gather
   with obliquity factor is the *default* engine; real interference + diffraction on every coherent
   run (double-slit pitch/visibility validated end-to-end). **PSF, FFT-MTF (+ MTF50),
@@ -281,7 +285,7 @@ Organised by the shared taxonomy (A–S). Line-item ratings are consolidated in 
   maps, spectrometer profiles, and a **space-invariant image-simulation** product. Curved detectors
   are incoherent-only; the image-sim is not yet field-varying.
 - **G Materials:** **847 materials** (Schott/Ohara AGF import — Sellmeier glasses + metals/polymers/
-  crystals), 38 TMM coatings, 56 filters, 8 gratings, **17 birefringent crystals (13 uniaxial +
+  crystals), 39 TMM coatings, 56 filters, 9 gratings, **17 birefringent crystals (13 uniaxial +
   4 biaxial)**; every row requires a cited reference. **dn/dT thermo-optic index now engine-hooked
   (Schott TIE-19, `--temperature`).** Still below the vendor thousands and no vendor-component
   catalog.
@@ -295,14 +299,17 @@ Organised by the shared taxonomy (A–S). Line-item ratings are consolidated in 
   **bulk-T dn/dT thermal** index (`--temperature`). **No glass substitution, multi-config
   optimization, compensator chains, fast-differential tolerancing, or operand library.**
   **Photometric units shipped (L1)**; multi-config is still CLI-sweep/Variables-dock only.
-- **N GUI/UX:** VTK 3D view, ~54-element parametric primitive library, ~20-level undo + macros,
+- **N GUI/UX:** VTK 3D view, ~70-element parametric primitive library, ~20-level undo + macros,
   wizards (thick-lens + waveplate solvers), 1 s-debounced live ray preview, **tracer-bead
   animation** (photons at c/n), results galleries, validation/problems pane. Linux desktop, steep
   authoring curve.
 - **O Coordinate system:** FreeCAD Placement (position + quaternion), absolute world pose + Euler,
   reference-point resolver, expression-bound placements, **snap-to-optical-axis + drag-along-axis**,
   **an optical-train chain model (anchored/chained, ports) and a 1-click fold operator** (insert
-  fold mirror + rigidly fold/unfold the downstream train). No sequential surface table.
+  fold mirror + rigidly fold/unfold the downstream train). No sequential surface-table AUTHORING
+  (elements are placed/chained in 3D, not entered as a Lens-Data-Editor row list); the Optiland
+  sequential evaluator (see above) consumes the same chain for preview/paraxial/optimizer use, not
+  authoring.
 - **P Data:** `.MieWB`/`.MieSim`/`.FCStd` ZIP formats, headless CLI (`miewb_tool`), case locking;
   text-based inner members. Scripting = external Python CLI **plus an in-app Python console bound to
   the live `Project` session** (`panes/py_console.py`) — real interactive scripting, though not a
@@ -432,7 +439,7 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 |C3|Mueller-matrix formalism|❌|⚠️|❌|❌|🟡claim|❌|**QUADOA** (unconfirmed) — Mueller claimed in marketing; Zemax via Jones-probe workaround|
 |C4|Uniaxial birefringence + walk-off|✅|✅|✅|✅|🟡unverif|❌|**MWB/Zemax/CODE V/OSLO** — validated walk-off physics|
 |C5|Biaxial birefringence|🟡biax|❌|❌|❌|❌|❌|**MWB** — the *only* biaxial two-sheet solver here (KTP/KTA/LBO/BiBO; no conical refraction). OSLO explicitly excludes biaxial|
-|C6|Optical activity / gyrotropy|❌|❌|❌|❌|❌|❌|*none* — universal gap|
+|C6|Optical activity / gyrotropy|🟡|❌|❌|❌|❌|❌|**MWB only, near-axis** — gyrotropic uniaxial ρ·d rotation on-axis (quartz rotator, asserted); off-axis/elliptical still open|
 |C7|TMM thin-film coatings|✅|✅|✅|✅31-layer|✅|⚠️presets|**Zemax** — largest catalog; MWB/CODE V/OSLO/QUADOA full TMM; 3DOptix 6 presets|
 |C8|Polarizers / retarders / waveplates|✅|✅|✅|✅|✅|🟡|**tie** (all but 3DOptix)|
 |C9|Grating diffraction efficiency|✅models|✅RCWA|🟡scalar|🟡scalar|❌scalar|🟡|**Zemax** — rigorous RCWA; **MWB** best *closed-form* (Kogelnik/Dammann/table); CODE V/OSLO scalar (RCWA→RSoft)|
@@ -658,7 +665,7 @@ block goes one way. Reflects the refreshed MWB column (post lowhanging/pulsed ro
 |C3 Mueller|Zemax|(workaround) vs MWB none|
 |C4 Birefringence+walk-off|tie|both validated uniaxial|
 |C5 Biaxial|**MWB**|MWB has a biaxial solver; Zemax has none|
-|C6 Optical activity|tie|both none|
+|C6 Optical activity|**MWB**|near-axis gyrotropic rotation shipped (quartz rotator); Zemax has none|
 |C7–C8 TMM/polarizers|Zemax|larger catalog|
 |C9 Grating efficiency|Zemax|RCWA rigorous > MWB closed-form|
 |D1–D10 Surfaces/CAD|Zemax|GRIN, Q-type, freeform, CAD-optical import|
@@ -1191,7 +1198,7 @@ No competitor here has *any* time-domain modeling, so these are moat-widening, n
   tables cover most practical cases. XL research; defer unless sub-wavelength gratings become a target.
 - **Mueller-matrix formalism (C3):** only QUADOA claims it (unconfirmed); Jones + Stokes maps cover
   MieWorkbench's needs. Defer.
-- **Optical activity / gyrotropy (C6):** *no package here has it.* Pursue only for a specific research need.
+- **Optical activity / gyrotropy (C6):** *MWB is the only package here with any* — near-axis gyrotropic rotation shipped (quartz rotator, asserted); off-axis/elliptical eigenmodes remain open, pursue only for a specific research need.
 - **Coating needle-synthesis (G5):** nobody here has true needle synthesis; users pair with Essential
   Macleod. Not worth chasing.
 - **Cloud compute (Q4):** conflicts with the data-locality/ITAR value proposition; keep optional.
@@ -1267,7 +1274,7 @@ Have" analysis-product item is now **done**, and optimization/tolerancing rise t
 ### 8.4 Not Really Important (defer or document as deliberate non-goals)
 18. **RCWA gratings** (§7.15) — Zemax-only; closed-form models suffice for most cases; XL research.
 19. **Mueller-matrix formalism** (§7.15) — only QUADOA claims it; Jones + Stokes cover the need.
-20. **Optical activity / conical refraction** (§7.15) — no package here has optical activity; conical
+20. **Optical activity / conical refraction** (§7.15) — MWB now ships near-axis natural optical activity (no other package here has any); conical
     refraction is a documented corner-case limit of a MieWorkbench-unique win.
 21. **Coating needle-synthesis** (§7.15) — nobody here has it; users pair with Essential Macleod.
 22. **Native cloud compute** (§7.15) — conflicts with the data-locality/ITAR value proposition.

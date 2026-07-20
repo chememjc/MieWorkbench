@@ -24,7 +24,7 @@ Chain: `L1 → D1 → Stop → D2 → L4 → Sensor`, symmetric about the stop.
   algorithm `local`, budget 40. Eval backend resolves to **sequential**
   (airspace-only variables, spot_rms-capable), same fast/noise-free path
   as camera_triplet.
-- **Tolerance**: **41 rows** — every chained element (`L1`, `D1`, `Stop`,
+- **Tolerance**: **42 rows** — every chained element (`L1`, `D1`, `Stop`,
   `D2`, `L4`, `Sensor`) despace/decenter/tilt, plus each lens/doublet's
   radii and (for the cemented doublets `D1`/`D2`) both `ct_crown`/
   `ct_flint` thickness rows; same `spot_rms:0:1` operand, 50 draws.
@@ -39,7 +39,7 @@ this as fast as camera_triplet's — expect a converged `air_front`/
 
 ## Run tolerance sensitivity
 
-Click **Run Tolerance Study**. At 41 rows this is the **largest** shipped
+Click **Run Tolerance Study**. At 42 rows this is the **largest** shipped
 tolerance table of the four showcase demos — exactly the case
 `common.shorten_variant`'s hash-shortening (landed in the variant-name-
 hashing round, after 15+ row studies previously hit the filesystem's
