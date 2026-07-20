@@ -70,6 +70,22 @@ and some packaging around it. Command-line users who only want the
 original engine pipeline can ignore this repo's GUI entirely and follow
 docs/RAYTRACER.md directly.
 
+## 1b. What this isn't
+
+This is a physics-first ray tracer capable of handling some fairly complicated
+physics including full Mie scattering, multiaxial birefringence and pulsed laser
+sources down to modern femtosecond lasers.  This is by no means an exhaustive list.
+It is capable of performing optical design and can look at real tollerances on optics
+to help determine real-world performance of optical systems.  It is not
+a commercial optical design studio nor is it as good as Zemax or other higher-end
+commercial packages for optical design.  If you need that, then use one of the tried
+and tested commercial packages.  Treat this program more as a 'virtual optical
+workbench' than anything else.  It was designed physics-first for output that is as
+close to testing something on a real optical bench as is possible.  The interface
+itself works for the way I think, but it may not be as intuitive for someone else.
+It is fully open-source so you are free to modify it however you would like to
+make it work best for you.  
+
 ---
 
 ## 2. Quick start
