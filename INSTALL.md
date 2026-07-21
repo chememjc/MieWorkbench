@@ -54,8 +54,8 @@ offscreen`) and for `miewb_tool.py`, which never touches Qt.
 ## 2. Clone the repo
 
 ```bash
-git clone <your-remote-url> raytracegui
-cd raytracegui
+git clone https://github.com/chememjc/MieWorkbench.git
+cd MieWorkbench
 ```
 
 `env/`, `var/`, `results/`, `geometry/`, `*.FCBak`, and `__pycache__/` are
