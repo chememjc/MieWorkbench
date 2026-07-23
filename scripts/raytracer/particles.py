@@ -141,7 +141,8 @@ class ParticleCloud:
     against the real solvent."""
 
     def __init__(self, spec, scene, threshold=1e6, seed=0,
-                 lam_list=(633e-9,), pol_scatter=True, host=None, sq=None):
+                 lam_list=(633e-9,), pol_scatter=True, host=None, sq=None,
+                 shape="sphere", aspect_ratio=1.0):
         # `sq` (samples-instruments round): inter-particle structure factor,
         # threaded straight into EnsembleTables. None (the CLI --particles
         # path) is byte-identical to the pre-S(q) engine. Accepted forms:
@@ -168,7 +169,15 @@ class ParticleCloud:
             gsd=spec["gsd"])
         rho_p = mat_p.density
         rho_h = self.host.density if self.host.density > 0 else 1.204
-        self.evaluator = MieEvaluator(mat_p, self.host)
+        # shape='spheroid' routes through the T-matrix evaluator
+        # (tmatrix.make_evaluator; orientation-averaged, volume-equivalent
+        # radius convention) — sphere is the byte-identical Mie path.
+        if shape == "sphere":
+            self.evaluator = MieEvaluator(mat_p, self.host)
+        else:
+            from .tmatrix import make_evaluator
+            self.evaluator = make_evaluator(mat_p, self.host, shape,
+                                            aspect_ratio)
         self.tau_resolved = None
         if spec.get("phi") is None:
             tau = spec.get("tau")
@@ -722,10 +731,6 @@ class BodyParticleMedium(ParticleCloud):
 
     def __init__(self, sample_name, row, body, scene, threshold=1e6,
                  seed=0, lam_list=(633e-9,), pol_scatter=True):
-        if row.get("shape", "sphere") != "sphere":
-            raise NotImplementedError(
-                "sample %r: shape=%s needs the T-matrix evaluator wiring "
-                "(lands later this round)" % (sample_name, row["shape"]))
         if body.bbox_m is None:
             raise ValueError(
                 "sample %r: body %s carries no bbox_m — re-extract the "
@@ -775,7 +780,9 @@ class BodyParticleMedium(ParticleCloud):
             sq = (row["sq_model"], row["sq_params"])
         super().__init__(spec, scene, threshold=threshold, seed=seed,
                          lam_list=lam_list, pol_scatter=pol_scatter,
-                         host=host, sq=sq)
+                         host=host, sq=sq,
+                         shape=row.get("shape", "sphere"),
+                         aspect_ratio=row.get("aspect_ratio", 1.0))
 
     # region hooks ------------------------------------------------------
     def segment_range(self, batch, seg_max):
