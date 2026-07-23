@@ -1,0 +1,13 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "RelayDet.RelayDet_pad.Face5": {
+   "peak_irradiance_W_m2": 1605.591645530262,
+   "power_seed_std_W": 2.9940062492276353e-05,
+   "profile_visibility": 0.9999809053217057,
+   "total_power_W": 0.016546168407338906
+  }
+ },
+ "seeds": 3
+}

@@ -1,0 +1,124 @@
+{
+ "bodies": {
+  "BS": {
+   "group": "BS",
+   "label": "BS",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.3826834323650898,
+     0.9238795325112867
+    ]
+   },
+   "primitive": "bs_plate"
+  },
+  "Backscatter": {
+   "group": "Backscatter",
+   "label": "Backscatter",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     30.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     -0.7071067811865475,
+     0.7071067811865476
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Cell": {
+   "group": "Cell",
+   "label": "Cell",
+   "placement": {
+    "pos_mm": [
+     16.24264068711929,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "sample_region"
+  },
+  "Forward": {
+   "group": "Forward",
+   "label": "Forward",
+   "placement": {
+    "pos_mm": [
+     34.24264068711929,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -30.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  }
+ },
+ "demo": "colloidal_crystal",
+ "sheets": {
+  "dim": {},
+  "dim_BS": {
+   "round_flag": "1",
+   "thickness": "=3 mm",
+   "wedge_deg": "=0 deg",
+   "width": "=24 mm"
+  },
+  "dim_Backscatter": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=20 mm"
+  },
+  "dim_Cell": {
+   "width": "=6 mm"
+  },
+  "dim_Forward": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=20 mm"
+  },
+  "dim_Laser": {
+   "diameter": "=4 mm",
+   "length": "=8 mm",
+   "round_flag": "1"
+  }
+ }
+}

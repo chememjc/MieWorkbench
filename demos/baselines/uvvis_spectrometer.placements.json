@@ -1,0 +1,210 @@
+{
+ "bodies": {
+  "Array": {
+   "group": "Array",
+   "label": "Array",
+   "placement": {
+    "pos_mm": [
+     9.042554726173762,
+     -57.770933460723384,
+     1.35e-14
+    ],
+    "quat": [
+     -5.652944424345675e-17,
+     -2.1198541591296278e-17,
+     -0.07066180530432159,
+     0.9975003304616666
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "CameraMirror": {
+   "group": "CameraMirror",
+   "label": "CameraMirror",
+   "placement": {
+    "pos_mm": [
+     -89.95882712805304,
+     -43.673898632307505,
+     8e-15
+    ],
+    "quat": [
+     -0.0,
+     9.969881303667294e-17,
+     0.9969881303667296,
+     -0.07755429006736506
+    ]
+   },
+   "primitive": "mirror_concave"
+  },
+  "Collimator": {
+   "group": "Collimator",
+   "label": "Collimator",
+   "placement": {
+    "pos_mm": [
+     -99.42877579668081,
+     10.673263023713844,
+     0.0
+    ],
+    "quat": [
+     0.6369330086949947,
+     0.7709191542793199,
+     -0.0,
+     6.123233995736766e-17
+    ]
+   },
+   "primitive": "mirror_concave"
+  },
+  "Cuvette": {
+   "group": "Cuvette",
+   "label": "Cuvette_cuvette_square",
+   "placement": {
+    "pos_mm": [
+     -204.18112138066047,
+     -44.72706273935814,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.2408463839427813,
+     0.9705632485014495
+    ]
+   },
+   "primitive": "cuvette_square"
+  },
+  "Cuvette_liquid": {
+   "group": "Cuvette",
+   "label": "Cuvette_cuvette_square_liquid",
+   "placement": {
+    "pos_mm": [
+     -204.18112138066047,
+     -44.72706273935814,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.2408463839427813,
+     0.9705632485014495
+    ]
+   },
+   "primitive": "cuvette_square"
+  },
+  "Lamp": {
+   "group": "Lamp",
+   "label": "Lamp",
+   "placement": {
+    "pos_mm": [
+     -209.48503761276072,
+     -47.532142524830135,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.2408463839427813,
+     0.9705632485014495
+    ]
+   },
+   "primitive": "tungsten_halogen"
+  },
+  "Slit": {
+   "group": "Slit",
+   "label": "Slit_slit",
+   "placement": {
+    "pos_mm": [
+     -187.82737966501807,
+     -36.078066734152806,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.2408463839427813,
+     0.9705632485014495
+    ]
+   },
+   "primitive": "slit"
+  },
+  "Slit_plug": {
+   "group": "Slit",
+   "label": "Slit_slit_plug",
+   "placement": {
+    "pos_mm": [
+     -187.82737966501807,
+     -36.078066734152806,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.2408463839427813,
+     0.9705632485014495
+    ]
+   },
+   "primitive": "slit"
+  },
+  "grating_plate": {
+   "group": "Grating",
+   "label": "Grating",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "grating_plate"
+  }
+ },
+ "demo": "uvvis_spectrometer",
+ "sheets": {
+  "dim": {},
+  "dim_Array": {
+   "height": "=0 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=30 mm"
+  },
+  "dim_CameraMirror": {
+   "R": "=200 mm",
+   "aperture": "=40 mm",
+   "ct": "=6 mm"
+  },
+  "dim_Collimator": {
+   "R": "=200 mm",
+   "aperture": "=40 mm",
+   "ct": "=6 mm"
+  },
+  "dim_Cuvette": {
+   "height": "=12 mm",
+   "path_length": "=10 mm",
+   "wall": "=1.25 mm",
+   "width": "=10 mm"
+  },
+  "dim_Grating": {
+   "round_flag": "0",
+   "thickness": "=3 mm",
+   "width": "=25 mm"
+  },
+  "dim_Lamp": {
+   "diameter": "=6 mm",
+   "length": "=8 mm",
+   "round_flag": "1"
+  },
+  "dim_Slit": {
+   "blackness": "1",
+   "height": "=20 mm",
+   "slit_height": "=8 mm",
+   "slit_width": "=0.3 mm",
+   "thickness": "=0.5 mm",
+   "width": "=20 mm"
+  }
+ }
+}

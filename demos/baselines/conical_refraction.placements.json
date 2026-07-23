@@ -1,0 +1,78 @@
+{
+ "bodies": {
+  "KTP": {
+   "group": "KTP",
+   "label": "KTP",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "window"
+  },
+  "Laser": {
+   "group": "Laser",
+   "label": "Laser",
+   "placement": {
+    "pos_mm": [
+     -10.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Screen": {
+   "group": "Screen",
+   "label": "Screen",
+   "placement": {
+    "pos_mm": [
+     23.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  }
+ },
+ "demo": "conical_refraction",
+ "sheets": {
+  "dim": {},
+  "dim_KTP": {
+   "round_flag": "1",
+   "thickness": "=20 mm",
+   "width": "=16 mm"
+  },
+  "dim_Laser": {
+   "diameter": "=0.1 mm",
+   "length": "=4 mm",
+   "round_flag": "1"
+  },
+  "dim_Screen": {
+   "height": "=6 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=6 mm"
+  }
+ }
+}

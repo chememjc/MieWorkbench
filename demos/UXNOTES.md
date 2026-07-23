@@ -90,3 +90,76 @@ originals.
   detector-detector solid overlap now classifies into the informational
   `validation.detector_overlap` list instead of the fatal
   `overlapping_solids`.
+
+## Discovered building the samples-instruments demo galleries (2026-07-23)
+
+Seven demos (`conical_refraction`, `colloidal_crystal`, `goniometer_bath`,
+`uvvis_spectrometer`, `insitec_sizer`, `imaging_bench`, `dls_goniometer`)
+were built; several hit real engine/scale limits that forced documented,
+physics-preserving substitutions (all in `scripts/make_demos.py` docstrings
++ `demos/README.md`):
+
+1. **Continuum particle scatter inside a GLASS cell diverges the C engine.**
+   A wide-angle continuum-scattered ray hitting a water/glass/air window
+   TIR-traps in the cell, and the C-engine continuum-sample pop accounting
+   then DIVERGES (closure blows to ~1e48–1e58; the trace itself prints
+   `pop accounting diverged; investigate`). Reproduced with `flow_cell`
+   (insitec), the decalin `vat_cylindrical`/`vial_cylindrical` bath
+   (goniometer), and `cuvette_square` (colloidal). The Python reference
+   engine does not diverge but runs away (multi-minute at a few thousand
+   rays). WORKAROUND in every case: put the sample in a bare
+   `sample_region` (air host) so wide-angle scatter escapes — an air region
+   has no refraction anyway, the sim-equivalent of the index-matching bath.
+   The intended cell/bath/vial primitives could not be showcased WITH an
+   active scattering sample. Worth an engine follow-up (the divergence is a
+   bug, not just a ray-budget cap).
+
+2. **Explicit paracrystal lattices are intractable at macroscopic scale.**
+   `colloidal_crystal_fcc` (mode=explicit) places a real jittered FCC
+   lattice; filling a millimetre-scale cell = ~1e12 sites and numpy tries
+   to allocate **136 TiB**. Added a demo-specific `colloidal_fcc_continuum`
+   row (mode=continuum, same paracrystal S(q) as a structure factor) so the
+   wavelength-selective Bragg backscatter survives. Even so the SHARP
+   single-bin (111) Bragg peak does not resolve above the λ⁻⁴ background at
+   the fixed 16-bin detector cube — the gate checks the tractable
+   wavelength-selective backscatter (blue/red reflectance > 1.8), not a
+   sharp Bragg line. A macroscopic coherent colloidal-crystal Bragg demo
+   needs either the explicit lattice made tractable or finer spectral cube
+   resolution.
+
+3. **`sample=` count controls: the row `count` column is ignored** (only
+   `phi`/`tau` set the explicit count) and `phi` is a MASS fraction vs the
+   HOST — so the same row gives wildly different counts in a water vs air
+   host, and a physical 100 nm concentration is astronomically many
+   spheres. A `tau=`-based row (optical-depth target) is host-independent
+   and far easier to tune to a sparse explicit realization.
+
+4. **DLS: 100 nm PSL is below the traced-speckle scatter floor, and the
+   resolvable geometry needs a water AMBIENT the extractor can't set.**
+   `run_dls` reconstructs a coherent speckle field per frame; 100 nm PSL
+   scatters ~9 orders too weakly for a discrete-ray gather (the detector
+   field comes out identically 0). The proven `test_dls.py` recipe is a
+   HANDFUL of LARGE (3 µm), well-separated spheres (a dense/small cloud
+   desynchronises the shared scatter RNG and g1 collapses in one frame) —
+   used here as `psl_dls_3um`. But a RESOLVABLE decay needs LARGE-angle
+   (large-q) detectors, and those need the scattered rays NOT to TIR at the
+   sample/air boundary — the test achieves this with
+   `model["ambient_material"] = "water"` (index-matched immersion), which
+   `extract_geometry` HARDCODES to `"air"` (no body property or simparam
+   exposes it). Forward small-angle detectors avoid the TIR but give a q so
+   small the decay (τ_c ~ seconds) never resolves in a sane frame budget.
+   `dls_goniometer` therefore ships as a DEMONSTRATOR (the builder + a
+   populated near-forward speckle field via `run_dls`), not a baseline
+   oracle; a full Γ-vs-D·q² gate would need a scene-settable ambient
+   material. Worth exposing `ambient_material` (e.g. a scene/source
+   property or a `--ambient` simparam).
+
+5. **The `tcd1304_array` diode-array saturates full-well across the band**
+   at ordinary lamp powers, so a `--reference-case` absorbance A=-log10(I/I0)
+   collapses to 0 (both sample and blank clip to 4095 counts) — and
+   reducing the lamp power did not de-saturate it in testing. The
+   `uvvis_spectrometer` gate instead forms A(λ) from the two Array
+   detectors' RAW spectral cubes (unsaturated dispersed power), which
+   recovers the KMnO₄ band cleanly (A peaks **3.24 at 528 nm** vs
+   Beer-Lambert 3.34). The diode-array instrument's electron/full-well/ADC
+   chain may need an auto-exposure or a documented linear-range note.

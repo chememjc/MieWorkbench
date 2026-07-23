@@ -1,0 +1,13 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "RingDet.RingDet_pad.Face2": {
+   "peak_irradiance_W_m2": 538802.6097588465,
+   "power_seed_std_W": 4.150132913444024e-06,
+   "profile_visibility": 0.9999999999204261,
+   "total_power_W": 0.004380652848295808
+  }
+ },
+ "seeds": 3
+}

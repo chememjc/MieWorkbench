@@ -2764,7 +2764,394 @@ def demo_speckle_mie_combo(d):
                          "phi=1.0e-2;median_um=2.0;gsd=1.5"}
 
 
+def demo_conical_refraction(d):
+    """Internal conical refraction (Hamilton's cone) in a biaxial KTP slab.
+    A collimated coherent=false 1064 nm pencil beam is launched exactly
+    along one of KTP's two optic axes: a single wave normal along an optic
+    axis fans into Hamilton's cone, so the 20 mm slab exit freezes a hollow
+    ring (the Poggendorff / conical-refraction ring) instead of a spot.
+
+    CRYSTAL FRAME: the optic-axis direction cosines (st, ct) at 1064 nm are
+    computed OFFLINE from the biaxial registry
+    (birefringence.biaxial_optic_axes on the ktp eps at 1064 nm ->
+    ax=[0.296997, 0, 0.954878]); the frame that maps the crystal optic axis
+    onto the global +x beam is crystal_axis (principal X) = [st, 0, -ct],
+    crystal_axis2 (principal Y) = [0, 1, 0] (so frame @ x_hat = the optic
+    axis exactly). This is the EXACT construction pinned by
+    scripts/raytracer/tests/test_biaxial.py _on_axis_ktp_model, scaled from
+    metres to the demo's mm.
+
+    Ring radius = 0.5 * t * tan(A), A = cone_half_angle(eps) = 0.02796 rad
+    at 1064 nm, t = 20 mm -> r_ring = 0.28 mm; the 6 mm detector 3 mm past
+    the exit resolves it. Biaxial birefringence is NOT in the C-engine
+    PORTED set, so this routes to the PYTHON reference engine (expected)."""
+    st, ct = 0.296997, 0.954878          # KTP optic axis @1064 nm
+    t = 20.0                             # slab thickness, mm
+    d.add("laser_collimated", "Laser", pos=(-10.0, 0.0, 0.0),
+          params={"diameter": 0.1, "length": 4.0},
+          props={"lambdac": 1064.0, "coherent": False, "power": 1.0})
+    d.chain("window", "KTP", "Laser", 10.0,
+            params={"width": 16.0, "thickness": t, "round_flag": 1},
+            props={"material": "ktp",
+                   "crystal_axis": "%.6f,0,%.6f" % (st, -ct),
+                   "crystal_axis2": "0,1,0"})
+    d.chain("detector_plane", "Screen", "KTP", 3.0,
+            params={"width": 6.0, "height": 6.0, "round_flag": 0})
+    d.expect("KTP", (0.0, 0.0, 0.0))
+    d.expect("Screen", (t + 3.0, 0.0, 0.0))
+    d.pin_detector("Screen", (1.0, 0.0, 0.0))
+    d.note("conical_refraction: 1064 nm pencil along a KTP optic axis fans "
+           "into Hamilton's cone; the slab exit freezes a hollow ring "
+           "(r=0.5*t*tan(A)=0.28 mm). Routes to PYTHON (biaxial unported).")
+    return {"preset": "quick", "conical": True, "conical_fan": 24}
+
+
+def demo_colloidal_crystal(d):
+    """Structural-colour Bragg reflection off an FCC colloidal crystal
+    (synthetic opal). A broadband beam (spanning the (111) Bragg wavelength)
+    crosses a sample volume carrying the FCC paracrystal structure factor
+    (sample=colloidal_fcc_continuum). A 50:50 plate BS picks the RETRO
+    return off to a backscatter detector; a forward detector records the
+    transmission.
+
+    BRAGG CONDITION: a_um=0.35, water host n=1.331, d_111 = a/sqrt(3) =
+    0.2021 um -> lambda_Bragg = 2*n*d_111 = 537.9 nm (matches the registry
+    row note 'near 537 nm in water host'), so the source spans it.
+
+    SAMPLE CHOICE (documented deviation): the intended
+    sample=colloidal_crystal_fcc is mode=explicit, which places a REAL
+    jittered PSL lattice — ~1e12 sites to fill a macroscopic cell (numpy
+    tried to allocate 136 TiB; see demos/UXNOTES.md 2026-07-23). The demo
+    ships sample=colloidal_fcc_continuum instead: the same FCC (111)
+    paracrystal enters as a powder-averaged CONTINUUM structure factor
+    S(q), so the wavelength-selective Bragg backscatter survives without the
+    intractable explicit lattice. The beads sit in a BARE `sample_region`
+    (air), not a glass cuvette, so wide-angle scatter escapes rather than
+    TIR-trapping (the same C-engine continuum-in-glass divergence the
+    goniometer/insitec demos document).
+
+    GATE geometry (why a BS): the Bragg return travels back along -x; on the
+    45 deg BS coated face a -x beam reflects to +y, while the immediate 50%
+    source reflection goes -y (to a dump), so the +y backscatter detector
+    carries NO BS-pedestal. The gate normalises R(lambda)=back/forward
+    per spectral bin (cancelling flat pedestals and the source SPD) and
+    asserts the Bragg-bin reflectance enhancement R(Bragg)/R(off) > 3
+    (single run, honest — see run_demo_equivalence gate_colloidal)."""
+    lam_bragg = 537.9
+    d.add("laser_collimated", "Laser", pos=(-30.0, 0.0, 0.0),
+          params={"diameter": 4.0, "length": 8.0},
+          props={"lambdac": lam_bragg, "lambdamin": 495.0, "lambdamax": 581.0,
+                 "coherent": False})
+    # plate BS (michelson-style: the cube's cemented gap bleeds power to
+    # seam loss; the plate's coated front face splits cleanly). tilt_ry=45
+    # -> +x reflects to -y (dump), -x return reflects to +y (detector).
+    d.chain("bs_plate", "BS", "Laser", 30.0, tilt_ry=45.0,
+            params={"width": 24.0, "thickness": 3.0, "round_flag": 1,
+                    "wedge_deg": 0.0})
+    d.chain("sample_region", "Cell", "BS", 12.0, port="transmit",
+            params={"width": 6.0},
+            props={("Cell", "sample"): "colloidal_fcc_continuum"})
+    d.chain("detector_plane", "Forward", "Cell", 12.0, port="transmit",
+            params={"width": 20.0, "round_flag": 1})
+    # backscatter detector: the +y return arm off the BS (anchored; the
+    # return reflect is not a forward chain port). Facing -y (rot_z(-90)
+    # maps local +x -> -y), so its recording normal opposes the +y arrival.
+    d.add("detector_plane", "Backscatter", pos=(0.0, 30.0, 0.0),
+          quat=rot_z(-90.0),
+          params={"width": 20.0, "round_flag": 1})
+    d.expect("BS", (0.0, 0.0, 0.0))
+    d.pin_detector("Backscatter", (0.0, 1.0, 0.0))
+    d.pin_detector("Forward", (1.0, 0.0, 0.0))
+    d.note("colloidal_crystal: FCC opal Bragg reflection; backscatter picked "
+           "off a 45 deg plate BS (+y return arm, no pedestal), gated on the "
+           "normalised reflectance enhancement R(Bragg)/R(off) > 3 (continuum paracrystal S(q); explicit lattice intractable, see UXNOTES)")
+    return {"preset": "quick", "nlambda": 15}
+
+
+def demo_goniometer_bath(d):
+    """Static-light-scattering (SLS) goniometer reading the fractal form
+    factor I(q) of a colloidal silica gel (sample=silica_gel_fractal) at
+    three arc angles (theta = 60/90/120 deg) around the scattering volume.
+    The arc is driven by anchored POSE EXPRESSIONS over miewb_vars
+    (theta_i, R): pos_x = cx + R*cos(theta), pos_y = R*sin(theta),
+    rot_rz = theta + 180 (face the centre) — the sweepable goniometer.
+
+    CELL CHOICE (documented deviation): the sample sits in a BARE
+    `sample_region` (air), NOT the intended decalin `vat_cylindrical` +
+    nested `vial_cylindrical`. A real cylindrical index-matching bath
+    exists precisely to let a ray leave the scattering centre RADIALLY and
+    cross the vat wall at normal incidence (no refraction); in this
+    non-sequential MC engine a bare air region ALREADY has no refraction, so
+    it is the sim-equivalent. Critically, wide-angle continuum-scattered
+    rays hitting the vat's glass/air boundary TIR back into the vat and the
+    C-engine continuum-sample pop accounting DIVERGES (closure ~1e58; see
+    demos/UXNOTES.md 2026-07-23) — the bare region lets wide-angle scatter
+    escape to the arc detectors, so the trace closes and the goniometer
+    physics (the whole point) is preserved.
+
+    GATE: I(q) ~ q^-df across the three angles (q = 4 pi n / lambda *
+    sin(theta/2)); a log-log fit gives slope -df = -2.1 +/-0.3 (Teixeira
+    fractal, registry df=2.1). The slope is invariant to the absolute
+    n/lambda scale (a constant log-q offset)."""
+    cx = 4.0                             # scattering-volume centre x
+    R = 60.0                             # goniometer arm radius, mm
+    thetas = {"Det60": 60.0, "Det90": 90.0, "Det120": 120.0}
+    d.variable("R", R, 45.0, 80.0, 5, comment="goniometer arm radius, mm")
+    for name, th in thetas.items():
+        d.variable(name.replace("Det", "theta"), th, comment="%s scattering "
+                   "angle, deg" % name)
+    d.add("laser_collimated", "Beam", pos=(-30.0, 0.0, 0.0),
+          params={"diameter": 1.0, "length": 8.0},
+          props={"lambdac": 632.8, "coherent": False})
+    d.chain("sample_region", "Sample", "Beam", 30.0,
+            params={"width": 2.0 * cx},
+            props={("Sample", "sample"): "silica_gel_fractal"})
+    for name, th in thetas.items():
+        tvar = name.replace("Det", "theta")
+        d.add("detector_plane", name, params={"width": 12.0, "round_flag": 1})
+        d.project.set_pose_expression(name, "pos_x",
+                                      "%g + R*cos(%s)" % (cx, tvar))
+        d.project.set_pose_expression(name, "pos_y", "R*sin(%s)" % tvar)
+        d.project.set_pose_expression(name, "rot_rz", "%s + 180" % tvar)
+        px = cx + R * math.cos(math.radians(th))
+        py = R * math.sin(math.radians(th))
+        d.expect(name, (px, py, 0.0))
+        d.pin_detector(name, (math.cos(math.radians(th)),
+                              math.sin(math.radians(th)), 0.0))
+    d.note("goniometer_bath: silica-gel fractal in a bare sample_region "
+           "(vat/vial glass traps wide-angle scatter -> C-engine divergence, "
+           "see UXNOTES); three arc detectors placed by anchored pose "
+           "expressions over a theta/R variable set (the sweepable "
+           "goniometer); I(q) fractal slope gate")
+    return {"preset": "quick"}
+
+
+def demo_uvvis_spectrometer(d):
+    """UV-Vis absorbance bench: a broadband lamp illuminates a square
+    cuvette of KMnO4 dye solution, a slit feeds a crossed Czerny-Turner
+    monochromator (600 g/mm), and a tcd1304 linear diode array reads the
+    dispersed spectrum. The equivalence gate re-runs a BLANK variant
+    (--suppress-body Cuvette_liquid) and post --reference-case to form the
+    absorbance A(lambda); it peaks at the 525 nm permanganate band.
+
+    Geometry copied from demo_czerny_turner (same crossed-CT fold math); the
+    lamp+cuvette are added ahead of the slit. The QTH spectrum is replaced
+    by a visible Gaussian envelope (lambdac 545, 430-660) so the quick-preset
+    strata sample the 450-620 measurement band — A = -log10(I/I0) cancels
+    the source SPD regardless."""
+    theta_i, theta_d = 6.127, 25.896
+    off = 34.0
+    u = unit(180.0 - theta_i)
+    v = unit(180.0 + theta_d)
+    C = (100.0 * u[0], 100.0 * u[1])
+    M2 = (100.0 * v[0], 100.0 * v[1])
+    w = unit(ang(u) + off)
+    S = (C[0] + 100.0 * w[0], C[1] + 100.0 * w[1])
+    m = unit(ang((-v[0], -v[1])) - off)
+    D = (M2[0] + 100.0 * m[0], M2[1] + 100.0 * m[1])
+
+    # lamp -> cuvette -> slit sits along +w, beam travels -w toward the slit.
+    # place the lamp back far enough for the 10 mm cuvette (d1+cuvette+d2).
+    d1, d2, pl, wall = 6.0, 6.0, 10.0, 1.25
+    front = d1 + (pl + 2 * wall) + d2      # lamp emit -> slit vertex
+    # band centred so ALL Gaussian strata stay inside the dye nk table
+    # [400,700] nm (a stray tail stratum outside it hard-errors the trace).
+    d.add("tungsten_halogen", "Lamp",
+          pos=(S[0] + front * w[0], S[1] + front * w[1], 0.0),
+          rot_deg=ang((-w[0], -w[1])),
+          params={"diameter": 6.0, "length": 8.0, "round_flag": 1},
+          props={"lambdac": 530.0, "lambdamin": 485.0, "lambdamax": 595.0,
+                 "spectrum": "", "coherent": False})
+    d.chain("cuvette_square", "Cuvette", "Lamp", d1,
+            params={"path_length": pl, "width": 10.0, "height": 12.0,
+                    "wall": wall},
+            props={("Cuvette_liquid", "material"): "dye_solution_kmno4"})
+    d.chain("slit", "Slit", "Cuvette", d2,
+            params={"width": 20.0, "height": 20.0, "slit_width": 0.3,
+                    "slit_height": 8.0})
+    dev_c, _, az_c = deviate_params((-w[0], -w[1]), (-u[0], -u[1]))
+    d.fold_mirror("Collimator", "Slit", 100.0, kind="mirror_concave",
+                  deviation=dev_c, azimuth=az_c,
+                  params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
+    dev_g, gaz_g, _ = deviate_params((-u[0], -u[1]), (v[0], v[1]))
+    d.chain("grating_plate", "Grating", "Collimator", 100.0,
+            fold=True, folded=True,
+            fold_deviation="%.10g" % dev_g, fold_azimuth=gaz_g,
+            tilt_ry="%.10g" % (-ang((-u[0], -u[1]))),
+            props={"material": "aluminum", "mirror": 1.0})
+    d.pin_grating("Grating", (-u[0], -u[1], 0.0), "600:0,1,0:orders=-1..1")
+    dev_m, _, az_m = deviate_params((v[0], v[1]), (m[0], m[1]))
+    d.fold_mirror("CameraMirror", "Grating", 100.0,
+                  kind="mirror_concave", deviation=dev_m, azimuth=az_m,
+                  params={"R": 200.0, "aperture": 40.0, "ct": 6.0})
+    d.chain("detector_plane", "Array", "CameraMirror", 100.0,
+            params={"width": 30.0}, props={"instrument": "tcd1304_array"})
+    d.expect("Slit", (S[0], S[1], 0.0))
+    d.expect("Collimator", (C[0], C[1], 0.0))
+    d.expect("Grating", (0.0, 0.0, 0.0))
+    d.expect("CameraMirror", (M2[0], M2[1], 0.0))
+    d.expect("Array", (D[0], D[1], 0.0))
+    d.pin_detector("Array", (m[0], m[1], 0.0))
+    d.note("uvvis_spectrometer: QTH+cuvette(KMnO4) ahead of a crossed CT "
+           "onto a tcd1304 diode array; blank+reference-case gate forms "
+           "A(lambda) peaking at 525 nm")
+    return {"preset": "quick", "nlambda": 15}
+
+
+def demo_insitec_sizer(d):
+    """ISO-13320 laser-diffraction particle sizer (Malvern Insitec-style):
+    a collimated 633 nm beam crosses a measurement volume of 10 um glass
+    beads (sample=glass_beads_10um_water, continuum forward-diffraction
+    regime) and a plano-convex Fourier lens focuses the diffraction onto a
+    ring detector at its back focal plane. The unscattered beam focuses to
+    the DC spot; a bead of diameter d diffracts to the Airy angle
+    theta = 1.22 lambda / d = 4.42 deg (10 um), mapping to r = f*theta on the
+    detector.
+
+    CELL CHOICE (documented deviation): the beads sit in a BARE `sample_region`
+    (air) measurement volume, NOT the glass `flow_cell` — a wide-angle
+    continuum-scattered ray hitting the flow-cell's water/glass/air windows
+    TIRs back into the cell, and the C-engine continuum-sample pop
+    accounting DIVERGES on those trapped rays (closure blows to ~1e48; see
+    demos/UXNOTES.md 2026-07-23). The bare region lets wide-angle scatter
+    escape, so the trace closes; the forward-diffraction ring (a geometric-
+    shadow feature at 1.22 lambda/d, independent of the host index) is
+    unchanged.
+
+    GATE (--ring-profile): the log-annular ring power peaks in the ring whose
+    radius contains r = f_eff*theta (+/-1 ring), and the ring integration
+    closes to the detector total."""
+    lam = 633.0
+    n = n_glass("bk7", lam)
+    R_front, ct, ap = 25.0, 5.0, 22.0
+    f_thin = R_front / (n - 1.0)
+    bfl = f_thin * (1.0 - (n - 1.0) * ct / (n * R_front))   # PCX back focal
+    d.add("laser_collimated", "Beam", pos=(-20.0, 0.0, 0.0),
+          params={"diameter": 10.0, "length": 8.0},
+          props={"lambdac": lam, "coherent": False})
+    d.chain("sample_region", "Cell", "Beam", 20.0,
+            params={"width": 6.0},
+            props={("Cell", "sample"): "glass_beads_10um_water"})
+    d.chain("lens_pcx", "Fourier", "Cell", 10.0,
+            params={"R_front": R_front, "ct": ct, "aperture": ap})
+    d.chain("detector_plane", "RingDet", "Fourier", "%.10g" % bfl,
+            params={"width": 20.0, "round_flag": 1})
+    # Beam(-20) + chain 20 -> region front x=0, exit at width=6; Fourier
+    # front vertex 10 past that = x=16; RingDet bfl past Fourier exit
+    d.expect("Fourier", (16.0, 0.0, 0.0))
+    d.expect("RingDet", (16.0 + ct + bfl, 0.0, 0.0))
+    d.pin_detector("RingDet", (1.0, 0.0, 0.0))
+    d.note("insitec_sizer: bare sample_region of 10 um beads + PCX Fourier "
+           "lens (flow_cell glass traps wide-angle scatter -> C-engine "
+           "divergence, see UXNOTES); ring-profile peak at r=f*1.22 lambda/d "
+           "(f_eff=BFL=%.2f mm, r=%.2f mm)"
+           % (bfl, bfl * 1.22 * lam * 1e-6 / 0.010))
+    return {"preset": "quick",
+            "ring_profile": "n=24:rmin_mm=0.05:rmax_mm=8"}
+
+
+def demo_imaging_bench(d):
+    """Finite-conjugate imaging bench: a backlit USAF-1951-style resolution
+    target (source_image, image=usaf_style_target) is relayed 1:1 by a BK7
+    double-convex singlet at 2f:2f conjugates onto a detector. The traced
+    end-to-end image (render_image_traced, auto-produced because the source
+    carries an `image` property) reproduces the target, INVERTED (a real
+    imaging bench rotates 180 deg).
+
+    m = -1 at so = si = 2f; f = R/(2(n-1)) for the symmetric DCX. The object
+    emits in an 8 deg half-cone (image_cone_deg) to fill the lens.
+
+    GATE: normalised cross-correlation of the traced image
+    (imaging/image_traced_RelayDet.png) against the registry target PNG,
+    center-cropped + resized + 180-rotated, NCC > 0.5 (see gate_imaging)."""
+    lam = 550.0
+    n = n_glass("bk7", lam)
+    R, ct, ap = 40.0, 6.0, 25.0
+    f = R / (2.0 * (n - 1.0))
+    conj = 2.0 * f                      # 2f:2f -> m = -1
+    cone = 8.0
+    d.add("source_image", "Target", pos=(-conj, 0.0, 0.0),
+          params={"width": 10.0, "height": 10.0, "length": 5.0},
+          props={"image": "usaf_style_target", "image_cone_deg": cone,
+                 "lambdac": lam, "coherent": False, "power": 20.0})
+    d.chain("lens_dcx", "Relay", "Target", conj,
+            params={"R_front": R, "R_back": R, "ct": ct, "aperture": ap})
+    d.chain("detector_plane", "RelayDet", "Relay", "%.10g" % (conj - ct),
+            params={"width": 14.0, "height": 14.0, "round_flag": 0})
+    d.expect("Relay", (0.0, 0.0, 0.0))
+    # object at -conj, lens at 0 (back vertex ct), image at +conj (m=-1)
+    d.expect("RelayDet", (conj, 0.0, 0.0))
+    d.pin_detector("RelayDet", (1.0, 0.0, 0.0))
+    d.note("imaging_bench: 1:1 (2f:2f) relay of a USAF target; the traced "
+           "image (NCC gate vs the registry PNG, 180-rotated) is the "
+           "inverted target. f=%.2f mm, conjugates=%.2f mm" % (f, conj))
+    return {"preset": "quick", "save_fields": True}
+
+
+def demo_dls_goniometer(d):
+    """Multi-angle dynamic light scattering (DLS): a coherent 632.8 nm beam
+    crosses a small water sample volume of a FEW sparse 3 um PSL spheres
+    (sample=psl_dls_3um) and three small FORWARD detectors at distinct
+    offsets read the coherent speckle at three scattering angles. The build
+    ships the .MieWB; the slow-marked equivalence gate runs run_dls.py
+    (60 frames) + dls_correlate and asserts the fitted decay rate Gamma
+    within a factor 2.5 of D*q^2 at each angle (Berne & Pecora) with a
+    physical coherence factor beta.
+
+    SAMPLE/GEOMETRY (matches scripts/raytracer/tests/test_dls.py, the proven
+    traced-speckle recipe — the task's 100 nm PSL does NOT work here): the
+    traced coherent-speckle correlator needs a HANDFUL of LARGE, WELL-
+    SEPARATED scatterers (3 um, tau=8e-4 -> ~10-30 spheres). A dense/small
+    cloud desynchronises the shared scatter RNG on nm-scale motion and g1
+    collapses in one frame; 100 nm PSL also scatters ~9 orders too weakly
+    for a discrete-ray coherent gather (the field comes out identically 0).
+    The detectors are FORWARD, offset above the direct beam (normal -x),
+    catching forward-scattered speckle — the geometry run_dls's forward
+    field gather resolves (a 60/90/120 deg goniometer ARC reads no field).
+    The sample sits in a water sample_region (host = solvent); forward
+    scatter exits near-normal so it is not TIR-trapped.
+
+    dt is sized for a resolvable decay: D = kT/(6 pi eta r) for r=1.5 um
+    (~1.6e-13 m^2/s), q ~ few e6 /m at these small forward angles ->
+    Gamma ~ 10-40 /s, tau_c ~ 30-100 ms; dt=8 ms * 60 frames ~ 5-15 tau_c."""
+    cx = 0.5                             # sample-volume centre x, mm
+    xd = 15.0                            # forward detector plane x, mm
+    yoff = {"DlsA": 1.3, "DlsB": 2.3, "DlsC": 3.3}   # y offsets -> 3 angles
+    # water host (the row's solvent): the 3 um forward-scatter lobe is
+    # confined to a narrow near-forward cone (<~12 deg), so the three small
+    # detectors sit at distinct small y offsets far enough (xd=15) that the
+    # cone spans real space; each records a distinct scattering angle
+    # theta = atan(y/L), L = xd - cx (5.0/8.8/12.4 deg -> distinct q).
+    d.add("laser_collimated", "Beam", pos=(-25.0, 0.0, 0.0),
+          params={"diameter": 0.2, "length": 8.0},
+          props={"lambdac": 632.8, "coherent": True})
+    d.chain("sample_region", "Cell", "Beam", 25.0,
+            params={"width": 2.0 * cx},
+            props={("Cell", "material"): "water",
+                   ("Cell", "sample"): "psl_dls_3um"})
+    for name, y in yoff.items():
+        # forward detector at (xd, y): normal -x (rot_z(180)); catches
+        # near-forward speckle above the Ø0.2 direct beam.
+        d.add("detector_plane", name, pos=(xd, y, 0.0), quat=rot_z(180.0),
+              params={"width": 0.8, "round_flag": 1})
+        d.expect(name, (xd, y, 0.0))
+        th = math.atan2(y, xd - cx)
+        d.pin_detector(name, (math.cos(th), math.sin(th), 0.0))
+    d.note("dls_goniometer: sparse 3 um PSL (100 nm too weak) in a water "
+           "sample_region + 3 forward offset detectors (an arc reads no "
+           "field); slow gate runs run_dls + dls_correlate, Gamma vs D q^2 "
+           "within 2.5x")
+    return {"preset": "quick"}
+
+
 DEMOS = {
+    "conical_refraction": demo_conical_refraction,
+    "colloidal_crystal": demo_colloidal_crystal,
+    "goniometer_bath": demo_goniometer_bath,
+    "uvvis_spectrometer": demo_uvvis_spectrometer,
+    "insitec_sizer": demo_insitec_sizer,
+    "imaging_bench": demo_imaging_bench,
+    "dls_goniometer": demo_dls_goniometer,
     "fizeau_flats": demo_fizeau_flats,
     "fs_shg_spectrogram": demo_fs_shg_spectrogram,
     "quartz_rotator": demo_quartz_rotator,

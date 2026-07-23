@@ -1,0 +1,79 @@
+{
+ "bodies": {
+  "Relay": {
+   "group": "Relay",
+   "label": "Relay",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_dcx"
+  },
+  "RelayDet": {
+   "group": "RelayDet",
+   "label": "RelayDet",
+   "placement": {
+    "pos_mm": [
+     77.14228152,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Target": {
+   "group": "Target",
+   "label": "Target",
+   "placement": {
+    "pos_mm": [
+     -77.14228151948747,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "source_image"
+  }
+ },
+ "demo": "imaging_bench",
+ "sheets": {
+  "dim": {},
+  "dim_Relay": {
+   "R_back": "=40 mm",
+   "R_front": "=40 mm",
+   "aperture": "=25 mm",
+   "ct": "=6 mm"
+  },
+  "dim_RelayDet": {
+   "height": "=14 mm",
+   "round_flag": "0",
+   "thickness": "=1 mm",
+   "width": "=14 mm"
+  },
+  "dim_Target": {
+   "height": "=10 mm",
+   "length": "=5 mm",
+   "width": "=10 mm"
+  }
+ }
+}

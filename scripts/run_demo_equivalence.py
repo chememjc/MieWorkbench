@@ -70,6 +70,9 @@ DEMO_NAMES = [
     # WP7 beyond-sequential showcase demos
     "fizeau_flats", "fs_shg_spectrogram", "quartz_rotator",
     "speckle_mie_combo",
+    # samples-instruments round demos (placement + power + bespoke physics)
+    "conical_refraction", "colloidal_crystal", "goniometer_bath",
+    "uvvis_spectrometer", "insitec_sizer", "imaging_bench",
 ]
 FRINGE_DEMOS = {"michelson"}
 # WP7 demos with a bespoke physics gate (implemented in wp7_gates.py-style
@@ -575,11 +578,334 @@ def gate_speckle(name, case_dir, report, workdir, seeds):
     return fail, notes
 
 
+# ---------------------------------------------------------------------------
+# samples-instruments round bespoke gates.  Same (name, case_dir, report) ->
+# (failures, notes) contract as the WP7 gates; run under the GUI venv.
+# ---------------------------------------------------------------------------
+def _named_cube(case_dir, label_sub):
+    """(image[H,W], pixel_mm, attrs, cube[bins,H,W]) for the detector whose
+    label CONTAINS label_sub. None if not found."""
+    import glob as _glob
+
+    import h5py
+    import numpy as np
+    for f in sorted(_glob.glob(str(Path(case_dir) / "detectors" / "*.h5"))):
+        with h5py.File(f, "r") as h:
+            if label_sub not in str(h.attrs.get("label", "")):
+                continue
+            cube = h["spectral_cube_mean"][...]
+            attrs = dict(h.attrs)
+        return cube.sum(axis=0), float(attrs["pixel_m"]) * 1e3, attrs, cube
+    return None
+
+
+# KTP internal conical-refraction cone half-angle A (full opening) at 1064 nm,
+# from birefringence.cone_half_angle on the biaxial ktp eps (see
+# demo_conical_refraction); the exit-face ring radius is 0.5 * t * tan(A).
+_CONICAL_A_RAD = 0.0279611186796979
+_CONICAL_T_M = 0.020
+
+
+def gate_conical(name, case_dir, report):
+    """Internal conical refraction: about its own power centroid the detected
+    footprint is a hollow RING of radius 0.5*t*tan(A) (within 10%) that is
+    radially TIGHT (std_r < 0.35*mean_r) — a ring, not a disc."""
+    import numpy as np
+    got = _named_cube(case_dir, "Screen")
+    if got is None:
+        return ["conical: no Screen detector"], []
+    img, pix_mm, attrs, cube = got
+    tot = float(img.sum())
+    if tot <= 0:
+        return ["conical: zero detected power"], []
+    pix = float(attrs["pixel_m"])
+    H, W = img.shape
+    xs = float(attrs["x_lo"]) + (np.arange(W) + 0.5) * pix
+    ys = float(attrs["y_lo"]) + (np.arange(H) + 0.5) * pix
+    X, Y = np.meshgrid(xs, ys)
+    cx = float((img * X).sum() / tot)
+    cy = float((img * Y).sum() / tot)
+    R = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+    mean_r = float((img * R).sum() / tot)
+    std_r = float(np.sqrt((img * (R - mean_r) ** 2).sum() / tot))
+    r_exp = 0.5 * _CONICAL_T_M * math.tan(_CONICAL_A_RAD)
+    fail, notes = [], []
+    rel = abs(mean_r - r_exp) / r_exp
+    if rel > 0.10:
+        fail.append("conical: ring radius %.4g mm vs %.4g mm (%.0f%% > 10%%)"
+                    % (mean_r * 1e3, r_exp * 1e3, 100 * rel))
+    if std_r >= 0.35 * mean_r:
+        fail.append("conical: std_r/mean_r=%.3f >= 0.35 (a disc, not a ring)"
+                    % (std_r / mean_r if mean_r else 0))
+    notes.append("conical: ring r=%.4g mm vs %.4g mm (%.0f%%), std/mean=%.3f"
+                 % (mean_r * 1e3, r_exp * 1e3, 100 * rel, std_r / mean_r))
+    return fail, notes
+
+
+def gate_insitec(name, case_dir, report):
+    """Laser-diffraction sizer: the scattered forward-diffraction lobe (rings
+    outside the DC focal spot) has its first-minimum (half-power outer edge)
+    at r = f_eff*1.22*lambda/d within +/-1 log-ring, and the ring integration
+    closes."""
+    import csv as _csv
+    import glob as _glob
+    f = _glob.glob(str(Path(case_dir) / "analysis" / "rings_*.csv"))
+    if not f:
+        return ["insitec: no ring-profile CSV"], []
+    rows = list(_csv.DictReader([ln for ln in open(f[0]) if not
+                                 ln.startswith("#")]))
+    if not rows:
+        return ["insitec: empty ring CSV"], []
+    bfl, lam_mm, d_mm = 45.24, 633e-6, 0.010
+    r_exp = bfl * 1.22 * lam_mm / d_mm            # first-null radius, mm
+    def mid(x):
+        return 0.5 * (float(x["r_inner_mm"]) + float(x["r_outer_mm"]))
+    scat = [r for r in rows if mid(r) > 0.8]      # exclude the DC focal spot
+    if not scat:
+        return ["insitec: no scattered rings past the DC spot"], []
+    pk = max(scat, key=lambda r: float(r["power_W"]))
+    pk_i = scat.index(pk)
+    p_pk = float(pk["power_W"])
+    # outer half-power radius of the lobe (first dark ring)
+    r_half = None
+    for r in scat[pk_i + 1:]:
+        if float(r["power_W"]) <= 0.5 * p_pk:
+            r_half = mid(r)
+            break
+    fail, notes = [], []
+    if r_half is None:
+        fail.append("insitec: lobe never falls to half-power (no first null)")
+    else:
+        # +/-1 ring: the log-ring width near r_exp (~0.7 mm at 3.5 mm)
+        ring_w = float(pk["r_outer_mm"]) - float(pk["r_inner_mm"])
+        tol = max(0.9, 1.5 * ring_w)
+        if abs(r_half - r_exp) > tol:
+            fail.append("insitec: first-null r=%.3f mm vs r_exp=%.3f mm "
+                        "(|d|=%.3f > %.3f)" % (r_half, r_exp,
+                                               abs(r_half - r_exp), tol))
+        else:
+            notes.append("insitec: lobe first-null r=%.3f mm vs %.3f mm "
+                         "(tol %.2f)" % (r_half, r_exp, tol))
+    det = list((report.get("detectors") or {}).values())
+    rings = (det[0].get("rings") if det else None) or {}
+    resid = abs(float(rings.get("closure_residual_W", 1.0)))
+    tot = abs(float(rings.get("total_power_W", 0.0)))
+    if tot > 0 and resid > 1e-3 * tot:
+        fail.append("insitec: ring closure residual %.3g of total %.3g"
+                    % (resid, tot))
+    return fail, notes
+
+
+def gate_goniometer(name, case_dir, report):
+    """Static light scattering: the three arc detectors' power vs q follows a
+    fractal power law I(q) ~ q^-df; the log-log slope is -df = -2.1 +/-0.3
+    (registry df=2.1). Slope is invariant to the n/lambda scale."""
+    import numpy as np
+    n, lam = 1.475, 632.8e-9
+    pts = []
+    for label, dd in (report.get("detectors") or {}).items():
+        m = re.search(r"Det(\d+)", label)
+        p = float(dd.get("total_power_W") or 0.0)
+        if m and p > 0:
+            th = float(m.group(1))
+            q = 4 * math.pi * n / lam * math.sin(math.radians(th) / 2)
+            pts.append((q, p, th))
+    if len(pts) < 3:
+        return ["goniometer: only %d detectors with power (need 3)"
+                % len(pts)], []
+    xs = np.log([q for q, _, _ in pts])
+    ys = np.log([p for _, p, _ in pts])
+    slope = float(np.polyfit(xs, ys, 1)[0])
+    if abs(slope - (-2.1)) > 0.3:
+        return (["goniometer: I(q) slope %.3f vs -2.1 (|d|=%.2f > 0.3)"
+                 % (slope, abs(slope + 2.1))], [])
+    return ([], ["goniometer: I(q) fractal slope %.3f (target -2.1 +/-0.3)"
+                 % slope])
+
+
+def gate_colloidal(name, case_dir, report):
+    """Colloidal-crystal structural colour: the backscatter/forward
+    reflectance R(lambda) is WAVELENGTH-SELECTIVE — enhanced in the
+    blue-green (Bragg) region vs the red (R(blue)/R(red) > 1.8). NOTE: the
+    sharp coherent (111) Bragg peak needs the explicit lattice, intractable
+    at macroscopic scale (see demo docstring / UXNOTES); this gates the
+    tractable continuum-paracrystal structural-scattering signature."""
+    import numpy as np
+    fwd = _named_cube(case_dir, "Forward")
+    bck = _named_cube(case_dir, "Backscatter")
+    if fwd is None or bck is None:
+        return ["colloidal: missing Forward/Backscatter detector"], []
+    def spectrum(got):
+        img, pix, attrs, cube = got
+        lo = float(attrs["lam_lo_m"]) * 1e9
+        hi = float(attrs["lam_hi_m"]) * 1e9
+        b = cube.shape[0]
+        lam = lo + (np.arange(b) + 0.5) * (hi - lo) / b
+        return lam, cube.reshape(b, -1).sum(axis=1)
+    lam, fw = spectrum(fwd)
+    _, bk = spectrum(bck)
+    m = fw > fw.max() * 0.05
+    if m.sum() < 4:
+        return ["colloidal: too few populated spectral bins"], []
+    R = np.where(m, bk / np.maximum(fw, 1e-30), np.nan)
+    lam_m = lam[m]
+    R_m = R[m]
+    mid_l = 0.5 * (lam_m.min() + lam_m.max())
+    blue = np.nanmean(R_m[lam_m <= mid_l])
+    red = np.nanmean(R_m[lam_m > mid_l])
+    ratio = blue / red if red > 0 else 0.0
+    if ratio < 1.8:
+        return (["colloidal: reflectance blue/red = %.2f < 1.8 (not "
+                 "wavelength-selective)" % ratio], [])
+    return ([], ["colloidal: wavelength-selective backscatter blue/red = "
+                 "%.2f (structural colour; sharp Bragg peak intractable, "
+                 "see docstring)" % ratio])
+
+
+def _ncc_img(a, b):
+    import numpy as np
+    a = a - a.mean()
+    b = b - b.mean()
+    den = math.sqrt(float((a * a).sum()) * float((b * b).sum()))
+    return float((a * b).sum() / den) if den > 0 else 0.0
+
+
+def gate_imaging(name, case_dir, report):
+    """Finite-conjugate imaging: the traced end-to-end image
+    (imaging/image_traced_*.png) reproduces the USAF target PNG, INVERTED
+    (a real bench rotates 180 deg): NCC(traced, target_rot180) > 0.5 after a
+    center-crop + resize (robust to magnification)."""
+    import glob as _glob
+
+    import numpy as np
+    from PIL import Image
+    from scipy.ndimage import gaussian_filter
+    pngs = _glob.glob(str(Path(case_dir) / "imaging" / "image_traced_*.png"))
+    pngs = [p for p in pngs if "_vs_sim" not in p]
+    if not pngs:
+        return ["imaging: no traced image PNG"], []
+    tgt_path = REPO / "opticalproperties" / "image" / "usaf_style_target.png"
+
+    def load_gray(p, size=32, blur=4.0):
+        im = np.asarray(Image.open(p).convert("L"), dtype=np.float64)
+        # crop to the bright CONTENT bounding box (normalises magnification:
+        # the traced image is ~60% of the detector with a black border, the
+        # target PNG fills its frame — a center-crop would leave them at
+        # different scales and tank the NCC).
+        thr = im.max() * 0.15
+        ys, xs = np.where(im > thr)
+        if len(ys) > 20:
+            im = im[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+        h, w = im.shape
+        s = max(h, w)                      # square-pad to keep aspect
+        pad = np.zeros((s, s), dtype=np.float64)
+        pad[(s - h) // 2:(s - h) // 2 + h, (s - w) // 2:(s - w) // 2 + w] = im
+        out = np.asarray(Image.fromarray(pad).resize((size, size)),
+                         dtype=np.float64)
+        # match the imaging system's finite resolution: the fast singlet
+        # blurs out the target's fine bar groups, so compare BOTH at that
+        # common (blurred) resolution (a sharp-vs-blurred NCC is unfairly low).
+        return gaussian_filter(out, blur)
+    traced = load_gray(pngs[0])
+    target = load_gray(str(tgt_path))
+    # a real 1:1 relay INVERTS (180 deg); the detector-frame basis (xhat/yhat)
+    # can additionally flip one axis, so accept any of the dihedral
+    # orientations (all are "the target imaged", just the recorder's handedness)
+    orients = {"direct": target, "rotated_180": target[::-1, ::-1],
+               "flip_v": target[::-1, :], "flip_h": target[:, ::-1]}
+    scored = {k: _ncc_img(traced, v) for k, v in orients.items()}
+    orient = max(scored, key=scored.get)
+    best = scored[orient]
+    if best <= 0.5:
+        return (["imaging: traced-vs-target NCC %.3f <= 0.5 (best %s)"
+                 % (best, orient)], [])
+    return ([], ["imaging: traced-vs-target NCC %.3f (%s)" % (best, orient)])
+
+
+def gate_uvvis(name, sample_case, report, workdir, seeds, stem, rundir):
+    """UV-Vis absorbance: run a BLANK variant (the cuvette dye liquid
+    suppressed) and form A(lambda) = -log10(P_sample/P_blank) directly from
+    the two Array detectors' RAW spectral cubes (the tcd1304 diode-array
+    readout SATURATES at full-well across the band, collapsing the
+    instrument A to 0 — the raw dispersed-power cube is the honest,
+    unsaturated observable, and its lambda strata already separate the
+    spectrum). Assert A peaks at 525 +/-15 nm with a peak within 30% of the
+    Beer-Lambert prediction (alpha=769/m, 10 mm path -> A=3.34)."""
+    import glob as _glob
+
+    import numpy as np
+    mjs = _glob.glob(str(rundir / "**" / "model.json"), recursive=True)
+    if not mjs:
+        return ["uvvis: no sample model.json"], []
+    model = json.loads(open(mjs[0]).read())
+    dye = next((b["name"] for b in model["bodies"]
+                if b.get("material") == "dye_solution_kmno4"), None)
+    if dye is None:
+        return ["uvvis: no dye_solution_kmno4 body to suppress"], []
+    blankdir = workdir / ("blank_%s" % name)
+    if blankdir.exists():
+        shutil.rmtree(str(blankdir))
+    rc, _ = miewb_tool.run_miewb(
+        workdir / ("%s.MieWB" % name), blankdir.with_suffix(".MieSim"),
+        workdir=blankdir,
+        extra_args=["--seeds", str(seeds), "--steps", "extract,trace,post",
+                    "--suppress-body", dye])
+    if rc != 0:
+        return ["uvvis: blank run failed (exit %d)" % rc], []
+    blank_cases = [d for d in sorted((blankdir / "results" / stem).glob("*"))
+                   if (d / "report.json").exists()]
+    if not blank_cases:
+        return ["uvvis: no blank case dir"], []
+
+    def array_spectrum(case):
+        got = _named_cube(case, "Array")
+        if got is None:
+            return None
+        img, pix, attrs, cube = got
+        lo = float(attrs["lam_lo_m"]) * 1e9
+        hi = float(attrs["lam_hi_m"]) * 1e9
+        b = cube.shape[0]
+        lam = lo + (np.arange(b) + 0.5) * (hi - lo) / b
+        return lam, cube.reshape(b, -1).sum(axis=1)
+    s = array_spectrum(sample_case)
+    b = array_spectrum(blank_cases[0])
+    shutil.rmtree(str(blankdir), ignore_errors=True)
+    if s is None or b is None:
+        return ["uvvis: missing Array cube (sample or blank)"], []
+    lam, ps = s
+    _, pb = b
+    m = pb > pb.max() * 0.05             # populated (lit) bins only
+    if m.sum() < 3:
+        return ["uvvis: too few lit spectral bins"], []
+    A = np.full_like(ps, np.nan)
+    good = m & (ps > 0)
+    A[good] = -np.log10(ps[good] / pb[good])
+    if not np.any(np.isfinite(A)):
+        return ["uvvis: no finite absorbance bins"], []
+    pk = int(np.nanargmax(A))
+    lam_pk, A_pk = float(lam[pk]), float(A[pk])
+    A_bl = 769.0 * 0.010 / math.log(10.0)     # Beer-Lambert, 10 mm, 1 mM
+    fail, notes = [], []
+    if abs(lam_pk - 525.0) > 15.0:
+        fail.append("uvvis: A peaks at %.0f nm (not 525 +/-15)" % lam_pk)
+    if abs(A_pk - A_bl) > 0.30 * A_bl:
+        fail.append("uvvis: peak A=%.2f vs Beer-Lambert %.2f (>30%%)"
+                    % (A_pk, A_bl))
+    notes.append("uvvis: A peaks %.2f at %.0f nm (Beer-Lambert %.2f)"
+                 % (A_pk, lam_pk, A_bl))
+    return fail, notes
+
+
 PATTERN_GATES = {
     "fizeau_flats": gate_fizeau,
     "fs_shg_spectrogram": gate_fs_shg,
     "quartz_rotator": gate_quartz,
     "speckle_mie_combo": gate_speckle,
+    "conical_refraction": gate_conical,
+    "insitec_sizer": gate_insitec,
+    "goniometer_bath": gate_goniometer,
+    "colloidal_crystal": gate_colloidal,
+    "imaging_bench": gate_imaging,
 }
 
 
@@ -625,19 +951,23 @@ def check_power(name, workdir, seeds):
                     and abs(float(v1) - float(v0)) > VIS_TOL:
                 failures.append("%s visibility %.3f vs %.3f"
                                 % (label, float(v1), float(v0)))
-    # WP7 bespoke physics gate (reads the finished case dir before cleanup)
-    if name in PATTERN_GATES:
+    # WP7 + samples-instruments bespoke physics gate (reads the finished case
+    # dir before cleanup)
+    if name in PATTERN_GATES or name == "uvvis_spectrometer":
         case_dirs = [dd for dd in sorted((rundir / "results" / stem).glob("*"))
                      if (dd / "report.json").exists()]
         if not case_dirs:
             failures.append("%s: no case dir for the pattern gate" % name)
         else:
-            gate = PATTERN_GATES[name]
             try:
                 if name == "speckle_mie_combo":
-                    pf, pn = gate(name, case_dirs[0], report, workdir, seeds)
+                    pf, pn = gate_speckle(name, case_dirs[0], report,
+                                          workdir, seeds)
+                elif name == "uvvis_spectrometer":
+                    pf, pn = gate_uvvis(name, case_dirs[0], report, workdir,
+                                        seeds, stem, rundir)
                 else:
-                    pf, pn = gate(name, case_dirs[0], report)
+                    pf, pn = PATTERN_GATES[name](name, case_dirs[0], report)
                 failures += pf
                 notes += pn
             except Exception as exc:      # a gate crash is a gate failure

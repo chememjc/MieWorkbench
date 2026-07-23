@@ -1,0 +1,25 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "Det120.Det120_pad.Face3": {
+   "peak_irradiance_W_m2": 0.6735036684437743,
+   "power_seed_std_W": 4.492935767475379e-09,
+   "profile_visibility": null,
+   "total_power_W": 6.268578972633745e-08
+  },
+  "Det60.Det60_pad.Face3": {
+   "peak_irradiance_W_m2": 0.8113409703009689,
+   "power_seed_std_W": 7.989386054803249e-09,
+   "profile_visibility": null,
+   "total_power_W": 1.861068769695483e-07
+  },
+  "Det90.Det90_pad.Face3": {
+   "peak_irradiance_W_m2": 0.6833583187128737,
+   "power_seed_std_W": 4.756568103335232e-09,
+   "profile_visibility": null,
+   "total_power_W": 6.427471753938737e-08
+  }
+ },
+ "seeds": 3
+}

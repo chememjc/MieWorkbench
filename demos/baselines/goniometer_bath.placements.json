@@ -1,0 +1,137 @@
+{
+ "bodies": {
+  "Beam": {
+   "group": "Beam",
+   "label": "Beam",
+   "placement": {
+    "pos_mm": [
+     -30.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Det120": {
+   "group": "Det120",
+   "label": "Det120",
+   "placement": {
+    "pos_mm": [
+     -25.999999999999986,
+     51.96152422706632,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     -0.49999999999999983,
+     0.8660254037844387
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Det60": {
+   "group": "Det60",
+   "label": "Det60",
+   "placement": {
+    "pos_mm": [
+     34.00000000000001,
+     51.96152422706631,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.8660254037844387,
+     -0.4999999999999998
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Det90": {
+   "group": "Det90",
+   "label": "Det90",
+   "placement": {
+    "pos_mm": [
+     4.0000000000000036,
+     60.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     -0.7071067811865476,
+     0.7071067811865475
+    ]
+   },
+   "primitive": "detector_plane"
+  },
+  "Sample": {
+   "group": "Sample",
+   "label": "Sample",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "sample_region"
+  }
+ },
+ "demo": "goniometer_bath",
+ "sheets": {
+  "dim": {},
+  "dim_Beam": {
+   "diameter": "=1 mm",
+   "length": "=8 mm",
+   "round_flag": "1"
+  },
+  "dim_Det120": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=12 mm"
+  },
+  "dim_Det60": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=12 mm"
+  },
+  "dim_Det90": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=12 mm"
+  },
+  "dim_Sample": {
+   "width": "=8 mm"
+  },
+  "miewb_vars": {
+   "R": "60",
+   "R__max": "80",
+   "R__min": "45",
+   "R__n": "5",
+   "R__on": "0",
+   "theta120": "120",
+   "theta120__on": "0",
+   "theta60": "60",
+   "theta60__on": "0",
+   "theta90": "90",
+   "theta90__on": "0"
+  }
+ }
+}

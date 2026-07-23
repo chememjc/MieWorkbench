@@ -1,0 +1,19 @@
+{
+ "case": "quick",
+ "closure_ok": true,
+ "detectors": {
+  "Backscatter.Backscatter_pad.Face3": {
+   "peak_irradiance_W_m2": 4.662277015714199,
+   "power_seed_std_W": 2.578583530444789e-07,
+   "profile_visibility": 0.9999894142154385,
+   "total_power_W": 3.578779868984137e-05
+  },
+  "Forward.Forward_pad.Face2": {
+   "peak_irradiance_W_m2": 64.65912032327063,
+   "power_seed_std_W": 1.2348703752575158e-06,
+   "profile_visibility": 0.9999838663668303,
+   "total_power_W": 0.0008013827263953579
+  }
+ },
+ "seeds": 3
+}

@@ -1,0 +1,99 @@
+{
+ "bodies": {
+  "Beam": {
+   "group": "Beam",
+   "label": "Beam",
+   "placement": {
+    "pos_mm": [
+     -20.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "laser_collimated"
+  },
+  "Cell": {
+   "group": "Cell",
+   "label": "Cell",
+   "placement": {
+    "pos_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "sample_region"
+  },
+  "Fourier": {
+   "group": "Fourier",
+   "label": "Fourier",
+   "placement": {
+    "pos_mm": [
+     16.0,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "lens_pcx"
+  },
+  "RingDet": {
+   "group": "RingDet",
+   "label": "RingDet",
+   "placement": {
+    "pos_mm": [
+     66.23577745,
+     0.0,
+     0.0
+    ],
+    "quat": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "primitive": "detector_plane"
+  }
+ },
+ "demo": "insitec_sizer",
+ "sheets": {
+  "dim": {},
+  "dim_Beam": {
+   "diameter": "=10 mm",
+   "length": "=8 mm",
+   "round_flag": "1"
+  },
+  "dim_Cell": {
+   "width": "=6 mm"
+  },
+  "dim_Fourier": {
+   "R_front": "=25 mm",
+   "aperture": "=22 mm",
+   "ct": "=5 mm"
+  },
+  "dim_RingDet": {
+   "height": "=0 mm",
+   "round_flag": "1",
+   "thickness": "=1 mm",
+   "width": "=20 mm"
+  }
+ }
+}

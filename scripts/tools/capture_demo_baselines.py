@@ -48,6 +48,9 @@ DEMO_NAMES = [
     # WP7 beyond-sequential showcase demos
     "fizeau_flats", "fs_shg_spectrogram", "quartz_rotator",
     "speckle_mie_combo",
+    # samples-instruments round demos (baseline placement + power gated)
+    "conical_refraction", "colloidal_crystal", "goniometer_bath",
+    "uvvis_spectrometer", "insitec_sizer", "imaging_bench",
 ]
 
 
