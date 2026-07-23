@@ -113,6 +113,17 @@ BATCHC_KINDS = [
     "fiber_optic", "mirror_annular",
 ]
 
+# samples-instruments round: cuvettes/vials/vat (nested WALL+LIQUID pair,
+# two bodies each), the bare air sample_region (one body), and the four
+# lamp/image sources (one body each).
+SAMPLES_CELL_KINDS = [
+    "cuvette_square", "cuvette_capillary", "flow_cell",
+    "vial_cylindrical", "vat_cylindrical", "sample_region",
+]
+SAMPLES_SOURCE_KINDS = [
+    "tungsten_halogen", "d2_lamp", "hg_calibration", "source_image",
+]
+
 NEW_KINDS = [
     "bs_plate", "pbs_plate", "dichroic_plate", "pellicle", "nd_filter",
     "nd_reflective", "filter_bandpass", "filter_longpass", "filter_shortpass",
@@ -120,7 +131,7 @@ NEW_KINDS = [
     "prism_right_angle", "prism_wedge", "prism_dove", "prism_penta",
     "prism_rhomboid", "mirror_concave", "mirror_convex", "mirror_d_shaped",
     "iris", "iris_bladed", "pinhole", "slit", "retro_corner_cube",
-] + BATCH3_KINDS + BATCHC_KINDS
+] + BATCH3_KINDS + BATCHC_KINDS + SAMPLES_CELL_KINDS + SAMPLES_SOURCE_KINDS
 
 
 def probe_new_kinds_build_rebuild():
@@ -343,6 +354,45 @@ def probe_batch3_geometry():
     return out
 
 
+def probe_samples_cells_nested_pairs():
+    """cuvette_square/cuvette_capillary/flow_cell/vial_cylindrical/
+    vat_cylindrical: two bodies, the WALL is the PRIMARY body (Name ==
+    group) and carries the glass-family material, the '<group>_liquid'
+    body is nested STRICTLY inside it (common volume == the liquid's own
+    volume, the bs_cube/nested4 nested-solids pattern -- no air gap,
+    glass-to-liquid contact). sample_region: a single air body."""
+    out = {}
+    for kind in SAMPLES_CELL_KINDS:
+        doc = App.newDocument("probe_cell_" + kind)
+        try:
+            bodies = pl.build_primitive(doc, kind, group=kind)
+            if kind == "sample_region":
+                b = bodies[0]
+                out[kind] = {"n_bodies": len(bodies),
+                            "material": getattr(b, "material", None),
+                            "name_is_group": b.Name == kind}
+                continue
+            wall = [b for b in bodies if b.Name == kind][0]
+            liquid = [b for b in bodies if b.Name == kind + "_liquid"][0]
+            common_vol = wall.Shape.common(liquid.Shape).Volume
+            liquid_vol = liquid.Shape.Volume
+            wall_vol = wall.Shape.Volume
+            out[kind] = {
+                "n_bodies": len(bodies),
+                "wall_is_primary": wall.Name == kind,
+                "wall_material": getattr(wall, "material", None),
+                "liquid_material": getattr(liquid, "material", None),
+                "liquid_nested_in_wall": abs(common_vol - liquid_vol)
+                                        <= 1e-6 * liquid_vol,
+                "liquid_strictly_smaller": liquid_vol < wall_vol,
+                "wall_vol_mm3": wall_vol,
+                "liquid_vol_mm3": liquid_vol,
+            }
+        finally:
+            App.closeDocument(doc.Name)
+    return out
+
+
 def probe_build_mirror_parabolic_scene(outpath):
     """Build + save a small mirror_parabolic FCStd scene (collimated
     coherent=false source upstream, mirror, a token far-away detector just
@@ -390,6 +440,7 @@ def main():
         "edge_blackened": probe_edge_blackened_lens(),
         "corner_cube": probe_corner_cube(),
         "batch3_geometry": probe_batch3_geometry(),
+        "samples_cells": probe_samples_cells_nested_pairs(),
         "mirror_parabolic_scene": probe_build_mirror_parabolic_scene(
             scene_path),
     }

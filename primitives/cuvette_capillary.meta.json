@@ -1,0 +1,29 @@
+{
+ "category": "Samples & Cells",
+ "kind": "cuvette_capillary",
+ "label": "Capillary cuvette (thin path)",
+ "params": {
+  "height": {
+   "default": 30.0,
+   "help": "internal liquid fill height (z); no headspace modeled",
+   "unit": "mm"
+  },
+  "path_length": {
+   "default": 0.2,
+   "help": "internal optical path length (liquid depth) along the beam",
+   "unit": "mm"
+  },
+  "wall": {
+   "default": 1.0,
+   "help": "glass wall thickness, added symmetrically on every face",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 10.0,
+   "help": "internal liquid cross-section width (y)",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Thin-path rectangular cuvette (short-pathlength cell for strongly absorbing/scattering samples): same nested-pair construction as cuvette_square (solid glass WALL body, LIQUID nested fully inside, wall thickness added symmetrically on every face -- see cuvette_square's tooltip for the full contract). Default path_length=0.2mm."
+}

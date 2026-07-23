@@ -1,0 +1,29 @@
+{
+ "category": "Sources",
+ "kind": "source_image",
+ "label": "Extended image source",
+ "params": {
+  "height": {
+   "default": 20.0,
+   "help": "emit face height (z)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 5.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 20.0,
+   "help": "emit face width (y)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "coherent": false,
+  "image": "usaf_style_target",
+  "lambdac": 550.0,
+  "power": 10.0
+ },
+ "tooltip": "Extended incoherent Lambertian emitter that projects a named image (image=usaf_style_target, an opticalproperties/image/images.mieimg registry row) across its rectangular emit face instead of a uniform disc/box -- e.g. a backlit resolution target or reticle for imaging-system demos. Add the optional 'image_cone_deg' body property (emission half-angle in degrees, default: full Lambertian hemisphere) to restrict emission to a narrower cone for etendue-matched imaging benches."
+}

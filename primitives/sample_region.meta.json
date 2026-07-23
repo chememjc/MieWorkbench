@@ -1,0 +1,16 @@
+{
+ "category": "Samples & Cells",
+ "kind": "sample_region",
+ "label": "Bare sample region (air)",
+ "params": {
+  "width": {
+   "default": 20.0,
+   "help": "cube edge length (all three axes)",
+   "unit": "mm"
+  }
+ },
+ "props": {
+  "material": "air"
+ },
+ "tooltip": "An air-material cube with no glass wall at all: a chainable train anchor for a BARE particle cloud (no cuvette/vial around it -- e.g. a free-space aerosol/spray measurement volume). Assign 'sample=' (a samples.miesamp row) directly on this body to bind a scattering/absorbing particle population; the beam passes straight through along local +x (a plain pass-through port, like a window)."
+}

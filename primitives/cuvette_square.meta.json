@@ -1,0 +1,29 @@
+{
+ "category": "Samples & Cells",
+ "kind": "cuvette_square",
+ "label": "Cuvette (square, 10mm path)",
+ "params": {
+  "height": {
+   "default": 40.0,
+   "help": "internal liquid fill height (z); no headspace modeled",
+   "unit": "mm"
+  },
+  "path_length": {
+   "default": 10.0,
+   "help": "internal optical path length (liquid depth) along the beam",
+   "unit": "mm"
+  },
+  "wall": {
+   "default": 1.25,
+   "help": "glass wall thickness, added symmetrically on every face",
+   "unit": "mm"
+  },
+  "width": {
+   "default": 10.0,
+   "help": "internal liquid cross-section width (y)",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Standard rectangular spectrophotometer cuvette: a solid glass WALL body with the LIQUID SAMPLE nested fully inside it (bs_cube-style nested pair -- glass-to-liquid contact, no air gap; the extractor classifies the pair as validation.nested_solids and the tracer's LIFO medium stack recovers the glass wall as the shell outside the liquid volume). Beam travels along local +x through path_length of liquid; width/height are the INTERNAL (liquid) cross-section, wall is added symmetrically on every face (x, y, AND z) to build the outer glass envelope. The WALL body carries the element label/train props (primary); set 'sample=' on the second body ('<name>_liquid') to bind a scattering/absorbing particle population, or override its 'material'/'filter' for a plain absorbing solution."
+}

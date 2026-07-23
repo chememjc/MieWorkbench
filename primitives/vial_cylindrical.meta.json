@@ -1,0 +1,24 @@
+{
+ "category": "Samples & Cells",
+ "kind": "vial_cylindrical",
+ "label": "Cylindrical vial (DLS)",
+ "params": {
+  "diameter": {
+   "default": 12.0,
+   "help": "outer glass vial diameter",
+   "unit": "mm"
+  },
+  "height": {
+   "default": 45.0,
+   "help": "internal liquid fill height (z); no headspace modeled",
+   "unit": "mm"
+  },
+  "wall": {
+   "default": 1.0,
+   "help": "glass wall thickness, added symmetrically (radially and axially)",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Dynamic-light-scattering-style round sample vial: vertical cylinder axis (local z); the beam crosses HORIZONTALLY (local +x) through the curved glass wall -- same local-origin convention as lens_rod (front glass tangent at x=0, back tangent at x=diameter). The glass WALL is a full solid cylinder; the LIQUID sample is a smaller concentric cylinder nested fully inside it (bs_cube-style nested pair, 'wall' added symmetrically: radially AND on both z ends). The WALL body is primary (element label/train props); set 'sample=' on '<name>_liquid' to bind a particle population (e.g. the DLS suspension itself). KNOWN ENGINE CAVEAT: at these dimensions the glass/water curved pair is a real (aberrated) compound cylindrical lens with an internal caustic; the C engine (the default under --engine auto -- what the GUI/CLI always use for this scene) traces it correctly (closure ~1e-14), but the pure-Python REFERENCE engine (--engine python) has a reproducible energy-closure bug on this specific glass/water/small-radius combination (closure error blows up to ~1e16-1e20; swapping the liquid to decalin at the identical geometry closes fine, ruling out a geometry-authoring mistake) -- a Python/C parity gap worth a follow-up engine investigation, not a reason to avoid this primitive in normal (auto-engine) use."
+}

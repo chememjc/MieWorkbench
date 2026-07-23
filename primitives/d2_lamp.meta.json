@@ -1,0 +1,29 @@
+{
+ "category": "Sources",
+ "kind": "d2_lamp",
+ "label": "Deuterium (D2) UV lamp",
+ "params": {
+  "diameter": {
+   "default": 10.0,
+   "help": "emit face diameter (circular) or edge length (rectangular, round_flag=0)",
+   "unit": "mm"
+  },
+  "length": {
+   "default": 10.0,
+   "help": "housing length",
+   "unit": "mm"
+  },
+  "round_flag": {
+   "default": 1,
+   "help": "1 = circular, 0 = rectangular",
+   "unit": ""
+  }
+ },
+ "props": {
+  "coherent": false,
+  "lambdac": 250.0,
+  "power": 5.0,
+  "spectrum": "d2_uv_approx"
+ },
+ "tooltip": "Deuterium arc lamp: the UV continuum only (spectrum=d2_uv_approx, ~185-400nm smooth hump peaking ~230-250nm) -- the real D2 Balmer-alpha/beta atomic lines at 486/656nm are DELIBERATELY OMITTED from this continuum-only table (see the emitters.miesrc row notes); do not use this preset where the visible Balmer lines matter. lambdac=250nm is a representative UV wavelength; the spectrum table supersedes it for actual wavelength sampling."
+}

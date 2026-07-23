@@ -34,6 +34,13 @@ IMPLEMENTED = [
     "window", "filter_plate", "polarizer_plate", "waveplate", "nd_filter",
     "filter_bandpass", "filter_longpass", "filter_shortpass", "filter_notch",
     "diffuser_plate", "window_wedged", "prism_wedge",
+    # samples-instruments round: cuvettes/vial/vat (nested pairs, beam
+    # along +x -- x=0 is the outer glass front, x=path_length+2*wall or
+    # x=diameter the outer glass back) + the bare air sample_region + the
+    # four lamp/image sources.
+    "cuvette_square", "cuvette_capillary", "flow_cell",
+    "vial_cylindrical", "vat_cylindrical", "sample_region",
+    "tungsten_halogen", "d2_lamp", "hg_calibration", "source_image",
 ]
 
 REFLECTIVE = {
@@ -195,6 +202,41 @@ def test_grating_plate_reflect_front():
     assert pf["reflect_plane"]["point"] == [0.0, 0.0, 0.0]
     assert pf["reflect_plane"]["normal"] == [-1.0, 0.0, 0.0]
     assert pf["exit"] == [3.0, 0.0, 0.0]
+
+
+@pytest.mark.parametrize("kind", [
+    "cuvette_square", "cuvette_capillary", "flow_cell",
+])
+def test_samples_rect_cell_exit_is_path_length_plus_two_wall(kind):
+    pf = primitivelib.port_frames(kind, {"path_length": 4.0, "wall": 1.5})
+    assert pf["entry"] == [0.0, 0.0, 0.0]
+    assert pf["exit"] == [7.0, 0.0, 0.0]      # 4.0 + 2*1.5
+    assert pf["reflect_plane"] is None
+
+
+@pytest.mark.parametrize("kind", ["vial_cylindrical", "vat_cylindrical"])
+def test_samples_cylindrical_cell_exit_is_diameter(kind):
+    pf = primitivelib.port_frames(kind, {"diameter": 12.0})
+    assert pf["entry"] == [0.0, 0.0, 0.0]
+    assert pf["exit"] == [12.0, 0.0, 0.0]
+    assert pf["reflect_plane"] is None
+
+
+def test_sample_region_exit_is_width():
+    pf = primitivelib.port_frames("sample_region", {"width": 20.0})
+    assert pf["entry"] == [0.0, 0.0, 0.0]
+    assert pf["exit"] == [20.0, 0.0, 0.0]
+    assert pf["reflect_plane"] is None
+
+
+@pytest.mark.parametrize("kind", [
+    "tungsten_halogen", "d2_lamp", "hg_calibration", "source_image",
+])
+def test_samples_lamp_sources_are_points(kind):
+    pf = primitivelib.port_frames(kind, {})
+    assert pf["entry"] == [0.0, 0.0, 0.0], kind
+    assert pf["exit"] == [0.0, 0.0, 0.0], kind
+    assert pf["reflect_plane"] is None, kind
 
 
 def test_source_and_detector_are_points():

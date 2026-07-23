@@ -1,0 +1,24 @@
+{
+ "category": "Samples & Cells",
+ "kind": "vat_cylindrical",
+ "label": "Index-matching bath (vat)",
+ "params": {
+  "diameter": {
+   "default": 80.0,
+   "help": "outer glass vat diameter",
+   "unit": "mm"
+  },
+  "height": {
+   "default": 100.0,
+   "help": "internal bath liquid fill height (z); no headspace modeled",
+   "unit": "mm"
+  },
+  "wall": {
+   "default": 2.5,
+   "help": "glass wall thickness, added symmetrically (radially and axially)",
+   "unit": "mm"
+  }
+ },
+ "props": {},
+ "tooltip": "Large cylindrical index-matching bath (e.g. a DLS/SLS goniometer vat): vertical axis (local z), same lens_rod-style horizontal beam convention as vial_cylindrical (glass tangent at x=0, x=diameter). The glass WALL is a full solid cylinder; the BATH LIQUID (default decalin, a common index-matching fluid) is a smaller concentric cylinder nested fully inside it (wall added symmetrically radially and axially). Intended usage: place a vial_cylindrical (or cuvette_*) element INSIDE the bath at the vat's local center (x=diameter/2, y=0, z=0) via an ordinary ANCHORED absolute placement -- train_solver has no multi-port 'center' concept, so this is a separate element nested by PLACEMENT, not a train port. The extractor then sees a depth-4 concentric stack (outer glass > bath liquid > inner vial glass > inner sample liquid), exactly the pattern pinned by scripts/raytracer/tests/test_nested_depth4.py. The WALL body is primary; set 'sample=' or a 'filter'/'material' override on '<name>_liquid' for the bath fluid itself."
+}

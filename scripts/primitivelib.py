@@ -1068,6 +1068,261 @@ PRIMITIVES = {
                                        "which bulges toward -x)")},
         "props": {"material": "aluminum"},
     },
+
+    # =========================================================================
+    # Samples & Cells (samples-instruments round): cuvettes/vials/vats built
+    # as a NESTED PAIR of solids (the bs_cube/nested4 pattern -- a glass WALL
+    # body fully containing a LIQUID body, no air gap, glass-to-liquid
+    # contact). The WALL is always the PRIMARY body (element label + train
+    # props); the liquid body is named '<group>_liquid' and is where the
+    # user sets 'sample=' (a samples.miesamp row) to bind a particle
+    # population, or overrides 'material'/'filter' for a plain absorbing
+    # solution. Convention shared by every kind below: geometry params are
+    # the INTERNAL (liquid) dimensions; 'wall' is added SYMMETRICALLY on
+    # every face (axial AND transverse, all the way round -- exactly the
+    # 'clearance_mm' convention make_test_scenes.make_nested4 already pins
+    # for depth-4 nesting) to get the outer glass envelope, so e.g. 'height'
+    # is the internal liquid fill height, not the external body height (no
+    # headspace/meniscus modeled). Beam travels local +x.
+    # =========================================================================
+    "cuvette_square": {
+        "category": "Samples & Cells", "label": "Cuvette (square, 10mm path)",
+        "tooltip": "Standard rectangular spectrophotometer cuvette: a solid "
+                   "glass WALL body with the LIQUID SAMPLE nested fully "
+                   "inside it (bs_cube-style nested pair -- glass-to-liquid "
+                   "contact, no air gap; the extractor classifies the pair "
+                   "as validation.nested_solids and the tracer's LIFO "
+                   "medium stack recovers the glass wall as the shell "
+                   "outside the liquid volume). Beam travels along local "
+                   "+x through path_length of liquid; width/height are the "
+                   "INTERNAL (liquid) cross-section, wall is added "
+                   "symmetrically on every face (x, y, AND z) to build the "
+                   "outer glass envelope. The WALL body carries the "
+                   "element label/train props (primary); set 'sample=' on "
+                   "the second body ('<name>_liquid') to bind a "
+                   "scattering/absorbing particle population, or override "
+                   "its 'material'/'filter' for a plain absorbing "
+                   "solution.",
+        "params": {"path_length": P(10.0, "mm", "internal optical path "
+                                                "length (liquid depth) "
+                                                "along the beam"),
+                   "width": P(10.0, "mm", "internal liquid cross-section "
+                                          "width (y)"),
+                   "height": P(40.0, "mm", "internal liquid fill height "
+                                           "(z); no headspace modeled"),
+                   "wall": P(1.25, "mm", "glass wall thickness, added "
+                                         "symmetrically on every face")},
+        "props": {},   # wall material=glass, liquid material=water (builder)
+    },
+    "cuvette_capillary": {
+        "category": "Samples & Cells", "label": "Capillary cuvette (thin path)",
+        "tooltip": "Thin-path rectangular cuvette (short-pathlength cell "
+                   "for strongly absorbing/scattering samples): same "
+                   "nested-pair construction as cuvette_square (solid "
+                   "glass WALL body, LIQUID nested fully inside, wall "
+                   "thickness added symmetrically on every face -- see "
+                   "cuvette_square's tooltip for the full contract). "
+                   "Default path_length=0.2mm.",
+        "params": {"path_length": P(0.2, "mm", "internal optical path "
+                                               "length (liquid depth) "
+                                               "along the beam"),
+                   "width": P(10.0, "mm", "internal liquid cross-section "
+                                          "width (y)"),
+                   "height": P(30.0, "mm", "internal liquid fill height "
+                                           "(z); no headspace modeled"),
+                   "wall": P(1.0, "mm", "glass wall thickness, added "
+                                        "symmetrically on every face")},
+        "props": {},   # wall material=glass, liquid material=water (builder)
+    },
+    "flow_cell": {
+        "category": "Samples & Cells", "label": "Flow cell (process/Insitec)",
+        "tooltip": "Process/in-line particle-sizing flow cell (Malvern "
+                   "Insitec-style): a single glass block spans the full "
+                   "body_width x body_height outer footprint (the window "
+                   "mount along the beam), with the FLOWING LIQUID modeled "
+                   "as a thin aperture x aperture channel of path_length "
+                   "depth nested fully inside it (bs_cube-style nested "
+                   "pair: 'wall' is the window thickness on each side of "
+                   "the liquid channel along the beam/x; body_width/"
+                   "body_height set the outer glass block footprint, "
+                   "aperture the liquid channel's clear cross-section -- "
+                   "keep aperture smaller than body_width/body_height so "
+                   "the channel stays nested). The window/wall block is "
+                   "the primary body (element label/train props); set "
+                   "'sample=' on the '<name>_liquid' body to bind a "
+                   "flowing particle population.",
+        "params": {"path_length": P(2.0, "mm", "liquid channel depth "
+                                               "along the beam"),
+                   "aperture": P(10.0, "mm", "clear liquid-channel "
+                                             "cross-section (square, y "
+                                             "and z)"),
+                   "body_width": P(20.0, "mm", "outer glass block width "
+                                               "(y)"),
+                   "body_height": P(20.0, "mm", "outer glass block height "
+                                                "(z)"),
+                   "wall": P(2.0, "mm", "window thickness on each side of "
+                                        "the liquid channel (x)")},
+        "props": {},   # wall material=glass, liquid material=water (builder)
+    },
+    "vial_cylindrical": {
+        "category": "Samples & Cells", "label": "Cylindrical vial (DLS)",
+        "tooltip": "Dynamic-light-scattering-style round sample vial: "
+                   "vertical cylinder axis (local z); the beam crosses "
+                   "HORIZONTALLY (local +x) through the curved glass wall "
+                   "-- same local-origin convention as lens_rod (front "
+                   "glass tangent at x=0, back tangent at x=diameter). "
+                   "The glass WALL is a full solid cylinder; the LIQUID "
+                   "sample is a smaller concentric cylinder nested fully "
+                   "inside it (bs_cube-style nested pair, 'wall' added "
+                   "symmetrically: radially AND on both z ends). The WALL "
+                   "body is primary (element label/train props); set "
+                   "'sample=' on '<name>_liquid' to bind a particle "
+                   "population (e.g. the DLS suspension itself). KNOWN "
+                   "ENGINE CAVEAT: at these dimensions the glass/water "
+                   "curved pair is a real (aberrated) compound cylindrical "
+                   "lens with an internal caustic; the C engine (the "
+                   "default under --engine auto -- what the GUI/CLI always "
+                   "use for this scene) traces it correctly (closure "
+                   "~1e-14), but the pure-Python REFERENCE engine "
+                   "(--engine python) has a reproducible energy-closure "
+                   "bug on this specific glass/water/small-radius "
+                   "combination (closure error blows up to ~1e16-1e20; "
+                   "swapping the liquid to decalin at the identical "
+                   "geometry closes fine, ruling out a geometry-authoring "
+                   "mistake) -- a Python/C parity gap worth a follow-up "
+                   "engine investigation, not a reason to avoid this "
+                   "primitive in normal (auto-engine) use.",
+        "params": {"diameter": P(12.0, "mm", "outer glass vial diameter"),
+                   "height": P(45.0, "mm", "internal liquid fill height "
+                                           "(z); no headspace modeled"),
+                   "wall": P(1.0, "mm", "glass wall thickness, added "
+                                        "symmetrically (radially and "
+                                        "axially)")},
+        "props": {},   # wall material=glass, liquid material=water (builder)
+    },
+    "vat_cylindrical": {
+        "category": "Samples & Cells", "label": "Index-matching bath (vat)",
+        "tooltip": "Large cylindrical index-matching bath (e.g. a DLS/SLS "
+                   "goniometer vat): vertical axis (local z), same "
+                   "lens_rod-style horizontal beam convention as "
+                   "vial_cylindrical (glass tangent at x=0, x=diameter). "
+                   "The glass WALL is a full solid cylinder; the BATH "
+                   "LIQUID (default decalin, a common index-matching "
+                   "fluid) is a smaller concentric cylinder nested fully "
+                   "inside it (wall added symmetrically radially and "
+                   "axially). Intended usage: place a vial_cylindrical "
+                   "(or cuvette_*) element INSIDE the bath at the vat's "
+                   "local center (x=diameter/2, y=0, z=0) via an ordinary "
+                   "ANCHORED absolute placement -- train_solver has no "
+                   "multi-port 'center' concept, so this is a separate "
+                   "element nested by PLACEMENT, not a train port. The "
+                   "extractor then sees a depth-4 concentric stack (outer "
+                   "glass > bath liquid > inner vial glass > inner sample "
+                   "liquid), exactly the pattern pinned by "
+                   "scripts/raytracer/tests/test_nested_depth4.py. The "
+                   "WALL body is primary; set 'sample=' or a 'filter'/"
+                   "'material' override on '<name>_liquid' for the bath "
+                   "fluid itself.",
+        "params": {"diameter": P(80.0, "mm", "outer glass vat diameter"),
+                   "height": P(100.0, "mm", "internal bath liquid fill "
+                                            "height (z); no headspace "
+                                            "modeled"),
+                   "wall": P(2.5, "mm", "glass wall thickness, added "
+                                        "symmetrically (radially and "
+                                        "axially)")},
+        "props": {},   # wall material=glass, liquid material=decalin (builder)
+    },
+    "sample_region": {
+        "category": "Samples & Cells", "label": "Bare sample region (air)",
+        "tooltip": "An air-material cube with no glass wall at all: a "
+                   "chainable train anchor for a BARE particle cloud "
+                   "(no cuvette/vial around it -- e.g. a free-space "
+                   "aerosol/spray measurement volume). Assign 'sample=' "
+                   "(a samples.miesamp row) directly on this body to bind "
+                   "a scattering/absorbing particle population; the beam "
+                   "passes straight through along local +x (a plain "
+                   "pass-through port, like a window).",
+        "params": {"width": P(20.0, "mm", "cube edge length (all three "
+                                          "axes)")},
+        "props": {"material": "air"},
+    },
+
+    # -- lamp sources (samples-instruments round): same disc/box-emitter
+    #    builder + params as source_broadband/led_white, differing only in
+    #    the emission registry row referenced by 'spectrum'. --------------
+    "tungsten_halogen": {
+        "category": "Sources", "label": "Tungsten-halogen (QTH) lamp",
+        "tooltip": "Quartz tungsten-halogen (QTH) broadband lamp: an "
+                   "analytic ~3000K blackbody continuum "
+                   "(spectrum=bb_halogen_3000k) over the typical QTH "
+                   "output range (350-2600nm; see the emitters.miesrc row "
+                   "notes for what the pure-Planck approximation leaves "
+                   "out). lambdac=850nm is a representative NIR-weighted "
+                   "wavelength; the spectrum table supersedes it for "
+                   "actual wavelength sampling.",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 50.0, "lambdac": 850.0,
+                  "spectrum": "bb_halogen_3000k", "coherent": False},
+    },
+    "d2_lamp": {
+        "category": "Sources", "label": "Deuterium (D2) UV lamp",
+        "tooltip": "Deuterium arc lamp: the UV continuum only "
+                   "(spectrum=d2_uv_approx, ~185-400nm smooth hump "
+                   "peaking ~230-250nm) -- the real D2 Balmer-alpha/beta "
+                   "atomic lines at 486/656nm are DELIBERATELY OMITTED "
+                   "from this continuum-only table (see the "
+                   "emitters.miesrc row notes); do not use this preset "
+                   "where the visible Balmer lines matter. lambdac=250nm "
+                   "is a representative UV wavelength; the spectrum table "
+                   "supersedes it for actual wavelength sampling.",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 5.0, "lambdac": 250.0,
+                  "spectrum": "d2_uv_approx", "coherent": False},
+    },
+    "hg_calibration": {
+        "category": "Sources", "label": "Hg pen-lamp (calibration)",
+        "tooltip": "Mercury pencil (pen) calibration lamp: discrete "
+                   "emission lines (spectrum=hg_penlamp) at the standard "
+                   "11-line Hg pen-lamp set (253.65nm and 365.01nm "
+                   "strongest; see the emitters.miesrc row for the full "
+                   "list + NIST ASD citation). lambdac=435.83nm (the "
+                   "strong visible blue-violet line) is a representative "
+                   "wavelength; the spectrum table supersedes it for "
+                   "actual line sampling.",
+        "params": {"diameter": P(10.0, "mm", "emit face diameter "
+                                              "(circular) or edge length "
+                                              "(rectangular, round_flag=0)"),
+                   "length": P(10.0, "mm", "housing length"),
+                   "round_flag": P(1, "", "1 = circular, 0 = rectangular")},
+        "props": {"power": 1.0, "lambdac": 435.83,
+                  "spectrum": "hg_penlamp", "coherent": False},
+    },
+    "source_image": {
+        "category": "Sources", "label": "Extended image source",
+        "tooltip": "Extended incoherent Lambertian emitter that projects a "
+                   "named image (image=usaf_style_target, an "
+                   "opticalproperties/image/images.mieimg registry row) "
+                   "across its rectangular emit face instead of a uniform "
+                   "disc/box -- e.g. a backlit resolution target or "
+                   "reticle for imaging-system demos. Add the optional "
+                   "'image_cone_deg' body property (emission half-angle in "
+                   "degrees, default: full Lambertian hemisphere) to "
+                   "restrict emission to a narrower cone for etendue-"
+                   "matched imaging benches.",
+        "params": {"width": P(20.0, "mm", "emit face width (y)"),
+                   "height": P(20.0, "mm", "emit face height (z)"),
+                   "length": P(5.0, "mm", "housing length")},
+        "props": {"power": 10.0, "lambdac": 550.0, "coherent": False,
+                  "image": "usaf_style_target"},
+    },
 }
 
 
@@ -1265,6 +1520,17 @@ def port_frames(kind, params):
     if kind == "fiber_optic":
         return _port_result(0.0, p["length"])
 
+    # -- samples & cells: nested glass-wall/liquid pairs, beam along +x ------
+    # (rectangular cuvettes/flow cell: outer glass front/back face vertices
+    # at x=0 and x=path_length+2*wall; cylindrical vial/vat: same lens_rod-
+    # style tangent-to-tangent span, x=0 and x=diameter)
+    if kind in ("cuvette_square", "cuvette_capillary", "flow_cell"):
+        return _port_result(0.0, p["path_length"] + 2.0 * p["wall"])
+    if kind in ("vial_cylindrical", "vat_cylindrical"):
+        return _port_result(0.0, p["diameter"])
+    if kind == "sample_region":
+        return _port_result(0.0, p["width"])
+
     # -- prism (deviate port; center-origin approximation) ------------------
     if kind == "prism":
         return _port_result(0.0, 0.0)
@@ -1360,6 +1626,115 @@ def _build_laser_divergent(doc, group, p):
     return [mts.new_body_pad(doc, group, group,
                              rects=[(-h, -h, w, w)],
                              x_start=-p["length"], length=p["length"])]
+
+
+def _build_source_image(doc, group, p):
+    """Rectangular Lambertian image-projecting emitter: identical box shape
+    to laser_collimated's round_flag=0 branch (emits from the +x face at
+    x=0, housing extends toward -x), but with independent width/height so a
+    non-square image aspect ratio (e.g. a 4:3 target) can be modeled."""
+    w, h = p["width"], p["height"]
+    return [mts.new_body_pad(doc, group, group,
+                             rects=[(-w / 2.0, -h / 2.0, w, h)],
+                             x_start=-p["length"], length=p["length"])]
+
+
+# ---------------------------------------------------------------------------
+# Samples & Cells: nested WALL(glass) + LIQUID pair (the bs_cube/nested4
+# pattern -- one full solid strictly inside another, glass-to-liquid
+# contact, no air gap -- extractor classifies it validation.nested_solids
+# and the tracer's LIFO medium stack recovers the wall as the shell outside
+# the liquid volume). 'wall' is added SYMMETRICALLY on every face, matching
+# make_test_scenes.make_nested4's 'clearance_mm' convention. The wall body
+# is always the PRIMARY body (named `group`, carries element label + train
+# props); the liquid body is `group + "_liquid"`.
+# ---------------------------------------------------------------------------
+def _build_cuvette_box(doc, group, p, wall_material="glass",
+                       liquid_material="water"):
+    """Rectangular cuvette: outer glass box spans
+    (path_length + 2*wall) x (width + 2*wall) x (height + 2*wall); the
+    liquid box (path_length x width x height) sits centered inside it,
+    inset by 'wall' on every face. Shared by cuvette_square and
+    cuvette_capillary (only the sheet defaults differ)."""
+    pl_, w, h, wall = p["path_length"], p["width"], p["height"], p["wall"]
+    outer_x = pl_ + 2.0 * wall
+    outer_y = w + 2.0 * wall
+    outer_z = h + 2.0 * wall
+    wall_body = mts.new_body_pad(
+        doc, group, group,
+        rects=[(-outer_y / 2.0, -outer_z / 2.0, outer_y, outer_z)],
+        x_start=0.0, length=outer_x, props={"material": wall_material})
+    liquid = mts.new_body_pad(
+        doc, group + "_liquid", group + "_liquid",
+        rects=[(-w / 2.0, -h / 2.0, w, h)],
+        x_start=wall, length=pl_, props={"material": liquid_material})
+    return [wall_body, liquid]
+
+
+def _build_cuvette_square(doc, group, p):
+    return _build_cuvette_box(doc, group, p)
+
+
+def _build_cuvette_capillary(doc, group, p):
+    return _build_cuvette_box(doc, group, p)
+
+
+def _build_flow_cell(doc, group, p):
+    """Process flow cell: a single glass block (body_width x body_height
+    outer footprint, outer x = path_length + 2*wall) with the flowing
+    liquid modeled as a thin aperture x aperture channel nested fully
+    inside it, inset by 'wall' on the two beam-direction (x) window
+    faces and centered within the larger body_width/body_height cross-
+    section."""
+    pl_, ap = p["path_length"], p["aperture"]
+    bw, bh, wall = p["body_width"], p["body_height"], p["wall"]
+    outer_x = pl_ + 2.0 * wall
+    wall_body = mts.new_body_pad(
+        doc, group, group,
+        rects=[(-bw / 2.0, -bh / 2.0, bw, bh)],
+        x_start=0.0, length=outer_x, props={"material": "glass"})
+    liquid = mts.new_body_pad(
+        doc, group + "_liquid", group + "_liquid",
+        rects=[(-ap / 2.0, -ap / 2.0, ap, ap)],
+        x_start=wall, length=pl_, props={"material": "water"})
+    return [wall_body, liquid]
+
+
+def _build_cyl_nested(doc, group, p, wall_material, liquid_material):
+    """Shared vial_cylindrical / vat_cylindrical builder: vertical (local
+    z) glass cylinder, a full solid, radius = diameter/2, x-centered at
+    its own radius so the near tangent point sits at local x=0 (the
+    lens_rod convention) and the far tangent at x=diameter; the liquid is
+    a smaller concentric cylinder nested fully inside, inset by 'wall'
+    radially and on both z ends."""
+    d, h, wall = p["diameter"], p["height"], p["wall"]
+    r_out = d / 2.0
+    r_in = r_out - wall
+    outer = Part.Circle(App.Vector(r_out, 0, 0), App.Vector(0, 0, 1), r_out)
+    wall_body = mts.pad_body(doc, group, [outer], plane="XY",
+                             offset=-(h / 2.0 + wall), length=h + 2.0 * wall,
+                             props={"material": wall_material})
+    inner = Part.Circle(App.Vector(r_out, 0, 0), App.Vector(0, 0, 1), r_in)
+    liquid = mts.pad_body(doc, group + "_liquid", [inner], plane="XY",
+                          offset=-h / 2.0, length=h,
+                          props={"material": liquid_material})
+    return [wall_body, liquid]
+
+
+def _build_vial_cylindrical(doc, group, p):
+    return _build_cyl_nested(doc, group, p, "glass", "water")
+
+
+def _build_vat_cylindrical(doc, group, p):
+    return _build_cyl_nested(doc, group, p, "glass", "decalin")
+
+
+def _build_sample_region(doc, group, p):
+    w = p["width"]
+    return [mts.new_body_pad(doc, group, group,
+                             rects=[(-w / 2.0, -w / 2.0, w, w)],
+                             x_start=0.0, length=w,
+                             props={"material": "air"})]
 
 
 def _build_plate(doc, group, width_mm, thickness_mm, round_flag, name=None):
@@ -2394,6 +2769,16 @@ def builders():
             "mirror_parabolic": _build_mirror_parabolic,
             "fiber_optic": _build_fiber_optic,
             "mirror_annular": _build_mirror_annular,
+            "cuvette_square": _build_cuvette_square,
+            "cuvette_capillary": _build_cuvette_capillary,
+            "flow_cell": _build_flow_cell,
+            "vial_cylindrical": _build_vial_cylindrical,
+            "vat_cylindrical": _build_vat_cylindrical,
+            "sample_region": _build_sample_region,
+            "tungsten_halogen": _build_laser_collimated,
+            "d2_lamp": _build_laser_collimated,
+            "hg_calibration": _build_laser_collimated,
+            "source_image": _build_source_image,
         }
         for kind, spec in PRIMITIVES.items():
             if "meridian" in spec:

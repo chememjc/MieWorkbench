@@ -417,6 +417,187 @@ def test_fiber_core_material_gives_na_022_vs_fused_silica():
                                                                abs=2e-3)
 
 
+# ---------------------------------------------------------------------------
+# Samples & Cells (samples-instruments round): cuvettes/vial/vat nested
+# WALL(glass)+LIQUID pairs, the bare air sample_region, and the four lamp/
+# image sources.
+# ---------------------------------------------------------------------------
+SAMPLES_CELL_KINDS = [
+    "cuvette_square", "cuvette_capillary", "flow_cell",
+    "vial_cylindrical", "vat_cylindrical", "sample_region",
+]
+SAMPLES_NESTED_KINDS = [
+    "cuvette_square", "cuvette_capillary", "flow_cell",
+    "vial_cylindrical", "vat_cylindrical",
+]
+SAMPLES_SOURCE_KINDS = [
+    "tungsten_halogen", "d2_lamp", "hg_calibration", "source_image",
+]
+SAMPLES_ALL_KINDS = SAMPLES_CELL_KINDS + SAMPLES_SOURCE_KINDS
+
+
+@pytest.mark.parametrize("kind", SAMPLES_ALL_KINDS)
+def test_samples_kind_registered_with_category_and_props(kind):
+    spec = pl.PRIMITIVES[kind]
+    assert spec["category"]
+    assert spec["label"]
+    assert spec["tooltip"]
+    assert spec["params"]
+    assert "props" in spec
+
+
+@pytest.mark.parametrize("kind", SAMPLES_CELL_KINDS)
+def test_samples_cell_kinds_use_samples_category(kind):
+    assert pl.PRIMITIVES[kind]["category"] == "Samples & Cells"
+
+
+@pytest.mark.parametrize("kind", SAMPLES_SOURCE_KINDS)
+def test_samples_source_kinds_use_sources_category(kind):
+    assert pl.PRIMITIVES[kind]["category"] == "Sources"
+
+
+@pytest.mark.parametrize("kind", SAMPLES_NESTED_KINDS)
+def test_samples_nested_kinds_have_wall_param(kind):
+    assert "wall" in pl.PRIMITIVES[kind]["params"]
+
+
+def test_no_samples_param_alias_looks_like_a_cell_address():
+    cell_re = re.compile(r"^[A-Za-z]{1,2}[0-9]{1,4}$")
+    for kind in SAMPLES_ALL_KINDS:
+        for alias in pl.PRIMITIVES[kind]["params"]:
+            assert not cell_re.match(alias), "%s.%s looks like a cell " \
+                "address" % (kind, alias)
+
+
+def test_lamp_sources_spectrum_rows_and_lambdac():
+    props = pl.PRIMITIVES
+    assert props["tungsten_halogen"]["props"]["spectrum"] == \
+        "bb_halogen_3000k"
+    assert props["tungsten_halogen"]["props"]["lambdac"] == \
+        pytest.approx(850.0)
+    assert props["d2_lamp"]["props"]["spectrum"] == "d2_uv_approx"
+    assert props["d2_lamp"]["props"]["lambdac"] == pytest.approx(250.0)
+    assert props["hg_calibration"]["props"]["spectrum"] == "hg_penlamp"
+    assert props["hg_calibration"]["props"]["lambdac"] == pytest.approx(435.83)
+    for kind in ("tungsten_halogen", "d2_lamp", "hg_calibration"):
+        assert props[kind]["props"]["coherent"] is False
+
+
+def test_source_image_registry():
+    spec = pl.PRIMITIVES["source_image"]
+    assert spec["props"]["image"] == "usaf_style_target"
+    assert spec["props"]["coherent"] is False
+    assert set(spec["params"]) == {"width", "height", "length"}
+
+
+def test_emission_registry_rows_load():
+    """The three new emitters.miesrc rows (bb_halogen_3000k, d2_uv_approx,
+    hg_penlamp) load cleanly and resolve into a sources.wavelength_strata-
+    consumable dict shape (emission count 2 -> 5)."""
+    import numpy as np
+    from raytracer.optprops import load_optical_properties
+    from raytracer.sources import wavelength_strata
+
+    props = load_optical_properties()
+    emission = props.emission
+    assert len(emission) == 5
+    for name in ("bb_halogen_3000k", "d2_uv_approx", "hg_penlamp"):
+        assert name in emission
+
+    def resolve_src(spec_name, lambdac_nm):
+        entry = emission[spec_name]
+        src = {"lambdac_nm": lambdac_nm}
+        if entry["kind"] == "lines":
+            src["_lines_nm"] = np.asarray(entry["lines_nm"], dtype=np.float64)
+            src["_lines_intensity"] = np.asarray(entry["intensity"],
+                                                 dtype=np.float64)
+            src["_lines_linewidth_nm"] = float(entry["linewidth_nm"])
+        else:
+            src["_spectrum_lam_nm"] = np.asarray(entry["lam_nm"],
+                                                  dtype=np.float64)
+            src["_spectrum_pdf"] = np.asarray(entry["relative_power"],
+                                              dtype=np.float64)
+        return src
+
+    for name, lambdac, kind in (
+            ("bb_halogen_3000k", 850.0, "blackbody"),
+            ("d2_uv_approx", 250.0, "continuous"),
+            ("hg_penlamp", 435.83, "lines")):
+        assert emission[name]["kind"] == kind
+        src = resolve_src(name, lambdac)
+        strata = wavelength_strata(src, 16)
+        lam_nm = np.asarray(strata) * 1e9
+        assert strata.shape == (16,)
+        assert np.all(np.isfinite(lam_nm))
+        assert lam_nm.min() > 0.0
+
+
+def test_d2_lamp_table_omits_balmer_lines_documented():
+    # the table is a UV-continuum-only approximation; the notes must say so
+    # (the real Balmer lines at 486/656nm are physically real but deliberately
+    # not modeled -- see the module's PRIMITIVES tooltip + registry notes).
+    import sys as _sys
+    scripts_dir = REPO_ROOT / "scripts"
+    if str(scripts_dir) not in _sys.path:
+        _sys.path.insert(0, str(scripts_dir))
+    from raytracer.optprops import load_optical_properties
+    props = load_optical_properties()
+    notes = props.emission["d2_uv_approx"]["notes"].lower()
+    assert "balmer" in notes
+    assert "omit" in notes
+    lam = props.emission["d2_uv_approx"]["lam_nm"]
+    assert lam.max() <= 400.0 + 1e-6
+
+
+@freecad_only
+def test_samples_new_kinds_build_and_rebuild_preserve_label_and_placement(
+        fc_probe_result):
+    per_kind = fc_probe_result["new_kinds_build_rebuild"]
+    two_body = set(SAMPLES_NESTED_KINDS)
+    for kind in SAMPLES_ALL_KINDS:
+        info = per_kind[kind]
+        expected_n = 2 if kind in two_body else 1
+        assert info["n_before"] == expected_n, kind
+        assert info["n_after"] == expected_n, kind
+        assert info["label_ok"], kind
+        assert info["placement_ok"], kind
+
+
+@freecad_only
+@pytest.mark.parametrize("kind", SAMPLES_NESTED_KINDS)
+def test_samples_cell_liquid_nested_strictly_inside_wall(fc_probe_result,
+                                                          kind):
+    """The bs_cube/nested4 pattern: the '<name>_liquid' body's volume is
+    fully swallowed by the '<name>' WALL body's volume (common volume ==
+    liquid volume to 1e-6 relative), with the wall the strictly larger
+    (and PRIMARY, Name==group) body -- glass-to-liquid contact, no air
+    gap."""
+    info = fc_probe_result["samples_cells"][kind]
+    assert info["n_bodies"] == 2
+    assert info["wall_is_primary"] is True
+    assert info["liquid_nested_in_wall"] is True
+    assert info["liquid_strictly_smaller"] is True
+
+
+@freecad_only
+def test_sample_region_is_single_air_body(fc_probe_result):
+    info = fc_probe_result["samples_cells"]["sample_region"]
+    assert info["n_bodies"] == 1
+    assert info["material"] == "air"
+    assert info["name_is_group"] is True
+
+
+@freecad_only
+def test_samples_cell_wall_and_liquid_materials(fc_probe_result):
+    cells = fc_probe_result["samples_cells"]
+    for kind in ("cuvette_square", "cuvette_capillary", "flow_cell",
+                 "vial_cylindrical"):
+        assert cells[kind]["wall_material"] == "glass", kind
+        assert cells[kind]["liquid_material"] == "water", kind
+    assert cells["vat_cylindrical"]["wall_material"] == "glass"
+    assert cells["vat_cylindrical"]["liquid_material"] == "decalin"
+
+
 def test_mirror_parabolic_k_minus_one_not_user_tunable():
     # a true parabola: k is baked in, not exposed as a spec param (unlike
     # lens_asphere, where k is a free conic-constant knob)
