@@ -522,6 +522,15 @@ class ResultsPane(QWidget):
         time_gallery.set_status_callback(self.statusChanged.emit)
         self.galleries["time"] = time_gallery
         self.tabs.addTab(time_gallery, "Time")
+        # dynamic light scattering products (samples-instruments round):
+        # dls_correlate.py writes <case>/dls/correlogram.png +
+        # gamma_vs_q2.png; refresh()'s auto-glob loop picks the directory up
+        # by gallery name, so this tab is empty (and harmless) on every case
+        # run without run_dls.py + dls_correlate.py.
+        dls_gallery = _Gallery()
+        dls_gallery.set_status_callback(self.statusChanged.emit)
+        self.galleries["dls"] = dls_gallery
+        self.tabs.addTab(dls_gallery, "DLS")
         # image-simulation products (imaging-analysis round): --image-sim
         # writes <case>/imaging/image_sim_*.png; refresh()'s auto-glob
         # loop picks the directory up by gallery name, so this tab is
