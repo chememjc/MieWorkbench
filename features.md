@@ -137,8 +137,9 @@ A PySide6 + VTK desktop GUI wrapped around a coherent Monte-Carlo, fully-vectori
 **non-sequential** ray tracer driven by annotated FreeCAD models. Physics: real interference/
 diffraction via a Huygens/Rayleigh–Sommerfeld final gather; uniaxial **and biaxial** birefringence
 with walk-off; TMM coatings; four grating models (lamellar, Kogelnik VBG, Dammann, measured
-table); Beckmann roughness + ground-glass diffusers + measured ABg BSDF (BRDF-side); **exact Mie
-particle clouds** (validated vs Wiscombe MIEV0); and a **pulsed/ultrafast/nonlinear layer** (fs/SC
+table); Beckmann roughness + ground-glass diffusers + measured ABg BSDF (BRDF+BTDF); **exact Mie
+particle clouds with real S(q) structure factors and T-matrix spheroids**
+(validated vs Wiscombe MIEV0); and a **pulsed/ultrafast/nonlinear layer** (fs/SC
 sources, time-domain spectrogram/streak/cube, SHG/Pockels/Kerr/TPA/saturable, GDD budget).
 Detectors are planar (curved incoherent), producing irradiance cubes, spectra, Stokes/DOP maps,
 per-element power tables, a **9-bucket energy-audit ledger** (closure gated at `1e-3`), and **named
@@ -269,9 +270,10 @@ Organised by the shared taxonomy (A–S). Line-item ratings are consolidated in 
   projector; no measured-interferogram surface.**
 - **C Polarization:** full Jones tracing; Stokes + degree-of-polarization maps; **validated
   uniaxial birefringence with walk-off** (calcite 6.23°@45°/590 nm) **and a validated biaxial
-  two-sheet solver** (KTP/KTA/LBO/BiBO, `<1e-9`) — the only biaxial in this field; TMM coatings;
-  four grating models with **real diffraction efficiency**. No conical refraction, no optical
-  activity, no RCWA, no Mueller-matrix formalism.
+  two-sheet solver** (KTP/KTA/LBO/BiBO, `<1e-9`) — the only biaxial in this field, now including
+  **internal conical refraction** behind `--conical`; TMM coatings;
+  four grating models with **real diffraction efficiency**. No external conical refraction, no RCWA,
+  no Mueller-matrix formalism.
 - **D Surfaces:** spherical, even-asphere (extract-verified `<1 µm`), cylindrical, conical,
   toroidal — analytic. Freeform only via triangle **mesh (incoherent-power only)**. DOE via the
   grating models. **No GRIN, no Q-type/Forbes. CAD (STEP/IGES) enters only through FreeCAD →
@@ -284,14 +286,17 @@ Organised by the shared taxonomy (A–S). Line-item ratings are consolidated in 
   diagrams, ray/OPD fans, encircled energy, **ghost/stray-light path ranking**, photometric lux
   maps, spectrometer profiles, and a **space-invariant image-simulation** product. Curved detectors
   are incoherent-only; the image-sim is not yet field-varying.
-- **G Materials:** **847 materials** (Schott/Ohara AGF import — Sellmeier glasses + metals/polymers/
+- **G Materials:** **849 materials** (Schott/Ohara AGF import — Sellmeier glasses + metals/polymers/
   crystals), 39 TMM coatings, 56 filters, 9 gratings, **17 birefringent crystals (13 uniaxial +
   4 biaxial)**; every row requires a cited reference. **dn/dT thermo-optic index now engine-hooked
   (Schott TIE-19, `--temperature`).** Still below the vendor thousands and no vendor-component
   catalog.
-- **H Scattering:** Beckmann roughness + diffusers + measured **ABg BSDF (BRDF-side, v1)** +
-  scatter-to-target importance aim + **exact Mie particle clouds** (explicit spheres to ~200k, then
-  a continuum medium). **No BTDF, no dedicated Path-Analysis stray-light tool.**
+- **H Scattering:** Beckmann roughness + diffusers + measured **ABg BSDF (BRDF + optional
+  isotropic BTDF)** + scatter-to-target importance aim + **exact Mie particle clouds** (explicit
+  spheres to ~200k, then a continuum medium, plus orientation-averaged **T-matrix spheroids**) +
+  **real S(q) inter-particle structure factors** (Percus-Yevick/Baxter/fractal/paracrystal/
+  tabulated) + a **body-bound scattering-sample registry** + a **traced dynamic-light-scattering
+  (DLS) workflow**. No anisotropic BSDF fit, no dedicated Path-Analysis stray-light tool.
 - **I/J/K/L/M Optimization / Tolerancing / Thermal / Photometry / Multi-config:** a **v1 design
   apparatus** now ships — a weighted-merit **optimizer** (`optimize.py`: scipy Nelder-Mead local +
   nevergrad CMA-ES global over spot-RMS/EE/MTF50/power, on a persistent-worker fast evaluator),
@@ -299,7 +304,7 @@ Organised by the shared taxonomy (A–S). Line-item ratings are consolidated in 
   **bulk-T dn/dT thermal** index (`--temperature`). **No glass substitution, multi-config
   optimization, compensator chains, fast-differential tolerancing, or operand library.**
   **Photometric units shipped (L1)**; multi-config is still CLI-sweep/Variables-dock only.
-- **N GUI/UX:** VTK 3D view, ~70-element parametric primitive library, ~20-level undo + macros,
+- **N GUI/UX:** VTK 3D view, 80-element parametric primitive library, ~20-level undo + macros,
   wizards (thick-lens + waveplate solvers), 1 s-debounced live ray preview, **tracer-bead
   animation** (photons at c/n), results galleries, validation/problems pane. Linux desktop, steep
   authoring curve.
@@ -438,7 +443,7 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 |C2|Stokes / DOP maps|✅|🟡ensemble|❌|🟡per-ray|✅|🟡map|**QUADOA/MWB** — first-class Stokes maps (QUADOA + Poincaré); CODE V none, OSLO per-ray only|
 |C3|Mueller-matrix formalism|❌|⚠️|❌|❌|🟡claim|❌|**QUADOA** (unconfirmed) — Mueller claimed in marketing; Zemax via Jones-probe workaround|
 |C4|Uniaxial birefringence + walk-off|✅|✅|✅|✅|🟡unverif|❌|**MWB/Zemax/CODE V/OSLO** — validated walk-off physics|
-|C5|Biaxial birefringence|🟡biax|❌|❌|❌|❌|❌|**MWB** — the *only* biaxial two-sheet solver here (KTP/KTA/LBO/BiBO; no conical refraction). OSLO explicitly excludes biaxial|
+|C5|Biaxial birefringence|🟡biax|❌|❌|❌|❌|❌|**MWB** — the *only* biaxial two-sheet solver here (KTP/KTA/LBO/BiBO; internal conical refraction modeled behind `--conical`, off by default). OSLO explicitly excludes biaxial|
 |C6|Optical activity / gyrotropy|🟡|❌|❌|❌|❌|❌|**MWB only, near-axis** — gyrotropic uniaxial ρ·d rotation on-axis (quartz rotator, asserted); off-axis/elliptical still open|
 |C7|TMM thin-film coatings|✅|✅|✅|✅31-layer|✅|⚠️presets|**Zemax** — largest catalog; MWB/CODE V/OSLO/QUADOA full TMM; 3DOptix 6 presets|
 |C8|Polarizers / retarders / waveplates|✅|✅|✅|✅|✅|🟡|**tie** (all but 3DOptix)|
@@ -474,7 +479,7 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 | # | Feature | MWB | Zemax | CODE V | OSLO | QUADOA | 3DOptix | Best · why |
 |--|--|:--:|:--:|:--:|:--:|:--:|:--:|--|
 |F1|Irradiance maps|✅|✅|✅|🟡1-field|✅|✅|**tie** — OSLO single-field PSF, not scene irradiance|
-|F2|Spectral / color detector|✅spectra|✅color|🟡|❌|🟡|✅spectral|**Zemax** — CIE color + per-pixel spectrum; MWB spectra + spectrometer mode|
+|F2|Spectral / color detector|✅spectra|✅color|🟡|❌|🟡|✅spectral|**Zemax** — CIE color + per-pixel spectrum; MWB spectra + spectrometer mode + a physical diode-array readout + absorbance/ring-profile products (samples-instruments round)|
 |F3|Curved detectors|🟡incoh|✅|🟡conic|🟡|🟡|❌|**Zemax** — curved/annular detector objects; MWB incoherent-only|
 |F4|Spot diagrams|✅|✅|✅|✅|✅|✅|**tie** — all six now ship spot diagrams (MWB via `--export-rays`)|
 |F5|Ray fans (OPD/transverse)|✅|✅|✅|✅|✅|❌|**tie** (all but 3DOptix)|
@@ -500,10 +505,10 @@ directly to the emoji (e.g. `🟡mesh`). Rows appended after this analysis's fie
 | # | Feature | MWB | Zemax | CODE V | OSLO | QUADOA | 3DOptix | Best · why |
 |--|--|:--:|:--:|:--:|:--:|:--:|:--:|--|
 |H1|Surface scatter models|✅Beckmann|✅7|❌|❌|🟡3|✅4|**Zemax** — Lambertian/Gaussian/ABg/BSDF/DLL; CODE V/OSLO delegate to LightTools/TracePro|
-|H2|Measured BSDF import|🟡BRDF|✅|❌|❌|❌|❌|**Zemax** — full BSDF; MWB v1 BRDF-only|
+|H2|Measured BSDF import|🟡BRDF+BTDF|✅|❌|❌|❌|❌|**Zemax** — full BSDF + anisotropic + importance sampling; MWB BRDF + optional isotropic BTDF (P2/P2.5), no anisotropic fit|
 |H3|Importance sampling|🟡aim|✅|⚠️LT|❌|❌|❌|**Zemax** — importance-target; MWB scatter-to-target aim|
-|H4|Volume / participating-media scatter|✅|🟡HG-DLL|❌|❌|❌|❌|**MWB** — continuum medium + rigor below (CODE V→LightTools)|
-|H5|Rigorous Mie particle scattering|✅Wiscombe|🟡DLL|❌|❌|❌|❌|**MWB** — first-class Mie validated vs Wiscombe MIEV0; Zemax only via MSP DLL; CODE V Mie→LightTools|
+|H4|Volume / participating-media scatter|✅+S(q)|🟡HG-DLL|❌|❌|❌|❌|**MWB** — continuum medium with real inter-particle S(q) structure factors (Percus-Yevick/Baxter/fractal/paracrystal/tabulated, samples-instruments round) below the Mie rigor; CODE V→LightTools|
+|H5|Rigorous Mie particle scattering|✅Wiscombe+T-matrix|🟡DLL|❌|❌|❌|❌|**MWB** — first-class Mie validated vs Wiscombe MIEV0, plus orientation-averaged T-matrix spheroids (pytmatrix, samples-instruments round); Zemax only via MSP DLL; CODE V Mie→LightTools|
 |H6|Dedicated stray-light workflow|🟡ghost|✅Path|⚠️LT|⚠️TracePro|🟡ghost|🟡manual|**Zemax** — Path Analysis / Critical Ray Tracer|
 
 ### I. Optimization
@@ -1038,7 +1043,7 @@ architecture (FreeCAD worker + numpy/torch MC engine + C engine + PySide GUI), c
 > named analysis products **PSF, FFT-MTF, encircled/ensquared energy, spot diagrams, ray/OPD fans**
 > (lowhanging round); **ghost/stray-light path ranking**; **photometric lux/lm/cd** and the
 > **spectrometer** mode; **Gaussian-beam (M²) sources + apodization**; **glass-catalog import**;
-> **biaxial crystals**; **measured ABg BSDF (BRDF-side)**; **multi-process `--workers` sharding**;
+> **biaxial crystals (incl. internal conical refraction)**; **measured ABg BSDF (BRDF+BTDF)**; **multi-process `--workers` sharding**;
 > the **fold operator + relative optical-train chaining**; **curved detectors (incoherent)**; and the
 > compiled **C engine**.
 > **Then the design-apparatus round (2026-07-13) landed a v1 of most of §7.1/§7.2/§7.3/§7.6/§7.11:**
@@ -1153,12 +1158,14 @@ Bulk-T index via **dn/dT (`--temperature`) landed** (K1🟡). **What remains:** 
 
 ### 7.9 Scattering & stray light (H2, H3, H6)
 - **① Ideal:** measured BSDF/ABg import (both BRDF and BTDF), importance sampling, a dedicated
-  stray-light workflow with path ranking. (Ghost path ranking + BRDF ABg + scatter-to-target aim
-  already landed.)
-- **② Pragmatic:** (a) **BTDF (transmitted-side) ABg** beside the shipped BRDF sampler (`future.md`
-  a) (**M**). (b) Broaden importance sampling (**M**). (c) A fuller **Path-Analysis-style stray-light
-  report** on top of the shipped ghost ranking (**M**). MieWorkbench already *wins* the scatter
-  physics (H4/H5); these close the tooling gap. **Effort: M each.**
+  stray-light workflow with path ranking. (Ghost path ranking + BRDF+BTDF ABg + scatter-to-target
+  aim (`--importance-scatter`) all landed.)
+- **② Pragmatic:** what remains is (a) anisotropic (per-azimuth) BSDF fits — the shipped ABg model
+  is isotropic on both the reflected and transmitted sides (**M**), and (b) a fuller
+  **Path-Analysis-style stray-light report** on top of the shipped ghost ranking (**M**).
+  MieWorkbench already *wins* the scatter physics (H4/H5) and the reflected+transmitted scatter
+  tooling itself (BTDF landed P2/P2.5, `engine3 overhaul` round); these close the remaining depth
+  gaps. **Effort: M each.**
 
 ### 7.10 Multi-configuration / zoom (M1–M3)
 - **② Pragmatic:** the `--var` sweep + Variables dock already parameterize variants; wrap them as a
@@ -1202,8 +1209,11 @@ No competitor here has *any* time-domain modeling, so these are moat-widening, n
 - **Coating needle-synthesis (G5):** nobody here has true needle synthesis; users pair with Essential
   Macleod. Not worth chasing.
 - **Cloud compute (Q4):** conflicts with the data-locality/ITAR value proposition; keep optional.
-- **Biaxial conical refraction:** biaxial itself is a MieWorkbench-unique *win*; the conical-refraction
-  corner case is documented as an honest limit (`future.md` b).
+- **External biaxial conical refraction:** biaxial itself is a MieWorkbench-unique *win*; **internal**
+  conical refraction is now modeled (perturbed two-sheet fan behind `--conical`, samples-instruments
+  round). **External** conical refraction (the emergent double-ring from a point source outside the
+  crystal) remains a deliberate non-goal — a narrower corner case than the internal cone, and no
+  competitor here models either (`future.md` Backlog b).
 
 ---
 
@@ -1255,8 +1265,9 @@ Have" analysis-product item is now **done**, and optimization/tolerancing rise t
    ingestion; the last source gaps vs Zemax/OSLO/QUADOA.
 10. **Config-table multi-configuration** (§7.10). *Why:* zoom/thermal/scan workflows; wraps existing
     sweep machinery; all four suites win M.
-11. **BTDF scatter + fuller stray-light report** (§7.9). *Why:* MieWorkbench already wins the scatter
-    *physics*; this closes the remaining tooling gap.
+11. **Fuller stray-light report** (§7.9). *Why:* BTDF itself landed (P2/P2.5, `engine3 overhaul`
+    round); MieWorkbench already wins the scatter *physics* and now has both scatter sides — a
+    Path-Analysis-style report on the shipped ghost ranking is what remains.
 
 ### 8.3 Might Be Useful (worthwhile but narrower or higher-effort)
 12. **Partial-coherence imaging + image simulation** (§7.3, §7.7). *Why:* OSLO/CODE V/Zemax win B8/
@@ -1274,8 +1285,9 @@ Have" analysis-product item is now **done**, and optimization/tolerancing rise t
 ### 8.4 Not Really Important (defer or document as deliberate non-goals)
 18. **RCWA gratings** (§7.15) — Zemax-only; closed-form models suffice for most cases; XL research.
 19. **Mueller-matrix formalism** (§7.15) — only QUADOA claims it; Jones + Stokes cover the need.
-20. **Optical activity / conical refraction** (§7.15) — MWB now ships near-axis natural optical activity (no other package here has any); conical
-    refraction is a documented corner-case limit of a MieWorkbench-unique win.
+20. **Optical activity / external conical refraction** (§7.15) — MWB now ships near-axis natural optical activity AND internal biaxial conical
+    refraction (no other package here has either); external
+    conical refraction remains a documented corner-case non-goal of a MieWorkbench-unique win.
 21. **Coating needle-synthesis** (§7.15) — nobody here has it; users pair with Essential Macleod.
 22. **Native cloud compute** (§7.15) — conflicts with the data-locality/ITAR value proposition.
 23. **A macro *language*** — redundant given an in-app Python console (§7.11).

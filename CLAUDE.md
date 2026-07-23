@@ -83,6 +83,20 @@ python3 scripts/run_pipeline.py --models example.FCStd --preset quick
 #   (p/dA)·κ from the ported differentials dA, else the source flat-top area).
 #   Only the chi2 `nonlinear` token still Python-routes — SHG harmonic-child
 #   strata + the Pockels index-shift split are a later tranche.
+# scattering samples (samples-instruments): body's `sample` property ->
+#   sample/samples.miesamp row (particle pop + optional S(q)/T-matrix
+#   spheroid); --conical/--conical-fan/--conical-delta = biaxial internal
+#   conical refraction (off by default); --ring-profile/--reference-case
+#   (post stage) = log-annular sizer readout / UV-Vis absorbance
+# traced DLS (dynamic light scattering, samples-instruments):
+/home3/optics/env/bin/python scripts/run_dls.py \
+    --model-json geometry/<stem>/model.json \
+    --case-dir results/<stem>/<case> --frames 200 --dt-ms 1.0
+/home3/optics/env/bin/python scripts/dls_correlate.py --case-dir results/<stem>/<case>
+#   (both optics-env python; needs one EXPLICIT-mode `sample` body + a
+#   coherent source; run_dls.py persists dls/frames.h5, dls_correlate.py
+#   is offline/re-runnable -> g1/g2/D/hydrodynamic-diameter, docs
+#   RAYTRACER.md §8.7)
 
 # GUI
 env/bin/python -m mieworkbench [model.FCStd|X.MieWB|X.MieSim]   # or bin/mieworkbench
@@ -94,7 +108,7 @@ python3 scripts/miewb_tool.py run X.MieWB -o X.MieSim    # unpack→pipeline→p
 
 Tests:
 ```bash
-/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q   # engine (~935; -m "not slow" for loops)
+/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q   # engine (~1336; -m "not slow" for loops)
 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbench/tests -q          # GUI, fast
 MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbench/tests -q  # + FreeCAD integration
 ```
@@ -149,7 +163,7 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   `run_trace` REFUSES a locked case (exit 4). The GUI opens live cases
   read-only in monitor mode (polls `progress.json`).
 - **Primitives** (`scripts/primitivelib.py` + `primitives/*.FCStd` +
-  `.meta.json`): 70 catalog elements (sources incl. 6 pulsed/SC
+  `.meta.json`): 80 catalog elements (sources incl. 6 pulsed/SC
   lasers (P12: maitai_800/erfiber_1560/ndyag_1064/sc_superk/laser_pulsed/
   fiber_nonlinear_output)/detectors/fiber optics/
   lenses/beamsplitters/filters/polarization/prisms & mirrors/apertures/
@@ -157,7 +171,12 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   analytic cylinders, NA 0.22 via the `fiber_core_na22` material row,
   `mirror_annular` perforated SCT-style primary, and `iris_bladed` (P8:
   N-blade true-polygon aperture stop -> N-fold coherent diffraction star);
-  geometry params live in a
+  samples-instruments adds 10: `cuvette_square`/`cuvette_capillary`/
+  `flow_cell` (nested wall+liquid cells), `vial_cylindrical`/
+  `vat_cylindrical` (DLS vial / decalin index-matching bath),
+  `sample_region` (bare air anchor for unwalled clouds), `tungsten_halogen`/
+  `d2_lamp`/`hg_calibration` (lamp sources), `source_image` (Lambertian
+  USAF-style image emitter); geometry params live in a
   `dim` spreadsheet; edits go through **rebuild-on-edit** (`rebuild_primitive`
   op re-runs the builder — constraint expressions can't change topology).
   Hand-authored primitives with real cell expressions use the normal
@@ -203,8 +222,13 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
 - sources: `power` (mW) + `lambdac` (nm) [+ `lambdamin`/`lambdamax` nm,
   `coherent` bool, `polarization` = `unpolarized` | `linear:<deg>` |
   `circular:left|right` | `elliptical:<psi>:<chi>`, `spectrum` =
-  `emission/emitters.miesrc` row = tabulated emission SPD (continuous only;
-  supersedes lambdamin/max, inverse-CDF equal-power strata)]
+  `emission/emitters.miesrc` row = tabulated/synthesized emission SPD
+  (`kind` continuous/blackbody/lines; supersedes lambdamin/max,
+  inverse-CDF equal-power strata — `lines` places strata at the line
+  centers via Hamilton apportionment), `image` = `image/images.mieimg`
+  row = per-position radiance bitmap (alias-method density sampling at
+  equal per-ray power, Lambertian by default; optional `image_cone_deg`
+  (0,90] cone restriction; excludes `beam`/`apodization`)]
 - pulsed sources (P3/P6): `power` XOR `pulse_energy` (µJ, needs
   `rep_rate` Hz); `pulse_duration` (ps FWHM; on a power-only source =
   virtual pulse); derived {P_pk=0.94E/τ, κ} echoed in case.json
@@ -225,7 +249,12 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
   scene build; the CAD is the UNPERTURBED shape by design so the <1 µm gate
   checks base-vs-CAD only; Python-routed), `edge_blackened` (P8 bool: blacken
   the lens CYLINDER barrel = per-face absorbance on cylinder faces, immune to
-  FaceN renumbering; Python-routed), `mirror`, `absorbance`
+  FaceN renumbering; Python-routed), `mirror`, `absorbance`, `sample`
+  (samples-instruments: `sample/samples.miesamp` row binding a particle
+  population to THIS body's interior — body's own `material` is the host
+  medium, body shape bounds the cloud; optional S(q) structure factor +
+  T-matrix spheroid shape; continuum mode C-ported, explicit/lattice mode
+  stays Python-routed)
 - NLO extras (pulsed round): `nonlinear` = nonlinear.mienlo row
   (chi2_process → per-segment SHG transfer: incoherent λ/2 child,
   stratum id n_λ+parent, η clamped 0.5; pockels rows + `pockels_voltage`/
@@ -317,18 +346,30 @@ symmetric element's own axis allowed+reported) and 3-seed power
 ## Optical component library
 
 `opticalproperties/` uses self-describing extensions (content is still CSV):
-`materials.miemat` (847 rows), `nk/*.mienk` (18 tables), `coating/coatings.miecoat`
+`materials.miemat` (849 rows, incl. `decalin` + `dye_solution_kmno4`),
+`nk/*.mienk` (18 tables), `coating/coatings.miecoat`
 (39), `polarizer/polarizers.miepol` (17), `filter/filters.miefilt` (56),
 `grating/gratings.miegrat` (9), `birefringence/uniaxial.miebrf` (13 uniaxial
 crystals) + `birefringence/biaxial.mibiax` (4 biaxial),
 `nonlinear/nonlinear.mienlo` (14: chi2 tensors/processes, pockels, n2,
 saturable), `diffuser/diffusers.miedif` (4), `scatter/bsdf.miebsdf` (4),
-`instrument/instruments.mieinst` (3),
-`detector/detectors.miedet` (detector QE curves, 1 entry: hamamatsu_s1223),
-`emission/emitters.miesrc` (tabulated source emission spectra, 2 entries:
-led_white_2733k + sc_superk supercontinuum SPD; continuous kind only),
+`instrument/instruments.mieinst` (4 classes shipped — camera/powermeter/
+spectrometer/`diode_array`, the last a P12 physical linear-array readout;
++3 schema-defined placeholder classes with no rows),
+`detector/detectors.miedet` (detector QE curves, 4 entries: hamamatsu_s1223
++ toshiba_tcd1304ap/sony_ilx511b/hamamatsu_s3904 linear-CCD rows),
+`emission/emitters.miesrc` (tabulated/synthesized source emission spectra,
+5 entries: led_white_2733k + sc_superk continuous, bb_halogen_3000k
+blackbody, d2_uv_approx continuous, hg_penlamp lines; `kind` ∈
+{continuous, blackbody, lines}),
 `figure/figures.miefig` (P8: Zernike SURFACE figure-error sets — Noll
 `j:rms_nm` coeffs + `r_norm_mm`, 4 entries: defocus/astig/trefoil/lambda10),
+`sample/samples.miesamp` (samples-instruments: 7 scattering-sample rows —
+particle material/size-distribution/loading + optional S(q) structure
+factor (Percus-Yevick/Baxter/Teixeira-fractal/paracrystal/tabulated) or
+T-matrix spheroid shape — bound to a scene via a body's `sample` property),
+`image/images.mieimg` (samples-instruments: 1 extended image-source row,
+`usaf_style_target`, bound via a source's `image` property),
 per-item tables `*/tables/*.mietab`. Loaders prefer the new names and **fall back to
 legacy `.csv`** (external all-.csv libraries keep working). `reference`
 (citation) column is REQUIRED everywhere; loaders hard-validate
@@ -439,6 +480,19 @@ promote entries to the repo (system) library.
   fold placements use the proper `fold_rotation` about the fold line.
 - GUI features are verified interactively via `scripts/tools/gui_verify.py`
   (`xvfb-run`) — screenshots per scenario; run it before closing GUI work.
+- **`fresnel.cos_theta_t`'s branch rule needs a radiation-condition
+  carve-out** (`Re(n2·cos_t)>=0`) for the effectively-propagating regime —
+  the unconditional `Im(n2·cos_t)>=0` decay rule flips a genuinely
+  propagating root into a spurious evanescent one whenever the INCIDENT
+  medium carries trace absorption (water, k~1e-8) into an exactly lossless
+  far medium, exploding closure by `O(1e16)` on a curved nested interface
+  (fixed; Python engine only, the C engine's rule already matched).
+- **`Tracer.run`'s termination valve must be a PER-LINEAGE hop cap, never
+  a shared/global pop budget** — a global counter consumed by `batch_size`
+  chunk splits silently truncates live-eligible rays on a many-interface
+  stack well before it should (found losing 37.8% of emitted power at 60k
+  rays on a depth-4 nested scene; fixed by carrying each batch's ancestry
+  step count through chunk splits unchanged).
 
 ## Physics invariants pinned by tests (don't break them)
 
@@ -473,7 +527,12 @@ Engine+reason recorded in case.json; C failures
 fall back to Python under auto. `--workers` is Python-only (C threads
 internally). Benchmarks: `cengine/BENCHMARKS.md`;
 docs: `docs/RAYTRACER.md` §13, `cengine/README.md` (incl. torch-gather
-sunset roadmap).
+sunset roadmap). samples-instruments: `image_source` (extended
+image-emitting source) and `sample_body` (continuum-mode `sample` body
+property, region-gated by the medium stack, zero C-side S(q) logic) are
+now PORTED; `conical` (biaxial internal conical refraction) and
+`sample_explicit` (explicit/lattice-mode sample realization) stay
+Python-only routing tokens.
 
 ## Everything else
 

@@ -226,6 +226,11 @@ Python engine on synthetic feature scenes) plus the C unit tests.
 | I | --importance-aim (opt-in, unbiased birth-culling with candidate reweighting) | **done** |
 | P7 | pulsed-optics/NLO transport: GDD budget, time-of-flight/group-delay products, ray differentials (Igehy, kernels/diffk.h), saturable absorption, TPA, Kerr bulk phase | **done** |
 | P8+ | χ² nonlinear frequency conversion (SHG/Pockels) | **Python-only** — `nonlinear` token; C port not started |
+| samples-instruments | `image_source` (extended image-emitting source: alias-table pixel draw + in-pixel jitter + Lambertian/cone emission, `trace.c` `sample_image_pos_dir`, reserved RNG event slots keep every other stream bit-identical); `sample_body` (continuum-mode body-bound `sample` property: media array region-gated by the medium stack, zero C-side S(q) logic — the corrected mu_ext/albedo and size-averaged S(q)-corrected inverse-CDF table are pre-resolved Python-side and serialized as plain tables) | **done** |
+
+`MEDIUM_STACK_DEPTH` is **8** (both engines, `raybuf.h`/`rays.py` — raised
+from 4 this round after a cuvette-in-bath-in-vat nested sample cell hit
+the old cap exactly).
 
 Python-only tokens (current set, routed to the Python engine under
 `auto`): `figure_error`, `beam`, `apodization`, `biref_exact`, `gyration`,
@@ -233,7 +238,13 @@ Python-only tokens (current set, routed to the Python engine under
 `time_directional_index`, `curved_detector`, `extra_detector_faces`,
 `scatter_g_ne_2`, `scatter_btdf`, `scatter_importance`, `coating_phase`,
 `particles_explicit`, `pol_transport`, `rough_fresnel_macro`,
-`surface:qforbes`, `surface:perturbedsurface`. `cengine.py::PORTED` is the
+`surface:qforbes`, `surface:perturbedsurface`, `conical` (biaxial internal
+conical-refraction fan — rides on `biaxial`/`berreman`, already
+Python-only, so a C port has nothing to port into), `sample_explicit`
+(EXPLICIT/lattice-mode `sample` body — the continuum-mode `sample_body`
+token above is PORTED; only explicit/lattice realizations stay
+Python-routed, the same brute-force-collision seam as
+`particles_explicit`). `cengine.py::PORTED` is the
 single source of truth — this list is a convenience snapshot, not
 authoritative.
 

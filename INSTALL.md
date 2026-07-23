@@ -141,6 +141,71 @@ GUI, which always adds this flag itself), pass
     --case-dir results/example/quick --model-json geometry/example/model.json
 ```
 
+### 3.4 Optional: pytmatrix (T-matrix spheroid samples, samples-instruments round)
+
+`scripts/raytracer/tmatrix.py`'s `TMatrixEvaluator` (orientation-averaged
+T-matrix scattering for non-spherical, `shape=spheroid` sample-registry
+rows, docs/RAYTRACER.md §5.13) is a **soft, optics-env-only** dependency
+on [pytmatrix](https://github.com/jleinonen/pytmatrix) (MIT) — a
+`sphere`-shape sample row never imports it, and every other feature in the
+repo works without it. Install it into `/home3/optics/env` (or your
+equivalent optics env) ONLY — never the GUI venv, never FreeCAD's python.
+
+**pytmatrix 0.3.3's own `setup.py` no longer builds under numpy 2.x** (its
+`numpy.distutils`-based Fortran extension build predates numpy's
+`distutils` removal), so a bare `pip install pytmatrix==0.3.3` fails on
+this machine's numpy 2.x optics env. The verified, REQUIRED recipe builds
+the Fortran extension by hand with `numpy.f2py`'s meson backend and drops
+the built package straight into `site-packages`:
+
+```bash
+OPTICS=/home3/optics/env   # substitute your optics env root
+
+# 1. pytmatrix's PyPI sdist (0.3.3) — has the Fortran sources but is
+#    MISSING pytmatrix.pyf (the f2py interface file); fetch that
+#    separately from GitHub's master branch.
+mkdir -p /tmp/pytmatrix_build && cd /tmp/pytmatrix_build
+$OPTICS/bin/pip download --no-binary :all: --no-deps -d . pytmatrix==0.3.3
+tar xzf pytmatrix-0.3.3.tar.gz
+curl -L -o pytmatrix-0.3.3/pytmatrix/fortran_tm/pytmatrix.pyf \
+    https://raw.githubusercontent.com/jleinonen/pytmatrix/master/pytmatrix/fortran_tm/pytmatrix.pyf
+
+# 2. meson is f2py's build backend here — install it into the optics env
+$OPTICS/bin/pip install meson
+
+# 3. build the extension IN PLACE (the env's own bin/ must be FIRST on
+#    PATH so f2py's meson backend picks up the right python/meson/ninja;
+#    FFLAGS points gfortran at ampld.par.f's shared parameter block)
+cd pytmatrix-0.3.3/pytmatrix/fortran_tm
+PATH="$OPTICS/bin:$PATH" FFLAGS="-I$(pwd)" \
+    $OPTICS/bin/python -m numpy.f2py -c pytmatrix.pyf \
+    ampld.lp.f lpd.f --backend meson
+
+# 4. copy the whole package (pure-python modules + the built .so) into
+#    site-packages — there is no working `pip install .` path here, this
+#    IS the install step
+cp -r /tmp/pytmatrix_build/pytmatrix-0.3.3/pytmatrix \
+    "$OPTICS"/lib/python3.11/site-packages/
+```
+
+(Adjust the `python3.11` site-packages path to your optics env's actual
+Python version.) **Verify** with a smoke test that builds a `Scatterer`
+and reads back its S-matrix:
+
+```bash
+$OPTICS/bin/python -c "
+from pytmatrix.tmatrix import Scatterer
+s = Scatterer(radius=1.0, wavelength=0.6328, m=complex(1.5, 0.0), axis_ratio=1.0)
+print(s.get_S())
+"
+```
+
+A clean run (no traceback, a 2×2 complex S-matrix printed) confirms the
+build. `raytracer/tmatrix.py` soft-imports pytmatrix and only raises
+(naming this exact install path) the first time a `shape=spheroid` sample
+row is actually evaluated — `sphere`-shape rows, and every other feature,
+are completely unaffected if this step is skipped.
+
 ---
 
 ## 4. The GUI virtualenv
@@ -329,7 +394,7 @@ given. See README.md §4 and §5.9 for the full format/CLI reference.
 ## 7. Verification
 
 ```bash
-# engine suite (~935 tests currently; see the actual count with
+# engine suite (~1336 tests currently; see the actual count with
 # --collect-only -q)
 /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q
 

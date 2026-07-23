@@ -622,7 +622,11 @@ docs/RAYTRACER.md §7.11 for the full output/report-field reference.
 covers every `class`, and a given row only fills the columns its own
 class uses (blank elsewhere), the same sparse-row shape as
 `nonlinear/nonlinear.mienlo` (§11 below). `class` discriminates the
-schema: `camera`, `powermeter`, `spectrometer` ship rows today;
+schema: `camera`, `powermeter`, `spectrometer`, `diode_array` (P12/
+samples-instruments: a physical linear-array readout — reuses `camera`'s
+electron/noise/ADC columns plus `spectrometer`'s `stray_light_floor`/
+`detector_qe_table`, adding its own `pixel_height_um`/`n_px` real-array
+geometry columns) ship rows today;
 `polarimeter`, `wavefront_sensor`, `autocorrelator` are schema-defined
 **placeholder classes** (fully validated, no shipped rows — bench gear
 the project doesn't own yet). Don't remove their validation branches just
@@ -647,6 +651,12 @@ To add a new instrument row:
    - `spectrometer`: `lam_lo_nm` < `lam_hi_nm`, `resolution_fwhm_nm`
      (>0), `slit_um` (>0), `stray_light_floor` ([0,1)),
      `detector_qe_table` (→ a `wavelength_nm,qe` table, values in (0,1]).
+   - `diode_array`: `pixel_pitch_um`, `pixel_height_um`, `n_px` (int>0,
+     real array pixel count), plus the SAME `full_well_e`/`read_noise_e`/
+     `bit_depth`/`adc_gain_e_per_dn`/`integration_time_s_default` columns
+     `camera` uses and the same `stray_light_floor`/`detector_qe_table`
+     columns `spectrometer` uses (no separate columns for these — the
+     loader reuses the identical fields across classes).
    - `polarimeter`/`wavefront_sensor`/`autocorrelator` (placeholder,
      validated but no shipped consumer in `post_process.py` yet):
      `analyzer_states` (int>=2)/`extinction_ratio`/`retarder_error_deg`;
@@ -665,9 +675,9 @@ To add a new instrument row:
    output; `--instruments off` on the CLI skips the layer even when a
    detector carries the property.
 
-See `opticalproperties/instrument/instruments.mieinst` for the three
+See `opticalproperties/instrument/instruments.mieinst` for the four
 shipped rows (`camera_generic`, `powermeter_generic`,
-`spectrometer_generic`, each citing a real datasheet) and
+`spectrometer_generic`, `tcd1304_array`, each citing a real datasheet) and
 docs/RAYTRACER.md §7.11 for the full report-field reference.
 
 ---
@@ -845,7 +855,9 @@ Biaxial crystals (`n_x != n_y != n_z`: KTP, KTA, LBO, BiBO today) need
 **two** registry additions plus a full principal-axis frame on the body
 — more moving parts than a uniaxial crystal (§4's `crystal_axis` alone).
 See docs/RAYTRACER.md §5.6b/§7.7 for the physics model and honest limits
-(conical refraction near an optic axis is not modeled).
+(internal conical refraction near an optic axis is modeled as a perturbed
+two-sheet fan behind `--conical`, off by default; external conical
+refraction is not modeled).
 
 1. **Add three principal-index rows to `materials.miemat`** (§5.1 above),
    one per axis, named `<crystal>_nx`/`_ny`/`_nz` (matching the shipped
@@ -972,3 +984,161 @@ To add a new figure-error entry:
 See `opticalproperties/figure/figures.miefig` for the four shipped rows
 (`fig_lambda4_defocus_633`, `fig_astig_633`, `fig_lambda10_typical`,
 `fig_trefoil_633`) and docs/RAYTRACER.md §5.8b for the physics model.
+
+---
+
+## 12. Adding a scattering-sample registry entry (`sample`, S(q))
+
+`opticalproperties/sample/samples.miesamp` (loader: `optprops.
+load_samples()`, docs/RAYTRACER.md §5.13/§7.16) is the scattering-sample
+registry consumed by an optic body's `sample` property (§4 above): a
+particle population bound to that body's interior (the body's own
+`material` is the host medium). 16 columns: `name, particle_material,
+dist, median_um, gsd, phi, tau, mode, count, sq_model, sq_params, shape,
+aspect_ratio, solvent_visc_pas, reference, notes`.
+
+1. **Append a row to `sample/samples.miesamp`:**
+   - `name`: registry key
+   - `particle_material`: must exist in `materials.miemat` (§5 above)
+   - `dist`: `mono` or a log-normal-over-radius kind; `median_um` (median
+     DIAMETER, matching `--particles`' own convention, §9 of
+     docs/RAYTRACER.md); `gsd` (optional, defaults 1.6, forced to 1.0 for
+     `dist=mono`)
+   - **exactly one** of `phi` (mass fraction, `(0,1)`) or `tau` (target
+     Beer-Lambert optical depth along the host body's own AABB x-extent)
+   - `mode` (optional, default `auto`): `auto`/`continuum`/`explicit`;
+     `count` (optional int `>0`) pins an explicit-mode site count directly
+   - `sq_model` (optional, default `none`): `none`/`py`/`baxter`/
+     `fractal`/`paracrystal`/`table`, with `sq_params` (`;`-separated
+     `key:val`) validated per model — see docs/RAYTRACER.md §7.16 for the
+     exact required/optional keys per model (each model's physics is in
+     §5.13). `mode=explicit` + `sq_model=paracrystal` places a REAL
+     fcc/bcc/sc lattice realization instead of an independent-sphere dart
+     throw.
+   - `shape` (optional, default `sphere`): `sphere` or `spheroid` (with
+     `aspect_ratio`, required `!= 1.0` for `spheroid`, forced `1.0` for
+     `sphere`) — `spheroid` routes through the T-matrix evaluator
+     (§5.13; needs `pytmatrix` in the optics env, INSTALL.md §3.4).
+   - `solvent_visc_pas` (optional): required if the row will be used with
+     `run_dls.py` (§8.7 of docs/RAYTRACER.md) — the host solvent's
+     dynamic viscosity for the Stokes-Einstein diffusion coefficient.
+   - `reference`: required citation for the particle/size-distribution/
+     S(q) data; `notes`: optional.
+
+2. **Create an S(q) table** if `sq_model=table`: `sample/tables/
+   <name>.mietab` with columns `q_per_um, s` (`q` strictly increasing
+   `>= 0`, `s > 0`, `>= 2` rows) — the abscissa is momentum transfer
+   (1/µm), not wavelength, so this is a distinct table shape from every
+   other `*.mietab` in the repo.
+
+3. **Tag a body:** set an optic body's `sample` property to your
+   registry name — the body's shape bounds the cloud and its `material`
+   is the host medium, so pick (or build) a host body whose interior
+   volume is what you want the sample to fill (§13 below for ready-made
+   nested-cell primitives).
+
+4. **Validate:** `load_samples()` hard-validates every field per the
+   schema above; a sample used with `run_dls.py` additionally requires
+   EXPLICIT mode (`mode=explicit` or `count` small enough that `auto`
+   resolves to it) and at least one coherent source in the scene.
+
+See `opticalproperties/sample/samples.miesamp` for the 7 shipped rows and
+docs/RAYTRACER.md §5.13/§7.16 for the full physics model and honest
+limits (decoupling approximation for polydisperse S(q); `tau` resolves
+along the host body's AABB x-extent, exact only for an on-axis
+rectangular cell).
+
+## 13. Building a cuvette-style nested-solid sample-cell primitive
+
+The samples-instruments round's sample-cell primitives
+(`cuvette_square`/`cuvette_capillary`/`flow_cell`/`vial_cylindrical`/
+`vat_cylindrical`) all follow the SAME pattern as `bs_cube`/`pbs_cube`
+(§3 above): a full WALL solid (glass) with a full LIQUID solid nested
+strictly inside it, glass-to-liquid contact, no air gap — the extractor
+classifies the pair `validation.nested_solids` and the tracer's LIFO
+medium stack recovers the wall as the shell outside the liquid volume
+(docs/RAYTRACER.md's "Optically-contacted solids" quirk note). The wall
+body is always the PRIMARY body (carries the element label + train
+props, named `group` by convention); the liquid body is a second body
+named `group + "_liquid"`.
+
+**Rectangular cells** (`_build_cuvette_box` in `primitivelib.py`, shared
+by `cuvette_square`/`cuvette_capillary`; `_build_flow_cell` is the same
+idea with a smaller flowing-liquid channel instead of a full-cross-
+section liquid fill): the outer wall box spans `(path_length + 2*wall) x
+(width + 2*wall) x (height + 2*wall)`; the liquid box (`path_length x
+width x height`) sits centered inside it, inset by `wall` on every face:
+
+```python
+def _build_cuvette_box(doc, group, p, wall_material="glass",
+                       liquid_material="water"):
+    pl_, w, h, wall = p["path_length"], p["width"], p["height"], p["wall"]
+    outer_x, outer_y, outer_z = pl_ + 2*wall, w + 2*wall, h + 2*wall
+    wall_body = mts.new_body_pad(
+        doc, group, group,
+        rects=[(-outer_y/2, -outer_z/2, outer_y, outer_z)],
+        x_start=0.0, length=outer_x, props={"material": wall_material})
+    liquid = mts.new_body_pad(
+        doc, group + "_liquid", group + "_liquid",
+        rects=[(-w/2, -h/2, w, h)],
+        x_start=wall, length=pl_, props={"material": liquid_material})
+    return [wall_body, liquid]
+```
+
+**Cylindrical cells** (`_build_cyl_nested`, shared by `vial_cylindrical`/
+`vat_cylindrical`): a vertical (local z) glass cylinder, radius =
+`diameter/2`, x-centered at its own radius so the near tangent point
+sits at local x=0 (the `lens_rod` convention, §3's primitive-anatomy
+note) and the far tangent at x=`diameter`; the liquid is a smaller
+concentric cylinder inset by `wall` radially and on both z ends.
+
+**A bare-cloud host with no cell walls at all**: `sample_region` is a
+single `material=air` box (no nesting, no second body) — the anchor for
+a `sample` cloud that shouldn't be walled at all, and it carries a
+`port_frames` pass-through entry so a downstream chained element (e.g. a
+goniometer detector) can reference it like any other element (closes the
+`future.md` a2 backlog item on chain-referenceable particle clouds).
+
+**To add a new nested-pair primitive**: write a builder following either
+pattern above (probe-verify the resulting volumes and confirm zero
+overlaps the way the samples-instruments wave did — see its test suite
+for the exact probe-point recipe), add a `port_frames` entry (§3b above)
+so the primitive is chain-able, and register both builder + `PRIMITIVES`
+metadata (§3). Set the wall body's `material` to a real glass/polymer row
+and the liquid body's `material` to the solvent (or a `sample`-cloud
+host, §12) — never both walls AND a bare-liquid-only design for the same
+cell; pick one topology.
+
+## 14. Adding an extended image-source registry entry
+
+`opticalproperties/image/images.mieimg` (loader: `optprops.
+load_images()`, docs/RAYTRACER.md §5.14/§7.17) names a greyscale bitmap
+consumed by a source body's `image` property (§4 above). Columns `name,
+file, reference, notes`.
+
+1. **Add the bitmap file** next to the registry CSV
+   (`opticalproperties/image/`), one of `.png`/`.jpg`/`.jpeg`/`.tif`/
+   `.tiff`/`.bmp`/`.npy` (`IMAGE_EXTENSIONS`) — keep it inside
+   `opticalproperties/` so a `.MieWB` project library carries it with the
+   scene. `scripts/tools/gen_usaf_target.py` is a worked example generator
+   (a MIL-STD-150A-style-alike resolution target) if you need a
+   synthetic test pattern rather than a real captured image; row 0 of the
+   bitmap is the picture's TOP (max-value convention — see the loader's
+   own orientation note, §5.14).
+2. **Append a row to `image/images.mieimg`**: `name`, `file` (the
+   filename from step 1), `reference` (required — cite the real image's
+   provenance, or the generator script + its own convention notes for a
+   synthetic target), `notes` (optional).
+3. **Tag a body:** set a source body's `image` property to your registry
+   name; optionally `image_cone_deg` (0,90] to restrict emission to a
+   cone instead of full Lambertian (§5.14 — this is a variance
+   optimization, not a physical claim about the object's emission
+   pattern). `image` is mutually exclusive with `beam`/`apodization` and
+   needs a planar emitting face.
+4. **Validate:** `load_images()` only checks file existence/extension and
+   the `reference` citation contract; the actual pixel data loads once at
+   scene build (`sources.load_image_gray`), so a corrupt/unreadable
+   bitmap fails at trace time, not at registry-load time.
+
+See `opticalproperties/image/images.mieimg` for the shipped
+`usaf_style_target` row and the `source_image` primitive.

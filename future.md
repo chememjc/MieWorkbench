@@ -97,11 +97,11 @@ prose is in git history / superseded by the shipped code):
 |7|Spot diagram + transverse/OPD ray fans|**done** (2026-07-10, needs `--export-rays`)|`run_trace.write_rays_full` → `rays_full.npz`; `post_process.render_spot_diagram`/`render_ray_fans`|
 |8|Gaussian-beam source + apodization|**done** (2026-07-10)|`scripts/raytracer/sources.py` (`beam_waist`/`m2`/`apodization`) + `element_wizard.py`|
 |9|Ghost/stray-light analysis|**done** (2026-07-10)|`RayBatch.refl_hist` → `post_process.render_ghost_analysis`, `--ghost-analysis` (implies `--export-rays`)|
-|10|BSDF/ABg measured-scatter import|**done** (2026-07-10), v1 BRDF-only|`raytracer/scatter.py` + `opticalproperties/scatter/bsdf.miebsdf`; BTDF (transmitted-side) not built|
+|10|BSDF/ABg measured-scatter import|**done** (2026-07-10), v1 BRDF-only|`raytracer/scatter.py` + `opticalproperties/scatter/bsdf.miebsdf`; BTDF (transmitted-side) not yet built at the time — LANDED SINCE (P2/P2.5, `engine3 overhaul` round, `btdf`/`btdf_A`/`btdf_B`/`btdf_g`/`btdf_tis_cap` columns)|
 |11|Fold operator + relative optical-train chaining|**done** (`object-placer` round)|`mieworkbench/core/project.py`/`train.py`, `scripts/train_solver.py`|
 |12|Multi-process ray sharding (`--workers`)|**done** (2026-07-10)|`run_trace._run_sharded`, `SeedSequence.spawn`; `--workers 1` bit-identical, `N>1` statistically equivalent|
 |13|Zernike wavefront + Strehl|**done, v1 pupil model** (2026-07-10)|`raytracer/analysis.py` + `post_process.render_wavefront`; pupil is **source-referenced** (exact for collimated benches), not a true exit pupil — see backlog|
-|14|Biaxial-crystal birefringence|**done** (2026-07-10) — KTP/KTA/LBO/BiBO|`raytracer/birefringence.py` biaxial extension + `birefringence/biaxial.mibiax`; conical refraction not modeled (honest limit, README §5.6b)|
+|14|Biaxial-crystal birefringence|**done** (2026-07-10) — KTP/KTA/LBO/BiBO|`raytracer/birefringence.py` biaxial extension + `birefringence/biaxial.mibiax`; internal conical refraction now modeled behind `--conical` (`samples-instruments` round, below), off by default (docs/RAYTRACER.md §5.6b)|
 |15|Stress/spatially-varying birefringence|**deferred** — see Backlog (a)|—|
 
 Also landed this round: curved (sphere/cylinder) detectors, incoherent path
@@ -166,6 +166,26 @@ glass substitution (I4), multi-config optimization + a config editor
 directed global synthesis (I6), annular/multi-basis Zernike (B6 depth),
 field-varying image-sim + VCZ partial coherence (F10/B8 depth).
 
+### `samples-instruments` round (landed 2026-07-23) — scattering samples, S(q), T-matrix spheroids, image sources, DLS
+
+STATUS facts only (full narrative in `CHANGELOG.md`):
+
+| Item | STATUS | Code seam |
+|--|--|--|
+|Biaxial internal conical refraction|**done** — perturbed two-sheet fan, off by default (`--conical`/`--conical-fan`/`--conical-delta`); closes Backlog (b)'s "conical refraction" gap|`raytracer/birefringence.py` (`biaxial_optic_axes`/`cone_half_angle`/`conical_fan`); docs/RAYTRACER.md §5.6b|
+|S(q) structure factors + explicit lattice realizations|**done** — exact Percus-Yevick + exact Baxter sticky-sphere + Teixeira fractal + powder paracrystal + tabulated; wired into the continuum ensemble AND real fcc/bcc/sc lattice site placement|`raytracer/structure.py`; `particles.py` (`ParticleCloud(sq=)`, `ExplicitRealization`)|
+|Body-bound sample media (`sample` property)|**done** — exact-containment medium-stack binding, host-material override, phi XOR tau; `MEDIUM_STACK_DEPTH` 4→8|`raytracer/particles.py` (`BodyParticleMedium`); `sample/samples.miesamp` (7 rows)|
+|Aspherical-particle T-matrix spheroids|**done** — closes Backlog (c)'s open T-matrix item|`raytracer/tmatrix.py` (pytmatrix, optics-env-only soft dep); `shape`/`aspect_ratio` sample columns|
+|Extended image-emitting source (`image` property)|**done, v1** — Lambertian/cone emission, alias-method density sampling; C-ported|`raytracer/sources.py`; `image/images.mieimg`; `cengine/src/trace.c` `sample_image_pos_dir`|
+|Blackbody + line emission kinds|**done** — closes the design-usability round's stated open item ("line-spectrum and blackbody/lamp source kinds... needs engine support")|`raytracer/optprops.py` (`EMISSION_KINDS`), `sources.wavelength_strata`'s `lines` regime|
+|Diode-array instrument class + absorbance + ring profile|**done, v1**|`post_process.render_diode_array`/`render_absorbance`/`render_ring_profile`; `instrument/instruments.mieinst` `diode_array` class|
+|Traced dynamic light scattering (DLS)|**done, v1** — dilute well-separated explicit clouds only (shared-RNG dense-cloud desync, see Backlog below)|`scripts/run_dls.py` + `scripts/dls_correlate.py`|
+|Co-located transparent detectors|**done** — closes the a2 backlog item below|`extract_geometry.py` (`validation.detector_overlap`)|
+|`--particles` cloud as a chain-referenceable anchor|**done** — closes the a2 backlog item below|`sample_region` primitive (air anchor cube) + its `port_frames` entry|
+|Anchored-placement expressions|**done** — closes the a2 backlog item below|`miewb_expr_pos_x/_y/_z`/`miewb_expr_rot_rx/_ry/_rz`; `train_solver.place_anchored`|
+|10 new primitives (catalog 70→80)|**done**|`primitivelib.py` — cuvette/vial/vat/sample_region/lamp/image-source builders|
+|Two Python-engine bug fixes (Fresnel weakly-absorbing-incident branch; trace hop cap)|**done**|`raytracer/fresnel.py` `cos_theta_t`; `raytracer/tracer.py` `Tracer.run`|
+
 ## Priority ranking — impact × leverage (2026-07-13, post design-apparatus round)
 
 The former "Must-Have" list (optimizer, tolerancer, dn/dT, exit-pupil,
@@ -213,9 +233,11 @@ Backlog/§ below (or `features.md` §7).
 10. **Directed global synthesis / multi-start (I6)** — **[XL · Med]**. Stretch
     on `optimize.py`: surface many distinct minima per run (CODE V Global-
     Synthesis-style). Lower leverage (research-grade), CODE V-unique.
-11. **BTDF scatter + fuller stray-light report (H2/H6)** — **[M · Med]**.
-    BTDF beside the shipped BRDF ABg sampler + a Path-Analysis-style report on
-    the shipped ghost ranking; MieWorkbench already wins the scatter *physics*.
+11. **Fuller stray-light report (H6)** — **[M · Med]**. BTDF itself
+    LANDED since this list was written (P2/P2.5, `engine3 overhaul`
+    round, beside the shipped BRDF ABg sampler); what remains is a
+    Path-Analysis-style report on the shipped ghost ranking —
+    MieWorkbench already wins the scatter *physics*.
 12. **Field-varying image-sim + VCZ partial coherence (F10/B8 depth)** —
     **[L · Med]**. Upgrade the shipped space-invariant image-sim to
     field-varying, add a Van Cittert–Zernike projector; rides on the exit-pupil
@@ -278,10 +300,16 @@ Backlog/§ below (or `features.md` §7).
   peak vs. a diffraction-limited reference — needs the same missing
   reference-sphere concept, cross-checking `--save-fields` against
   `--export-rays`).
-- **BTDF (transmitted-side) measured scatter.** The shipped `scatter`
-  property (`raytracer/scatter.py`, README §5.4.2) is reflected-side
-  (BRDF) only, v1; a scattering lens/window exit face currently transmits
-  its Fresnel/TMM child unmodified.
+- ~~**BTDF (transmitted-side) measured scatter.**~~ LANDED (P2/P2.5,
+  `engine3 overhaul` round): the `scatter` property (§5.4.2) now supports
+  an optional transmitted-side lobe via the `btdf`/`btdf_A`/`btdf_B`/
+  `btdf_g`/`btdf_tis_cap` columns on a `scatter/bsdf.miebsdf` row (each
+  defaulting to its reflected-side counterpart), split from the specular
+  transmitted remainder the same way the BRDF splits the reflected one;
+  ported to the C engine with importance-sampling support
+  (`raytracer/cengine.py`, `test_scatter_importance_btdf.py`). This row
+  was stale — this note is the only remaining stale copy as of the
+  `samples-instruments` docs pass.
 - **Coherent gather on curved detectors.** `CurvedDetectorGrid` (README
   §5.12) shipped incoherent-only as scoped — the planar Huygens gather
   kernel assumes a flat aperture; `add_gather_samples()` raises on a
@@ -308,8 +336,11 @@ Backlog/§ below (or `features.md` §7).
   round)**: `spectrum` body property → `opticalproperties/emission/`
   registry, equal-power quantile strata in `sources.wavelength_strata`
   (zero C-engine changes, scenes stay C-routable), `led_white` primitive.
-  Line-spectrum and blackbody/lamp source kinds are still open (the
-  loader rejects those `kind`s with "needs engine support").
+  ~~Line-spectrum and blackbody/lamp source kinds are still open~~ LANDED
+  (`samples-instruments` round): `EMISSION_KINDS` now includes
+  `blackbody` (Planck synthesis at load) and `lines` (Hamilton-
+  apportioned per-line strata); `tungsten_halogen`/`d2_lamp`/
+  `hg_calibration` are the new lamp primitives.
 
 ### (a2) Placement/authoring affordances (design-usability round findings)
 
@@ -328,29 +359,34 @@ loop (each names its seam):
   expressions (variables)" per-field editor with the `expr (= value)`
   affordance. The one-shot polar place-about-point (`place_about_point`)
   remains for computing a literal pose without persisting expressions.
-- **A `--particles` cloud is not a chain-referenceable body** — no way to
-  chain a detector "40 mm at 90° from the cloud center" (nephelometer
-  ring). Needs a lightweight non-solid "region anchor" element the train
-  solver can reference (`train_solver` port_frames + an extractor-ignored
-  marker body, or a virtual element in the recipe).
+- ~~**A `--particles` cloud is not a chain-referenceable body**~~ LANDED
+  (`samples-instruments`): the `sample_region` primitive (a bare
+  `material=air` anchor cube) carries a `port_frames` pass-through entry,
+  so a body-bound sample cloud (§5.13's `sample` property, bound to any
+  host body's interior, not just a CLI `--particles` box) can now anchor a
+  chained detector "N mm at θ° from the cloud center" like any other
+  element.
 - **Field-angle source fan helper.** N collimated sources at a common
   pivot overlap as solids; they must be spread on an arc by hand
   (y = L·tanθ). A wizard ("fan of field angles: N, ±θ, pivot") placing
   them chained/anchored would remove the trig (`element_wizard.py`).
-- **Co-located transparent detectors** overlap-fail extraction — no
-  authoring path for "measure the same plane two ways" (needs either
-  zero-thickness detector sheets or an extractor exemption for
-  detector-detector overlap).
-- **Coherent-gather ray-budget preflight.** Aperture-diffraction scenes
-  have an implicit `rays >> (beam/aperture)² · 1000` requirement the
-  presets don't know about; the GatherError names the fix only AFTER a
-  failed trace. `core/validation.py` could estimate transmitted-fraction
-  × rays against the M_eff gate at check time (a coarse aperture-area
-  ratio suffices).
-- **`--particles` target-optical-depth knob.** phi is opaque (the
-  aerosol demo needed 4 orders of magnitude off the spec'd value to make
-  τ visible); `parse_particles_spec` + the Mie ensemble tables could
-  accept `tau=1.0` and solve phi for the box length.
+- ~~**Co-located transparent detectors** overlap-fail extraction~~ LANDED
+  (`samples-instruments`, T16a): detector-detector solid overlap now
+  classifies into the informational `validation.detector_overlap` list
+  instead of the fatal `overlapping_solids` — "measure the same plane two
+  ways" is a physically well-defined stack of transparent screens
+  (`extract_geometry.py`).
+- ~~**Coherent-gather ray-budget preflight.**~~ This row was STALE — the
+  preflight check already existed (`design-usability` round,
+  `mieworkbench/core/validation.py`'s `check_gather_preflight`, a coarse
+  aperture-area-ratio estimate against the M_eff gate at check time, run
+  BEFORE a trace). No open item remains here.
+- ~~**`--particles` target-optical-depth knob.**~~ This row was STALE —
+  `common.parse_particles_spec` already accepts `tau=<F>` (mutually
+  exclusive with `phi`) and resolves it to an equivalent `phi` via
+  `ParticleCloud` (§9 of docs/RAYTRACER.md). The `sample` registry
+  (§5.13) also exposes `tau` directly on every sample row. No open item
+  remains here.
 - **"Span N Airy zeros" detector-sizing intent** and other
   diffraction-scale insert-values for the right-click menu
   (`core/opticalvalues.py` — needs aperture+distance context).
@@ -382,16 +418,25 @@ loop (each names its seam):
   gyration, C-engine port (`gyration` is a Python-only routing token), and
   scene-level coupling of Berreman's full tensor beyond the near-axis
   uniaxial case.
-- **Biaxial crystals — conical refraction only.** Biaxial birefringence
+- ~~**Biaxial crystals — conical refraction only.**~~ Biaxial birefringence
   itself LANDED 2026-07-10 (`raytracer/birefringence.py`
   `refract_in_biaxial()`/`biaxial_modes_for_k()`, quartic normal-surface
   root solve via companion-matrix eigenvalues; `birefringence/
   biaxial.mibiax` registry; KTP/KTA/LBO/BiBO ship, 15 tests in
-  `test_biaxial.py`). The remaining open limit is **conical refraction
-  near an optic axis** — degenerate eigenvectors there return an
-  arbitrary transverse basis; documented as an honest limit rather than
-  solved (README §5.6b). A conical-refraction validation scene would be
-  the natural next increment.
+  `test_biaxial.py`). **Internal conical refraction near an optic axis
+  LANDED (`samples-instruments` round, 2026-07-23)** behind `--conical`
+  (off by default, still an arbitrary transverse basis at the degeneracy
+  when off): a perturbed two-sheet fan reproduces Hamilton's internal cone
+  (`birefringence.py` `biaxial_optic_axes`/`cone_half_angle`/
+  `conical_fan`; docs/RAYTRACER.md §5.6b). Still open: **external**
+  conical refraction (the emergent double-ring from a point source outside
+  the crystal) is not modeled — only the internal cone the fan reproduces
+  — and the fan is Python-only (biaxial scenes already Python-route
+  regardless). **A C-engine port of `--conical` is NOT currently
+  planned**: biaxial birefringence itself (`biaxial`/`berreman` tokens)
+  is already Python-only, so the fan rides on a physics path that has no
+  C-side counterpart to port INTO yet — porting `--conical` alone, ahead
+  of a biaxial C port, would be a seam with nothing on the other side.
 - **Absorbing (dichroic) uniaxial crystals.** `Im(n_o)`/`Im(n_e)` are
   currently ignored for geometry (real indices only); the o-ray's index
   stands in for bulk absorption of both modes. Needed for tourmaline-like
@@ -427,8 +472,9 @@ loop (each names its seam):
   reemission event exists; would need a new emission event type
   (isotropic, incoherent, at a shifted wavelength stratum) triggered by
   bulk or surface absorption in a fluorescent material.
-- **Measured BSDF scatter — BTDF half.** See Backlog (a); the BRDF half
-  landed 2026-07-10.
+- ~~**Measured BSDF scatter — BTDF half.**~~ LANDED (P2/P2.5,
+  `engine3 overhaul` round) — see the note at Backlog (a)'s item #10
+  above; the BRDF half landed 2026-07-10.
 - **Ghost-image analysis mode.** LANDED as `--ghost-analysis`
   (`RayBatch.refl_hist` → `post_process.render_ghost_analysis`,
   2026-07-10) — groups generation->=2 purely-specular detector hits by
@@ -452,14 +498,28 @@ loop (each names its seam):
   `ExplicitRealization._place`. Note: the C engine's continuum-mode
   particle-cloud phase (G, `cengine/README.md`) is done for the
   Mie-ensemble-table path; explicit realizations above the cap still
-  Python-route regardless of engine.
+  Python-route regardless of engine. **`sample_explicit` C port
+  (samples-instruments round, new)**: the body-bound `sample` registry's
+  EXPLICIT/lattice mode (§5.13) hits the exact same seam — it emits the
+  `sample_explicit` Python-only routing token for the identical reason
+  (brute-force collision, no DDA/grid traversal on the C side yet). A
+  future numba/C DDA implementation would close both gaps together, not
+  as two separate ports.
 - **Mesh-type source/detector faces** still hard-error unconditionally
   (README §5.8/§5.11) — both need a UV parameterization the incoherent/
   coherent paths don't have yet; the ordinary-optic mesh path (BVH tracing)
   is otherwise fully shipped.
-- **Aspherical particles** (user goal): T-matrix (e.g. `pytmatrix`) drop-in
-  behind the `MieEvaluator` interface — `efficiencies()` and `amplitudes()`
-  are the only two entry points `particles.py` uses. Still open.
+- ~~**Aspherical particles** (user goal): T-matrix drop-in~~ LANDED
+  (`samples-instruments` round, 2026-07-23): `raytracer/tmatrix.py`'s
+  `TMatrixEvaluator` (pytmatrix, optics-env-only soft dependency) drops in
+  behind the exact `MieEvaluator.efficiencies()`/`amplitudes()` interface
+  this item named, orientation-averaged at the volume-equivalent-sphere
+  radius, wired into both continuum and explicit sample media via the
+  `sample` registry's `shape`/`aspect_ratio` columns (docs/RAYTRACER.md
+  §5.13). Physics caveat documented at the code site: pytmatrix's own
+  orientation averaging is exact for Qext but ~15% low for Qsca vs
+  independent random orientations — worked around by deriving Qsca/g/S1/S2
+  from the phase matrix Z instead.
 
 Multi-process tracing (`--workers`) and multi-process ray sharding are no
 longer gaps — both landed 2026-07-10 (`run_trace._run_sharded`,
@@ -506,6 +566,51 @@ round.
   `optimize.py`; photometric units (lux/lumen/candela via CIE V(λ)) already
   landed. Effort: L.
 
+### (e) `samples-instruments` round follow-ons (new)
+
+- **DLS dense-cloud RNG desync.** `run_dls.py`/`dls_correlate.py`
+  (docs/RAYTRACER.md §8.7) are validated for a DILUTE, well-separated
+  explicit sample cloud only: the shared Monte-Carlo RNG stream's draw
+  order depends on the exact ray-particle collision set, so a dense
+  cloud's collisions change frame-to-frame and the field goes
+  delta-correlated instead of decaying at the physical `D·q^2` rate — not
+  a bug in the correlator (independently validated against synthetic
+  fields), but a real limitation of sharing one RNG stream across a
+  changing collision set. A collision-order-independent (or per-particle-
+  keyed) RNG scheme would remove the dilute-cloud requirement. Related
+  frame-sequence extensions still open: multi-angle detectors already
+  work (`gamma_vs_q2.png` is multi-angle by construction), but there is no
+  polydisperse-population decomposition (a mixed-size sample's g1 is a
+  single effective cumulant fit, not a resolved distribution) and no
+  concentration/viscosity sweep automation (each is a separate `run_dls.py`
+  invocation today).
+- **Field-varying PSF image simulation.** Explicitly EXCLUDED from the
+  `image`-source work this round (§5.14) — `render_image_traced`/
+  `--image-sim` both still use a single space-invariant PSF convolution
+  (`analysis_field.image_*`); an extended `image` source makes this gap
+  more visible (a resolution-target image traced end-to-end has real
+  field-dependent aberrations the space-invariant sim cannot reproduce),
+  but closing it is the same field-varying-image-sim item already tracked
+  under Backlog (b)/priority list #12 (F10/B8 depth), not a new item —
+  cross-referenced here because the `image` source is the natural
+  acceptance-test scene for it.
+- **C-engine trace iteration valve is still a heuristic, not the exact
+  per-lineage cap.** The Python engine's hop-cap fix this round (this
+  file's `samples-instruments` round-summary table, `raytracer/tracer.py`
+  `Tracer.run`) replaced a shared/global pop budget with an exact
+  per-lineage step count. `cengine/src/trace.c`'s `max_iter` valve
+  (`trace.c:2121-2123`) instead scales the same style of global budget by
+  a `split_factor` — a "worst-case children-per-primary" headroom
+  multiplier chosen empirically (documented at the code site, from an
+  earlier `microscope_objective`-benchmark fix) — which is HEADROOM, not
+  an exact bound: a sufficiently pathological many-interface C-engine
+  scene could in principle still exhaust it before a lineage is actually
+  done, the same failure mode the Python-side exact cap now categorically
+  rules out. Porting the exact per-lineage accounting into `trace.c`
+  (replacing the heuristic `split_factor` scale-up with a per-batch
+  ancestry counter, mirroring the Python fix) would close this asymmetry;
+  not yet started.
+
 ## Roadmap rating index (every open item, 2-axis)
 
 One row per open item, grouped by the section it lives in. Effort/impact per the
@@ -519,7 +624,7 @@ narrative + exact code seam for each stays in its own section above (or in
 |--|:--:|:--:|--|
 |Stress/spatially-varying birefringence|L-XL|Med|first cut (constant axis, position-dependent Δn) closer to L; full stress-optic + FEA XL; niche photoelastic|
 |Exit-pupil / chief-ray search stage|—|—|**DONE (design-apparatus round, 2026-07-13)** — `analysis_imaging.py`, `--wavefront-pupil exit_pupil`; PSF-peak Strehl + partial image-sim shipped. Depth follow-on (annular Zernike, field-varying image-sim) in the priority list #6/#12|
-|BTDF (transmitted-side) measured scatter|M|Med|completes the ABg scatter model; scattering exit faces (priority list #11)|
+|BTDF (transmitted-side) measured scatter|✅|—|**LANDED (P2/P2.5, `engine3 overhaul` round)** — this row was stale; `btdf`/`btdf_A`/`btdf_B`/`btdf_g`/`btdf_tis_cap` columns beside the shipped BRDF ABg sampler. Fuller stray-light report (H6) remains — priority list #11|
 |Coherent gather on curved detectors|L|Med|curved-aperture obliquity terms; `curved_focal_surface` demo|
 |Materials dn/dT (thermo-optic) hook|—|—|**DONE (design-apparatus round, 2026-07-13)** — Schott TIE-19 `n(λ,T)` + `--temperature` + 847-glass AGF import (`materials.py`, `import_agf.py`)|
 |Line-spectrum + blackbody/lamp sources|M|Med|continuous-tabulated + white LED landed; discrete-line & Planck kinds remain|
@@ -528,11 +633,11 @@ narrative + exact code seam for each stays in its own section above (or in
 | Item | Effort | Impact | Note |
 |--|:--:|:--:|--|
 |Expressions/variables for anchored placements|M|Med|**DONE (samples-instruments)** — `miewb_expr_pos_*/rot_*` baked by `train_solver.place_anchored` in the shared solve; GUI + headless, parity-pinned|
-|`--particles` cloud as chain-referenceable anchor|M|Low|nephelometer-ring authoring|
+|`--particles` cloud as chain-referenceable anchor|—|—|**DONE (samples-instruments)** — `sample_region` primitive + its `port_frames` pass-through entry; a body-bound `sample` cloud (§5.13) is chain-referenceable like any element|
 |Field-angle source-fan wizard|S|Med|removes hand-computed `y=L·tanθ` placement|
-|Co-located transparent detectors|S|Low|"measure a plane two ways" without overlap-fail|
-|Coherent-gather ray-budget preflight|S|Med|estimate the M_eff gate at check time, not after a failed trace|
-|`--particles` target-optical-depth knob|S|Low|solve φ for a requested τ|
+|Co-located transparent detectors|—|—|**DONE (samples-instruments, T16a)** — `validation.detector_overlap` informational classification replaces the fatal `overlapping_solids`|
+|Coherent-gather ray-budget preflight|—|—|**ALREADY DONE (design-usability round)** — this row was stale; `core/validation.py`'s `check_gather_preflight` already estimates the M_eff gate at check time|
+|`--particles` target-optical-depth knob|—|—|**ALREADY DONE** — this row was stale; `common.parse_particles_spec` already accepts `tau=<F>` and resolves it to `phi`; the `sample` registry (§5.13) also exposes `tau` directly|
 |"Span N Airy zeros" detector-sizing intent|S|Low|diffraction-scale insert-values in the right-click menu|
 
 ### Backlog (b) — higher-fidelity physics
@@ -540,7 +645,7 @@ narrative + exact code seam for each stays in its own section above (or in
 |--|:--:|:--:|--|
 |Exact uniaxial Fresnel at a birefringent interface|✅|—|**LANDED (P6, Python):** Lekner-1991 4×4 boundary-match; C-engine port + exit mode-conversion remain|
 |Optical activity / chiral media (off-axis/elliptical + full-tensor scene coupling)|M|Low|**partially landed** — near-axis scene-level rotation + Berreman module both ship; remaining scope is off-axis gyration and a C-engine port|
-|Biaxial conical refraction|M|Low|corner-case of a MieWorkbench-unique win (C5)|
+|Biaxial conical refraction (internal)|✅|—|**LANDED (samples-instruments)**: perturbed two-sheet fan behind `--conical`, off by default. **External** conical refraction (point-source double-ring) and a C-engine port remain open, corner-cases of a MieWorkbench-unique win (C5)|
 |Absorbing (dichroic) uniaxial crystals|M|Low|`Im(n_o)/Im(n_e)` currently ignored|
 |Reflection-geometry Kogelnik gratings|M|Low|tanh/sinh reflection VBG solution|
 |RCWA|XL|Low|Zemax-only among the six; closed-form models suffice (`features.md` §7.15)|
@@ -553,9 +658,9 @@ narrative + exact code seam for each stays in its own section above (or in
 ### Backlog (c) — capability gaps (hard errors today)
 | Item | Effort | Impact | Note |
 |--|:--:|:--:|--|
-|Explicit particle clouds > 200k spheres|L|Low|numba DDA/grid traversal removes the cap|
+|Explicit particle clouds > 200k spheres|L|Low|numba DDA/grid traversal removes the cap; `sample_explicit` (samples-instruments) hits the identical seam|
 |Mesh-type source/detector faces|M|Low|needs a UV parameterization the paths lack|
-|Aspherical particles (T-matrix)|M|Low|`pytmatrix` drop-in behind `MieEvaluator`|
+|Aspherical particles (T-matrix)|✅|—|**DONE (samples-instruments)** — `tmatrix.py` (pytmatrix) drops in behind `MieEvaluator`|
 
 ### Design-apparatus v1-maturation follow-ons (NEW — the top of the priority list)
 | Item | Closes | Effort | Impact | Note |
@@ -576,6 +681,15 @@ narrative + exact code seam for each stays in its own section above (or in
 |`tolerance_yield` (tolerancing)|—|—|**DONE (design-apparatus round, 2026-07-13)** — `tolerance.py` (sensitivity + MC yield + focus compensator) + demo; compensator-chains/J5 in the follow-ons table above|
 |`cad_import_scene` (CAD import)|M/L|Med|FreeCAD already imports STEP; expose as element (`features.md` §7.4; priority list #4)|
 |`freeform_illuminator` (illumination design)|L|Med|rides on the optimizer (now shipped); photometric units already landed|
+
+### Roadmap (e) — `samples-instruments` round follow-ons
+| Item | Effort | Impact | Note |
+|--|:--:|:--:|--|
+|Conical refraction C port|—|—|**NOT PLANNED** — biaxial birefringence itself is Python-only; nothing to port `--conical` into yet|
+|`sample_explicit` C port (DDA/grid traversal)|L|Low|same seam as the `>200k`-sphere explicit-cloud cap above; a shared DDA/grid implementation would close both|
+|DLS dense-cloud RNG desync|L|Med|shared-RNG collision-set desync limits DLS to dilute clouds; a collision-order-independent RNG scheme would remove it|
+|Field-varying PSF image simulation|L|Med|cross-references the existing F10/B8-depth item (priority list #12); the new `image` source is its natural acceptance scene|
+|C-engine exact per-lineage hop cap|M|Low|`trace.c`'s `split_factor` headroom valve vs the Python engine's now-exact per-lineage cap; a pathological C-engine scene could still exhaust the heuristic|
 
 ### Pulsed-optics round follow-ups (moat-widening on the S axis MieWorkbench uniquely owns)
 | Item | Effort | Impact | Note |
@@ -662,9 +776,9 @@ would compare to.
 |**Zernike / Strehl** (B6/B7 🟡)|Fits Noll+Fringe Zernike (jmax=15) on a **source-referenced** pupil (each ray's normalized birth position); Strehl via the **Maréchal** approximation from residual RMS. Exact for collimated/laser benches.|Zemax/CODE V/OSLO/QUADOA reference a **true exit pupil** at a field point's image and report a **PSF-peak-ratio** Strehl — correct for finite-conjugate, off-axis field imaging.|Exit-pupil/chief-ray search stage (Backlog a / `features.md` §7.3) — **[L·High]**|
 |**Curved detectors** (F3 🟡)|Sphere/cylinder detector grids with a per-pixel metric-area map, **incoherent path only** — a coherent Huygens gather on a curved screen raises `NotImplementedError`.|Zemax curved/annular detector objects accept the full (coherent) field.|Per-pixel normals/obliquity through the gather kernel (Backlog a) — **[L·Med]**|
 |**Measured (tabulated) coatings** (C7)|P2: table coatings now accept OPTIONAL Zemax-TABLE-style `ars_deg/arp_deg/ats_deg/atp_deg` phase columns (`materials.py` `phase_valid`; branch-cut-safe complex interpolation, `optprops.interp_phase_deg`); a phase-carrying table forces Python routing (`coating_phase` cengine token — not yet C-ported) and a pre-run/CLI warning fires when a coherent scene uses a phase-invalid table. `scripts/tools/import_zemax_coating.py` converts real Zemax TABLE files. Tables WITHOUT phase columns (most of the shipped 39-row library — one demo row, `bs_5050_vis_45_ph`, carries phase) still borrow the bare-interface Fresnel phase, same as before.|Zemax/OSLO's measured-coating tables can carry phase as standard practice and their catalogs are far larger; MieWorkbench's own library still ships phase for only one illustrative row (real vendor phase curves are rarely published).|Populate more of the shipped library's phase columns from vendor/TMM data as it becomes available; C-engine table-coating phase support — **[S·Low]**|
-|**Measured BSDF scatter** (H2 🟡)|ABg model, **BRDF (reflected) side only**, single-scatter, isotropic; 3 shipped rows flagged UNVERIFIED.|Zemax imports full BSDF (BRDF+BTDF), anisotropic, with importance sampling; the scatter physics MieWorkbench *does* have (Mie/volume) beats them, but the measured-import tooling is narrower.|BTDF half + anisotropic fit (Backlog a/b) — **[M·Med]**|
+|**Measured BSDF scatter** (H2 🟡)|ABg model, **BRDF + optional BTDF (transmitted-side)** since P2/P2.5 (`engine3 overhaul` round), single-scatter, isotropic; 4 shipped rows (one, `lightly_ground_glass_window`, exercises BTDF), flagged UNVERIFIED.|Zemax imports full BSDF (BRDF+BTDF), anisotropic, with importance sampling; the scatter physics MieWorkbench *does* have (Mie/volume) beats them, but the measured-import tooling and anisotropy are narrower.|Anisotropic (per-azimuth) fit — **[M·Med]**|
 |**Grating efficiency** (C9 🟡 for CODE V/OSLO comparison)|Four closed-form models with real efficiency (Kogelnik VBG, Dammann, measured table); lamellar/Dammann are polarization-blind; **no RCWA**; reflection VBGs not modeled.|Zemax uses rigorous **RCWA** (exact for sub-wavelength/non-sinusoidal grooves). CODE V/OSLO are scalar/efficiency-limited — MieWorkbench actually *leads* those two on closed-form efficiency.|RCWA is a deliberate non-goal (§7.15); reflection-Kogelnik is the pragmatic increment (Backlog b) — **[M·Low]**|
-|**Biaxial birefringence** (C5 🟡)|Validated two-sheet quartic solver (KTP/KTA/LBO/BiBO, `<1e-9`); the **only** biaxial in the field. But **no conical refraction**, internal reflections are **sheet-preserving**, and the interface uses an **effective-index Fresnel** approximation.|No competitor here has biaxial at all, so MieWorkbench is strictly ahead — the "partial" is vs the rigorous ideal, not vs a competitor.|Conical refraction + exact anisotropic Fresnel (Backlog b) — **[M·Low]** / **[L·Med]**|
+|**Biaxial birefringence** (C5 🟡)|Validated two-sheet quartic solver (KTP/KTA/LBO/BiBO, `<1e-9`); the **only** biaxial in the field. **Internal conical refraction** is now modeled behind `--conical` (samples-instruments round, off by default); the entry interface uses the exact Berreman 4×4, but internal reflections are still **sheet-preserving** and the exit interface still uses an **effective-index Fresnel** approximation.|No competitor here has biaxial at all, so MieWorkbench is strictly ahead — the "partial" is vs the rigorous ideal, not vs a competitor.|Exact anisotropic Fresnel at the exit interface + cross-sheet internal-reflection coupling (Backlog b) — **[L·Med]**|
 |**Curved-vs-flat, multi-config, ghost** (M1 ⚠️, F9 ✅/🟡)|Multi-config is CLI-sweep + Variables dock + Compare pane (no named editor). Ghost is a specular **path ranking** (top multi-bounce paths by detected power).|Zemax/CODE V/OSLO/QUADOA have named multi-config editors (12–unlimited configs) and Zemax's Path Analysis / Critical Ray Tracer is a fuller stray-light workflow than a ranked list.|Config-table GUI (§7.10) — **[M·Med]**; fuller stray-light report on the ghost ranking (§7.9) — **[M·Med]**|
 |**Photocurrent / QE** (F2 partial)|`qe_curve` body property → photocurrent_A + coverage_frac, but only **1** QE curve ships and there's no CLI flag.|Zemax/vendor tools ship large detector-QE libraries.|Add QE-curve library rows + a CLI/GUI surface — **[S·Low]**|
 

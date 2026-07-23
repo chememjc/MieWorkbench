@@ -282,6 +282,7 @@ fields on each `PartDesign::Body`:
 | `polarizer` | String, optional | a row name in `opticalproperties/polarizer/polarizers.miepol` (§5.3) |
 | `polarizer_axis` | String `'x,y,z'`, optional | body-local transmission-axis vector, default `0,0,1` (§5.3) |
 | `filter` | String, optional | a row name in `opticalproperties/filter/filters.miefilt` (§5.3) |
+| `sample` | String, optional | optic-only: a row name in `opticalproperties/sample/samples.miesamp` (or an inline spec) binding a particle population to THIS body's interior — the body's own `material` is the host medium, its shape bounds the cloud (§5.13) |
 | `crystal_axis` | String `'x,y,z'`, optional | body-local optic-axis vector for a uniaxial birefringent `material` (§5.6), default `+x`; the X principal axis for a biaxial `material` (§5.6b) |
 | `crystal_axis2` | String `'x,y,z'`, optional | body-local Y principal axis; REQUIRED alongside `crystal_axis` when `material` is a biaxial crystal (§5.6b), otherwise ignored with a warning |
 | `scatter` | String, optional | a per-face map (or whole-body) of `opticalproperties/scatter/bsdf.miebsdf` registry names (§5.4.2) — mutually exclusive with `roughness`/`diffuser` on the same face |
@@ -303,6 +304,8 @@ fields on each `PartDesign::Body`:
 | `spectrum` | String, optional | source-only: `emission/emitters.miesrc` registry row naming a tabulated emission spectrum (§5.2); supersedes `lambdamin`/`lambdamax` |
 | `apodization` | String, optional | source-only: `'gaussian:w0=<mm>[:order=<n>]'` transverse field-amplitude taper across the emitting face (§5.2) |
 | `beam_waist` (mm) + `m2` (optional, default 1.0) | Float | source-only: Gaussian-beam mode — position sampled from the waist intensity profile plus a per-ray angular divergence (§5.2); requires a planar emitting face |
+| `image` | String, optional | source-only: a row name in `opticalproperties/image/images.mieimg` naming a per-position radiance bitmap (§5.14); mutually exclusive with `beam`/`apodization`; requires a planar emitting face |
+| `image_cone_deg` | Float, optional, (0,90] | source-only: emission-cone HALF-angle restriction for an `image` source (default: full Lambertian, §5.14) |
 
 Classification (`classify_body`, in this priority order):
 0. `miewb_exclude` truthy (a bool set by the GUI on unfolded fold
@@ -999,11 +1002,26 @@ Poynting flux to 1e-13, and reproduces α-quartz optical activity 21.77 deg/mm
 @589.3 nm and 4H-SiC reststrahlen reflectivity (`test_berreman.py`).
 
 Honest limits (mirror the uniaxial ones, plus two biaxial-specific ones):
-- **Conical refraction is not modeled.** Near an optic axis the two
-  sheets meet and their eigenvectors become numerically degenerate; the
-  solver returns an arbitrary orthonormal transverse pair there rather
-  than the physical internal/external conical-refraction cone. Keep
-  incidence away from the crystal's optic axes.
+- **Internal conical refraction is modeled behind `--conical`, off by
+  default.** Near an optic axis the two sheets meet and their eigenvectors
+  become numerically degenerate. By **default** (`--conical` absent) the
+  solver still returns an arbitrary orthonormal transverse pair there — a
+  degenerate ray just passes through on an unphysical single direction
+  rather than the true internal-conical-refraction cone; those rays are
+  tallied into `conical_guard` (`case.json`/`audit.json`) so a scene that
+  grazes an optic axis is at least visible in the diagnostics. With
+  `--conical`, a ray landing within `--conical-delta` (radians, default
+  1e-4) of an optic axis instead fans into `2*--conical-fan` (default 16)
+  coherent children — a perturbed two-sheet solve at closely-spaced
+  transverse azimuths that reproduces Hamilton's internal cone (opening
+  angle `tan A = sqrt((n2^2-n1^2)(n3^2-n2^2))/(n1 n3)`, Born & Wolf, verified
+  <1e-8 vs the numeric ray limit) as the perturbation shrinks, including the
+  classic φ/2 polarization half-turn around the Poggendorff ring; those rays
+  are tallied into `conical_fanned` instead. **External** conical refraction
+  (the emergent double-ring cone from a point source outside the crystal)
+  is not modeled — only the internal cone the fan reproduces. `--conical`
+  is Python-engine-only (`birefringence.py`; biaxial scenes already
+  Python-route regardless, §13).
 - **Internal reflections are sheet-preserving** (`reflect_internal_
   biaxial`): a slow-sheet ray reflects to another slow-sheet ray (same for
   fast); real cross-sheet mode coupling at an internal reflection is
@@ -1231,6 +1249,150 @@ must be fed by `coherent=false` sources only. `--export-rays`/
 frame at the arc center (for the ray-export meta and spot-diagram
 machinery, §8.2) but that frame is **not** used by the splat itself.
 
+### 5.13 Body-bound scattering samples & S(q) structure factors (`sample`)
+
+An optic body's `sample` property (string) names a row in
+`opticalproperties/sample/samples.miesamp` (§7.16) and binds a **particle
+population to that body's interior**: the body's own `material` is the
+HOST medium (the real solvent — controls the Mie contrast/density/OPL
+against it), and the body's shape is the containing region
+(`raytracer/particles.py`'s `BodyParticleMedium`, `Scene.point_inside_body`
+does exact marching containment against the body's own faces). This is the
+authoring-time route to a liquid-fill sample cell (a cuvette, vial, or bath
+primitive, §6 catalog additions below); the CLI `--particles` world-box
+spec (§9) is unchanged and coexists — `sample` is the only route to a
+registry-driven **S(q) structure factor** or an **explicit lattice
+realization**, neither of which `--particles` exposes.
+
+**Mode** (`mode` column: `auto`/`continuum`/`explicit`, same threshold
+convention as §9's hybrid mode) picks between a continuum participating
+medium (deterministic-splitting estimator, §6.2) and a frozen discrete
+sphere/lattice realization (brute-force collision, exact Mie per hit).
+`phi` (mass fraction) XOR `tau` (target Beer-Lambert optical depth along
+the body's own AABB x-extent — the resolution basis for a body-bound
+cloud, since there is no CLI box length to target) is required, same
+semantics as §9.
+
+**S(q)** (`sq_model` ∈ `none`/`py`/`baxter`/`fractal`/`paracrystal`/`table`,
+`sq_params` `;`-separated `key:val` pairs — full grammar in §7.16) applies
+an inter-particle structure factor on top of the independent-scatterer Mie
+physics, via `structure.sq_evaluate()` (§7.16's model list):
+
+- **Continuum mode**: the per-λ scattering-angle PDF becomes
+  `P_ens(μ)·S(q(μ))` (`q = 4π·n_host/λ_μm · sqrt((1-μ)/2)`, the metres→1/µm
+  conversion happens at the call site); `mu_sca` is corrected by `<S>_p`
+  (the phase-function-weighted mean of `S(q)` over the shared angular
+  grid), `mu_abs` is untouched, so albedo — and therefore Beer-Lambert
+  transmission and the coherent/incoherent child split — stays energy-exact
+  **by construction**; azimuth sampling is untouched (`S` is θ-only). This
+  is a **decoupling approximation** for a polydisperse population (the
+  size distribution and the structure factor are averaged independently,
+  not jointly) — an honest limit, not exact liquid-state theory.
+- **Explicit/lattice mode**: `sq_model=paracrystal` with `mode=explicit`
+  places a REAL fcc/bcc/sc lattice realization (`ExplicitRealization`,
+  conventional-cell sites with Gaussian positional jitter `sigma = g·a`,
+  clipped to the region including real body interiors) instead of an
+  independent-sphere dart-throw — for coherent Bragg/speckle work where
+  the actual site correlations (not just the ensemble-averaged S(q))
+  matter. `count` in the registry row is overridden to the kept-site count
+  (both echoed in diagnostics); a KDTree overlap check warns.
+
+**Honest limits**: continuum-mode S(q) is a decoupling approximation for
+polydispersity (above); a continuum-medium scattered child is still
+incoherent by construction regardless of S(q) (§6.2's continuum-scattering
+note is unchanged — S(q) reshapes *where* power scatters, not whether the
+scattered child carries phase); `tau` resolves along the body's own AABB
+x-extent, which is only exactly the beam path length for an on-axis body
+with the beam along local x (an off-axis or non-rectangular cell's `tau`
+is therefore approximate — use `phi` directly for an exact loading in that
+case).
+
+**Shape / T-matrix spheroids**: a sample row's `shape` (`sphere`/
+`spheroid`) + `aspect_ratio` columns select the per-particle scattering
+evaluator via `tmatrix.make_evaluator` — `sphere` is byte-identical to the
+ordinary `MieEvaluator` path; `spheroid` builds an orientation-averaged
+`TMatrixEvaluator` (pytmatrix, an OPTICS-ENV-ONLY soft dependency —
+`ImportError` at first use names the install path, INSTALL.md §3.4) at the
+**volume-equivalent-sphere radius** convention. `efficiencies()`/
+`amplitudes()` are the only two entry points `particles.py` needs, so
+`TMatrixEvaluator` subclasses `MieEvaluator` and inherits its
+phase-function/sampler machinery unchanged. **Physics caveat** (verified,
+not assumed): pytmatrix's own `orient_averaged_fixed` averages the
+scattering amplitude S coherently across orientations — exact for `Qext`
+(optical theorem) but measured ~15% LOW for `Qsca` vs independent random
+orientations, so `Qsca`/`g`/`|S1|`/`|S2|` are instead derived from the
+(correctly bilinear-averaging) phase matrix Z, cross-checked <0.02% against
+pytmatrix's own slow `sca_xsect`/`asym` reference integrals.
+`amplitudes()` returns `|S1|`,`|S2|` **magnitudes only** (the ensemble
+phase is orientation-random, so downstream gather/Mie-amplitude consumers
+only ever use magnitudes for a spheroid population). Disk-cached under
+`var/cache/tmatrix` keyed on resolved optical params.
+
+**Routing**: continuum-mode `sample` bodies are C-engine-ported
+(`sample_body`, §13) — the corrected `mu_ext`/albedo and the
+size-averaged S(q)-corrected inverse-CDF table are pre-resolved
+Python-side and serialized as plain tables, so the C side needs zero S(q)
+or host-material logic. Explicit/lattice-mode sample rows emit the
+Python-only `sample_explicit` token regardless of engine.
+
+See `opticalproperties/sample/samples.miesamp` for the 7 shipped rows
+(§7.16) and the `cuvette_square`/`cuvette_capillary`/`flow_cell`/
+`vial_cylindrical`/`vat_cylindrical`/`sample_region` primitives (§ catalog
+list) for ready-made host bodies.
+
+### 5.14 Extended image-emitting sources (`image`, `image_cone_deg`)
+
+A source body's `image` property (string) names a row in
+`opticalproperties/image/images.mieimg` (§7.17): a greyscale bitmap
+(PNG/JPG/TIFF/BMP or a 2-D `.npy`) that replaces the source's uniform emit
+face with a **per-position radiance map** — the authoring path for a test
+target (USAF-1951-style resolution chart), a structured illumination
+pattern, or any other spatially-varying extended source. `sources.py`
+loads the pixel data once at scene build (`load_image_gray`, BT.601 luma
+collapse for color inputs; an all-zero bitmap is rejected), builds a Vose
+alias table (`_build_alias_table`, O(1) per-ray draw) over the pixel
+values, and samples emission positions with **density proportional to
+pixel value at EQUAL per-ray power** (in-pixel jitter; row 0 of the bitmap
+= the picture's TOP = the maximum-value row, so an image loads
+right-side-up) — trim rejection against the emit face's real aperture
+still applies on top, exactly like an ordinary source face.
+
+**Emission directions default Lambertian** (`sqrt(1-u1)` cosine-weighted
+sampling) — deliberate: an imaging bench needs every object point to fill
+the whole aperture, not emit a narrow beam. `image_cone_deg` (0,90],
+optional) restricts emission to a uniform-solid-angle cone about the
+signed emit normal instead, as a variance-reduction optimization when the
+downstream aperture subtends a known small angle (**not** a physical
+statement that the object emits into a narrower cone). `image` is
+mutually exclusive with `beam`/`apodization` (a hard error at scene build)
+and requires a planar emitting face.
+
+**End-to-end products**: `post_process.render_image_traced` (§8.3)
+publishes the traced detector image into `imaging/` whenever the source
+carried `image` — auto-surfaces in the Results "Imaging" gallery; if
+`--image-sim` also ran on the same detector, a traced-vs-convolution-sim
+side-by-side PNG plus an NCC (normalized cross-correlation) agreement
+metric is added, evaluated at both direct and 180°-rotated orientations
+(a real imaging bench inverts the image; the space-invariant sim is
+object-oriented) with the better-agreeing orientation reported.
+
+**Honest limits**: source-side only — there is no field-varying PSF
+imaging simulation (the existing `--image-sim` convolution stays a single
+space-invariant PSF, §6.10); a coherent `image` source warns (an extended
+incoherent object is the physically sensible default for this kind of
+target).
+
+**Routing**: `image_source` is C-engine-ported (§13) — the request
+serializes the same Vose alias table (`sources._build_alias_table`, one
+implementation, zero drift) plus the face UV bbox and cone half-angle;
+`trace.c`'s `sample_image_pos_dir` alias-draws a pixel, jitters in-pixel,
+and emits Lambertian/cone about the signed emit normal, using two reserved
+RNG event slots so every other stream stays bit-identical with/without an
+image source present.
+
+See `opticalproperties/image/images.mieimg` for the shipped
+`usaf_style_target` row and the `source_image` primitive.
+
 ---
 
 ## 6. Physics engine
@@ -1334,8 +1496,11 @@ Two-part model, in `scripts/raytracer/`:
   uniaxial crystal (quartz's rotary power along its own optic axis) IS
   modeled as a near-axis bulk ρ·ds polarization rotation (§5.6, §6.12b);
   absorbing (dichroic) uniaxial/biaxial crystals are not modeled in a
-  scene trace (Berreman-oracle-only), and biaxial conical refraction and
-  cross-sheet internal-reflection coupling are also not modeled (§5.6b).
+  scene trace (Berreman-oracle-only); biaxial internal conical refraction
+  is modeled as a perturbed-fan approximation behind `--conical` (off by
+  default — an arbitrary transverse basis at the degeneracy otherwise),
+  and cross-sheet internal-reflection coupling is still not modeled at all
+  (a same-sheet-only reflection, on or off the cone) (§5.6b).
 - **Measured scatter (`scatter`, §5.4.2) is reflected-side (BRDF) only,
   single-scatter, isotropic.** The transmitted child at a scattering face
   is untouched; multiple-bounce lobe transport and azimuthal anisotropy
@@ -1806,8 +1971,10 @@ reference`.
   a body sets `material=calcite` (the crystal name in `uniaxial.miebrf`, §7.6),
   which resolves to the `calcite_o`/`calcite_e` pair internally.
 
-847 materials ship today: a 168-row hand-curated core (24 originals + a
-`library-expansion` round) plus 679 Schott + Ohara optical glasses imported from
+849 materials ship today: a 170-row hand-curated core (24 originals + the
+`library-expansion` round + `decalin`/`dye_solution_kmno4` from the
+samples-instruments round, §5.13's sample-cell host/index-match media)
+plus 679 Schott + Ohara optical glasses imported from
 the vendor Zemax AGF catalogs by `scripts/tools/import_agf.py` (formula code
 1→`schott`, 2→`sellmeier`; unsupported formulas skipped, never approximated),
 carrying Schott TIE-19 dn/dT where the catalog provides it. The curated core:
@@ -1948,8 +2115,15 @@ contract.
 ### 7.8 `detector/detectors.miedet` (+ `detector/tables/*.mietab`)
 
 Columns `name, table_csv, reference, notes`. Tables are `wavelength_nm, qe`
-(quantum efficiency, values in (0,1]). One detector QE curve ships: `hamamatsu_s1223`
-(Si PIN photodiode, 4 datasheet points, 660–960 nm). When a detector body carries a
+(quantum efficiency, values in (0,1]). 4 detector QE curves ship:
+`hamamatsu_s1223` (Si PIN photodiode, 4 datasheet points, 660–960 nm),
+and three samples-instruments-round linear-CCD rows —
+`toshiba_tcd1304ap`/`sony_ilx511b` (relative response digitized from
+datasheet plots, an assumed 55% peak absolute scale, flagged) and
+`hamamatsu_s3904` (absolute A/W from the 2024 datasheet, QE derived
+honestly via `QE=R·1240/λ_nm`, high confidence) — the same
+`toshiba_tcd1304ap` curve backs `tcd1304_array`'s `diode_array`
+instrument row (§7.11). When a detector body carries a
 `qe_curve` property naming a registered curve, `post_process.py` reports a
 `qe` block per detector: `photocurrent_A` (R(λ)=QE·qλ/hc weighting of the
 spectral cube), `qe_weighted_power_W`, and `coverage_frac` (the fraction of
@@ -2026,7 +2200,7 @@ assigned; there is no CLI way to render it on a detector that carries no
 
 One wide CSV header (`name, class, reference, notes` + every class's own
 columns, sparse per row — the same shape as `nonlinear/nonlinear.mienlo`)
-covers three shipped classes and three schema-defined **placeholder**
+covers four shipped classes and three schema-defined **placeholder**
 classes with no shipped rows (`polarimeter`, `wavefront_sensor`,
 `autocorrelator` — gear the owner does not have yet; their columns are
 still hard-validated the moment a row is authored):
@@ -2036,34 +2210,78 @@ still hard-validated the moment a row is authored):
 | `camera` | `pixel_pitch_um, width_px, height_px, fill_factor, qe_table, full_well_e, read_noise_e, dark_current_e_per_s, bit_depth, adc_gain_e_per_dn, integration_time_s_default` | `<case>/instrument/instr_<label>_camera_<mode>.png` + `..._counts.npy` (a full-well-clipped, bit-depth-quantized counts image on the SAME (H,W) grid as the ideal detector plane — see `detector.spectral_cube_to_electrons`'s docstring for why the counts image is not resampled to the camera's native pixel count); report fields `integration_time_s, saturation_fraction, mean_counts, max_counts, snr_estimate` |
 | `powermeter` | EXACTLY ONE of `responsivity_table` / `flat_responsivity_a_w`, `aperture_mm, nep_w_per_sqrthz, bandwidth_hz, display_digits` | report fields `power_reported_W, power_reported_display` (sig-fig rounded), `lam_ref_nm` (the cube's own power-weighted mean wavelength — exact for a monochromatic source), `responsivity_a_w_at_ref` |
 | `spectrometer` | `lam_lo_nm, lam_hi_nm, resolution_fwhm_nm, slit_um, stray_light_floor, detector_qe_table` | `<case>/spectra/instrument_<label>_spectrum_<mode>.png` + `.csv` under `--emit-csv` (Gaussian-convolved to `resolution_fwhm_nm`, QE-weighted, stray-light floor added, clipped to `[lam_lo_nm, lam_hi_nm]`); report fields `lam_lo_nm, lam_hi_nm, resolution_fwhm_nm, peak_power_W, stray_light_floor` |
+| `diode_array` (samples-instruments) | `pixel_pitch_um, pixel_height_um, n_px` (physical array geometry) + the `camera`-style electron chain (`full_well_e, read_noise_e, bit_depth, adc_gain_e_per_dn, integration_time_s_default`) + the `spectrometer`-style `stray_light_floor, detector_qe_table` (no `lam_lo_nm`/`lam_hi_nm`/`resolution_fwhm_nm`/`slit_um` — the array's own `n_px*pixel_pitch_um` extent and real pixel geometry replace them) | `render_diode_array` (§8.3): bins the ideal detector-plane cube onto the array's REAL `n_px`-pixel geometry (dispersion axis auto-picked via the same `_axis_wavelength_fit` the spectrometer centroid uses, `pixel_height_um` integrated across the perpendicular axis) instead of `spectrometer`'s continuous resolution-convolved curve — `<case>/instrument/instr_<label>_diode_array_<mode>.png` + `.csv`, QE-exact per-pixel electrons, the same ideal/full noise split (Poisson shot + read noise) and full-well-clip + ADC-DN chain as `camera` |
 
-Three generic starter rows ship, each citing a real datasheet:
+Four starter rows ship, each citing a real datasheet:
 `camera_generic` (Sony IMX264 Pregius global-shutter CMOS, 3.45 µm,
 2448×2048, per FLIR Blackfly S BFS-U3-51S5M-C's technical reference),
 `powermeter_generic` (Thorlabs S130C Si photodiode sensor, the sensor
 behind the PM16-130 power meter), `spectrometer_generic` (Ocean
 Optics/Ocean Insight USB4000, Toshiba TCD1304AP CCD, VIS-NIR
-configuration). GUI: a detector's instrument assignment lands beside
+configuration), `tcd1304_array` (`diode_array`: the SAME Toshiba
+TCD1304DG/AP CCD as `spectrometer_generic`, but read as a real 8 µm ×
+200 µm 3648-pixel linear array rather than a continuous curve — the
+`--reference-case`-paired absorbance workflow below is validated against
+this row). GUI: a detector's instrument assignment lands beside
 `qe_curve` in its property panel; the Results pane's "Instrument" tab
 flattens the report block into a table above a thumbnail gallery of
 `<case>/instrument/*.png` (the spectrometer's own PNG stays in the
 existing Spectra tab, prefixed `instrument_`, rather than duplicating
 into a second gallery).
 
+**Absorbance** (`--reference-case DIR`, §8.1/§8.3): given a blank
+(reference) case directory using the SAME instrument row, `post_process.py`
+recomputes that case's raw spectrometer/diode-array product from its own
+`.h5` and renders `A(λ) = -log10(I/I0)` against the current case
+(`instrument/absorbance_<label>.csv` + PNG) — a hard `SystemExit` if the
+reference case's instrument row or pixel grid doesn't match. Pairs
+naturally with a `dye_solution_kmno4`-filled `cuvette_square` (§5.13) and
+`tcd1304_array`/`spectrometer_generic` for a UV-Vis-style absorbance bench.
+
 ### 7.12 `emission/emitters.miesrc` (+ `emission/tables/*.mietab`)
 
-Columns `name, kind, table_csv, reference, notes`; `kind` is `continuous`
-only this round (staged `blackbody`/`line` kinds are rejected naming the
-kind). Each row references a per-emitter table `wavelength_nm,
-relative_power` giving the RELATIVE spectral power density of a source's
-emission — only the SHAPE matters (`sources.wavelength_strata` normalizes
-it to a PDF and places equal-power quantile strata). Validated:
-`relative_power >= 0` everywhere, positive integral, `>= 2` rows. 2
-emitters ship: `led_white_2733k` (phosphor-converted white LED SPD,
-CCT ~2733 K, CIE 015:2018 illuminant LED-B1) and `sc_superk` (NKT SuperK
-EXTREME supercontinuum SPD, 400–2400 nm). A source body's `spectrum`
-property (§5.1/§5.2) names one; the tabulated SPD supersedes
-`lambdamin`/`lambdamax`.
+Columns `name, kind, table_csv, params, lines, reference, notes`; `kind` ∈
+`{continuous, blackbody, lines}` (`EMISSION_KINDS` — samples-instruments
+round: `blackbody` and `lines` were staged/rejected in earlier rounds,
+both now load). A source body's `spectrum` property (§5.1/§5.2) names any
+row regardless of kind; the tabulated/synthesized SPD supersedes
+`lambdamin`/`lambdamax` in every case.
+
+- **`continuous`**: `table_csv` names a per-emitter table
+  `wavelength_nm, relative_power` giving the RELATIVE spectral power
+  density of a source's emission — only the SHAPE matters
+  (`sources.wavelength_strata` normalizes it to a PDF and places
+  equal-power quantile strata). Validated: `relative_power >= 0`
+  everywhere, positive integral, `>= 2` rows.
+- **`blackbody`**: `params` = `'temp_k:<K>;lam_lo_nm:<lo>;lam_hi_nm:<hi>'`.
+  The Planck curve (`optprops.planck_relative_power`, peak-normalized;
+  Wien's-law-verified) is synthesized to a dense table **AT LOAD TIME**
+  over `[lam_lo_nm, lam_hi_nm]`, so every downstream consumer sees exactly
+  the same tabulated-SPD shape a `continuous` row would produce — no
+  separate code path anywhere else in the pipeline.
+- **`lines`**: `lines` = `'wavelength_nm:intensity;...'` (strictly
+  increasing, unique wavelengths, intensities relative — shape only, `>= 1`
+  line), optional `params` = `'linewidth_nm:<w>'` (floored at
+  `MIN_LINEWIDTH_NM` so every stratum keeps a finite wavelength edge for
+  `stratum_domega`/time-product bookkeeping; adjacent line bands must not
+  overlap once widened — a hard error naming the colliding pair). A `lines`
+  row has NO `lam_um`/`relative_power` keys, so a consumer that mistakenly
+  treats a line source as continuous fails loudly instead of
+  mis-sampling. `sources.wavelength_strata`'s `lines` regime places strata
+  AT the line centers using Hamilton largest-remainder apportionment
+  (proportional to line intensity, `>= 1` stratum per kept line) and warns
+  explicitly when `n_lambda < n_lines` (proportions become
+  unrepresentable below one stratum per line).
+
+5 emitters ship: `led_white_2733k` (phosphor-converted white LED SPD,
+CCT ~2733 K, CIE 015:2018 illuminant LED-B1, `continuous`), `sc_superk`
+(NKT SuperK EXTREME supercontinuum SPD, 400–2400 nm, `continuous`),
+`bb_halogen_3000k` (`blackbody`, tungsten-halogen 3000 K approximation),
+`d2_uv_approx` (`continuous`, tabulated deuterium-lamp UV continuum
+approximation — the Balmer-series line structure is explicitly flagged
+omitted, not modeled as `lines`), `hg_penlamp` (`lines`, an 11-line
+NIST-cited mercury pen-lamp spectrum, the classic UV-Vis wavelength
+calibration source).
 
 ### 7.13 `figure/figures.miefig`
 
@@ -2113,6 +2331,67 @@ precede their `materials.miemat` index row). See §5.1's NLO extras and
 §6.12/§6.12b for the physics; `nonlinear`/`pockels` are Python-routed
 (§13).
 
+### 7.16 `sample/samples.miesamp` (+ `sample/tables/*.mietab`)
+
+The scattering-sample registry (samples-instruments round) named by a
+body's `sample` property (§5.13). 16 columns: `name, particle_material,
+dist, median_um, gsd, phi, tau, mode, count, sq_model, sq_params, shape,
+aspect_ratio, solvent_visc_pas, reference, notes`.
+
+- `particle_material` must exist in `materials.miemat`; `dist` (`mono` or
+  a log-normal-over-radius kind), `median_um` (median DIAMETER, the same
+  `--particles` convention, §9), `gsd` (defaults 1.6, forced to 1.0 for
+  `dist=mono`).
+- `phi` (mass fraction, `(0,1)`) XOR `tau` (target optical depth, `> 0`) —
+  exactly one required, same semantics as §9/§5.13.
+- `mode` ∈ `auto`/`continuum`/`explicit`; `count` (optional int `> 0`)
+  pins an explicit-mode site count directly instead of deriving one from
+  `phi`/`tau`.
+- `sq_model` ∈ `none`/`py`/`baxter`/`fractal`/`paracrystal`/`table`
+  (`SQ_MODELS`); `sq_params` is `;`-separated `key:val`, validated per
+  model (§5.13's model list gives the physics; the params each needs):
+  `py`/`baxter` take optional `phi_hs`/`r_hs_um` (default: derived from
+  the sample's own `phi`/median radius at trace time) plus `baxter`'s
+  required `tau_stick > 0`; `fractal` requires `xi_um > 0`, `df` in
+  `(1, 3]`, optional `r0_um`; `paracrystal` requires `lattice` ∈
+  `fcc`/`bcc`/`sc`, `a_um > 0`, `g` in `(0, 1)`; `table` requires
+  `table:<name>` resolving to `sample/tables/<name>.mietab`
+  (`q_per_um, s` columns, `q` strictly increasing `>= 0`, `s > 0`).
+- `shape` ∈ `sphere`/`spheroid` (default `sphere`); `aspect_ratio`
+  (default 1.0, must be `1.0` when `shape=sphere` — a nonzero value there
+  is a hard error naming the fix) selects the T-matrix path (§5.13) when
+  `shape=spheroid`.
+- `solvent_visc_pas` (optional): the host solvent's dynamic viscosity
+  (Pa·s), consumed by `run_dls.py`'s Stokes-Einstein diffusion
+  coefficient (§8.7) — required for a sample used in a DLS run, unused
+  otherwise.
+
+7 rows ship: `latex_100nm_water` (the DLS standard reference sample —
+100 nm polystyrene latex spheres in water), `glass_beads_10um_water`
+(Insitec/ISO 13320-class calibration beads), `hard_sphere_py` (Percus-
+Yevick S(q), Pusey & van Megen's colloidal hard-sphere system),
+`sticky_sphere_baxter` (Baxter S(q)), `silica_gel_fractal` (Teixeira
+fractal, Schaefer/Teixeira `df=2.1` silica gel), `colloidal_crystal_fcc`
+(explicit fcc lattice, a synthetic opal — (111) Bragg peak ~537 nm in
+water), `spheroid_hematite` (T-matrix prolate spheroid, aspect 1.8).
+
+### 7.17 `image/images.mieimg`
+
+The extended image-source registry (samples-instruments round) named by a
+source body's `image` property (§5.14). Columns `name, file, reference,
+notes` — `file` names a bitmap stored NEXT TO the registry CSV (extensions
+`.png`/`.jpg`/`.jpeg`/`.tif`/`.tiff`/`.bmp`/`.npy`, `IMAGE_EXTENSIONS`);
+files live inside `opticalproperties/` so a `.MieWB` project library
+carries its targets with it. The loader validates existence + extension
+and the `reference` citation contract only — pixel data is loaded once by
+the engine at scene build (§5.14), not here.
+
+1 row ships: `usaf_style_target` (512×512 8-bit, MIL-STD-150A-style-alike
+3-bar resolution groups, generated by `scripts/tools/gen_usaf_target.py` —
+NOT a licensed reproduction of the real USAF-1951 chart; bright-emits
+convention with an asymmetric top-left orientation mark for end-to-end
+flip/orientation tests). Used by the `source_image` primitive.
+
 ---
 
 ## 8. Command reference
@@ -2143,7 +2422,9 @@ python3 scripts/run_pipeline.py --models FCSTD [FCSTD ...]
     [--source-face SPEC]... [--detector-face SPEC]...
     [--grating SPEC]... [--rough SPEC]... [--particles SPEC]
     [--particle-threshold F] [--suppress-body NAME]...
+    [--conical] [--conical-fan N] [--conical-delta RAD]
     [--photometric] [--spectrometer] [--instruments {on,off}]
+    [--ring-profile SPEC] [--reference-case DIR]
     [--time-products LIST] [--time-bins N] [--time-window T0,T1]
     [--time-cube-res N] [--time-envelope {analytic,histogram}]
     [--gdd-budget]
@@ -2183,6 +2464,15 @@ escape (unbiased, C engine); `--importance-scatter` aims measured-scatter
 FRAC` the bias/variance knob (default 1.0; §5.4.2). `--biref-approx`
 selects the legacy isotropic effective-index Fresnel at uniaxial
 interfaces instead of the default exact Lekner amplitudes (§6.1).
+`--conical` (default off) turns on the internal-conical-refraction fan at
+biaxial optic axes; `--conical-fan N` (default 16) and `--conical-delta
+RAD` (default `1e-4`) are its azimuth count and optic-axis dispatch
+radius (§5.6b). `--ring-profile SPEC` (forwarded to **post**) integrates
+each detector image into log-spaced annular power bins about the optical
+axis (`'n=32:rmin_mm=0.05:rmax_mm=10[:center=peak|chief|X,Y]'`,
+laser-diffraction-sizer style; §5.13/§8.3). `--reference-case DIR`
+(forwarded to **post**) renders `A(λ) = -log10(I/I0)` absorbance against
+a blank case's matching spectrometer/diode-array product (§7.11/§8.3).
 `--gather-exact` forces the bit-exact fp64 gather kernel and
 `--gather-nufft` opts into the EXPERIMENTAL NUFFT angular-spectrum fast
 path (both C engine only; §12). `--viz-pattern SPEC` lays out viz rays
@@ -2280,6 +2570,7 @@ trace can already saturate every core/GPU). Logs: `results/log.extract`
     [--viz-pattern SPEC]
     [--ray-differentials] [--no-pol-scatter] [--rough-fresnel {micro,macro}=micro]
     [--biref-approx]
+    [--conical] [--conical-fan N=16] [--conical-delta RAD=1e-4]
     [--temperature DEG_C]
     [--source-face SPEC]... [--detector-face SPEC]...
     [--grating SPEC]... [--rough SPEC]...
@@ -2309,7 +2600,8 @@ is unaffected) capped at `--viz-rays-max` (default 20000) per source.
 `--ray-differentials`, `--no-pol-scatter`, `--rough-fresnel`,
 `--save-fields`, `--gather-occlusion`, `--strict-analytic`,
 `--mesh-flat-normals` are documented in §6/§5; all default off (or
-`micro` for `--rough-fresnel`) except where noted. `--temperature
+`micro` for `--rough-fresnel`) except where noted. `--conical`/
+`--conical-fan`/`--conical-delta` (§5.6b) default off/16/`1e-4`. `--temperature
 DEG_C` shifts glasses carrying a thermo-optic model via Schott TIE-19
 dn/dT (§5.1, §7.1); default is each material's reference temperature
 (no shift), and a per-body `temperature` property overrides the scene-
@@ -2363,6 +2655,7 @@ without reconstructing the scene. Both flags are **seed 0 only**, like
     --case-dir DIR --model-json PATH [--viz-generations N]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--photometric] [--spectrometer] [--instruments {on,off}]
+    [--ring-profile SPEC] [--reference-case DIR]
     [--emit-csv] [--wavefront-point X_MM,Y_MM]
     [--wavefront-pupil {source,exit_pupil}] [--imaging-products LIST]
     [--image-sim PATH] [--image-sim-coherence {incoherent,coherent,partial}]
@@ -2451,6 +2744,38 @@ Curved (sphere/cylinder) detectors (§5.12) render through the same
 `.h5`'s extra `pixel_area_map` dataset (true per-pixel metric area,
 present only for curved detectors) instead of the fixed planar pixel
 area, so irradiance stays correct regardless of screen curvature.
+
+**Instruments follow-ons** (samples-instruments round; §7.11): a detector
+carrying an `instrument` property naming a `diode_array` row (e.g.
+`tcd1304_array`) gets `render_diode_array()`'s physical linear-array
+readout instead of `spectrometer`'s continuous curve — same
+`instrument/instr_<label>_diode_array_<mode>.png`/`.csv`/report-block
+shape as every other instrument class. `--reference-case DIR` runs
+`render_absorbance()`: it recomputes `DIR`'s own raw spectrometer/
+diode-array product from that case's `.h5` (same instrument row, same
+mode) and writes `A(λ) = -log10(I/I0)` against the current case's product
+(`instrument/absorbance_<label>.csv` + PNG, `report.json`
+`detectors.<label>.absorbance` block, with stray-light-floor masking near
+`I≈0`); a mismatched instrument row or pixel grid between the two cases
+is a hard `SystemExit` naming the mismatch, not a silently wrong curve.
+`--ring-profile SPEC` (§8.1) runs `render_ring_profile()`
+(`analysis_field.log_annular_power` + `parse_ring_spec`): log-spaced
+annular power bins about the optical axis on the detector's UNCLIPPED
+(possibly zero-mean-negative) power image, `center` resolved to `peak`
+(brightest pixel), `chief`/unset (the image power centroid — every other
+radial `analysis_field` function's own default), or an explicit `X,Y` mm
+in the detector grid frame; writes `analysis/rings_<label>.csv` + PNG with
+an exact closure accounting (incl. inside/outside remainders) so the ring
+sum plus the two remainders equals the detector's total power exactly.
+When the source carried an `image` body property (§5.14),
+`render_image_traced()` (no CLI flag — runs automatically whenever the
+scene has one) publishes the traced end-to-end detector image into
+`imaging/`, auto-surfacing in the Results "Imaging" gallery; if
+`--image-sim` also ran on the same detector, it additionally writes a
+traced-vs-convolution-sim side-by-side PNG plus an NCC agreement metric,
+evaluated at direct AND 180°-rotated orientations (a real imaging bench
+inverts; the space-invariant sim is object-oriented) with the
+better-agreeing orientation reported.
 
 ```
 /home3/optics/env/bin/python scripts/compare_runs.py \
@@ -2616,9 +2941,108 @@ Both share `--preset`/`--rays`/`--resolution`/`--nlambda`/`--seeds`/
 fills them from `common.PRESETS`) and `--config JSON` (keys mirror the
 CLI dests; explicit flags win over the file).
 
+### 8.7 `run_dls.py` / `dls_correlate.py` (optics env python — dynamic light scattering)
+
+Traced-dynamics DLS: a real Brownian-motion frame sequence off a
+body-bound EXPLICIT-mode `sample` (§5.13), each frame independently
+traced and gathered into a coherent speckle field, so the frame-to-frame
+field decorrelation is genuine particle-displacement physics rather than
+an analytic model.
+
+```
+/home3/optics/env/bin/python scripts/run_dls.py
+    --model-json PATH --case-dir DIR
+    --frames N --dt-ms F
+    [--temp-k F=293.15] [--rays F=1e5] [--nlambda N=1]
+    [--detectors LABEL,...] [--resolution N=32]
+    [--workers auto|N] [--seed N=12345] [--max-gb F=2.0]
+    [--optical-properties PATH] [--particle-threshold F=2e5]
+    [--max-reflections N=6] [--power-floor F=1e-4]
+```
+
+Requires exactly one EXPLICIT-mode `sample` body in the scene and at
+least one `coherent=true` source. Flow: (1) build the `Scene` **once**
+and locate the sampled body's `BodyParticleMedium`; (2) frame 0 = the
+sample row's frozen explicit realization; pre-generate `--frames` further
+positions SEQUENTIALLY via per-particle Stokes-Einstein diffusion
+(`D_i = kB·T / (6π·η·r_i)`, `η` = the sample row's `solvent_visc_pas`,
+`T` = `--temp-k`; per-axis step `sigma_i = sqrt(2·D_i·dt)`), a REFLECTIVE
+body-wall boundary condition enforced by rejection-redraw against
+`Scene.point_inside_body` (a particle holds still that frame after
+`_REFLECT_TRIES` failed redraws); radii are frozen at frame 0 (no size
+evolution). (3) Trace all frames EMBARRASSINGLY PARALLEL over a spawned
+process pool (`numpy.random.SeedSequence.spawn`, the same CUDA-safe
+convention `run_trace._run_sharded` uses); each worker reconstructs the
+RAW (unnormalized, ungated) coherent field per frame with
+`gather.points_numpy` directly — DLS needs frame-to-frame PHASE evolution,
+not a power-calibrated image, so `render_coherent`'s per-population power
+renormalization and its `M_eff` sampling gate are deliberately bypassed
+(numpy also keeps torch/CUDA out of the spawned workers entirely). (4)
+Persist `<case>/dls/frames.h5` + `manifest.json`.
+
+**`frames.h5` schema**: `/positions` `(N, n_p, 3)` float32 (Brownian
+positions, m); `/radii` `(n_p,)` float32 (frozen); `/dt_s` (), `/temp_k`
+() scalars; `/detectors/<safe>/frames` `(N, nkeys, 2, H, W)` complex64 —
+per-frame RAW coherent field, axis 1 = gather key (mutually incoherent
+populations — correlations sum, fields don't), axis 2 = `[Ex, Ey]`
+detector-frame Jones components; `/detectors/<safe>/q_vector` `(3,)`
+float64 (`k_s - k_i`, 1/m); group attrs `label, H, W, pixel_m, xhat,
+yhat, normal, x_lo, y_lo, q_magnitude_per_m, lam_lo_m, lam_hi_m,
+keys_json`; root attrs `seed, engine, sample, body, host_material,
+solvent_visc_pas, n_particles, rays, nlambda, frames, dt_ms,
+sample_row_json`.
+
+```
+/home3/optics/env/bin/python scripts/dls_correlate.py
+    --case-dir DIR [--aperture-px K] [--emit-csv]
+```
+
+Fully OFFLINE and re-runnable (reads only `frames.h5`, never re-traces).
+Per detector: the complex field summed over a central `K×K` aperture
+(default: the full grid; smaller `K` trades a higher coherence factor
+`beta` for lower SNR) per (source, λ-stratum, pol-stratum) gather key and
+Jones component gives an FFT field autocorrelation `g1(tau)` (per-channel
+autocorrelations summed at the CORRELATION level — the physically correct
+combination for mutually-incoherent channels — then normalized to
+`g1(0)=1`); the Siegert relation `g2(tau) = 1 + beta·|g1(tau)|^2`
+reconstructs the intensity correlation, `beta` fitted from the measured
+`tau->0` aperture-intensity-fluctuation intercept; a weighted second-order
+cumulant fit `ln|g1| = -Gamma·tau + mu2·tau^2/2` over the contiguous
+`|g1| > 0.1` window gives the decay rate `Gamma`, diffusion coefficient
+`D = Gamma / q^2` (`q` from the h5's `q_magnitude_per_m`), and the
+hydrodynamic diameter `d_H = kB·T / (3·pi·eta·D)` (Stokes-Einstein).
+Outputs under `<case>/dls/`: `g2_<label>.csv`, `correlogram.png`
+(`|g1|(tau)` per detector, log-x), `gamma_vs_q2.png` (multi-angle
+through-origin fit, slope = `D`), `report.json` (per-detector `D, d_H,
+beta, Gamma`). GUI: Results pane "dls" gallery.
+
+**Honest limits (shared)**: **single-scattering only** — keep the sample
+optically thin (`tau` from §5.13's `sample` row, target a few×`1e-3`);
+frozen radii (no size evolution); no hydrodynamic interactions and no
+structure-factor collective slow-down of `D` (dilute Stokes-Einstein);
+no sedimentation/flow (drift-free Brownian only). **Sparse-cloud
+requirement**: the explicit medium samples each scatter event with a
+SHARED Monte-Carlo RNG stream whose draw order depends on the exact set
+of ray-particle collisions — in a DENSE cloud a nm-scale particle move
+flips a collision somewhere, desynchronizing the whole stream, so the
+speckle field goes delta-correlated frame-to-frame instead of decaying at
+the physical `D·q^2` rate. For a clean, quantitative `g1` decay the
+sample must be DILUTE (tens of well-separated spheres, not thousands) so
+the collision set stays stable across a frame — dense suspensions still
+run and persist, but their `Gamma`/`D`/`d_H` are unreliable (the
+correlator math itself is validated independently against synthetic
+fields, `test_dls.py`). Index-match the ambient to the solvent (e.g. the
+`vat_cylindrical` decalin bath, §5.13's catalog additions) so scattered
+rays are not TIR-trapped at cell walls.
+
 ---
 
 ## 9. Particle clouds
+
+This section covers the CLI `--particles` world-box spec. A body-bound
+sample cloud authored via the `sample` property (registry-driven S(q)
+structure factors, explicit lattice realizations, T-matrix spheroids) is a
+separate, coexisting route — §5.13.
 
 `--particles` spec (`common.parse_particles_spec`):
 ```
@@ -3080,6 +3504,39 @@ segfaults: every failure carries context, a log
   crossed-polarizer or narrow-band filter scene will legitimately park
   most power in `polarizer_absorbed`/`absorbed_bulk` rather than
   indicating a bug.
+- **Astronomically large detected power (e.g. `1e8` W out of a 1 mW
+  source) on a nested-cylinder / curved-glass-to-liquid interface, Python
+  engine only** — FIXED (samples-instruments round), but the failure
+  signature is worth recognizing if you're on an older checkout or a
+  from-scratch reimplementation of `fresnel.cos_theta_t`: a weakly
+  absorbing INCIDENT medium (e.g. water, k~1e-8) into an exactly lossless
+  far medium (e.g. decalin/glass) picks up a `~1e-13` numerical-dust
+  imaginary part on the transmitted-cosine radicand; the old unconditional
+  `Im(n2·cos_t) >= 0` decay-branch rule flipped that dust into a spurious
+  evanescent classification, and the near-cancelling Fresnel denominator
+  this produces gives `|rs| ~ 15` — squared and looped around a curved
+  interface, that is an `O(1e16)` closure explosion in a handful of
+  bounces. The fix applies the radiation condition
+  (`Re(n2·cos_t) >= 0`) instead, whenever the imaginary part is at
+  numerical-dust scale relative to the whole quantity (`fresnel.py`,
+  `cos_theta_t`). The C engine's branch rule already matched the fix, so
+  this only ever showed up under `--engine python`/`--biref-approx`-free
+  Python fallback — `--engine auto` silently masked it on any scene the C
+  engine could route.
+- **A many-interface stack (deep nesting, several particle-medium
+  crossings) loses a large, oddly-specific fraction of emitted power into
+  `truncated_generation` well before `--max-reflections` should matter,
+  Python engine only** — FIXED (samples-instruments round, found by the
+  `nested4` depth-4 spike at 37.8% loss at 60k rays). The old termination
+  valve was a fixed **global** pop budget (`64*(max_reflections+2)`)
+  shared across every source and consumed by `batch_size` chunk splits, so
+  a scene with enough live interfaces could exhaust it while rays were
+  still legitimately eligible to continue. It is now a **per-lineage hop
+  cap**: each batch carries its own ancestry step count and chunk splits
+  inherit it unchanged, so splitting the work never changes the outcome —
+  a truncation today means a lineage genuinely exhausted 512 segments, and
+  it is reported by name with the exact power lost, not silently folded
+  into the ordinary ledger.
 - **`[trace] REFUSED: … .lock.json` (exit code `4`)**: a second writer on
   a case that already has a live run is refused rather than corrupting it
   (one writer per case, `common.acquire_case_lock()`). Rerun when the

@@ -79,3 +79,14 @@ originals.
     params; LED primitive name suffixes are bin nicknames while the
     actual CWL is in `lambdac`; `model.json`/`rays_full.npz` units are
     metres (a 1000× foot-gun) with no doc callout.
+
+## Resolved (samples-instruments round, 2026-07-23)
+
+- Item **3** (`--particles` clouds not chain-referenceable): the
+  `sample_region` primitive (a bare `material=air` anchor cube) carries a
+  `port_frames` pass-through entry, so a body-bound `sample` cloud is now
+  chain-referenceable like any other element.
+- Item **4** (co-located transparent detectors overlap-fail extraction):
+  detector-detector solid overlap now classifies into the informational
+  `validation.detector_overlap` list instead of the fatal
+  `overlapping_solids`.

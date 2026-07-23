@@ -66,6 +66,20 @@ MieWorkbench wraps that pipeline with:
   and friends, `--wavefront-pupil exit_pupil`) for convolving an input image
   through the modeled system's PSF and reporting a PSF-peak-ratio Strehl
   at the exit pupil instead of just the source-referenced one.
+- **Scattering-instrument benches** (`sample` body property + the
+  `sample/samples.miesamp` registry): a particle population bound to a
+  liquid-fill cell's interior, with real inter-particle S(q) structure
+  factors (Percus-Yevick/Baxter sticky-sphere/Teixeira fractal/powder
+  paracrystal/tabulated, plus explicit fcc/bcc/sc lattice realizations)
+  and orientation-averaged T-matrix spheroids for non-spherical particles.
+  A traced dynamic-light-scattering (DLS) workflow (`scripts/run_dls.py` +
+  `scripts/dls_correlate.py`) simulates a real Brownian frame sequence and
+  correlates it back to g1/g2/D/hydrodynamic diameter. On the instrument
+  side, a physical diode-array detector readout, a `--reference-case`
+  UV-Vis absorbance product, and a `--ring-profile` log-annular sizer
+  readout round out a laser-diffraction/spectrophotometer-style bench —
+  see docs/RAYTRACER.md §5.13/§5.14/§8.7 and the 10 new sample-cell/lamp/
+  image-source primitives (§3.6.2 below, catalog now 80 elements).
 
 Everything the engine does — the physics, the tagging contract, the
 optical-property registries — is unchanged; MieWorkbench only adds a UI
@@ -609,7 +623,7 @@ it configures the whole element, not just its geometry:
   fall back to focusing the Element Properties pane, since there's no
   primitive spec to drive a wizard from.
 
-### 3.6.2 Primitive catalog (70 elements)
+### 3.6.2 Primitive catalog (80 elements)
 
 Every entry below is one `primitives/*.FCStd` + `.meta.json` pair, built by
 `scripts/primitivelib.py`'s `PRIMITIVES` registry (CUSTOMIZE.md §§1–3).
@@ -630,7 +644,11 @@ properties), plus 8 monochromatic LEDs (`led_deep_red_660`/`led_red_630`/
 `led_uv_365`/`led_uv_385`) and a `led_white`, and 6 pulsed/supercontinuum
 sources for the time-domain/NLO demo group (`laser_pulsed`,
 `laser_maitai_800`, `laser_erfiber_1560`, `laser_ndyag_1064`, `sc_superk`,
-`fiber_nonlinear_output`).
+`fiber_nonlinear_output`); `tungsten_halogen`/`d2_lamp`/`hg_calibration`
+(the samples-instruments round's three new lamp emission rows — blackbody,
+tabulated UV continuum, and NIST-cited line-spectrum sources
+respectively) and `source_image` (a Lambertian USAF-style-target image
+emitter, `image`/`image_cone_deg` properties, §5.14 of docs/RAYTRACER.md).
 
 **Detectors** — `detector_plane` (width, height, thickness, round_flag:
 thin transparent screen, its −x face records irradiance; height 0 = the
@@ -739,6 +757,16 @@ air-filler aperture contract (docs/RAYTRACER.md §5.10); `blackness` drives
 the plate/disc's `absorbance` property directly through the
 `derived_props` mechanism (CUSTOMIZE.md §1) — it is re-derived on every
 rebuild, so editing `absorbance` by hand would just be overwritten.
+
+**Samples & Cells** (samples-instruments round) — `cuvette_square`/
+`cuvette_capillary`/`flow_cell` (nested glass-wall + liquid rectangular
+cells, the `bs_cube` exact-containment pattern); `vial_cylindrical` (DLS
+vial) / `vat_cylindrical` (decalin index-matching bath); `sample_region`
+(a bare `material=air` anchor cube, chain-referenceable via its own
+`port_frames` entry, for an unwalled particle cloud). All are hosts for
+the `sample` body property (§5.13 of docs/RAYTRACER.md) — a particle
+population with an optional S(q) structure factor or T-matrix spheroid
+shape bound to whichever cell's interior.
 
 **Swapping registry variants without changing geometry**: many of the
 plate primitives above default to one row of a larger registry family and

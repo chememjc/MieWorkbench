@@ -46,9 +46,10 @@ schema needing a loader (flagged [needs engine]).
 
 ## Current inventory recap (what already exists — do not duplicate)
 
-From the live library (exact counts): **847 materials** — by class: 728 glass, 56 oxide, 20 liquid,
+From the live library (exact counts): **849 materials** — by class: 728 glass, 56 oxide, 22 liquid,
 15 polymer, 9 metal, 7 gas, 6 special, 6 film; by model: 646 sellmeier, 128 schott, 38 constant,
-18 tabulated, 17 cauchy. **679 Schott+Ohara glasses were bulk-imported from Zemax AGF**
+19 tabulated, 18 cauchy (samples-instruments round added `decalin` (liquid, cauchy) and
+`dye_solution_kmno4` (liquid, tabulated), §1.6 below). **679 Schott+Ohara glasses were bulk-imported from Zemax AGF**
 (`scripts/tools/import_agf.py`, raw catalogs `library_data/agf/{schott,ohara}.agf`, 366+417 records;
 byte-preservation guardrail `scripts/tools/verify_miemat_preserved.py`); 758 rows carry TIE-19 dn/dT
 in the `thermo_*` columns · **18 n/k tables** · **39 coatings**
@@ -56,8 +57,17 @@ in the `thermo_*` columns · **18 n/k tables** · **39 coatings**
 dichroic/laser elements, standard 45°-AOI) · **17 polarizers** (Glan variants, Polaroid sheets, wire-grids,
 circular types) · **56 filters** (Schott colored-glass series, interference bandpass) · **9 gratings**
 (lamellar, Bragg/VPH, Dammann, echelle, ruled blazed) · **13 uniaxial crystals** (calcite, quartz, sapphire,
-LiNbO3, LiTaO3, YVO4, BBO isomers, KDP, ADP, rutile, TeO2, MgF2) · **1 detector QE curve** (hamamatsu_s1223)
-· **70 primitives** (8 LED monochromatic sources + 1 white-LED source). Every entry is cited. The **`lamellar`** grating model now
+LiNbO3, LiTaO3, YVO4, BBO isomers, KDP, ADP, rutile, TeO2, MgF2) · **4 detector QE curves**
+(hamamatsu_s1223, toshiba_tcd1304ap, sony_ilx511b, hamamatsu_s3904 — the last three samples-instruments
+linear-CCD rows) · **5 emission spectra** (led_white_2733k, sc_superk continuous; bb_halogen_3000k
+blackbody; d2_uv_approx continuous; hg_penlamp lines — the last three samples-instruments) ·
+**7 scattering samples** (`sample/samples.miesamp`, samples-instruments: particle population +
+optional S(q) structure factor or T-matrix spheroid shape, bound via a body's `sample` property) ·
+**1 extended image source** (`image/images.mieimg`, samples-instruments: `usaf_style_target`, bound
+via a source's `image` property)
+· **80 primitives** (8 LED monochromatic sources + 1 white-LED source + 10 samples-instruments
+additions: cuvette/vial/vat sample cells, `sample_region`, 3 lamp sources, `source_image`). Every
+entry is cited. The **`lamellar`** grating model now
 has its first registry entry; the **`cauchy`** dispersion model is exercised by polymer/liquid/gas materials.
 
 Existing materials (sample): vacuum, air, bk7, fused_silica, sapphire_o/e, water, glass, polystyrene, latex,
@@ -80,8 +90,9 @@ hand-transcription where possible.
 
 # 1. Materials
 
-The current library ships **847 materials** (the original 144-row hand-curated expansion below, plus
-679 Schott+Ohara glasses bulk-imported from Zemax AGF — see the new subsection at the end of this
+The current library ships **849 materials** (the original 144-row hand-curated expansion below, plus
+679 Schott+Ohara glasses bulk-imported from Zemax AGF, plus 2 samples-instruments-round rows —
+`decalin`/`dye_solution_kmno4`, §1.6 below — see the new subsection at the end of this
 section). Below are the **144 new cited, drop-in rows** across five groups that landed first. All are
 **[data-only]** (work with the current engine) except where noted. Full rows in
 `library_data/materials_*.miemat` + `library_data/nk/*.mienk`. **Sellmeier order is block
@@ -135,7 +146,7 @@ only **[needs engine: χ²]**. Birefringence registry entries in §3.
 power-series, n²=a0+a1λ²+a2λ⁻²+a3λ⁻⁴+a4λ⁻⁶+a5λ⁻⁸ — mapped to the new `model=schott`, 128 rows) and
 **2** (standard Sellmeier) are imported; other AGF formula codes are skipped. Each AGF record's
 `TD` (thermal data) line, where present, populates the 7 new `thermo_*` columns (Schott TIE-19
-dn/dT: D0,D1,D2,E0,E1,λ_TK,T_ref °C) — 758 of the 847 material rows now carry dn/dT.
+dn/dT: D0,D1,D2,E0,E1,λ_TK,T_ref °C) — 758 of the 849 material rows now carry dn/dT.
 `materials.py::_dn_thermal` applies it at trace time via scene-level `--temperature` (°C) or a
 per-body `temperature` override. `scripts/tools/verify_miemat_preserved.py` is the byte-
 preservation guardrail: it diffs the post-import `materials.miemat` against a pre-import snapshot
@@ -174,8 +185,10 @@ confidence, Kato & Takaoka 2002 the primary KTP citation) — a body sets `mater
 **both** `crystal_axis` (X) and `crystal_axis2` (Y) to use one. The 5 mineral placeholders
 (muscovite, aragonite, topaz, alpha_sulfur, borax) remain **unpromoted** in
 `library_data/birefringence_biaxial.mibiax` — still UNVERIFIED handbook constants, not yet copied
-into the live registry. Honest solver limits (conical refraction near an optic axis not modeled;
-absorbing biaxial crystals/optical activity out of scope) are in `docs/RAYTRACER.md` §5.6b; see
+into the live registry. Honest solver limits (internal conical refraction near an optic axis is
+modeled behind `--conical`, off by default, `samples-instruments` round; external conical
+refraction, absorbing biaxial crystals, and optical activity are out of scope) are in
+`docs/RAYTRACER.md` §5.6b; see
 `lowhanging.md` §4.1 for the original difficulty analysis (now a progress record).
 
 **3.3 Filters — 40 new [data-only]** (`filters.miefilt` + `filter_tables.csv`; current library 16):
@@ -194,13 +207,15 @@ echelle_79, transmission_iof_cubes (binary UV), vph_eso_574 (Kogelnik VPH), rule
 
 **3.6a Measured BSDF / ABg scatter — RESOLVED (2026-07-10, `lowhanging-improvements` round),
 now live.** `opticalproperties/scatter/bsdf.miebsdf` (schema `name,model,A,B,g,tis_cap,reference,
-notes`; `docs/RAYTRACER.md` §7.9) ships 3 rows — `polished_fused_silica`, `polished_bk7_glass`,
-`diamond_turned_aluminum` — all flagged **UNVERIFIED** (representative ABg fits per Pfisterer
-2011's form, not transcribed from a specific measured/vendor curve; verify before production use).
+notes` + an optional `btdf,btdf_A,btdf_B,btdf_g,btdf_tis_cap` transmitted-side block, landed P2/P2.5
+`engine3 overhaul` round; `docs/RAYTRACER.md` §7.9) ships 4 rows — `polished_fused_silica`,
+`polished_bk7_glass`, `diamond_turned_aluminum` (all flagged **UNVERIFIED**, representative ABg
+fits per Pfisterer 2011's form, not transcribed from a specific measured/vendor curve; verify
+before production use), and `lightly_ground_glass_window` (the worked BTDF example).
 A per-face `scatter` body property selects one (mutually exclusive with `roughness`/`diffuser`).
-**v1 scope: reflected-side (BRDF) only** — BTDF (transmitted-side) scatter is not modeled; that
-and additional cited goniophotometer-derived rows are the natural next step
-(`lowhanging.md`'s new backlog, §6).
+**Current scope: isotropic ABg only** — BTDF (transmitted-side) scatter is modeled (both sides);
+per-azimuth anisotropic fits and additional cited goniophotometer-derived rows are the natural
+next step (`future.md` Backlog b).
 
 **3.6 Still needing engine support (data notes only, no drop-in rows yet):**
 - **GRIN profiles** (radial/axial/Luneburg) **[needs engine: GRIN curved-ray integration]** —
@@ -259,7 +274,9 @@ Today: only `detector_plane` (planar, wavelength-independent). Missing types, ra
 
 # 6. Primitives / elements
 
-Current: 70 catalog elements. Missing element types, by build difficulty:
+Current: 80 catalog elements (samples-instruments round added 10:
+sample-cell/lamp/image-source primitives, §6 of `docs/RAYTRACER.md`
+§5.13/§5.14). Missing element types, by build difficulty:
 
 **Tier A — buildable now (catalog/wizard work only):**
 - **Toroidal lens** — `Torus` surface class already exists in `surfaces.py`; needs a builder.
@@ -302,7 +319,8 @@ Sellmeier order; the S-BSL7 negative-C2 and lbo_ny negative-B1 valid-but-check c
 · QE detector data (1 curve + coverage metrics + `report.json` keys). **Superseded by the AGF
 import round** (see the new materials subsection above): +679 Schott/Ohara glasses, the new
 `schott` dispersion model (128 rows), and 7 `thermo_*` dn/dT columns (758 rows populated) —
-materials now total **847**.
+materials totaled **847** as of that round (now **849** — samples-instruments round added
+`decalin`/`dye_solution_kmno4`, see the current-inventory recap at the top of this document).
 
 **Update (2026-07-10, `lowhanging-improvements` round):** 4 of the 9 staged biaxial crystals are
 now **promoted and live** (ktp, kta, lbo, bibo — §3.2) alongside the biaxial solver; a new
