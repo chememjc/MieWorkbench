@@ -2209,7 +2209,9 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
                  % (obj.Label, role), warnings)
 
         bodies_out.append(body_dict)
-        bodies_solids.append((obj.Name, shape))
+        bodies_solids.append((obj.Name, shape,
+                              (body_dict.get("material") or "").lower()
+                              == "detector"))
 
     if not bodies_out:
         die("%s: no non-ignored bodies found" % stem)
@@ -2221,11 +2223,12 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
 
     overlaps = []
     nested = []
+    detector_overlaps = []
     for i in range(len(bodies_solids)):
-        ni, si = bodies_solids[i]
+        ni, si, det_i = bodies_solids[i]
         bi = si.BoundBox
         for j in range(i + 1, len(bodies_solids)):
-            nj, sj = bodies_solids[j]
+            nj, sj, det_j = bodies_solids[j]
             bj = sj.BoundBox
             if (bi.XMax < bj.XMin or bi.XMin > bj.XMax
                     or bi.YMax < bj.YMin or bi.YMin > bj.YMax
@@ -2238,7 +2241,18 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
                 # the beamsplitter cubes model their coated internal
                 # interface (a nested thin plate: glass-glass, no gap,
                 # no TIR); only PARTIAL overlap is non-manifold and
-                # rejected.
+                # rejected — EXCEPT between two detector bodies
+                # (samples-instruments round): detectors are ideal
+                # transparent pass-through screens with no medium, so
+                # co-located "measure the same plane two ways" stacks are
+                # physically well-defined. Classified as informational
+                # detector_overlap (keep the recording faces >= 1 um
+                # apart — coincident faces inside the tracer's 100 nm
+                # t_eps guard would drop the second hit).
+                if det_i and det_j:
+                    detector_overlaps.append({"a": ni, "b": nj,
+                                              "volume_mm3": common_vol})
+                    continue
                 vi, vj = si.Volume, sj.Volume
                 inner = min(vi, vj)
                 if abs(common_vol - inner) <= 1e-6 * inner:
@@ -2260,6 +2274,7 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
         "validation": {
             "overlapping_solids": overlaps,
             "nested_solids": nested,
+            "detector_overlap": detector_overlaps,
             "warnings": warnings,
         },
     }
