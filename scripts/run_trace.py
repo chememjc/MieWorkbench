@@ -539,7 +539,10 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                       importance_limit=getattr(
                           args, "importance_limit", 1.0),
                       pol_transport=getattr(args, "pol_transport", False),
-                      biref_approx=getattr(args, "biref_approx", False))
+                      biref_approx=getattr(args, "biref_approx", False),
+                      conical=getattr(args, "conical", False),
+                      conical_fan=getattr(args, "conical_fan", 16),
+                      conical_delta=getattr(args, "conical_delta", 1e-4))
     pseed = int(child_seq.generate_state(1)[0])
     media, media_diag = build_particle_media(args, scene, pseed,
                                              particle_lams)
@@ -618,7 +621,10 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
                       importance_limit=getattr(
                           args, "importance_limit", 1.0),
                       pol_transport=getattr(args, "pol_transport", False),
-                      biref_approx=getattr(args, "biref_approx", False))
+                      biref_approx=getattr(args, "biref_approx", False),
+                      conical=getattr(args, "conical", False),
+                      conical_fan=getattr(args, "conical_fan", 16),
+                      conical_delta=getattr(args, "conical_delta", 1e-4))
     media, media_diag = build_particle_media(args, scene, seed,
                                              particle_lams)
     if media_diag.get("particles") is not None:

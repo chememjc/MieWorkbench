@@ -67,7 +67,8 @@ class TraceConfig:
                  rough_fresnel="micro", export_rays=False,
                  track_history=False, track_time=False,
                  importance_scatter=False, importance_limit=1.0,
-                 pol_transport=False, biref_approx=False):
+                 pol_transport=False, biref_approx=False,
+                 conical=False, conical_fan=16, conical_delta=1e-4):
         self.max_reflections = max_reflections
         self.power_floor = power_floor
         self.n_lambda = n_lambda
@@ -117,6 +118,16 @@ class TraceConfig:
         # cross terms dropped) instead of the default EXACT Lekner-1991
         # amplitudes. --biref-approx; kept for A/B and C-engine parity.
         self.biref_approx = bool(biref_approx)
+        # conical (--conical, samples-instruments round): model internal
+        # conical refraction at biaxial optic axes. Rays whose internal
+        # wave normal lies within conical_delta (rad) of an optic axis fan
+        # into 2*conical_fan cone children (slow+fast per azimuth, D-hat
+        # projection weights — the Poggendorff double ring) instead of the
+        # default arbitrary-basis two-sheet pass-through. Off = unchanged
+        # physics + the conical_guard counter, exactly as before.
+        self.conical = bool(conical)
+        self.conical_fan = int(conical_fan)
+        self.conical_delta = float(conical_delta)
 
 
 class VizStore:
