@@ -379,12 +379,26 @@ _DETECTORS = {
 _EMISSION = {
     "name": _name("emission spectrum"),
     "kind": ColumnInfo(
-        "Spectrum shape family. Only 'continuous' (piecewise-linear PDF "
-        "table) has engine support today -- 'blackbody'/'line' rows are "
-        "staged but rejected at load with a needs-engine-support error.",
-        format="enum: continuous (blackbody/line staged, not yet loadable)",
-        validator={"kind": "enum", "values": ("continuous",)}),
+        "Spectrum shape family (samples-instruments round). 'continuous' "
+        "= piecewise-linear PDF table (table_csv); 'blackbody' = analytic "
+        "Planck synthesized to a dense table at load (params column: "
+        "temp_k:3000;lam_lo_nm:350;lam_hi_nm:2500 — no table_csv); "
+        "'lines' = discrete emission lines (lines column "
+        "'nm:intensity;...', optional params linewidth_nm; no table_csv).",
+        format="enum: continuous | blackbody | lines",
+        validator={"kind": "enum",
+                   "values": ("continuous", "blackbody", "lines")}),
     "table_csv": _TABLE_CSV("emission/tables"),
+    "params": ColumnInfo(
+        "':'-keyed ';'-separated per-kind parameters: blackbody temp_k/"
+        "lam_lo_nm/lam_hi_nm (required); lines linewidth_nm (optional, "
+        "floors at 1e-3 nm). Blank for continuous rows.",
+        format="key:value;key:value (blank ok)"),
+    "lines": ColumnInfo(
+        "kind=lines only: the discrete line list, "
+        "'wavelength_nm:relative_intensity;...' (e.g. Hg pen-lamp "
+        "'253.65:1500;435.83:400;546.07:1000').",
+        format="nm:intensity;... (blank unless kind=lines)"),
     "reference": _REFERENCE,
     "notes": _NOTES,
 }
