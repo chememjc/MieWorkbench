@@ -300,27 +300,53 @@ class Tracer:
                 b.alloc_time()
             if self.cfg.pol_transport and b.Qmat is None:
                 pt.init_birth(b)
-        # a hard iteration cap guards against pathological loops; with the
-        # generation cap the loop terminates naturally well before this
-        for _ in range(64 * (self.cfg.max_reflections + 2)):
-            if not queue:
-                break
-            batch = queue.pop()
+        # Termination valve: a PER-LINEAGE hop cap (number of step() calls
+        # in a batch's ancestry), not a global pop budget. The old fixed
+        # 64*(max_reflections+2) POP counter was shared by every source
+        # and — critically — consumed by the batch_size chunk splitting
+        # below (each chunk of one oversized child cost a pop while
+        # representing the SAME propagation step), so a many-interface
+        # nested stack at high ray counts silently dumped LIVE, eligible
+        # rays into truncated_generation (37.8% of the power at 60k rays
+        # through a depth-4 cuvette/bath stack — found by the
+        # samples-instruments nested4 spike; closure stayed perfect, the
+        # physics was wrong). Hops are inherited by chunks unchanged, so
+        # splitting is budget-neutral; each lineage still terminates
+        # after hop_cap segments (the generation cap + power floor drain
+        # it far earlier in any sane scene).
+        hop_cap = 64 * (self.cfg.max_reflections + 2)
+        queue = [(0, b) for b in queue]
+        truncated = []
+        while queue:
+            hops, batch = queue.pop()
             if len(batch) == 0:
                 continue
             children = self.step(batch)
             if children is not None and len(children) > 0:
-                # split oversized batches to bound memory
+                if hops + 1 >= hop_cap:
+                    truncated.append(children)
+                    continue
+                # split oversized batches to bound memory (chunks inherit
+                # the parent's hop count — same propagation step)
                 if len(children) > self.cfg.batch_size:
                     idx = np.arange(len(children))
                     for part in np.array_split(
                             idx, len(children) // self.cfg.batch_size + 1):
-                        queue.append(children.select(part))
+                        queue.append((hops + 1, children.select(part)))
                 else:
-                    queue.append(children)
-        if queue:
-            # drain leftovers into the ledger so closure still holds
-            for b in queue:
+                    queue.append((hops + 1, children))
+        if truncated:
+            # lineages that genuinely exhausted the hop cap: credit the
+            # ledger so closure still holds, and say so — this is now an
+            # exceptional event, not a silent scaling artifact
+            import warnings
+            p_tr = sum(float(np.sum(b.power)) for b in truncated)
+            warnings.warn(
+                "trace hop cap (%d segments/lineage) truncated %.3g W of "
+                "live rays — an extraordinarily deep bounce chain; raise "
+                "--max-reflections only if this power matters"
+                % (hop_cap, p_tr))
+            for b in truncated:
                 self.ledger.credit("truncated_generation", b.source_id,
                                    b.power)
         names = [self.scene.bodies[i].label for i, _ in self.scene.sources]

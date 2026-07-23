@@ -472,6 +472,44 @@ SCENES = {
                 "detector_face.",
         "faces": {"cylinder": 1, "plane": 3},
     },
+
+    # ---------------------------------------------------------------------
+    # Depth-4 nesting spike (cuvette-in-bath de-risk). Four concentric
+    # axis-aligned cube shells on the +x beam axis, each strictly inside the
+    # previous with a 2mm clearance (>>5um): outer vat glass wall > bath
+    # liquid > inner cuvette glass wall > sample liquid. Beam travels
+    # straight through the common centre at normal incidence on every face
+    # -> 8 Fresnel interfaces + one Beer-Lambert absorbing chord (the
+    # innermost body carries an nd_od01 bulk filter on top of material=water
+    # so the test has a clean closed-form expected transmission).
+    # ---------------------------------------------------------------------
+    "nested4": {
+        "description": "depth-4 concentric nesting: 20mm BK7 outer vat wall "
+                       "> 16mm water bath > 12mm BK7 cuvette wall > 8mm water "
+                       "sample (nd_od01 bulk filter for a measurable Beer-"
+                       "Lambert chord), each pair with a 2mm clearance on "
+                       "every face (extractor classifies 6 pairwise "
+                       "validation.nested_solids entries: outer/bath, "
+                       "outer/inner_glass, outer/sample, bath/inner_glass, "
+                       "bath/sample, inner_glass/sample). Collimated "
+                       "unpolarized 550nm beam on-axis; straight through -> "
+                       "8 normal-incidence Fresnel interfaces + one "
+                       "Beer-Lambert chord through the sample body.",
+        "lambda_nm": 550.0, "beam_dia_mm": 3.0,
+        "outer_material": "bk7", "bath_material": "water",
+        "inner_material": "bk7", "sample_material": "water",
+        "sample_filter": "nd_od01",
+        "outer_half_mm": 10.0, "bath_half_mm": 8.0,
+        "inner_half_mm": 6.0, "sample_half_mm": 4.0,
+        "clearance_mm": 2.0,
+        "outer_x0_mm": 40.0, "outer_len_mm": 20.0,
+        "bath_x0_mm": 42.0, "bath_len_mm": 16.0,
+        "inner_x0_mm": 44.0, "inner_len_mm": 12.0,
+        "sample_x0_mm": 46.0, "sample_len_mm": 8.0,
+        "sample_chord_mm": 8.0,
+        "source_x_mm": -20.0, "detector_x_mm": 90.0, "detector_half_mm": 20.0,
+        "faces": {"plane": 6 * 4},
+    },
     "auto_designed_lens": {
         "description": "optimizer demo: the lens_pcx singlet with its "
                        "axial position spreadsheet-driven (dim.lenspos "
@@ -1608,6 +1646,43 @@ def make_curved_focal(outpath):
         App.closeDocument(doc.Name)
 
 
+def make_nested4(outpath):
+    """Depth-4 concentric nesting spike: four axis-aligned cube shells, each
+    strictly inside the previous with a clearance gap (never coincident
+    faces -- see CLAUDE.md's nested-solids trap). Built directly with boxes
+    (new_body_pad rects) rather than a hollow shell: the tracer's LIFO
+    medium stack recovers the "wall" as the region inside the outer solid
+    but outside the next nested one, exactly like bs_cube's coated plate."""
+    s = SCENES["nested4"]
+    doc = App.newDocument("nested4")
+    try:
+        def cube(name, half, x0, length, material, extra_props=None):
+            props = {"material": material}
+            if extra_props:
+                props.update(extra_props)
+            return new_body_pad(
+                doc, name, name,
+                rects=[(-half, -half, 2 * half, 2 * half)],
+                x_start=x0, length=length, props=props)
+
+        cube("OuterVat", s["outer_half_mm"], s["outer_x0_mm"],
+             s["outer_len_mm"], s["outer_material"])
+        cube("Bath", s["bath_half_mm"], s["bath_x0_mm"], s["bath_len_mm"],
+             s["bath_material"])
+        cube("InnerCuvette", s["inner_half_mm"], s["inner_x0_mm"],
+             s["inner_len_mm"], s["inner_material"])
+        cube("Sample", s["sample_half_mm"], s["sample_x0_mm"],
+             s["sample_len_mm"], s["sample_material"],
+             extra_props={"filter": s["sample_filter"]})
+        add_source(doc, "Source", s["source_x_mm"], s["beam_dia_mm"] / 2.0,
+                   {"power": 5.0, "lambdac": s["lambda_nm"],
+                    "polarization": "unpolarized", "coherent": False})
+        add_detector(doc, "Screen", s["detector_x_mm"], s["detector_half_mm"])
+        finalize(doc, outpath)
+    finally:
+        App.closeDocument(doc.Name)
+
+
 # =============================================================================
 # Dispatch
 # =============================================================================
@@ -1646,6 +1721,7 @@ BUILDERS = {
     "ghost_doublet": make_ghost_doublet,
     "scatter_plate": make_scatter_plate,
     "curved_focal": make_curved_focal,
+    "nested4": make_nested4,
 }
 
 
