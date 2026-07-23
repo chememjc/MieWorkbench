@@ -240,7 +240,12 @@ def test_sample_property_renders_as_registry_combo(qtbot):
     # value options -- sample is optic-only (a particle population bound
     # to the body's interior; the body's own `material` is the solvent)
     names = pane._registry_names("sample")
-    assert len(names) == 7
+    # >= 7: the round shipped 7 canonical rows and the demos wave adds
+    # demo-specific ones — pin membership, not the exact count
+    assert len(names) >= 7
+    for canonical in ("latex_100nm_water", "hard_sphere_py",
+                      "silica_gel_fractal", "colloidal_crystal_fcc"):
+        assert canonical in names
     assert "latex_100nm_water" in names
     assert "hard_sphere_py" in names
     editor = pane._make_property_editor("sample", "latex_100nm_water")
