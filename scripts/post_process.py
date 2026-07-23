@@ -3460,6 +3460,89 @@ def render_image_sim(case_dir, h5paths, report, image_sim,
              image_sim, label, key, outname), flush=True)
 
 
+def _ncc(a, b):
+    """Normalized cross-correlation of two same-shape images in [-1, 1]
+    (mean-removed cosine similarity; scale/offset-invariant)."""
+    a = np.asarray(a, dtype=np.float64) - float(np.mean(a))
+    b = np.asarray(b, dtype=np.float64) - float(np.mean(b))
+    den = np.sqrt(float(np.sum(a * a)) * float(np.sum(b * b)))
+    return float(np.sum(a * b) / den) if den > 0 else 0.0
+
+
+def render_image_traced(case_dir, h5paths, report, model):
+    """Extended image-source products (samples-instruments round). No-op
+    unless some source body carries an `image` property. Per detector:
+    imaging/image_traced_<label>.png (the traced end-to-end power image,
+    display-clipped). If report['image_sim'] exists (the --image-sim
+    convolution ran on the same case): a traced-vs-sim side-by-side
+    (imaging/image_traced_vs_sim_<label>.png) + NCC agreement metric —
+    computed at both direct and 180-degree-rotated orientations (a real
+    imaging bench INVERTS; the convolution sim is object-oriented) with
+    the better one reported. report['image_traced'] block."""
+    has_image_src = any(
+        (b.get("source") or {}).get("image")
+        for b in model.get("bodies", []))
+    if not has_image_src:
+        return
+    case_dir = Path(case_dir)
+    idir = case_dir / "imaging"
+    idir.mkdir(parents=True, exist_ok=True)
+    sim_block = report.get("image_sim")
+    sim_img = None
+    if sim_block is not None:
+        sim_path = case_dir / sim_block["output"]
+        if sim_path.exists():
+            import matplotlib.image as mpimg
+            sim_img = np.asarray(mpimg.imread(str(sim_path)),
+                                 dtype=np.float64)
+            if sim_img.ndim == 3:
+                sim_img = sim_img[..., :3].mean(axis=-1)
+    out_blocks = {}
+    for h5path in h5paths:
+        with h5py.File(h5path) as h:
+            cube = h["spectral_cube_mean"][...]
+            attrs = dict(h.attrs)
+        label = attrs["label"]
+        safe = label.replace(".", "_")
+        img = np.maximum(cube.sum(axis=0), 0.0)
+        if img.sum() <= 0:
+            continue
+        plt.imsave(idir / ("image_traced_%s.png" % safe), img,
+                   cmap="gray")
+        block = {"output": "imaging/image_traced_%s.png" % safe}
+        if sim_img is not None and sim_block.get("detector") == label \
+                and sim_img.shape == img.shape:
+            ncc_d = _ncc(img, sim_img)
+            ncc_r = _ncc(img, sim_img[::-1, ::-1])
+            inverted = ncc_r > ncc_d
+            block.update(ncc_vs_sim=max(ncc_d, ncc_r),
+                         sim_orientation="rotated_180" if inverted
+                         else "direct")
+            fig, axes = plt.subplots(1, 2, figsize=(9, 4.5))
+            axes[0].imshow(img, cmap="gray")
+            axes[0].set_title("traced (MC end-to-end)")
+            axes[1].imshow(sim_img[::-1, ::-1] if inverted else sim_img,
+                           cmap="gray")
+            axes[1].set_title("PSF-convolution sim (%s)"
+                              % block["sim_orientation"])
+            for ax in axes:
+                ax.set_xticks([])
+                ax.set_yticks([])
+            fig.suptitle("%s — NCC %.3f" % (label, block["ncc_vs_sim"]))
+            fig.tight_layout()
+            fig.savefig(idir / ("image_traced_vs_sim_%s.png" % safe),
+                        dpi=110)
+            plt.close(fig)
+            block["comparison"] = "imaging/image_traced_vs_sim_%s.png" \
+                % safe
+            print("[post] image traced vs sim (%s): NCC %.3f (%s)"
+                  % (label, block["ncc_vs_sim"],
+                     block["sim_orientation"]), flush=True)
+        out_blocks[label] = block
+    if out_blocks:
+        report["image_traced"] = out_blocks
+
+
 # =============================================================================
 # --export-rays follow-on: per-coherent-key wavefront (Zernike/Strehl)
 # analysis from rays_full.npz's birth_pos/opl records -- the source-
@@ -4230,6 +4313,14 @@ def main(argv=None):
     render_image_sim(case_dir, h5paths, report, args.image_sim,
                      coherence=args.image_sim_coherence,
                      sigma=args.image_sim_sigma)
+
+    # extended image-source follow-on (samples-instruments round): when
+    # the scene EMITTED a bitmap (source `image` property), publish the
+    # traced end-to-end detector image into imaging/ and, if --image-sim
+    # also ran, a traced-vs-simulated side-by-side + NCC agreement metric
+    # (the two views of the same bench: real MC trace vs space-invariant
+    # PSF convolution).
+    render_image_traced(case_dir, h5paths, report, model)
 
     # --export-rays follow-on: per-coherent-key wavefront/Zernike/Strehl
     # analysis (no-op unless rays_full.npz exists AND some key clears
