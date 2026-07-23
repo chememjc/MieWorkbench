@@ -2081,10 +2081,18 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
             # samples-instruments round: `image` names an image/images.mieimg
             # row (extended image-emitting source — per-position radiance
             # from a greyscale bitmap over the emit face; sources.py
-            # alias-method sampler). Pass-through string.
+            # alias-method sampler). Pass-through string. Optional
+            # image_cone_deg (float, emission cone HALF-angle in degrees)
+            # restricts the default Lambertian emission for efficiency.
             image_raw = str_prop_or_none(obj, "image")
             if image_raw is not None:
                 source_dict["image"] = image_raw
+                if hasattr(obj, "image_cone_deg"):
+                    cone = float(obj.image_cone_deg)
+                    if not (0.0 < cone <= 90.0):
+                        die("%s: image_cone_deg must be in (0, 90] degrees "
+                            "(got %g)" % (obj.Label, cone))
+                    source_dict["image_cone_deg"] = cone
             if hasattr(obj, "beam_waist"):
                 waist_mm = float(obj.beam_waist)
                 if waist_mm <= 0:

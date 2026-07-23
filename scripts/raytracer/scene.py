@@ -596,6 +596,41 @@ class Scene:
                             entry["lam_nm"], dtype=np.float64)
                         src["_spectrum_pdf"] = np.asarray(
                             entry["relative_power"], dtype=np.float64)
+                # samples-instruments round: extended image-emitting source.
+                # `image` names an image/images.mieimg registry row; pixels
+                # are loaded HERE (once per scene build) into the greyscale
+                # radiance map sources._sample_image_points consumes.
+                image_name = src.get("image")
+                if image_name is not None:
+                    images = (self.optprops.images
+                              if self.optprops is not None else {})
+                    if image_name not in images:
+                        raise ValueError(
+                            "source %s: unknown image %r (image registry "
+                            "has: %s)"
+                            % (body.label, image_name,
+                               ", ".join(sorted(images)) or
+                               "<none loaded — pass optprops>"))
+                    from .sources import load_image_gray
+                    src["_image_gray"] = load_image_gray(
+                        images[image_name]["path"])
+                    if src.get("beam"):
+                        raise ValueError(
+                            "source %s: image and beam_waist are mutually "
+                            "exclusive (a bitmap radiance map has no "
+                            "Gaussian mode)" % body.label)
+                    if src.get("apodization"):
+                        raise ValueError(
+                            "source %s: image and apodization are mutually "
+                            "exclusive (the bitmap IS the transverse "
+                            "profile)" % body.label)
+                    if src.get("coherent"):
+                        import warnings
+                        warnings.warn(
+                            "source %s: coherent extended image source — "
+                            "physical for a laser-illuminated transparency; "
+                            "an incandescent/diffuse scene should set "
+                            "coherent=false" % body.label)
                 self.sources.append((body.index, src))
                 # source bodies contribute no intersectable geometry (the
                 # housing is not traced), but the emitting face itself is

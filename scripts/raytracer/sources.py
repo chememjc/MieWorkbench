@@ -587,6 +587,12 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
     beam = src.get("beam")
     apod = src.get("apodization")
 
+    image_gray = src.get("_image_gray")
+    if image_gray is not None and beam is not None:
+        # Scene validates this at build; guard the direct-injection path
+        # (tests / hand-built src dicts) too so beam can't silently win.
+        raise ValueError("source %s: image and beam_waist are mutually "
+                         "exclusive" % body.label)
     if beam is not None:
         if surf.__class__.__name__ != "Plane":
             raise NotImplementedError(
@@ -594,6 +600,11 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
                 "(got %s)" % (body.label, surf.__class__.__name__))
         w0_m = beam["waist_mm"] * 1e-3
         pts, normals = _sample_beam_points(face, w0_m, n_rays, rng)
+    elif image_gray is not None:
+        # extended image-emitting source (samples-instruments round):
+        # emission density carries the bitmap; per-ray power stays uniform
+        pts, normals = _sample_image_points(face, image_gray, src,
+                                            n_rays, rng)
     else:
         pts, normals = _sample_face_points(face, n_rays, rng)
     n = len(pts)
@@ -625,6 +636,12 @@ def sample_source(scene, body, src, source_id, n_rays, n_lambda, rng,
             dirs = normals
             clipped = sign < 0
     dirs = dirs / np.linalg.norm(dirs, axis=-1, keepdims=True)
+
+    if image_gray is not None:
+        # extended objects emit into a hemisphere/cone (each object point
+        # must fill the imaging aperture — collimated emission cannot form
+        # an image through a lens); see _image_emission_dirs.
+        dirs = _image_emission_dirs(dirs, surf, src, rng, n)
 
     if apod is not None:
         # apodization weights ALL n samples (pre-clip) so the ledger.emit
@@ -751,6 +768,148 @@ def _emit_face_from_record(scene, body, src):
     raise ValueError(
         "source %s: emit_face %r is not in the scene's face table — "
         "extractor/scene mismatch" % (body.label, src["emit_face"]))
+
+
+def load_image_gray(path):
+    """Load a registry image (image/images.mieimg) as a float64 (H, W)
+    greyscale radiance map, values >= 0. PNG/JPG/TIFF/BMP via
+    matplotlib.image (RGB collapses through the ITU-R BT.601 luma — for
+    binary/greyscale test targets this is a no-op); .npy loads a 2-D
+    array verbatim. All-zero images are rejected (no power anywhere)."""
+    from pathlib import Path
+    path = Path(path)
+    if path.suffix.lower() == ".npy":
+        img = np.load(path)
+    else:
+        import matplotlib.image as mpimg
+        img = mpimg.imread(str(path))
+    img = np.asarray(img, dtype=np.float64)
+    if img.ndim == 3:
+        # drop alpha, collapse RGB by luma
+        rgb = img[..., :3]
+        img = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1]
+               + 0.114 * rgb[..., 2])
+    if img.ndim != 2:
+        raise ValueError("image %s: expected a 2-D greyscale map, got "
+                         "shape %s" % (path.name, img.shape))
+    img = np.clip(img, 0.0, None)
+    if img.sum() <= 0:
+        raise ValueError("image %s: all-zero radiance map" % path.name)
+    return img
+
+
+def _build_alias_table(prob):
+    """Vose alias method: O(P) build, O(1) draws. prob: 1-D nonnegative,
+    normalized internally. Returns (prob_table, alias_idx) float64/int64."""
+    p = np.asarray(prob, dtype=np.float64)
+    p = p / p.sum()
+    n = len(p)
+    scaled = p * n
+    prob_table = np.empty(n)
+    alias_idx = np.empty(n, dtype=np.int64)
+    small = [i for i in range(n) if scaled[i] < 1.0]
+    large = [i for i in range(n) if scaled[i] >= 1.0]
+    scaled = scaled.copy()
+    while small and large:
+        s = small.pop()
+        l = large.pop()
+        prob_table[s] = scaled[s]
+        alias_idx[s] = l
+        scaled[l] = scaled[l] - (1.0 - scaled[s])
+        (small if scaled[l] < 1.0 else large).append(l)
+    for i in large + small:
+        prob_table[i] = 1.0
+        alias_idx[i] = i
+    return prob_table, alias_idx
+
+
+def _alias_draw(prob_table, alias_idx, rng, m):
+    k = rng.integers(0, len(prob_table), size=m)
+    take_alias = rng.uniform(0.0, 1.0, size=m) >= prob_table[k]
+    return np.where(take_alias, alias_idx[k], k)
+
+
+def _sample_image_points(face, img_gray, src, n_rays, rng):
+    """Position sampling for an extended image-emitting source: rays are
+    drawn with probability proportional to the bitmap's pixel value
+    (alias method, O(1)/ray) and jittered uniformly within their pixel,
+    so EQUAL-power rays carry the image through emission DENSITY — the
+    same convention every other source keeps (per-ray power stays
+    power_W/n).
+
+    Mapping: the image fills the emitting face's UV bounding rectangle;
+    columns run along +t1 (u), row 0 is the TOP of the picture at max v
+    (so the picture appears as authored when viewed looking along the
+    emission direction with +t2 up). Non-rectangular trims reject
+    out-of-trim jittered points and redraw (renormalizes over the
+    visible pixels — the aperture crops the picture, exactly like a
+    physical mask). The alias table is cached on the src dict."""
+    surf = face.surface
+    if surf.__class__.__name__ != "Plane":
+        raise NotImplementedError(
+            "image source requires a planar emitting face (got %s)"
+            % surf.__class__.__name__)
+    H, W = img_gray.shape
+    cache = src.get("_image_alias")
+    if cache is None:
+        prob_table, alias_idx = _build_alias_table(img_gray.ravel())
+        src["_image_alias"] = cache = (prob_table, alias_idx)
+    prob_table, alias_idx = cache
+    allu = np.concatenate([lp[:, 0] for lp in face.trim.loops])
+    allv = np.concatenate([lp[:, 1] for lp in face.trim.loops])
+    u_lo, u_hi = float(allu.min()), float(allu.max())
+    v_lo, v_hi = float(allv.min()), float(allv.max())
+    pts = np.empty((0, 3))
+    tries = 0
+    while len(pts) < n_rays and tries < 60:
+        m = int((n_rays - len(pts)) * 1.5) + 16
+        flat_idx = _alias_draw(prob_table, alias_idx, rng, m)
+        row = flat_idx // W
+        col = flat_idx % W
+        ju = rng.uniform(0.0, 1.0, size=m)
+        jv = rng.uniform(0.0, 1.0, size=m)
+        u = u_lo + (col + ju) / W * (u_hi - u_lo)
+        v = v_hi - (row + jv) / H * (v_hi - v_lo)   # row 0 = top = max v
+        cand = _uv_to_xyz(surf, u, v)
+        ok = face.trim.contains(surf.to_uv(cand))
+        pts = np.concatenate([pts, cand[ok]], axis=0)
+        tries += 1
+    if len(pts) < n_rays:
+        raise RuntimeError(
+            "image source face %s: sampling failed to converge (%d/%d) — "
+            "does the image's bright content lie outside the face trim?"
+            % (face.id, len(pts), n_rays))
+    pts = pts[:n_rays]
+    normals = surf.normal(pts)
+    return pts, normals
+
+
+def _image_emission_dirs(n_emit, surf, src, rng, m):
+    """Emission directions for an extended image source. A real extended
+    object emits each point into a range of angles — an imaging bench
+    NEEDS that (each object point must fill the imaging aperture; a
+    collimated extended source cannot form an image through a lens).
+
+    Default: Lambertian (cosine-weighted hemisphere about the emit
+    normal) — the honest diffuse-emitter model. Optional body property
+    image_cone_deg restricts emission to a uniform-solid-angle cone of
+    that HALF-angle (importance optimization: rays outside the imaging
+    NA are wasted; equal-power rays, so restricting the cone just reduces
+    variance — it does not change relative image irradiance within the
+    accepted cone)."""
+    cone_deg = src.get("image_cone_deg")
+    u1 = rng.uniform(0.0, 1.0, size=m)
+    u2 = rng.uniform(0.0, 2.0 * np.pi, size=m)
+    if cone_deg:
+        cos_max = np.cos(np.deg2rad(float(cone_deg)))
+        cos_t = 1.0 - u1 * (1.0 - cos_max)      # uniform in solid angle
+    else:
+        cos_t = np.sqrt(1.0 - u1)               # cosine-weighted (Lambert)
+    sin_t = np.sqrt(np.clip(1.0 - cos_t ** 2, 0.0, 1.0))
+    d = (cos_t[:, None] * n_emit
+         + (sin_t * np.cos(u2))[:, None] * surf.t1
+         + (sin_t * np.sin(u2))[:, None] * surf.t2)
+    return d / np.linalg.norm(d, axis=-1, keepdims=True)
 
 
 def _sample_face_points(face, n_rays, rng):
