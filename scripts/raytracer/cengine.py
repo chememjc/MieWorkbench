@@ -31,6 +31,15 @@ from pathlib import Path
 
 import numpy as np
 
+# scripts/ is on sys.path by the time every known caller imports this module
+# (run_trace.py, the cengine parity/registry tests) — but guard it here too
+# so `import common` below is safe standalone (same bare-module convention
+# run_trace.py uses, not a package-relative import).
+_scripts_dir = str(Path(__file__).resolve().parent.parent)
+if _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
+import common                                             # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Ported-feature registry. Grows phase by phase; a feature is added ONLY
 # after its side-by-side parity tests pass (see plan: cengine round).
@@ -128,9 +137,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def binary_path():
-    """Path to miewb-trace, or None if not built. MIEWB_CENGINE overrides
-    (repo convention, like MIEWB_FREECAD etc. in common.py)."""
-    env = os.environ.get("MIEWB_CENGINE")
+    """Path to miewb-trace, or None if not built. Resolution order:
+    the MIEWB_CENGINE env var (checked explicitly here, for clarity, even
+    though common.CENGINE_BINARY already folds it in) > common.CENGINE_BINARY
+    (miewb.env's MIEWB_CENGINE line, if any — repo machine-config
+    convention, like MIEWB_FREECAD etc.) > the repo-default build path."""
+    env = os.environ.get("MIEWB_CENGINE") or common.CENGINE_BINARY
     p = Path(env) if env else _REPO_ROOT / "cengine" / "build" / "miewb-trace"
     return p if p.is_file() and os.access(p, os.X_OK) else None
 

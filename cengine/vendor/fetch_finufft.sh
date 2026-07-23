@@ -22,9 +22,17 @@ set -euo pipefail
 TAG=v2.5.1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DST="$HERE/finufft"
+
+# Machine paths (MIEWB_NVCC, MIEWB_CUDA_ARCH, ...) from <repo>/miewb.env —
+# only-if-unset, so an already-exported env var still wins. Tolerate a
+# missing/absent file and don't let it trip set -e. Path is relative to
+# this script's own directory (cengine/vendor/), not the caller's CWD.
+MIEWB_ENV_QUIET=1
+source "$HERE/../../scripts/miewb_env.sh" || true
+
 CMAKE="${CMAKE:-cmake}"
-NVCC="${MIEWB_NVCC:-/usr/local/cuda-13/bin/nvcc}"
-ARCH="${MIEWB_CUDA_ARCH:-89}"   # RTX 4090 = SM 8.9
+NVCC="${MIEWB_NVCC:-/usr/local/cuda-13/bin/nvcc}"   # legacy fallback
+ARCH="${MIEWB_CUDA_ARCH:-89}"   # legacy fallback: RTX 4090 = SM 8.9
 
 if [ ! -d "$DST/.git" ]; then
   echo "[fetch_finufft] cloning cuFINUFFT $TAG -> $DST"

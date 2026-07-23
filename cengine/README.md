@@ -16,12 +16,20 @@ cd cengine
 ./build.sh clean
 ```
 
-Requirements: gcc ≥ 11, cmake ≥ 3.22, ninja, OpenMP. CUDA 13
-(`/usr/local/cuda-13`) joins in phase D. The build is **optional**: without
-the binary, `--engine auto` silently runs everything on the Python engine.
+Requirements: gcc ≥ 11, cmake ≥ 3.22, ninja, OpenMP. CUDA joins in phase D.
+The build is **optional**: without the binary, `--engine auto` silently
+runs everything on the Python engine.
+
+CUDA toolchain discovery goes through `<repo>/miewb.env` (created by
+`scripts/setup_env.sh`): `build.sh` sources `scripts/miewb_env.sh` and
+passes `MIEWB_NVCC`/`MIEWB_CUDA_ARCH` through to the cmake configure as
+`-DCMAKE_CUDA_COMPILER`/`-DMIEWB_CUDA_ARCH`. `CUDACXX`/an already-set
+`CMAKE_CUDA_COMPILER` still win over `MIEWB_NVCC` if exported. Absent any
+of that, `CMakeLists.txt` falls back to the legacy hardcoded
+`/usr/local/cuda-13/bin/nvcc` (if it exists) and arch `89` (RTX 4090).
 
 Binary discovery: `cengine/build/miewb-trace`, overridable with the
-`MIEWB_CENGINE` env var (repo convention).
+`MIEWB_CENGINE` env var (repo convention; also settable via `miewb.env`).
 
 ### NUFFT gather (cuFINUFFT) — optional, experimental, OFF by default
 
@@ -34,7 +42,9 @@ cengine/vendor/fetch_finufft.sh          # clones tag v2.5.1, builds .so
 #   needs CMake ≥ 3.24 (cuFINUFFT's floor; the system cmake here is 3.22 —
 #   `CMAKE=/path/to/newer/cmake cengine/vendor/fetch_finufft.sh`, e.g. a
 #   `pip install cmake` binary). Builds a self-contained shared
-#   libcufinufft.so pinned to the CUDA-13 toolkit.
+#   libcufinufft.so. Picks up MIEWB_NVCC/MIEWB_CUDA_ARCH the same way
+#   build.sh does (miewb.env, sourced via scripts/miewb_env.sh), falling
+#   back to the legacy /usr/local/cuda-13 toolkit + arch 89.
 ```
 
 CMake auto-detects `cengine/vendor/finufft` (or a prebuilt root via

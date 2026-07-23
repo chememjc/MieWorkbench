@@ -10,9 +10,12 @@
 # per-file, later, only where parity-proven safe. -g is always on
 # (negligible runtime cost; makes every crash backtrace resolvable).
 #
-# CUDA joins in phase D: enable_language(CUDA), arch 89 (RTX 4090),
-# CUDAToolkit_ROOT defaulting to /usr/local/cuda-13 (the system nvcc at
-# /usr/bin is CUDA 11.5 — do NOT let CMake pick it up).
+# CUDA joins in phase D: enable_language(CUDA), arch 89 (RTX 4090) by
+# default, CUDAToolkit_ROOT defaulting to /usr/local/cuda-13 (the system
+# nvcc at /usr/bin is CUDA 11.5 — do NOT let CMake pick it up). Both the
+# compiler and the arch are machine-configurable via <repo>/miewb.env
+# (MIEWB_NVCC / MIEWB_CUDA_ARCH, sourced by build.sh before this configure
+# runs) — see the guards below.
 # ============================================================================
 cmake_minimum_required(VERSION 3.22)
 project(miewb-trace LANGUAGES C)
@@ -65,10 +68,16 @@ target_link_options(miewb-trace PRIVATE -rdynamic)
 
 # ---- CUDA (phase D gather) — optional; engine falls back to the CPU
 # gather kernel when absent. The system nvcc (/usr/bin, CUDA 11.5) must
-# NOT be picked up: default to the CUDA 13 toolkit unless CUDACXX is set.
-if(NOT DEFINED CMAKE_CUDA_COMPILER AND NOT DEFINED ENV{CUDACXX}
-   AND EXISTS /usr/local/cuda-13/bin/nvcc)
-  set(CMAKE_CUDA_COMPILER /usr/local/cuda-13/bin/nvcc)
+# NOT be picked up: prefer $ENV{MIEWB_NVCC} (from miewb.env, machine
+# config) when set and unless CMAKE_CUDA_COMPILER/CUDACXX already pin one;
+# else fall back to the legacy hardcoded CUDA 13 toolkit path.
+if(NOT DEFINED CMAKE_CUDA_COMPILER AND NOT DEFINED ENV{CUDACXX})
+  if(DEFINED ENV{MIEWB_NVCC} AND EXISTS "$ENV{MIEWB_NVCC}")
+    set(CMAKE_CUDA_COMPILER "$ENV{MIEWB_NVCC}")
+  elseif(EXISTS /usr/local/cuda-13/bin/nvcc)
+    # legacy fallback: this machine's CUDA 13 toolkit, pre-miewb.env
+    set(CMAKE_CUDA_COMPILER /usr/local/cuda-13/bin/nvcc)
+  endif()
 endif()
 include(CheckLanguage)
 check_language(CUDA)
@@ -76,9 +85,20 @@ if(CMAKE_CUDA_COMPILER)
   enable_language(CUDA)
   set(CMAKE_CUDA_STANDARD 17)
   target_sources(miewb-trace PRIVATE src/cuda/gather.cu)
+  # GPU SM architecture: cache var (-DMIEWB_CUDA_ARCH=..) wins, else
+  # $ENV{MIEWB_CUDA_ARCH} (miewb.env), else the legacy default 89 (RTX 4090).
+  set(MIEWB_CUDA_ARCH "" CACHE STRING
+      "GPU SM architecture for the CUDA gather (e.g. 89)")
+  if(MIEWB_CUDA_ARCH)
+    set(_miewb_cuda_arch "${MIEWB_CUDA_ARCH}")
+  elseif(DEFINED ENV{MIEWB_CUDA_ARCH} AND NOT "$ENV{MIEWB_CUDA_ARCH}" STREQUAL "")
+    set(_miewb_cuda_arch "$ENV{MIEWB_CUDA_ARCH}")
+  else()
+    set(_miewb_cuda_arch 89)            # legacy default: RTX 4090 (SM 8.9)
+  endif()
   # the target predates enable_language, so set its arch property directly
   set_target_properties(miewb-trace PROPERTIES
-    CUDA_ARCHITECTURES 89)              # RTX 4090 (SM 8.9)
+    CUDA_ARCHITECTURES "${_miewb_cuda_arch}")
   target_compile_definitions(miewb-trace PRIVATE MIEWB_HAS_CUDA)
   target_compile_options(miewb-trace PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-O3 -lineinfo>)
