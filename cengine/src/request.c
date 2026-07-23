@@ -96,6 +96,28 @@ static double *need_dbl_array(yyjson_val *obj, const char *key,
     return out;
 }
 
+static int64_t *need_i64_array(yyjson_val *obj, const char *key,
+                               const char *ctx, size_t expect) {
+    yyjson_val *v = need(obj, key, ctx);
+    if (!yyjson_is_arr(v))
+        die(EXIT_INPUT, "request: '%s' in %s is not an array", key, ctx);
+    size_t n = yyjson_arr_size(v);
+    if (expect && n != expect)
+        die(EXIT_INPUT, "request: '%s' in %s has %zu entries, expected %zu",
+            key, ctx, n, expect);
+    int64_t *out = (int64_t *)malloc(n * sizeof(int64_t));
+    if (!out) die(EXIT_INPUT, "request: out of memory for '%s'", key);
+    size_t i, max;
+    yyjson_val *e;
+    yyjson_arr_foreach(v, i, max, e) {
+        if (!yyjson_is_int(e))
+            die(EXIT_INPUT, "request: '%s'[%zu] in %s not an integer",
+                key, i, ctx);
+        out[i] = yyjson_get_sint(e);
+    }
+    return out;
+}
+
 /* Python-style modulo: result in [0, m) for m > 0. */
 static double pymod(double x, double m) {
     double r = fmod(x, m);
@@ -855,6 +877,33 @@ SceneC *request_load(const char *path) {
         parse_face_into(&src->emit_face, need(sobj, "emit_face", ctx),
                         ctx, 0);
         source_uv_bounds(src, ctx);
+        /* samples-instruments round: extended image-emitting source. The glue
+         * serializes a Vose alias table over the bitmap pixels (built by
+         * sources._build_alias_table — one implementation, zero drift), the
+         * image W/H, the emission cone half-angle (0 = Lambertian), and the
+         * face-UV bbox the bitmap fills (sources._sample_image_points). Absent
+         * on an ordinary source (calloc left has_image = 0). */
+        yyjson_val *im = yyjson_obj_get(sobj, "image");
+        if (im && !yyjson_is_null(im)) {
+            if (src->emit_face.surf.kind != SURF_PLANE)
+                die(EXIT_INPUT, "request: %s image source requires a planar "
+                    "emit face", ctx);
+            src->has_image = 1;
+            src->img_W = (int32_t)need_int(im, "W", ctx);
+            src->img_H = (int32_t)need_int(im, "H", ctx);
+            if (src->img_W <= 0 || src->img_H <= 0)
+                die(EXIT_INPUT, "request: %s image W/H must be positive", ctx);
+            src->img_P = (int64_t)src->img_W * (int64_t)src->img_H;
+            src->img_cone_deg = need_num(im, "cone_deg", ctx);
+            src->img_u_lo = need_num(im, "u_lo", ctx);
+            src->img_u_hi = need_num(im, "u_hi", ctx);
+            src->img_v_lo = need_num(im, "v_lo", ctx);
+            src->img_v_hi = need_num(im, "v_hi", ctx);
+            src->img_prob = need_dbl_array(im, "prob", ctx,
+                                           (size_t)src->img_P);
+            src->img_alias = need_i64_array(im, "alias", ctx,
+                                            (size_t)src->img_P);
+        }
         if (src->n_strata > s->max_strata) s->max_strata = src->n_strata;
         if (src->n_pol > s->max_pol) s->max_pol = src->n_pol;
     }
@@ -1048,6 +1097,8 @@ void scene_free(SceneC *s) {
         free((void *)s->sources[i].emit_face.trim.pts_v);
         free(s->sources[i].sample_area);
         free(s->sources[i].stratum_t0);
+        free(s->sources[i].img_prob);
+        free(s->sources[i].img_alias);
     }
     for (int i = 0; i < s->n_dets; i++) {
         free(s->dets[i].inc);

@@ -82,9 +82,9 @@ PYTHON_ONLY = frozenset({
     "sample_body",                      # samples-instruments: body-bound sample
                                         #   media (`sample` property; continuum
                                         #   C port is a planned tranche)
-    "image_source",                     # samples-instruments: extended image-
-                                        #   emitting source (alias sampler; C
-                                        #   sampler port is a planned tranche)
+    # NOTE: "image_source" (extended image-emitting source) is now PORTED —
+    # the C sampler (trace.c sample_image_pos_dir) alias-draws pixels + emits
+    # Lambertian/cone; it lives in cengine.PORTED + the C registry, not here.
 })
 
 

@@ -52,6 +52,13 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
      * interactions (the gather and the Python-side viz overlay own these) */
     { "coherent",       "gather" },
     { "save_fields",    "gather" },
+    /* samples-instruments round: extended image-emitting source. Emission
+     * position rides a per-pixel Vose alias table over a bitmap (built
+     * Python-side by sources._build_alias_table); the direction is
+     * Lambertian or a solid-angle cone about the emit normal. A source-level
+     * sampling feature (trace.c sample_image_pos_dir) — not a surface
+     * interaction, so no dispatch entry. */
+    { "image_source",   "source" },
     { "export_rays",    "diagnostic" },
     { "ghost_analysis", "diagnostic" },
     { "viz_pattern",    "glue" },

@@ -38,6 +38,13 @@
  * 0, 1, 2, ... and never reach this range) */
 #define EV_EMIT_POS   0xF0000000u
 #define EV_EMIT_PHASE 0xF0000001u
+/* extended image-emitting source (sources._sample_image_points /
+ * _image_emission_dirs): the alias-draw + in-pixel jitter rejection loop
+ * (4 uniforms per attempt) and the emission-direction draw (2 uniforms).
+ * Distinct events keep every image primary's draws a pure function of its
+ * ray_key, so results stay independent of thread count / scheduling. */
+#define EV_EMIT_IMG_POS 0xF0000002u
+#define EV_EMIT_IMG_DIR 0xF0000003u
 
 /* speed of light [m/s] — the pulsed-optics arrival-time conversion t = gopl/c
  * (sources.C_LIGHT_MPS / materials.C_LIGHT_M_S) */
@@ -1790,6 +1797,74 @@ static kvec3 sample_emit_position(const SourceC *src, uint64_t ray_key,
         "(4096 attempts) — trim geometry suspect", label);
 }
 
+/* Sample one primary of an extended image-emitting source: alias-draw a pixel
+ * proportional to the bitmap, jitter uniformly within it, and emit Lambertian
+ * (cone_deg == 0) or into a uniform-solid-angle cone about the SIGNED emit
+ * normal. A formula-for-formula port of sources._sample_image_points
+ * (sources.py:832-884) + _image_emission_dirs (sources.py:887-912): row 0 is
+ * the TOP of the picture at max v, columns run along +t1; the Vose draw takes
+ * the alias when u2 >= prob[k] (sources._alias_draw). EQUAL per-ray power (the
+ * bitmap rides the density, sources.py convention) — the caller keeps
+ * p_ray = power_W / rays untouched. RNG per attempt uses fresh counters so the
+ * result is a pure function of the ray key (thread-invariant). */
+static void sample_image_pos_dir(const SourceC *src, uint64_t key,
+                                 kvec3 *pos_out, kvec3 *dir_out) {
+    const SurfC *surf = &src->emit_face.surf;       /* SURF_PLANE (validated) */
+    const double W = (double)src->img_W;
+    const double H = (double)src->img_H;
+    /* --- position: alias-draw pixel + in-pixel jitter, rejected on trim --- */
+    kvec3 pos = v3(0.0, 0.0, 0.0);
+    int found = 0;
+    for (uint32_t a = 0; a < 4096u && !found; a++) {
+        double u1 = rng_uniform(key, EV_EMIT_IMG_POS, 4u * a + 0u);
+        int64_t k = (int64_t)(u1 * (double)src->img_P);   /* floor, u1 in [0,1) */
+        if (k >= src->img_P) k = src->img_P - 1;          /* guard u1 -> 1 */
+        if (k < 0) k = 0;
+        double u2 = rng_uniform(key, EV_EMIT_IMG_POS, 4u * a + 1u);
+        int64_t flat = (u2 >= src->img_prob[k]) ? src->img_alias[k] : k;
+        int64_t row = flat / src->img_W;
+        int64_t col = flat % src->img_W;
+        double ju = rng_uniform(key, EV_EMIT_IMG_POS, 4u * a + 2u);
+        double jv = rng_uniform(key, EV_EMIT_IMG_POS, 4u * a + 3u);
+        double u = src->img_u_lo
+            + ((double)col + ju) / W * (src->img_u_hi - src->img_u_lo);
+        /* row 0 = top = max v (sources.py:872) */
+        double v = src->img_v_hi
+            - ((double)row + jv) / H * (src->img_v_hi - src->img_v_lo);
+        kvec3 p = surf_uv_to_xyz(surf, u, v);
+        double qu, qv;
+        surf_to_uv(surf, p, &qu, &qv);
+        if (trim_contains(&src->emit_face.trim, qu, qv)) {
+            pos = p;
+            found = 1;
+        }
+    }
+    if (!found)
+        die(EXIT_PHYSICS, "image source face %s: sampling failed to converge "
+            "(4096 attempts) — does the bitmap's bright content lie outside "
+            "the face trim?", src->label);
+    *pos_out = pos;
+    /* --- direction: cosine-weighted Lambertian, or a solid-angle cone, about
+     * the SIGNED emit normal (emit_dir); transverse basis = the plane frame
+     * t1/t2 (sources._image_emission_dirs). --- */
+    double du1 = rng_uniform(key, EV_EMIT_IMG_DIR, 0u);
+    double du2 = rng_uniform(key, EV_EMIT_IMG_DIR, 1u);
+    double phi = K_TWO_PI * du2;
+    double cos_t;
+    if (src->img_cone_deg > 0.0) {
+        double cos_max = cos(src->img_cone_deg * K_PI / 180.0);
+        cos_t = 1.0 - du1 * (1.0 - cos_max);            /* uniform in solid ang */
+    } else {
+        cos_t = sqrt(1.0 - du1);                        /* cosine-weighted */
+    }
+    double s2 = 1.0 - cos_t * cos_t;
+    double sin_t = sqrt(s2 > 0.0 ? s2 : 0.0);
+    kvec3 d = v3_scale(src->emit_dir, cos_t);
+    d = v3_add(d, v3_scale(surf->u.plane.t1, sin_t * cos(phi)));
+    d = v3_add(d, v3_scale(surf->u.plane.t2, sin_t * sin(phi)));
+    *dir_out = v3_unit(d);
+}
+
 /* --importance-aim birth test: does this emission ray meet the scene's
  * root bounding box at all? Misses are culled at birth with their power
  * credited to 'escaped' — the exact fate they would have had. */
@@ -1819,8 +1894,13 @@ static void sample_source_c(const SceneC *s, int source_index, RayVec *batch,
             uint64_t key = rng_primary_key(s->seed ^ 0xA13Aull,
                                            (uint32_t)source_index,
                                            (uint64_t)i);
-            kvec3 pos = sample_emit_position(src, key, src->label);
-            kvec3 dir;
+            kvec3 pos, dir;
+            if (src->has_image) {
+                sample_image_pos_dir(src, key, &pos, &dir);
+                if (aim_hits_scene(s, pos, dir)) hits++;
+                continue;
+            }
+            pos = sample_emit_position(src, key, src->label);
             if (src->emit_policy == EMIT_COLLIMATED) {
                 dir = src->emit_dir;
             } else {
@@ -1853,13 +1933,21 @@ static void sample_source_c(const SceneC *s, int source_index, RayVec *batch,
     for (int64_t i = lo; i < hi; i++) {
         uint64_t key = rng_primary_key(s->seed, (uint32_t)source_index,
                                        (uint64_t)i);
-        kvec3 pos = sample_emit_position(src, key, src->label);
+        kvec3 pos, dir;
+        if (src->has_image) {
+            /* extended image source: alias-drawn position + Lambertian/cone
+             * direction. A planar face emits every sample (no clip path,
+             * sources.py flat branch). */
+            sample_image_pos_dir(src, key, &pos, &dir);
+            ledger->emitted[source_index] += p_ray;
+            goto have_dir;
+        }
+        pos = sample_emit_position(src, key, src->label);
 
         /* emitted power records EVERY sample (clipped ones immediately
          * balance into their bucket — sources.py:308-316) */
         ledger->emitted[source_index] += p_ray;
 
-        kvec3 dir;
         if (src->emit_policy == EMIT_COLLIMATED) {
             dir = src->emit_dir;
         } else {
@@ -1878,6 +1966,7 @@ static void sample_source_c(const SceneC *s, int source_index, RayVec *batch,
             }
             dir = v3_unit(dir);
         }
+    have_dir:
         if (s->importance_aim && !aim_hits_scene(s, pos, dir)) {
             /* would fly straight past every face: same 'escaped' fate,
              * zero trace cost (emitted power was recorded above) */

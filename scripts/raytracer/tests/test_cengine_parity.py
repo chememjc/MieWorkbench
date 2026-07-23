@@ -832,3 +832,120 @@ def test_time_products_spm_chirp_parity(tmp_path):
     cm, cw, ci = _profile_moments(ca, cp)
     rel_close(pm, cm, 1e-9, "spm profile mean-t")
     rel_close(pw, cw, 1e-9, "spm profile rms-width")
+
+
+# ===========================================================================
+# extended image-emitting source (samples-instruments round)
+#
+# The C sampler (trace.c sample_image_pos_dir) alias-draws pixels proportional
+# to a bitmap and emits Lambertian (or into an image_cone_deg cone) about the
+# signed emit normal — a formula-for-formula port of sources._sample_image_
+# points / _image_emission_dirs, differing from Python only in RNG realization.
+# A left-bright 2-value bitmap makes the detector irradiance ASYMMETRIC, so a
+# uniform-emission bug (bitmap ignored) would fail these engine-vs-engine bars:
+#   * detected total power within 2%,
+#   * flux centroid within 2% of the detector span,
+#   * bright/dark half-power ratio within 5% (and meaningfully != 1).
+# Single seed, like the neighbouring statistical parity tests.
+# ===========================================================================
+def _image_optprops_root(tmp_path, bitmap):
+    """A tmp optical-properties root: every repo registry symlinked through so
+    materials/coatings/etc. still load, with image/ replaced by a fresh
+    registry pointing at the synthetic .npy bitmap."""
+    from raytracer.optprops import DEFAULT_OPTPROPS_DIR
+    root = tmp_path / "optprops"
+    root.mkdir()
+    for entry in Path(DEFAULT_OPTPROPS_DIR).iterdir():
+        if entry.name == "image":
+            continue
+        (root / entry.name).symlink_to(entry)
+    img_dir = root / "image"
+    img_dir.mkdir()
+    np.save(img_dir / "half.npy", np.asarray(bitmap, dtype=np.float64))
+    (img_dir / "images.mieimg").write_text(
+        "name,file,reference,notes\n"
+        "half_target,half.npy,synthetic C-engine parity fixture,"
+        "left-bright 2-value target\n")
+    return root
+
+
+def _image_detector_stats(case_dir):
+    """(total, centroid_px[row,col], img2d) from the sole detector cube."""
+    import h5py
+    with h5py.File(next((case_dir / "detectors").glob("*.h5")), "r") as h:
+        img2d = h["spectral_cube_mean"][...].sum(axis=0)     # (H, W)
+    tot = float(img2d.sum())
+    H, W = img2d.shape
+    rows = np.arange(H)
+    cols = np.arange(W)
+    row_c = float((img2d.sum(axis=1) * rows).sum() / tot)
+    col_c = float((img2d.sum(axis=0) * cols).sum() / tot)
+    return tot, (row_c, col_c), img2d
+
+
+@pytest.mark.parametrize("cone_deg", [None, 20.0])
+def test_image_source_parity(tmp_path, cone_deg):
+    """C-vs-Python parity of the extended image-emitting source, Lambertian
+    (cone_deg=None) and cone-restricted. A left-bright bitmap keeps the
+    detector pattern asymmetric so the comparison is a real test of the C
+    density + direction sampler, not two washed-out blurs."""
+    import run_trace
+    from scenehelpers import source_body, detector_body, make_model
+
+    # 8x8 left-half-bright 2-value target (columns 0..3 emit, 4..7 dark).
+    bitmap = np.zeros((8, 8))
+    bitmap[:, :4] = 1.0
+    root = _image_optprops_root(tmp_path, bitmap)
+
+    sb = source_body("Src", x=-0.01, half=0.01, power_mW=2.0,
+                     lambdac_nm=550.0)
+    sb["source"]["image"] = "half_target"
+    if cone_deg is not None:
+        sb["source"]["image_cone_deg"] = cone_deg
+    model = make_model([sb, detector_body("Det", x=0.01, half=0.05)])
+
+    def run(engine, sub):
+        geo = tmp_path / sub / "geometry"
+        geo.mkdir(parents=True, exist_ok=True)
+        (geo / "model.json").write_text(json.dumps(model))
+        case = tmp_path / (sub + "_case")
+        rc = run_trace.main([
+            "--model-json", str(geo / "model.json"), "--case-dir", str(case),
+            "--rays", "200000", "--resolution", "96", "--nlambda", "1",
+            "--spectral-bins", "4", "--engine", engine, "--workers", "1",
+            "--optical-properties", str(root)])
+        assert rc == 0, "run_trace --engine %s exited %s" % (engine, rc)
+        return case
+
+    py_case = run("python", "img_py")
+    c_case = run("c", "img_c")
+    case = json.loads((c_case / "case.json").read_text())
+    assert case["engine"] == "c", case.get("engine_reason")
+
+    py_tot, py_c, py_img = _image_detector_stats(py_case)
+    c_tot, c_c, c_img = _image_detector_stats(c_case)
+    H, W = py_img.shape
+
+    # 1. detected total power within 2%
+    rel_close(py_tot, c_tot, 0.02, "image detected total (cone=%s)" % cone_deg)
+
+    # 2. flux centroid within 2% of the detector span (rows and cols)
+    assert abs(py_c[0] - c_c[0]) / H < 0.02, \
+        "image centroid row: py %.2f vs c %.2f (span %d)" % (py_c[0], c_c[0], H)
+    assert abs(py_c[1] - c_c[1]) / W < 0.02, \
+        "image centroid col: py %.2f vs c %.2f (span %d)" % (py_c[1], c_c[1], W)
+
+    # 3. bright/dark half-power ratio within 5%, along the asymmetry axis the
+    #    Python run picks (the more off-centre centroid coordinate). Must be
+    #    meaningfully != 1 so a uniform-emission bug can't pass.
+    if abs(py_c[1] - (W - 1) / 2.0) >= abs(py_c[0] - (H - 1) / 2.0):
+        lo_py, hi_py = py_img[:, :W // 2].sum(), py_img[:, W // 2:].sum()
+        lo_c, hi_c = c_img[:, :W // 2].sum(), c_img[:, W // 2:].sum()
+    else:
+        lo_py, hi_py = py_img[:H // 2, :].sum(), py_img[H // 2:, :].sum()
+        lo_c, hi_c = c_img[:H // 2, :].sum(), c_img[H // 2:, :].sum()
+    r_py = float(lo_py / hi_py)
+    r_c = float(lo_c / hi_c)
+    assert abs(r_py - 1.0) > 0.1, \
+        "image pattern not asymmetric (ratio %.3f) — test would be blind" % r_py
+    rel_close(r_py, r_c, 0.05, "image bright/dark ratio (cone=%s)" % cone_deg)

@@ -251,6 +251,24 @@ typedef struct {
      * offset [s] (sources._stratum_t0). A primary is born with gopl =
      * c * stratum_t0[stratum] (sources.apply_stratum_t0). NULL => all zero. */
     double *stratum_t0;         /* [n_strata] seconds, or NULL */
+    /* samples-instruments round: extended image-emitting source
+     * (sources._sample_image_points / _image_emission_dirs). When has_image,
+     * emission position rides a per-pixel Vose alias table over the bitmap
+     * (equal per-ray power; the bitmap carries the DENSITY) jittered within the
+     * pixel, and the direction is Lambertian (cone_deg == 0) or a
+     * uniform-solid-angle cone of that half-angle about the SIGNED emit normal
+     * (emit_dir). REQUIRES a planar emit face (request.c hard-errors otherwise);
+     * the alias table + bbox are built Python-side by sources._build_alias_table
+     * so there is exactly one implementation. */
+    uint8_t has_image;
+    int32_t img_W, img_H;       /* bitmap width (cols) / height (rows) */
+    int64_t img_P;              /* img_W * img_H pixels */
+    double img_cone_deg;        /* emission cone HALF-angle; 0 = Lambertian */
+    /* face-UV bounding rectangle the bitmap fills (min/max over trim loops,
+     * exactly sources._sample_image_points) */
+    double img_u_lo, img_u_hi, img_v_lo, img_v_hi;
+    double *img_prob;           /* [img_P] Vose prob_table */
+    int64_t *img_alias;         /* [img_P] Vose alias_idx */
 } SourceC;
 
 /* continuum-mode particle cloud (particles.py _continuum): all tables

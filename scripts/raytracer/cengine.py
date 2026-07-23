@@ -59,6 +59,16 @@ PORTED = frozenset({
     "ghost_analysis",           # phase H (refl_hist face-id history)
     "viz_pattern",              # phase H (glue-level: Python viz-only
                                 #   pass supplies the overlay rays)
+    "image_source",             # samples-instruments: extended image-emitting
+                                #   source. The glue serializes a Vose alias
+                                #   table over the bitmap pixels (built by the
+                                #   SAME sources._build_alias_table — one
+                                #   implementation) + the face-UV bbox + cone
+                                #   half-angle; the C sampler (trace.c
+                                #   sample_image_pos_dir) alias-draws a pixel,
+                                #   jitters in-pixel, and emits Lambertian/cone
+                                #   about the signed emit normal. Requires a
+                                #   planar emit face (both engines error else).
     "gdd_budget",               # P7 tranche 1: per-body power-weighted bulk
                                 #   path tallied in C; ALL dispersion (group
                                 #   index / GDD / TOD) resolved Python-side
@@ -144,9 +154,10 @@ def detect_features(args, scene):
         if src.get("apodization"):
             feats.add("apodization")
         # samples-instruments round: extended image-emitting source
-        # (per-pixel alias-method emission, sources.py). Python-routes
-        # until the C source sampler learns the alias tables (planned
-        # this round -- see cengine tranche in the round plan).
+        # (per-pixel alias-method emission, sources.py). PORTED: the glue
+        # serializes the Vose alias table + face-UV bbox + cone half-angle
+        # and the C sampler (trace.c sample_image_pos_dir) reproduces the
+        # density + Lambertian/cone emission statistically.
         if src.get("image"):
             feats.add("image_source")
     biref_approx = getattr(args, "biref_approx", False)
@@ -836,6 +847,38 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
             "emit_face": _face_entry(-1, emit_rec, bidx, -1),
         }
         entry.update(_emit_dir_policy(face))
+        # samples-instruments round: extended image-emitting source. The scene
+        # resolved the registry bitmap into src["_image_gray"] at build; the C
+        # sampler needs the Vose alias table (built by the SAME
+        # sources._build_alias_table so there is exactly ONE implementation),
+        # the image W/H, the emission cone half-angle (0.0 = Lambertian
+        # sentinel), and the face-UV bounding rectangle the bitmap fills
+        # (u_lo/u_hi/v_lo/v_hi over the trim loops, exactly as
+        # sources._sample_image_points computes them). The emit_dir policy above
+        # already resolved the SIGNED emit normal the image directions fan
+        # about. Requires a planar emit face (Python raises the same).
+        img = src.get("_image_gray")
+        if img is not None:
+            if type(face.surface).__name__ != "Plane":
+                raise SystemExit(
+                    "cengine: image source %s requires a planar emit face "
+                    "(got %s)" % (body.label,
+                                  type(face.surface).__name__))
+            from .sources import _build_alias_table
+            img = np.asarray(img, dtype=np.float64)
+            H, W = img.shape
+            prob_table, alias_idx = _build_alias_table(img.ravel())
+            loops = face.trim.loops
+            allu = np.concatenate([np.asarray(lp)[:, 0] for lp in loops])
+            allv = np.concatenate([np.asarray(lp)[:, 1] for lp in loops])
+            entry["image"] = {
+                "W": int(W), "H": int(H),
+                "cone_deg": float(src.get("image_cone_deg") or 0.0),
+                "u_lo": float(allu.min()), "u_hi": float(allu.max()),
+                "v_lo": float(allv.min()), "v_hi": float(allv.max()),
+                "prob": [float(x) for x in prob_table],
+                "alias": [int(x) for x in alias_idx],
+            }
         # per-(stratum, pol) gather normalization areas (compute_sample_area)
         from run_trace import compute_sample_area
         sa = compute_sample_area(scene, args)
