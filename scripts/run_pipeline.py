@@ -161,7 +161,7 @@ def variant_output_names(stem, varspecs, sweep_mode="product"):
 # Per-stage command builders (single source of truth for flag forwarding)
 # ---------------------------------------------------------------------------
 def permute_cmd(model_path, varspecs, sweep_mode="product"):
-    cmd = [common.FREECAD_APPIMAGE, "-c",
+    cmd = [common.require_tool("MIEWB_FREECAD"), "-c",
            str(common.SCRIPTS_DIR / "permute_model.py"), "--",
            "--model", str(model_path)]
     for var, vmin, vmax, n in varspecs:
@@ -174,7 +174,7 @@ def permute_cmd(model_path, varspecs, sweep_mode="product"):
 
 
 def extract_cmd(model_paths):
-    cmd = [common.FREECAD_APPIMAGE, "-c",
+    cmd = [common.require_tool("MIEWB_FREECAD"), "-c",
            str(common.SCRIPTS_DIR / "extract_geometry.py"), "--",
            "--models"] + [str(p) for p in model_paths]
     return cmd
@@ -187,7 +187,8 @@ def _preset_val(args, key, attr):
 
 def trace_cmd(stem, case_dir, args):
     model_json = common.GEOMETRY_DIR / stem / "model.json"
-    cmd = [common.OPTICS_PYTHON, str(common.SCRIPTS_DIR / "run_trace.py"),
+    cmd = [common.require_tool("MIEWB_OPTICS_PYTHON"),
+           str(common.SCRIPTS_DIR / "run_trace.py"),
            "--model-json", str(model_json), "--case-dir", str(case_dir),
            "--rays", repr(_preset_val(args, "rays", "rays")),
            "--resolution", str(int(_preset_val(args, "resolution",
@@ -318,7 +319,8 @@ def _dim_rays_args(args):
 
 def post_cmd(stem, case_dir, args):
     model_json = common.GEOMETRY_DIR / stem / "model.json"
-    cmd = [common.OPTICS_PYTHON, str(common.SCRIPTS_DIR / "post_process.py"),
+    cmd = [common.require_tool("MIEWB_OPTICS_PYTHON"),
+           str(common.SCRIPTS_DIR / "post_process.py"),
           "--case-dir", str(case_dir), "--model-json", str(model_json)] \
         + _dim_rays_args(args)
     if args.photometric:
@@ -353,7 +355,7 @@ def post_cmd(stem, case_dir, args):
 
 def viz_cmd(stem, case_dir, args):
     model_json = common.GEOMETRY_DIR / stem / "model.json"
-    cmd = [common.PVPYTHON, "--force-offscreen-rendering",
+    cmd = [common.require_tool("MIEWB_PVPYTHON"), "--force-offscreen-rendering",
           str(common.SCRIPTS_DIR / "make_viz.py"),
           "--case-dir", str(case_dir), "--model-json", str(model_json)] \
         + _dim_rays_args(args)
@@ -533,6 +535,16 @@ def print_summary(stems, case):
 def main():
     args = parse_args()
     steps = resolve_steps(args.steps)
+    if "viz" in steps and common.PVPYTHON is None:
+        # Configured-absent ParaView (MIEWB_PVPYTHON empty) is a supported
+        # headless install — skip viz with a NOTICE, like the no-sources
+        # post/viz skip, rather than failing mid-pipeline.
+        print("NOTICE: viz stage skipped — ParaView configured absent "
+              "(MIEWB_PVPYTHON empty; run scripts/setup_env.sh to change)",
+              flush=True)
+        steps = [s for s in steps if s != "viz"]
+        if not steps:
+            raise SystemExit(0)
     varspecs = validate_var_counts(args)
     if args.imaging_products and not (args.export_rays
                                       or args.ghost_analysis):

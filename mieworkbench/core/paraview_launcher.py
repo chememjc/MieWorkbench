@@ -19,13 +19,18 @@ import common  # noqa: E402
 
 def find_paraview(settings=None):
     """Best available interactive paraview binary path, or None."""
+    pvpython = common.PVPYTHON
     if settings is not None:
         explicit = settings.get("paraview")
         if explicit and os.path.isfile(explicit):
             return explicit
-    sibling = os.path.join(os.path.dirname(common.PVPYTHON), "paraview")
-    if os.path.isfile(sibling):
-        return sibling
+        # live value (Settings reads miewb.env per call, so a dialog edit
+        # takes effect without restarting the GUI)
+        pvpython = settings.pvpython() or pvpython
+    if pvpython:  # None = unconfigured / configured absent
+        sibling = os.path.join(os.path.dirname(pvpython), "paraview")
+        if os.path.isfile(sibling):
+            return sibling
     for candidate in os.environ.get("PATH", "").split(os.pathsep):
         p = os.path.join(candidate, "paraview")
         if os.path.isfile(p) and os.access(p, os.X_OK):
@@ -48,8 +53,13 @@ def launch(case_dir, settings=None):
     running, subprocess otherwise (so it is testable headless)."""
     binary = find_paraview(settings)
     if binary is None:
+        if common.PVPYTHON is None and settings is None:
+            return False, ("ParaView is not configured on this machine "
+                           "(MIEWB_PVPYTHON empty/unset — run "
+                           "scripts/setup_env.sh or set it in Settings)")
         return False, ("no interactive 'paraview' binary found next to "
-                       "%s (set it in Settings)" % common.PVPYTHON)
+                       "%s (set it in Settings)"
+                       % (common.PVPYTHON or "the configured pvpython"))
     files = viz_files(case_dir)
     if not files:
         return False, ("no viz/*.vtp files in %s — run the viz stage "

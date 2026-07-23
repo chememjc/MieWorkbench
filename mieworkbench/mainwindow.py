@@ -216,6 +216,16 @@ class MainWindow(QMainWindow):
         self._wire_panes()
         self._update_window_title()
 
+        # Unconfigured machine (no miewb.env, __main__ set the
+        # MIEWB_ALLOW_UNCONFIGURED escape hatch): tell the user and open
+        # Settings -> Tool Paths, which edits miewb.env directly.
+        if common.UNCONFIGURED:
+            self.statusBar().showMessage(
+                "Machine tool paths not configured (%s) — set them in "
+                "Settings, or run scripts/setup_env.sh"
+                % ", ".join(common.UNCONFIGURED))
+            QTimer.singleShot(0, self._on_settings)
+
     # -- central --------------------------------------------------------------
     def _build_central(self):
         """The central graphics area is a bottom-tabbed QTabWidget: the

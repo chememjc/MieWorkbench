@@ -23,3 +23,7 @@ cengine/build/
 # vendored cuFINUFFT checkout (build-time fetch, pinned v2.5.1; see
 # cengine/vendor/fetch_finufft.sh and cengine/README.md "NUFFT gather")
 cengine/vendor/finufft/
+
+# machine-local tool paths (create with scripts/setup_env.sh;
+# template: miewb.env.example)
+miewb.env

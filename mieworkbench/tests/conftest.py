@@ -1,5 +1,9 @@
 import os
 
+# Tests must import on an unconfigured machine (tool-needing tests gate on
+# MIEWB_RUN_FREECAD / skip when the resolved tool is None).
+os.environ.setdefault("MIEWB_ALLOW_UNCONFIGURED", "1")
+
 import pytest
 
 

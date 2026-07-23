@@ -21,20 +21,90 @@ import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Paths and pinned interpreters (SimulationsGuide.md §1/§2 conventions)
+# Paths and pinned interpreters — single source of truth: <repo>/miewb.env
+#
+# Machine-specific tool paths are NOT baked in here. They resolve, in
+# precedence order: exported MIEWB_* environment variable (an exported
+# EMPTY value counts) > miewb.env entry > hard error at import naming
+# scripts/setup_env.sh. An explicitly EMPTY value means "configured
+# absent" (tool deliberately not installed) — the constant becomes None
+# and only the consuming stage errors, via require_tool().
+# MIEWB_ALLOW_UNCONFIGURED=1 lets an unconfigured machine import anyway
+# (unresolved tools = None); the GUI and the test conftests use it.
 # ---------------------------------------------------------------------------
-def _env_path(var, default):
-    """Env-overridable path. Defaults preserve historical behavior; the
-    MieWorkbench GUI (and remote/headless runs) override via MIEWB_* so a
-    project can run against a workspace directory or relocated tools."""
-    return Path(os.environ.get(var, "")) if os.environ.get(var) else default
+class UnconfiguredError(RuntimeError):
+    """Machine tool paths unresolved; run scripts/setup_env.sh."""
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_DIR / "scripts"
 BASEMODELS_DIR = PROJECT_DIR / "basemodels"
-GEOMETRY_DIR = _env_path("MIEWB_GEOMETRY_DIR", PROJECT_DIR / "geometry")
-RESULTS_DIR = _env_path("MIEWB_RESULTS_DIR", PROJECT_DIR / "results")
+ENV_FILE = Path(os.environ.get("MIEWB_ENV_FILE") or PROJECT_DIR / "miewb.env")
+
+# Every key miewb.env may define (miewb.env.example must list them all;
+# pinned by test_env_config.py).
+KNOWN_ENV_KEYS = (
+    "MIEWB_FREECAD", "MIEWB_OPTICS_PYTHON", "MIEWB_PVPYTHON",
+    "MIEWB_GUI_PYTHON", "MIEWB_NVCC", "MIEWB_CUDA_ARCH",
+    "MIEWB_GEOMETRY_DIR", "MIEWB_RESULTS_DIR", "MIEWB_OPTPROPS_DIR",
+    "MIEWB_CENGINE",
+)
+
+
+def load_env_file(path=None):
+    """Parse a miewb.env-style KEY=value file -> dict (stdlib, no shell:
+    values are literal — no quotes, no $interpolation, no escapes).
+    Missing file -> {}. Blank lines and lines whose first non-space char
+    is '#' are skipped; other lines must contain '=' (split on the FIRST
+    '=' only) or ValueError names file:line. Later duplicate keys win."""
+    path = Path(path) if path is not None else ENV_FILE
+    if not path.exists():
+        return {}
+    out = {}
+    with open(path, "r", encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "=" not in stripped:
+                raise ValueError(
+                    "%s:%d: expected KEY=value, got %r"
+                    % (path, lineno, stripped))
+            key, _, value = stripped.partition("=")
+            out[key.strip()] = value.strip()
+    return out
+
+
+_FILE_CFG = load_env_file(ENV_FILE)
+
+
+def _cfg(var):
+    """Env-wins lookup: exported env var (even if empty) > miewb.env entry
+    > None (absent everywhere)."""
+    if var in os.environ:
+        return os.environ[var]
+    return _FILE_CFG.get(var)
+
+
+def _dir_cfg(var, default):
+    """Directory knob: empty/absent -> repo-derived default."""
+    v = _cfg(var)
+    return Path(v) if v else default
+
+
+def _tool_cfg(var, unresolved):
+    """Required-tool knob. Absent everywhere -> None + recorded in
+    `unresolved` (import-time error unless MIEWB_ALLOW_UNCONFIGURED=1).
+    Present but EMPTY -> None, configured absent (no error)."""
+    raw = _cfg(var)
+    if raw is None:
+        unresolved.append(var)
+        return None
+    return raw.strip() or None
+
+
+GEOMETRY_DIR = _dir_cfg("MIEWB_GEOMETRY_DIR", PROJECT_DIR / "geometry")
+RESULTS_DIR = _dir_cfg("MIEWB_RESULTS_DIR", PROJECT_DIR / "results")
 # Optical-properties library: materials.miemat at the root, one subdirectory
 # per category, per-item tables under <category>/tables/ (README §7).
 #
@@ -43,8 +113,8 @@ RESULTS_DIR = _env_path("MIEWB_RESULTS_DIR", PROJECT_DIR / "results")
 # resolve_prop_file() keeps old-style all-.csv libraries (e.g. a user's
 # --optical-properties DIR that predates this migration) working: it
 # prefers the new name but falls back to the legacy same-stem .csv file.
-OPTPROPS_DIR = _env_path("MIEWB_OPTPROPS_DIR",
-                         PROJECT_DIR / "opticalproperties")
+OPTPROPS_DIR = _dir_cfg("MIEWB_OPTPROPS_DIR",
+                        PROJECT_DIR / "opticalproperties")
 
 
 def resolve_prop_file(preferred_path):
@@ -75,18 +145,97 @@ FILTERS_CSV = resolve_prop_file(OPTPROPS_DIR / "filter" / "filters.miefilt")
 GRATINGS_CSV = resolve_prop_file(OPTPROPS_DIR / "grating" / "gratings.miegrat")
 CALIBRATION_JSON = RESULTS_DIR / ".calibration.json"
 
-FREECAD_APPIMAGE = os.environ.get(
-    "MIEWB_FREECAD", "/home3/freecad/FreeCAD.AppImage")
-OPTICS_PYTHON = os.environ.get(
-    "MIEWB_OPTICS_PYTHON", "/home3/optics/env/bin/python")
+_unresolved = []
+FREECAD_APPIMAGE = _tool_cfg("MIEWB_FREECAD", _unresolved)
+OPTICS_PYTHON = _tool_cfg("MIEWB_OPTICS_PYTHON", _unresolved)
+PVPYTHON = _tool_cfg("MIEWB_PVPYTHON", _unresolved)
 # The GUI venv (PySide6 + numpy + Optiland). The P4b sequential merit backend
 # shells out to it for the Optiland bridge, which lives in env/ ONLY.
-GUI_PYTHON = os.environ.get(
-    "MIEWB_GUI_PYTHON", str(PROJECT_DIR / "env" / "bin" / "python"))
-PVPYTHON = os.environ.get(
-    "MIEWB_PVPYTHON",
-    "/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64"
-    "/bin/pvpython")
+GUI_PYTHON = _cfg("MIEWB_GUI_PYTHON") or str(
+    PROJECT_DIR / "env" / "bin" / "python")
+# C-engine binary between-env-and-default tier (cengine.binary_path()).
+CENGINE_BINARY = _cfg("MIEWB_CENGINE") or None
+UNCONFIGURED = tuple(_unresolved)
+del _unresolved
+
+if UNCONFIGURED and os.environ.get("MIEWB_ALLOW_UNCONFIGURED") != "1":
+    raise UnconfiguredError(
+        "MieWorkbench machine paths are not configured: %s unresolved.\n"
+        "Run scripts/setup_env.sh once to create %s\n"
+        "(or export the MIEWB_* variables directly). A tool you genuinely\n"
+        "don't have can be configured absent with an empty value\n"
+        "(e.g. MIEWB_PVPYTHON=). Set MIEWB_ALLOW_UNCONFIGURED=1 to import\n"
+        "anyway with unresolved tools set to None."
+        % (", ".join(UNCONFIGURED), ENV_FILE))
+
+_TOOL_LABELS = {
+    "MIEWB_FREECAD": "FreeCAD AppImage",
+    "MIEWB_OPTICS_PYTHON": "optics-env python",
+    "MIEWB_PVPYTHON": "ParaView pvpython",
+}
+
+
+def require_tool(var):
+    """Return the configured path for a tool key, or raise
+    UnconfiguredError (covers both unresolved-under-escape-hatch and
+    configured-absent). Call at the point a tool is actually launched."""
+    value = {"MIEWB_FREECAD": FREECAD_APPIMAGE,
+             "MIEWB_OPTICS_PYTHON": OPTICS_PYTHON,
+             "MIEWB_PVPYTHON": PVPYTHON}[var]
+    if not value:
+        raise UnconfiguredError(
+            "%s (%s) is not configured on this machine. Run "
+            "scripts/setup_env.sh (or set %s in %s / export it) first."
+            % (_TOOL_LABELS[var], var, var, ENV_FILE))
+    return value
+
+
+def update_env_file(updates, path=None):
+    """Comment-preserving miewb.env editor (shared by the Settings dialog
+    and tests). For each KEY in `updates`, replace the FIRST non-comment
+    'KEY=...' line in place and DROP later duplicates of it (the parser
+    is later-dup-wins, so leaving them would silently mask the edit);
+    keys not present are appended at the end. A value of '' writes
+    'KEY=' (configured absent). Atomic write (tempfile + os.replace in
+    the same directory, mode preserved); creates the file with a
+    one-line header if absent."""
+    import tempfile
+    path = Path(path) if path is not None else ENV_FILE
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as fh:
+            old_lines = fh.read().splitlines()
+        mode = os.stat(path).st_mode
+    else:
+        old_lines = ["# MieWorkbench machine paths — created by MieWorkbench "
+                     "(see miewb.env.example / scripts/setup_env.sh)"]
+        mode = None
+    pending = dict(updates)
+    lines = []
+    for line in old_lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.partition("=")[0].strip()
+            if key in updates:
+                if key in pending:
+                    lines.append("%s=%s" % (key, pending.pop(key)))
+                continue  # drop later duplicates of an updated key
+        lines.append(line)
+    for key, value in pending.items():
+        lines.append("%s=%s" % (key, value))
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent),
+                               prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 # ---------------------------------------------------------------------------
 # Physical constants / units
@@ -1428,11 +1577,22 @@ def _selfcheck():
         print("  [%s] %s %s" % (status, name, detail))
         ok = ok and bool(cond)
 
+    def check_tool(name, var, value):
+        nonlocal ok
+        if value:
+            check(name, os.path.exists(value), value)
+        elif _cfg(var) is not None:
+            print("  [skip] %s (configured absent: %s empty)" % (name, var))
+        else:
+            print("  [FAIL] %s unresolved (run scripts/setup_env.sh)" % name)
+            ok = False
+
     print("common.py self-check")
-    check("FreeCAD AppImage", os.path.exists(FREECAD_APPIMAGE),
-          FREECAD_APPIMAGE)
-    check("optics env python", os.path.exists(OPTICS_PYTHON), OPTICS_PYTHON)
-    check("pvpython", os.path.exists(PVPYTHON), PVPYTHON)
+    print("  [%s] miewb.env %s" % ("ok" if ENV_FILE.exists() else "--",
+                                   ENV_FILE))
+    check_tool("FreeCAD AppImage", "MIEWB_FREECAD", FREECAD_APPIMAGE)
+    check_tool("optics env python", "MIEWB_OPTICS_PYTHON", OPTICS_PYTHON)
+    check_tool("pvpython", "MIEWB_PVPYTHON", PVPYTHON)
     check("project dir", PROJECT_DIR.is_dir(), str(PROJECT_DIR))
     check("materials.miemat", MATERIALS_CSV.exists(), str(MATERIALS_CSV))
 
