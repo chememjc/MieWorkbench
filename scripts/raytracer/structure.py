@@ -19,7 +19,8 @@
 #                     Thiele 1963, closed form via Ashcroft & Lekner 1966 /
 #                     Kinning & Thomas 1984 Macromolecules 17, 1712).
 #   sq_baxter         Baxter (1968) J. Chem. Phys. 49, 2770 sticky hard
-#                     sphere, PY closure — see the JUDGMENT CALL note below.
+#                     sphere, PY closure — EXACT delta-shell S(q)=1/(A^2+B^2)
+#                     (see the EXACT SOLUTION provenance note below).
 #   sq_fractal        Teixeira (1988) J. Appl. Cryst. 21, 781 fractal
 #                     aggregate / Ornstein-Zernike gel.
 #   sq_paracrystal    powder-averaged ideal paracrystal, Hosemann disorder
@@ -28,38 +29,52 @@
 #   sq_evaluate       one dispatcher over the samples-registry (model,
 #                     params) pair, used by the ensemble-tables integration.
 #
-# JUDGMENT CALL — sq_baxter: Baxter's original 1968 solution factorizes the
-# OZ equation through an auxiliary function Q(r) and a boundary-value
-# problem at contact; reconstructing that Q(r) algebra exactly (rather than
-# from a primary-source copy) is error-prone. What IS reproduced exactly
-# here, independently re-derived and cross-checked two ways (the tau -> inf
-# limit AND the low-density second-virial expansion B2 = B2_HS*(1-1/(4tau))
-# both match to machine precision — see test_structure.py and the module
-# comment above sq_baxter): the stickiness quadratic for Baxter's lambda,
-# and the resulting mu = phi*lambda enters S(q) through a contact-
-# scattering ("sticky delta-shell") term added to the exact PY hard-sphere
-# background, amplitude Gamma = 2*mu/(1-phi)^2 chosen to match the EXACT
-# low-density (leading-order-in-phi) limit of Baxter's second-virial
-# relation B2 = B2_HS*(1-1/(4*tau)) (independently re-derived from the
-# standard compressibility virial expansion S(0) ~ 1-2*B2*n; see the
-# module tests). Baxter's own S(0) formula has further phi-dependent terms
-# beyond this leading order that were NOT reproduced here: an early
-# attempt at the fuller nonlinear compressibility expression gave
-# NEGATIVE S(0) at ordinary literature test points (phi=0.1, tau=0.15),
-# i.e. it was wrong, and rather than ship an unverified nonlinear formula
-# this implementation deliberately stays at the term it COULD verify two
-# independent ways. A small Gaussian envelope keeps the
-# shell's oscillatory tail from ever driving S(q) negative at the q values
-# where the plain sinc tail would overshoot (checked on an internal dense
-# probe grid — sq_baxter raises ValueError if no envelope choice keeps
-# S(q) > 0, which is the practical extension of "unphysical tau/phi combo"
-# beyond the bare discriminant). This is NOT a claim to reproduce Baxter's
-# exact Q(r) algebra at every q; it is a controlled, positivity-guaranteed,
-# S(0)-exact approximation good enough for a Monte-Carlo ray tracer's
-# ensemble structure factor. Root selection: Baxter's lambda quadratic has
-# two roots; the SMALLER one is physical (it is the branch that -> 0 as
-# tau -> infinity, i.e. no residual stickiness when the well vanishes; the
-# larger root diverges in that limit and is spurious).
+# EXACT SOLUTION — sq_baxter: this is the EXACT Baxter (1968) sticky-hard-
+# sphere structure factor under the Percus-Yevick closure, in the delta-
+# shell (zero-well-width) limit — no approximation, no envelope hack.
+# S(q) = 1/(A(k)^2 + B(k)^2), where A,B are the cosine/sine moments of the
+# Baxter (Wiener-Hopf) factorization Q(r); because S(q) is the reciprocal
+# of a SUM OF SQUARES it is positive by construction (the old Gaussian
+# positivity envelope is gone), it recovers sq_percus_yevick ANALYTICALLY
+# as tau -> infinity (lambda -> 0, so mu -> 0 and A,B reduce to the pure
+# PY hard-sphere moments), and its S(0) matches the exact Baxter
+# compressibility (and, at low phi, the second-virial B2 = B2_HS*(1-1/(4
+# tau)) enhancement). Provenance — cross-verified against THREE independent
+# statements that agree on the functional form and every coefficient:
+#   1. SasView 6.x model source sasmodels/models/stickyhardsphere.c, the
+#      Iq() function (the authoritative reference implementation): the
+#      lambda quadratic; mu = lambda*eta*(1-eta); alpha = (1+2eta-mu)/
+#      (1-eta)^2; beta = (mu-3eta)/(2(1-eta)^2); and the aq1..aq3 / bq1..bq3
+#      trig closed form reproduced verbatim in _baxter_aq_bq below.
+#   2. The Menon, Manohar & Rao (1991) J. Chem. Phys. 95, 9186 form as
+#      restated in the small-angle-scattering literature: S(k*sigma) =
+#      1/([1-12*eta*qcos(k*sigma)]^2 + [12*eta*qsin(k*sigma)]^2), qcos/qsin
+#      being exactly the trig-moment combinations (I0..I2 / J0..J2 with
+#      coefficients alpha, beta, lambda) implemented here.
+#   3. Baxter (1968) J. Chem. Phys. 49, 2770: the original delta-shell
+#      factorization and the lambda quadratic (phi/12)*lambda^2 - [tau +
+#      phi/(1-phi)]*lambda + (1+phi/2)/(1-phi)^2 = 0.
+# The tau->inf PY limit, S(0) vs the Baxter compressibility, and S(0)
+# monotonicity in tau are pinned as further independent checks in
+# test_structure.py.
+#
+# CONVENTION MAPPING (validated against SasView's own published reference
+# values, reproduced by an independent transcription in test_structure.py):
+# SasView's Iq(q, radius_effective, volfraction, PERTURB, STICKINESS) has
+# two stickiness-like inputs and the names are a known trap. Its `perturb`
+# = tau_pert = Delta/(sigma+Delta) is the square-well WIDTH parameter and
+# enters ONLY through the renormalized packing fraction eta = phi/
+# (1-perturb)^3. Its `stickiness` is the Baxter adhesion strength that
+# enters the lambda quadratic (qb = stickiness + eta/(1-eta)). This module
+# implements the pure Baxter DELTA-SHELL limit perturb -> 0 (so eta = phi
+# exactly, matching Baxter 1968), and maps our tau_stick == SasView
+# `stickiness` == Baxter's tau (larger = weaker adhesion, tau->inf = PY;
+# smaller = stickier). Root selection: the lambda quadratic has two roots;
+# the SMALLER is physical (it -> 0 as tau -> infinity, no residual
+# stickiness when the well vanishes; the larger root diverges there and is
+# spurious). ValueError is raised when the discriminant < 0 (no real
+# lambda) OR when mu > 1 + 2*eta (SasView's `mu>test` unphysical guard) --
+# both signal a (tau, phi) combination with no sticky-sphere PY solution.
 #
 # JUDGMENT CALL — sq_paracrystal: this is a PRAGMATIC powder paracrystal.
 # Peak POSITIONS and selection rules are exact (conventional-cell cubic
@@ -89,15 +104,24 @@ from scipy.special import gamma as _gamma_fn
 __all__ = ["sq_percus_yevick", "sq_baxter", "sq_fractal", "sq_paracrystal",
            "sq_table", "sq_evaluate"]
 
-# A = q*sigma below this uses the Taylor series (the closed form's
-# sin/cos - polynomial cancellation loses all precision well before this;
-# see the module tests for the calibration).
-_A_SMALL = 1e-2
+# A = q*sigma (= k*sigma) below this uses the Taylor series instead of the
+# closed forms, whose sin/cos - polynomial cancellation loses precision as
+# A -> 0. Shared by the PY direct correlation AND the Baxter aq/bq moments.
+# Calibrated by test: the PY exact branch's cancellation error exceeds 1e-6
+# for A < ~0.02 (measured against a 50-digit mpmath reference), so the
+# threshold sits comfortably above that at 0.05 where the exact branch is
+# good to <1e-8; the series itself is accurate to ~1e-13 out to 0.05 (both
+# checked in test_structure.py). The old 1e-2 value left A~0.01-0.02 on the
+# inaccurate exact branch -- harmless when PY and Baxter shared one code
+# path, but the exact Baxter S(q)=1/(A^2+B^2) form exposed the PY error.
+_A_SMALL = 0.05
 # q*xi below this uses the analytic fractal S(0) limit.
 _FRACTAL_X_SMALL = 1e-3
-# dense internal probe grid sq_baxter uses to guarantee S(q) > 0 for ALL q,
-# not just the caller's query points (a physically-required property of
-# any structure factor, not merely a courtesy at q=0).
+# dense internal probe grid: sq_baxter ASSERTS S(q) > 0 on it as a sanity
+# check on the exact A^2+B^2 closed form (positivity is guaranteed by the
+# reciprocal-of-sum-of-squares structure, so a failure here is a
+# transcription bug, not an unphysical (tau, phi) combo). Values are q in
+# 1/um; multiplied by sigma inside sq_baxter to form k = q*sigma.
 _BAXTER_PROBE = np.linspace(1e-3, 60.0, 4000)
 
 
@@ -167,8 +191,8 @@ def sq_percus_yevick(q, r_hs_um, phi_hs):
 
 
 # ---------------------------------------------------------------------------
-# Baxter sticky hard sphere (PY closure) — see the module-header judgment
-# call note for exactly what is and is not reproduced from Baxter (1968).
+# Baxter sticky hard sphere (PY closure) — EXACT delta-shell solution; see
+# the module-header EXACT SOLUTION provenance note for sources + conventions.
 # ---------------------------------------------------------------------------
 def _baxter_lambda(phi_hs, tau_stick):
     """Solve Baxter's stickiness quadratic for lambda (his own symbol,
@@ -198,45 +222,105 @@ def _baxter_lambda(phi_hs, tau_stick):
     return (Bq - np.sqrt(disc)) / (2.0 * Aq)
 
 
+def _baxter_aq_bq(kk, eta, alpha, beta, lam):
+    """The Baxter/Menon-Manohar-Rao cosine (A) and sine (B) factorization
+    moments, S(q) = 1/(A^2 + B^2). kk = q*sigma (sigma = HS diameter).
+    Reproduces sasmodels/models/stickyhardsphere.c's aq1..aq3 / bq1..bq3
+    verbatim (its `aa = sig/(1-perturb)` is just sig here, since this module
+    is the delta-shell perturb->0 limit and eta = phi):
+
+      A(k) = 1 + 12 eta [ alpha (sin k - k cos k)/k^3
+                          + beta (1 - cos k)/k^2
+                          - lambda sin k /(12 k) ]
+      B(k) =     12 eta [ alpha (1/(2k) - sin k/k^2 + (1 - cos k)/k^3)
+                          + beta (1/k - sin k/k^2)
+                          - (lambda/12)(1 - cos k)/k ]
+
+    The bracketed 1/k, 1/k^2, 1/k^3 combinations are removable 0/0's at
+    k=0 but catastrophic-cancellation traps in float64 (the same failure
+    mode as the PY direct correlation); below _A_SMALL this switches to the
+    Taylor series of A and B, matched term-by-term to the exact form
+    (verified in test_structure.py), which is finite and NaN-free at k=0.
+    """
+    kk = np.asarray(kk, dtype=np.float64)
+    small = kk < _A_SMALL
+    ksafe = np.where(small, 1.0, kk)      # dummy where small (unused)
+    k2 = ksafe * ksafe
+    k3 = k2 * ksafe
+    ds, dc = np.sin(ksafe), np.cos(ksafe)
+
+    aq1 = (ds - ksafe * dc) * alpha / k3
+    aq2 = beta * (1.0 - dc) / k2
+    aq3 = lam * ds / (12.0 * ksafe)
+    aq_exact = 1.0 + 12.0 * eta * (aq1 + aq2 - aq3)
+
+    bq1 = alpha * (0.5 / ksafe - ds / k2 + (1.0 - dc) / k3)
+    bq2 = beta * (1.0 / ksafe - ds / k2)
+    bq3 = (lam / 12.0) * ((1.0 - dc) / ksafe)
+    bq_exact = 12.0 * eta * (bq1 + bq2 - bq3)
+
+    # small-k Taylor series (k2 = kk^2 here; no cancellation):
+    ks = kk
+    k2s = kk * kk
+    aq1s = alpha * (1.0 / 3.0 - k2s / 30.0 + k2s * k2s / 840.0)
+    aq2s = beta * (0.5 - k2s / 24.0 + k2s * k2s / 720.0)
+    aq3s = (lam / 12.0) * (1.0 - k2s / 6.0 + k2s * k2s / 120.0)
+    aq_series = 1.0 + 12.0 * eta * (aq1s + aq2s - aq3s)
+
+    bq1s = alpha * (ks / 8.0 - ks * k2s / 144.0)
+    bq2s = beta * (ks / 6.0 - ks * k2s / 120.0)
+    bq3s = (lam / 12.0) * (ks / 2.0 - ks * k2s / 24.0)
+    bq_series = 12.0 * eta * (bq1s + bq2s - bq3s)
+
+    aq = np.where(small, aq_series, aq_exact)
+    bq = np.where(small, bq_series, bq_exact)
+    return aq, bq
+
+
 def sq_baxter(q, r_hs_um, phi_hs, tau_stick):
-    """Baxter (1968) sticky hard sphere, PY closure.
+    """Baxter (1968) sticky hard sphere, PY closure — EXACT delta-shell
+    solution S(q) = 1/(A(k)^2 + B(k)^2); see the module header for the
+    three cross-verified sources and the SasView convention mapping.
 
     q: 1/um. r_hs_um: hard-sphere radius, um. phi_hs: packing fraction.
     tau_stick: Baxter's stickiness (> 0; smaller = stickier; -> infinity
     recovers sq_percus_yevick exactly, pinned to 1e-6 by test_structure.py).
 
     Raises ValueError for an unphysical (tau_stick, phi_hs) combination:
-    either the stickiness quadratic has no real root, or (a further,
-    practical check -- see the module header) no contact-shell envelope
-    keeps S(q) > 0 everywhere.
+    the stickiness quadratic has no real root (discriminant < 0), or the
+    resulting mu = lambda*eta*(1-eta) exceeds 1 + 2*eta (SasView's `mu>test`
+    guard) -- both mean there is no sticky-sphere PY solution there.
+
+    S(q) is positive by construction (reciprocal of a sum of squares); the
+    module's dense _BAXTER_PROBE grid is kept only as a SANITY ASSERTION
+    (the exact solution can never need an envelope -- a non-positive probe
+    would be a transcription bug, not an "unphysical combo").
     """
     q = np.asarray(q, dtype=np.float64)
     sigma = 2.0 * r_hs_um
+    eta = phi_hs                     # delta-shell: perturb = 0 => eta = phi
     lam = _baxter_lambda(phi_hs, tau_stick)
-    mu = phi_hs * lam
-    # Amplitude of the contact (sticky-shell) term -- see the module
-    # header for the derivation/verification of this leading-order form.
-    Gamma = 2.0 * mu / (1.0 - phi_hs) ** 2
-
-    # Gaussian envelope width (dimensionless in A=q*sigma): small enough
-    # to leave S(0) exact (envelope(0)=1) and to leave tau->inf -> Gamma=0
-    # untouched, large enough that the shell's sinc(A) tail cannot drive
-    # 1-C(A) negative at any A for the (phi,Gamma) combinations the probe
-    # grid below actually accepts.
-    damp = 0.3
-
-    def _Cq(Aarr):
-        shell = np.sinc(Aarr / np.pi) * np.exp(-(damp * Aarr) ** 2)
-        return _py_direct_correlation(Aarr, phi_hs) + Gamma * shell
-
-    probe_S = 1.0 / (1.0 - _Cq(_BAXTER_PROBE))
-    if not np.all(np.isfinite(probe_S)) or np.any(probe_S <= 0.0):
+    mu = lam * eta * (1.0 - eta)
+    if mu > 1.0 + 2.0 * eta:
         raise ValueError(
-            "sq_baxter: tau_stick=%g, phi_hs=%g gives a non-positive S(q) "
-            "somewhere -- unphysical combo" % (tau_stick, phi_hs))
+            "sq_baxter: no physical solution for tau_stick=%g, phi_hs=%g "
+            "(mu=%g exceeds 1+2*eta=%g -- too sticky for this packing "
+            "fraction under the PY closure)"
+            % (tau_stick, phi_hs, mu, 1.0 + 2.0 * eta))
+    alpha = (1.0 + 2.0 * eta - mu) / (1.0 - eta) ** 2
+    beta = (mu - 3.0 * eta) / (2.0 * (1.0 - eta) ** 2)
 
-    A = q * sigma
-    return 1.0 / (1.0 - _Cq(A))
+    # Positivity is guaranteed by S = 1/(A^2+B^2); this probe is a sanity
+    # assertion, not the "unphysical combo" gate (that is the two raises
+    # above). If it ever trips, the aq/bq closed form has a bug.
+    aqp, bqp = _baxter_aq_bq(_BAXTER_PROBE * sigma, eta, alpha, beta, lam)
+    probe_S = 1.0 / (aqp * aqp + bqp * bqp)
+    assert np.all(np.isfinite(probe_S)) and np.all(probe_S > 0.0), (
+        "sq_baxter: exact A^2+B^2 form gave a non-positive/non-finite S(q) "
+        "-- transcription bug (tau_stick=%g, phi_hs=%g)" % (tau_stick, phi_hs))
+
+    aq, bq = _baxter_aq_bq(q * sigma, eta, alpha, beta, lam)
+    return 1.0 / (aq * aq + bq * bq)
 
 
 # ---------------------------------------------------------------------------

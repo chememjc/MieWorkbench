@@ -104,6 +104,122 @@ def test_baxter_positive_everywhere_valid_combo():
     assert np.all(s > 0)
 
 
+# --- exact-solution cross-checks against SasView (independent transcription)
+def _sasview_sticky_iq(q, radius_effective, volfraction, perturb, stickiness):
+    """Independent, standalone transcription of SasView's
+    sasmodels/models/stickyhardsphere.c Iq() (the exact Baxter/Menon-Manohar-
+    Rao PY sticky-hard-sphere S(q)), written straight from the published C
+    source and sharing NO code with structure.py. Scalar q; q and
+    radius_effective in any consistent inverse-length units. Returns -1.0 on
+    the same unphysical branches the C code does."""
+    import math
+    onemineps = 1.0 - perturb
+    eta = volfraction / onemineps ** 3
+    sig = 2.0 * radius_effective
+    aa = sig / onemineps
+    etam1 = 1.0 - eta
+    etam1sq = etam1 * etam1
+    qa = eta / 6.0
+    qb = stickiness + eta / etam1
+    qc = (1.0 + eta / 2.0) / etam1sq
+    radic = qb * qb - 2.0 * qa * qc
+    if radic < 0:
+        return -1.0
+    radic = math.sqrt(radic)
+    lam = (qb - radic) / qa
+    lam2 = (qb + radic) / qa
+    if lam2 < lam:
+        lam = lam2
+    test = 1.0 + 2.0 * eta
+    mu = lam * eta * etam1
+    if mu > test:
+        return -1.0
+    alpha = (1.0 + 2.0 * eta - mu) / etam1sq
+    beta = (mu - 3.0 * eta) / (2.0 * etam1sq)
+    kk = q * aa
+    k2 = kk * kk
+    k3 = kk * k2
+    ds = math.sin(kk)
+    dc = math.cos(kk)
+    aq1 = ((ds - kk * dc) * alpha) / k3
+    aq2 = (beta * (1.0 - dc)) / k2
+    aq3 = (lam * ds) / (12.0 * kk)
+    aq = 1.0 + 12.0 * eta * (aq1 + aq2 - aq3)
+    bq1 = alpha * (0.5 / kk - ds / k2 + (1.0 - dc) / k3)
+    bq2 = beta * (1.0 / kk - ds / k2)
+    bq3 = (lam / 12.0) * ((1.0 - dc) / kk)
+    bq = 12.0 * eta * (bq1 + bq2 - bq3)
+    return 1.0 / (aq * aq + bq * bq)
+
+
+def test_baxter_sasview_published_reference_values():
+    # SasView's own model test block (sasmodels/models/stickyhardsphere.py):
+    #   {radius_effective=50, volfraction=0.1, perturb=0.05, stickiness=0.2}
+    #   q = [0.001, 0.003]  ->  Iq = [1.09718, 1.087830]
+    # First confirm the independent transcription reproduces SasView's
+    # published numbers (validates the algorithm we implemented).
+    got = [_sasview_sticky_iq(q, 50.0, 0.1, 0.05, 0.2)
+           for q in (0.001, 0.003)]
+    assert got[0] == pytest.approx(1.09718, abs=2e-5)
+    assert got[1] == pytest.approx(1.087830, abs=2e-5)
+
+
+def test_baxter_matches_sasview_at_perturb_zero():
+    # Our sq_baxter is the delta-shell (perturb -> 0) limit; it must equal
+    # the full independent SasView transcription at perturb=0, across a
+    # spread of (q, r, phi, tau). This is the exact-formula spot check.
+    cases = [
+        # (r_um, phi, tau, A=q*sigma probe points)
+        (0.1, 0.1, 0.15, [0.2, 1.0, 3.0, 6.5, 12.0, 25.0]),
+        (0.1, 0.2, 0.30, [0.1, 0.5, 2.0, 7.0, 15.0]),
+        (0.2, 0.3, 0.50, [0.3, 1.5, 5.0, 10.0, 20.0]),
+        (0.05, 0.35, 1.0, [0.05, 2.0, 6.0, 14.0]),
+    ]
+    for r, phi, tau, As in cases:
+        for A in As:
+            q = A / (2 * r)
+            ours = st.sq_baxter(np.array([q]), r, phi, tau)[0]
+            ref = _sasview_sticky_iq(q, r, phi, 0.0, tau)
+            assert ref > 0
+            assert abs(ours - ref) < 1e-9 * max(1.0, ref), \
+                "mismatch r=%g phi=%g tau=%g A=%g: %g vs %g" \
+                % (r, phi, tau, A, ours, ref)
+
+
+def test_baxter_s0_matches_full_compressibility():
+    # phi=0.1, tau=0.15 is exactly where the OLD fuller-formula attempt went
+    # NEGATIVE; the exact solution must be positive, finite, and equal to the
+    # closed-form Baxter compressibility S(0) = 1/A(0)^2, with A(0) assembled
+    # here by an algebraically-independent reduction
+    #   A(0) = 1 + (4 eta - eta^2 - eta*mu)/(1-eta)^2 - eta*lambda .
+    r, phi, tau = 0.1, 0.1, 0.15
+    eta = phi
+    lam = st._baxter_lambda(phi, tau)
+    mu = lam * eta * (1.0 - eta)
+    a0 = 1.0 + (4.0 * eta - eta ** 2 - eta * mu) / (1.0 - eta) ** 2 - eta * lam
+    s0_compress = 1.0 / a0 ** 2
+    s0 = st.sq_baxter(np.array([0.0]), r, phi, tau)[0]
+    assert np.isfinite(s0) and s0 > 0.0
+    assert abs(s0 - s0_compress) < 1e-12
+    # and, sanity, it lands in the physically-sensible enhanced-but-finite
+    # range (positive, and > the PY value at the same phi)
+    s0_py = st.sq_percus_yevick(np.array([0.0]), r, phi)[0]
+    assert 0.0 < s0_py < s0 < 5.0
+
+
+def test_baxter_s0_monotonic_in_tau():
+    # stickier (smaller tau) => larger S(0); S(0) must increase monotonically
+    # as tau decreases toward the sticky limit.
+    r, phi = 0.1, 0.2
+    taus = [100.0, 5.0, 1.2, 0.6, 0.3, 0.16]  # decreasing = stickier
+    s0 = [st.sq_baxter(np.array([0.0]), r, phi, t)[0] for t in taus]
+    assert all(v > 0.0 for v in s0)
+    assert all(s0[i] < s0[i + 1] for i in range(len(s0) - 1))
+    # the loosest (tau=100) should be within a hair of the PY value
+    s0_py = st.sq_percus_yevick(np.array([0.0]), r, phi)[0]
+    assert abs(s0[0] - s0_py) < 1e-2 * s0_py
+
+
 # ---------------------------------------------------------------------------
 # Teixeira fractal aggregate
 # ---------------------------------------------------------------------------
