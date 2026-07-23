@@ -40,13 +40,35 @@ DEFAULT_GRATINGS_CSV = DEFAULT_OPTPROPS_DIR / "grating" / "gratings.miegrat"
 DEFAULT_DETECTORS_CSV = DEFAULT_OPTPROPS_DIR / "detector" / "detectors.miedet"
 DEFAULT_EMISSION_CSV = DEFAULT_OPTPROPS_DIR / "emission" / "emitters.miesrc"
 DEFAULT_NONLINEAR_CSV = DEFAULT_OPTPROPS_DIR / "nonlinear" / "nonlinear.mienlo"
+DEFAULT_SAMPLES_CSV = DEFAULT_OPTPROPS_DIR / "sample" / "samples.miesamp"
+DEFAULT_IMAGES_CSV = DEFAULT_OPTPROPS_DIR / "image" / "images.mieimg"
 
 POLARIZER_TYPES = ("linear", "circular_left", "circular_right")
 GRATING_MODELS = ("lamellar", "bragg_kogelnik", "dammann", "table")
-# Emitter kinds with engine support THIS round. 'blackbody' (analytic Planck)
-# and 'line' (discrete point-mass lines) are staged in library_data/ but need
-# their own source models — rejected here rather than silently mis-sampled.
-EMISSION_KINDS = ("continuous",)
+# Emitter kinds (samples-instruments round): 'continuous' = tabulated SPD;
+# 'blackbody' = analytic Planck, synthesized to a dense table AT LOAD so
+# every downstream consumer (sources.wavelength_strata, estimator, GUI)
+# sees exactly the tabulated-SPD shape — zero engine changes, C-routable;
+# 'lines' = discrete emission lines carried as (lam_nm, intensity) pairs
+# with a finite micro-linewidth (sources.py places per-line strata).
+EMISSION_KINDS = ("continuous", "blackbody", "lines")
+# Minimum line width: strata need finite wavelength edges (stratum_domega,
+# time products); a physical lamp line is never narrower than this anyway.
+MIN_LINEWIDTH_NM = 1e-3
+# Planck-table synthesis density. 2048 points resolves the CIE-integration
+# and quantile-strata placement to <<0.1% for any 190-2500 nm band.
+_BLACKBODY_TABLE_N = 2048
+# second radiation constant c2 = h*c/kB, exact from SI-defined constants
+_C2_M_K = 1.4387768775039337e-2
+# sample/samples.miesamp enums (samples-instruments round)
+SAMPLE_DISTS = ("lognormal", "mono")
+SAMPLE_MODES = ("auto", "continuum", "explicit")
+SAMPLE_SHAPES = ("sphere", "spheroid")
+SQ_MODELS = ("none", "py", "baxter", "fractal", "paracrystal", "table")
+PARACRYSTAL_LATTICES = ("fcc", "bcc", "sc")
+# physical hard-sphere fluid branch tops out at freezing (~0.494); the
+# Percus-Yevick closure degrades well before close packing.
+_SQ_PHI_HS_MAX = 0.55
 # nonlinear/nonlinear.mienlo row kinds (pulsed-optics round; the math lives
 # in raytracer/nlo.py, the tracer-side SHG event is a later phase).
 NLO_KINDS = ("chi2_tensor", "chi2_process", "pockels", "n2", "saturable")
@@ -173,6 +195,32 @@ def _parse_params_field(raw, ctx):
                 out[k] = float(v)
         except ValueError:
             raise MaterialError("%s: params %r=%r is not numeric" % (ctx, k, v))
+    return out
+
+
+def _parse_params_field_mixed(raw, ctx, sep=";", kvsep=":"):
+    """Like _parse_params_field but string-tolerant: values parse as float
+    when they can and stay strings otherwise (sample sq_params carry enum
+    values like lattice:fcc and table:mysq alongside numerics). Separators
+    default to ';' between pairs and ':' inside a pair (the sample-registry
+    convention, matching the --particles k=v style but ':'-keyed so the csv
+    field never fights the ';' pair separator)."""
+    out = {}
+    for kv in (raw or "").strip().split(sep):
+        kv = kv.strip()
+        if not kv:
+            continue
+        if kvsep not in kv:
+            raise MaterialError("%s: bad params field %r (expected "
+                                "key%svalue)" % (ctx, kv, kvsep))
+        k, v = kv.split(kvsep, 1)
+        k, v = k.strip(), v.strip()
+        if not k or not v:
+            raise MaterialError("%s: bad params field %r" % (ctx, kv))
+        try:
+            out[k] = float(v)
+        except ValueError:
+            out[k] = v
     return out
 
 
@@ -399,18 +447,73 @@ def load_detectors(csv_path=None):
 # ---------------------------------------------------------------------------
 # emission/emitters.miesrc + tables/  (tabulated source emission spectra)
 # ---------------------------------------------------------------------------
-def load_emission(csv_path=None):
-    """-> {name: {"kind": str, "lam_um": arr, "lam_nm": arr,
-    "relative_power": arr, "reference": str, "notes": str}}.
+def planck_relative_power(lam_nm, temp_k):
+    """Relative spectral power density (per-nm shape) of a blackbody at
+    temp_k over the lam_nm grid: B_lambda ∝ lam^-5 / (exp(c2/(lam*T)) - 1),
+    peak-normalized to 1 (only the SHAPE matters to the quantile-strata
+    sampler). expm1 keeps the long-wavelength tail exact."""
+    lam_m = np.asarray(lam_nm, dtype=np.float64) * 1e-9
+    x = _C2_M_K / (lam_m * float(temp_k))
+    rel = lam_m ** -5.0 / np.expm1(x)
+    return rel / rel.max()
 
-    Each row references a per-emitter table wavelength_nm,relative_power
-    giving the RELATIVE spectral power density P(lambda) of a source's
-    emission (arbitrary units — the sampler in sources.wavelength_strata
-    normalizes it to a PDF and places equal-power quantile strata, so only
-    the SHAPE matters). Only kind='continuous' (piecewise-linear PDF) is
-    supported this round; other staged kinds (blackbody, line) are rejected
-    naming the kind. Validation: relative_power >= 0 everywhere, integral of
-    P over lambda > 0, >= 2 rows (via _read_table)."""
+
+def _parse_lines_field(raw, ctx):
+    """'253.65:1500;296.73:600;...' -> (lam_nm asc, intensity) arrays.
+    Wavelengths nm > 0 strictly unique; intensities > 0; >= 1 line."""
+    lam, inten = [], []
+    for pair in (raw or "").strip().split(";"):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            raise MaterialError(
+                "%s: bad lines entry %r (expected wavelength_nm:intensity)"
+                % (ctx, pair))
+        l_s, i_s = pair.split(":", 1)
+        try:
+            l, i = float(l_s), float(i_s)
+        except ValueError:
+            raise MaterialError("%s: lines entry %r not numeric" % (ctx, pair))
+        if l <= 0 or i <= 0:
+            raise MaterialError(
+                "%s: lines entry %r needs wavelength and intensity > 0"
+                % (ctx, pair))
+        lam.append(l)
+        inten.append(i)
+    if not lam:
+        raise MaterialError("%s: kind=lines requires a non-empty lines "
+                            "field" % ctx)
+    order = np.argsort(lam)
+    lam = np.asarray(lam, dtype=np.float64)[order]
+    inten = np.asarray(inten, dtype=np.float64)[order]
+    if np.any(np.diff(lam) <= 0):
+        raise MaterialError("%s: duplicate line wavelength in lines field"
+                            % ctx)
+    return lam, inten
+
+
+def load_emission(csv_path=None):
+    """-> {name: entry} keyed by emitter row. Entry shapes per kind:
+
+    continuous: {"kind", "lam_um", "lam_nm", "relative_power",
+                 "reference", "notes"} — tabulated RELATIVE spectral power
+        density (arbitrary units; sources.wavelength_strata normalizes to a
+        PDF and places equal-power quantile strata, so only SHAPE matters).
+        Table via table_csv; relative_power >= 0, integral > 0, >= 2 rows.
+    blackbody: SAME keys as continuous (plus "temp_k") — the Planck curve
+        for params temp_k over [lam_lo_nm, lam_hi_nm] is synthesized to a
+        dense table AT LOAD (planck_relative_power), so every downstream
+        consumer sees exactly the tabulated-SPD shape. params column:
+        'temp_k:3000;lam_lo_nm:350;lam_hi_nm:2500'.
+    lines: {"kind", "lines_nm", "lines_um", "intensity", "linewidth_nm",
+            "reference", "notes"} — discrete emission lines (lines column
+        'nm:intensity;...'), intensities relative (shape only). Optional
+        params 'linewidth_nm:<w>' floors at MIN_LINEWIDTH_NM so strata keep
+        finite wavelength edges (stratum_domega / time products). NO
+        lam_um/relative_power keys — a consumer that treats a line source
+        as continuous fails loudly instead of mis-sampling.
+    """
     csv_path = Path(csv_path) if csv_path is not None \
         else DEFAULT_EMISSION_CSV
     tables_dir = csv_path.parent / "tables"
@@ -420,24 +523,62 @@ def load_emission(csv_path=None):
         kind = (row.get("kind") or "").strip()
         if kind not in EMISSION_KINDS:
             raise MaterialError(
-                "%s: kind %r needs engine support (only %s supported this "
-                "round)" % (ctx, kind, ", ".join(EMISSION_KINDS)))
-        table = _read_table(tables_dir / (row.get("table_csv") or "").strip(),
-                            ("relative_power",), ctx)
-        rel = table["relative_power"]
-        if np.any(rel < 0):
-            raise MaterialError(
-                "%s: relative_power must be >= 0 everywhere (a spectral "
-                "power density is non-negative)" % ctx)
-        if np.trapezoid(rel, table["lam_um"]) <= 0:
-            raise MaterialError(
-                "%s: relative_power integrates to <= 0 — the table carries no "
-                "power" % ctx)
-        out[name] = {"kind": kind, "lam_um": table["lam_um"],
-                     "lam_nm": table["lam_um"] * 1e3,
-                     "relative_power": rel,
-                     "reference": (row.get("reference") or "").strip(),
-                     "notes": (row.get("notes") or "").strip()}
+                "%s: kind %r must be one of %s"
+                % (ctx, kind, ", ".join(EMISSION_KINDS)))
+        entry = {"kind": kind,
+                 "reference": (row.get("reference") or "").strip(),
+                 "notes": (row.get("notes") or "").strip()}
+        params = _parse_params_field_mixed(row.get("params"), ctx)
+        if kind == "continuous":
+            table = _read_table(
+                tables_dir / (row.get("table_csv") or "").strip(),
+                ("relative_power",), ctx)
+            rel = table["relative_power"]
+            if np.any(rel < 0):
+                raise MaterialError(
+                    "%s: relative_power must be >= 0 everywhere (a spectral "
+                    "power density is non-negative)" % ctx)
+            if np.trapezoid(rel, table["lam_um"]) <= 0:
+                raise MaterialError(
+                    "%s: relative_power integrates to <= 0 — the table "
+                    "carries no power" % ctx)
+            entry.update(lam_um=table["lam_um"],
+                         lam_nm=table["lam_um"] * 1e3,
+                         relative_power=rel)
+        elif kind == "blackbody":
+            for k in ("temp_k", "lam_lo_nm", "lam_hi_nm"):
+                if not isinstance(params.get(k), float):
+                    raise MaterialError(
+                        "%s: kind=blackbody requires numeric params "
+                        "temp_k, lam_lo_nm, lam_hi_nm (got %r)"
+                        % (ctx, params))
+            temp_k = params["temp_k"]
+            lam_lo, lam_hi = params["lam_lo_nm"], params["lam_hi_nm"]
+            if temp_k <= 0:
+                raise MaterialError("%s: temp_k must be > 0" % ctx)
+            if not (0 < lam_lo < lam_hi):
+                raise MaterialError(
+                    "%s: need 0 < lam_lo_nm < lam_hi_nm" % ctx)
+            lam_nm = np.linspace(lam_lo, lam_hi, _BLACKBODY_TABLE_N)
+            entry.update(lam_um=lam_nm * 1e-3, lam_nm=lam_nm,
+                         relative_power=planck_relative_power(lam_nm,
+                                                              temp_k),
+                         temp_k=temp_k)
+        else:  # lines
+            lam_nm, inten = _parse_lines_field(row.get("lines"), ctx)
+            width = params.get("linewidth_nm", MIN_LINEWIDTH_NM)
+            if not isinstance(width, float) or width <= 0:
+                raise MaterialError(
+                    "%s: linewidth_nm must be a positive number" % ctx)
+            width = max(width, MIN_LINEWIDTH_NM)
+            # neighbouring line bands must not overlap once widened
+            if lam_nm.size > 1 and np.any(np.diff(lam_nm) <= width):
+                raise MaterialError(
+                    "%s: linewidth_nm %.4g overlaps adjacent lines"
+                    % (ctx, width))
+            entry.update(lines_nm=lam_nm, lines_um=lam_nm * 1e-3,
+                         intensity=inten, linewidth_nm=width)
+        out[name] = entry
     return out
 
 
@@ -1114,6 +1255,260 @@ def load_nonlinear(csv_path=None, uniaxial=None, biaxial=None):
 
 
 # ---------------------------------------------------------------------------
+# sample/samples.miesamp + tables/  (scattering-sample library,
+# samples-instruments round)
+#
+# A row is a NAMED SAMPLE: a particle population (material, size
+# distribution, loading) plus an optional inter-particle structure factor
+# S(q). It is bound to a scene through the `sample` body property on a
+# liquid-fill solid (the body's own material is the HOST medium; the
+# body's shape bounds the cloud) — see raytracer/particles.py. The CLI
+# --particles world-box spec is unchanged and coexists.
+#
+# Length units are MICROMETRES throughout (median_um, r_hs_um, xi_um,
+# a_um, q_per_um) — the engine-internal wavelength unit; q = 4*pi*n_host/
+# lambda * sin(theta/2) is therefore in 1/um at trace time.
+#
+# sq_model/sq_params (':'-keyed, ';'-separated — _parse_params_field_mixed):
+#   none        no structure factor (independent scatterers, S(q) = 1)
+#   py          Percus-Yevick hard sphere; optional phi_hs (VOLUME
+#               fraction; default derived at trace time from the sample's
+#               phi mass fraction + densities), optional r_hs_um (default
+#               trace-time volume-weighted mean radius)
+#   baxter      sticky hard sphere; required tau_stick > 0 (Baxter
+#               stickiness; smaller = stickier), optional phi_hs/r_hs_um
+#   fractal     fractal aggregate / Ornstein-Zernike gel (Teixeira);
+#               required xi_um > 0 (correlation length), df in (1, 3];
+#               optional r0_um (primary-particle radius)
+#   paracrystal powder-averaged lattice with Hosemann disorder; required
+#               lattice (fcc|bcc|sc), a_um > 0 (lattice constant),
+#               g in (0, 1) (relative disorder — small g = sharp Bragg
+#               peaks, large g = the "acrystalline" liquid-like limit).
+#               With mode=explicit the SAME parameters drive a real
+#               lattice realization (sites + Gaussian jitter sigma = g*a)
+#               for coherent Bragg/speckle runs.
+#   table       user-tabulated S(q): required table:<name> resolving to
+#               tables/<name>.mietab with columns q_per_um,s
+# ---------------------------------------------------------------------------
+
+def _read_sq_table(path, ctx):
+    """tables/<name>.mietab with columns q_per_um,s -> {"q_per_um","s"}.
+    q strictly increasing >= 0; s > 0. (Not _read_table: the abscissa is
+    momentum transfer, not wavelength.)"""
+    path = Path(path)
+    resolved = resolve_prop_path(path, alt_ext=".mietab")
+    if not resolved.exists():
+        raise MaterialError("%s: S(q) table not found: %s" % (ctx, path))
+    q, s = [], []
+    with open(resolved, newline="") as fh:
+        reader = csv.DictReader(fh)
+        missing = {"q_per_um", "s"} - set(reader.fieldnames or [])
+        if missing:
+            raise MaterialError("%s: S(q) table %s missing column(s) %s"
+                                % (ctx, resolved, sorted(missing)))
+        for j, r in enumerate(reader):
+            try:
+                q.append(float(r["q_per_um"]))
+                s.append(float(r["s"]))
+            except (TypeError, ValueError):
+                raise MaterialError("%s: S(q) table %s row %d not numeric: %r"
+                                    % (ctx, resolved, j + 2, r))
+    q = np.asarray(q, dtype=np.float64)
+    s = np.asarray(s, dtype=np.float64)
+    if q.size < 2:
+        raise MaterialError("%s: S(q) table %s has fewer than 2 rows"
+                            % (ctx, resolved))
+    if q[0] < 0 or np.any(np.diff(q) <= 0):
+        raise MaterialError("%s: S(q) table %s q_per_um must be >= 0 and "
+                            "strictly increasing" % (ctx, resolved))
+    if np.any(s <= 0):
+        raise MaterialError("%s: S(q) table %s s must be > 0" % (ctx,
+                                                                 resolved))
+    return {"q_per_um": q, "s": s}
+
+
+def _sq_optional_float(params, key, ctx, lo=None, hi=None):
+    """Validate an OPTIONAL numeric sq_params entry; returns float or None."""
+    if key not in params:
+        return None
+    v = params[key]
+    if not isinstance(v, float) or not np.isfinite(v):
+        raise MaterialError("%s: sq_params %s must be numeric" % (ctx, key))
+    if lo is not None and not (v > lo):
+        raise MaterialError("%s: sq_params %s must be > %g" % (ctx, key, lo))
+    if hi is not None and not (v < hi):
+        raise MaterialError("%s: sq_params %s must be < %g" % (ctx, key, hi))
+    return v
+
+
+def load_samples(csv_path=None, db=None):
+    """-> {name: entry} from sample/samples.miesamp (schema in the section
+    comment above). Entry keys: particle_material, dist, median_um (median
+    DIAMETER um, --particles convention), gsd, phi, tau (phi XOR tau),
+    mode, count, sq_model, sq_params (validated per model; model 'table'
+    resolves to {"q_per_um","s"} arrays under sq_params["table_data"]),
+    shape, aspect_ratio, solvent_visc_pas, reference, notes. If db is
+    given, particle_material must exist in it."""
+    csv_path = Path(csv_path) if csv_path is not None else DEFAULT_SAMPLES_CSV
+    tables_dir = csv_path.parent / "tables"
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "particle_material", "dist", "median_um",
+                       "sq_model", "reference"}, "samples"):
+        mat = (row.get("particle_material") or "").strip()
+        if not mat:
+            raise MaterialError("%s: particle_material is required" % ctx)
+        if db is not None and mat not in db:
+            raise MaterialError("%s: particle_material %r not in the "
+                                "materials registry" % (ctx, mat))
+        dist = (row.get("dist") or "").strip()
+        if dist not in SAMPLE_DISTS:
+            raise MaterialError("%s: dist %r must be one of %s"
+                                % (ctx, dist, ", ".join(SAMPLE_DISTS)))
+        median_um = _nlo_float(row, "median_um", ctx, positive=True)
+        if dist == "mono":
+            gsd = 1.0
+        else:
+            gsd_raw = (row.get("gsd") or "").strip()
+            gsd = float(gsd_raw) if gsd_raw else 1.6
+            if gsd < 1.0:
+                raise MaterialError("%s: gsd must be >= 1" % ctx)
+        phi_raw = (row.get("phi") or "").strip()
+        tau_raw = (row.get("tau") or "").strip()
+        if bool(phi_raw) == bool(tau_raw):
+            raise MaterialError(
+                "%s: exactly one of phi (mass fraction) / tau (target "
+                "optical depth) is required" % ctx)
+        phi = tau = None
+        if phi_raw:
+            phi = float(phi_raw)
+            if not (0 < phi < 1):
+                raise MaterialError(
+                    "%s: phi (mass fraction) must be in (0,1)" % ctx)
+        else:
+            tau = float(tau_raw)
+            if tau <= 0:
+                raise MaterialError(
+                    "%s: tau (target optical depth) must be > 0" % ctx)
+        mode = (row.get("mode") or "").strip() or "auto"
+        if mode not in SAMPLE_MODES:
+            raise MaterialError("%s: mode %r must be one of %s"
+                                % (ctx, mode, ", ".join(SAMPLE_MODES)))
+        count_raw = (row.get("count") or "").strip()
+        count = None
+        if count_raw:
+            count = _reg_int(row, "count", ctx, positive=True)
+        shape = (row.get("shape") or "").strip() or "sphere"
+        if shape not in SAMPLE_SHAPES:
+            raise MaterialError("%s: shape %r must be one of %s"
+                                % (ctx, shape, ", ".join(SAMPLE_SHAPES)))
+        ar_raw = (row.get("aspect_ratio") or "").strip()
+        aspect = float(ar_raw) if ar_raw else 1.0
+        if aspect <= 0:
+            raise MaterialError("%s: aspect_ratio must be > 0" % ctx)
+        if shape == "sphere" and aspect != 1.0:
+            raise MaterialError(
+                "%s: aspect_ratio %g on shape=sphere — use shape=spheroid "
+                "for nonspherical particles" % (ctx, aspect))
+        visc_raw = (row.get("solvent_visc_pas") or "").strip()
+        visc = None
+        if visc_raw:
+            visc = _nlo_float(row, "solvent_visc_pas", ctx, positive=True)
+        sq_model = (row.get("sq_model") or "").strip() or "none"
+        if sq_model not in SQ_MODELS:
+            raise MaterialError("%s: sq_model %r must be one of %s"
+                                % (ctx, sq_model, ", ".join(SQ_MODELS)))
+        sq = _parse_params_field_mixed(row.get("sq_params"), ctx)
+        if sq_model == "none":
+            if sq:
+                raise MaterialError(
+                    "%s: sq_params given but sq_model=none" % ctx)
+        elif sq_model in ("py", "baxter"):
+            _sq_optional_float(sq, "phi_hs", ctx, lo=0.0, hi=_SQ_PHI_HS_MAX)
+            _sq_optional_float(sq, "r_hs_um", ctx, lo=0.0)
+            if sq_model == "baxter":
+                if not isinstance(sq.get("tau_stick"), float) \
+                        or sq["tau_stick"] <= 0:
+                    raise MaterialError(
+                        "%s: sq_model=baxter requires numeric "
+                        "tau_stick > 0" % ctx)
+        elif sq_model == "fractal":
+            if not isinstance(sq.get("xi_um"), float) or sq["xi_um"] <= 0:
+                raise MaterialError(
+                    "%s: sq_model=fractal requires numeric xi_um > 0" % ctx)
+            df = sq.get("df")
+            if not isinstance(df, float) or not (1.0 < df <= 3.0):
+                raise MaterialError(
+                    "%s: sq_model=fractal requires df in (1, 3]" % ctx)
+            _sq_optional_float(sq, "r0_um", ctx, lo=0.0)
+        elif sq_model == "paracrystal":
+            lat = sq.get("lattice")
+            if lat not in PARACRYSTAL_LATTICES:
+                raise MaterialError(
+                    "%s: sq_model=paracrystal requires lattice in %s"
+                    % (ctx, "/".join(PARACRYSTAL_LATTICES)))
+            if not isinstance(sq.get("a_um"), float) or sq["a_um"] <= 0:
+                raise MaterialError(
+                    "%s: sq_model=paracrystal requires numeric a_um > 0"
+                    % ctx)
+            g = sq.get("g")
+            if not isinstance(g, float) or not (0.0 < g < 1.0):
+                raise MaterialError(
+                    "%s: sq_model=paracrystal requires g in (0, 1)" % ctx)
+        else:  # table
+            tname = sq.get("table")
+            if not isinstance(tname, str) or not tname:
+                raise MaterialError(
+                    "%s: sq_model=table requires table:<name>" % ctx)
+            sq["table_data"] = _read_sq_table(tables_dir / tname, ctx)
+        out[name] = {
+            "particle_material": mat, "dist": dist, "median_um": median_um,
+            "gsd": gsd, "phi": phi, "tau": tau, "mode": mode, "count": count,
+            "sq_model": sq_model, "sq_params": sq, "shape": shape,
+            "aspect_ratio": aspect, "solvent_visc_pas": visc,
+            "reference": (row.get("reference") or "").strip(),
+            "notes": (row.get("notes") or "").strip()}
+    return out
+
+
+# ---------------------------------------------------------------------------
+# image/images.mieimg  (extended-source image registry,
+# samples-instruments round)
+#
+# A row names a greyscale bitmap (PNG/JPG/TIFF/BMP or a 2-D .npy) stored
+# NEXT TO the registry csv; the `image` body property on a source binds it
+# as a per-position radiance map (sources.py alias-method sampler). Files
+# live inside opticalproperties/ so a .MieWB project library carries its
+# targets with it. Pixel data is loaded by the engine, not here — the
+# loader validates existence + extension and enforces the reference
+# (citation/provenance) contract.
+# ---------------------------------------------------------------------------
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".npy")
+
+
+def load_images(csv_path=None):
+    """-> {name: {"path": Path, "reference": str, "notes": str}} from
+    image/images.mieimg (columns name,file,reference,notes)."""
+    csv_path = Path(csv_path) if csv_path is not None else DEFAULT_IMAGES_CSV
+    out = {}
+    for name, row, ctx in _read_registry(
+            csv_path, {"name", "file", "reference"}, "images"):
+        fname = (row.get("file") or "").strip()
+        if not fname:
+            raise MaterialError("%s: file is required" % ctx)
+        path = csv_path.parent / fname
+        if path.suffix.lower() not in IMAGE_EXTENSIONS:
+            raise MaterialError("%s: file %r extension must be one of %s"
+                                % (ctx, fname, ", ".join(IMAGE_EXTENSIONS)))
+        if not path.exists():
+            raise MaterialError("%s: image file not found: %s" % (ctx, path))
+        out[name] = {"path": path,
+                     "reference": (row.get("reference") or "").strip(),
+                     "notes": (row.get("notes") or "").strip()}
+    return out
+
+
+# ---------------------------------------------------------------------------
 # instrument/instruments.mieinst + tables/  (virtual instrument layer,
 # engine3.md §9 -- P2.5)
 #
@@ -1139,7 +1534,7 @@ def load_nonlinear(csv_path=None, uniaxial=None, biaxial=None):
 # ---------------------------------------------------------------------------
 DEFAULT_INSTRUMENTS_CSV = DEFAULT_OPTPROPS_DIR / "instrument" / "instruments.mieinst"
 
-INSTRUMENT_CLASSES = ("camera", "powermeter", "spectrometer",
+INSTRUMENT_CLASSES = ("camera", "powermeter", "spectrometer", "diode_array",
                       "polarimeter", "wavefront_sensor", "autocorrelator")
 # classes with a schema but (by design) no shipped rows this round -- see
 # module note above.
@@ -1288,6 +1683,41 @@ def load_instruments(csv_path=None):
                 slit_um=_nlo_float(row, "slit_um", ctx, positive=True),
                 stray_light_floor=stray,
                 lam_um=table["lam_um"], qe=qe)
+        elif klass == "diode_array":
+            # physical linear array at a spectrograph focal plane
+            # (samples-instruments round): the render bins the detector
+            # plane's spectral cube along the dispersion axis at the real
+            # pixel geometry and applies QE + shot/read noise + ADC —
+            # post_process.render_diode_array.
+            table = _read_table(
+                tables_dir / (row.get("detector_qe_table") or "").strip(),
+                ("qe",), ctx)
+            qe = table["qe"]
+            if np.any(qe <= 0) or np.any(qe > 1):
+                raise MaterialError(
+                    "%s: detector_qe_table qe must be in (0, 1]" % ctx)
+            stray = _nlo_float(row, "stray_light_floor", ctx,
+                               nonnegative=True)
+            if stray >= 1.0:
+                raise MaterialError(
+                    "%s: stray_light_floor must be in [0, 1)" % ctx)
+            entry.update(
+                pixel_pitch_um=_nlo_float(row, "pixel_pitch_um", ctx,
+                                          positive=True),
+                pixel_height_um=_nlo_float(row, "pixel_height_um", ctx,
+                                           positive=True),
+                n_px=_reg_int(row, "n_px", ctx, positive=True),
+                lam_um=table["lam_um"], qe=qe,
+                full_well_e=_nlo_float(row, "full_well_e", ctx,
+                                       positive=True),
+                read_noise_e=_nlo_float(row, "read_noise_e", ctx,
+                                        nonnegative=True),
+                bit_depth=_reg_int(row, "bit_depth", ctx, positive=True),
+                adc_gain_e_per_dn=_nlo_float(row, "adc_gain_e_per_dn", ctx,
+                                             positive=True),
+                integration_time_s_default=_nlo_float(
+                    row, "integration_time_s_default", ctx, positive=True),
+                stray_light_floor=stray)
         elif klass == "polarimeter":
             entry.update(
                 analyzer_states=_reg_int(row, "analyzer_states", ctx,
@@ -1327,12 +1757,13 @@ class OpticalProperties:
 
     __slots__ = ("root", "matdb", "coatings", "polarizers", "filters",
                  "gratings", "uniaxial", "biaxial", "diffusers", "detectors",
-                 "scatter", "emission", "nonlinear", "instruments", "figures")
+                 "scatter", "emission", "nonlinear", "instruments", "figures",
+                 "samples", "images")
 
     def __init__(self, root, matdb, coatings, polarizers, filters, gratings,
                  uniaxial, diffusers=None, detectors=None, biaxial=None,
                  scatter=None, emission=None, nonlinear=None,
-                 instruments=None, figures=None):
+                 instruments=None, figures=None, samples=None, images=None):
         self.root = root
         self.matdb = matdb
         self.coatings = coatings
@@ -1348,6 +1779,8 @@ class OpticalProperties:
         self.nonlinear = nonlinear if nonlinear is not None else {}
         self.instruments = instruments if instruments is not None else {}
         self.figures = figures if figures is not None else {}
+        self.samples = samples if samples is not None else {}
+        self.images = images if images is not None else {}
 
 
 def load_optical_properties(root=None, db=None):
@@ -1396,7 +1829,10 @@ def load_optical_properties(root=None, db=None):
                            uniaxial=uniaxial, biaxial=biaxial),
         instruments=optional(load_instruments,
                              root / "instrument" / "instruments.mieinst"),
-        figures=optional(load_figures, root / "figure" / "figures.miefig"))
+        figures=optional(load_figures, root / "figure" / "figures.miefig"),
+        samples=optional(load_samples, root / "sample" / "samples.miesamp",
+                         db=db),
+        images=optional(load_images, root / "image" / "images.mieimg"))
 
 
 # ---------------------------------------------------------------------------

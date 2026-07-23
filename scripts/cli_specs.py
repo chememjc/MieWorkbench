@@ -423,6 +423,24 @@ def _build_pipeline_parser():
     g.add_argument("--particle-threshold", type=float, default=None)
     g.add_argument("--suppress-body", action="append", default=[],
                    metavar="BODY")
+    g.add_argument("--conical", action="store_true",
+                   help="model internal conical refraction at biaxial "
+                        "optic axes: rays inside the degeneracy cone fan "
+                        "into 2N cone children (Poggendorff double ring) "
+                        "instead of the default arbitrary-basis two-sheet "
+                        "pass-through (Python engine; biaxial scenes "
+                        "Python-route regardless)")
+    g.add_argument("--conical-fan", type=int, default=16, metavar="N",
+                   help="azimuth count of the conical-refraction fan; each "
+                        "degenerate ray spawns 2N children (slow+fast per "
+                        "azimuth; default 16)")
+    g.add_argument("--conical-delta", type=float, default=1e-4,
+                   metavar="RAD",
+                   help="angular radius (rad) of the optic-axis cone that "
+                        "takes the conical fan, and the k-perturbation used "
+                        "to build it (default 1e-4; with "
+                        "--ray-differentials the parent's angular spread "
+                        "is used when larger)")
 
     g = p.add_argument_group("time-domain products (pulsed optics; "
                              "stage: trace)")
@@ -451,6 +469,20 @@ def _build_pipeline_parser():
                         "map and a lambda(x) dispersion fit per detector "
                         "(det_<label>_lambda_map.png, "
                         "spectra/lambda_vs_x_<label>.png; post stage only)")
+    g.add_argument("--ring-profile", default=None, metavar="SPEC",
+                   help="log-annular ring-detector readout (laser-"
+                        "diffraction sizer style): integrate each "
+                        "detector image into log-spaced annular bins "
+                        "about the optical axis, e.g. "
+                        "'n=32:rmin_mm=0.05:rmax_mm=10' -> "
+                        "analysis/rings_<label>.csv + png (post stage "
+                        "only)")
+    g.add_argument("--reference-case", default=None, metavar="DIR",
+                   help="reference (blank) case directory for absorbance: "
+                        "post renders A(lambda) = -log10(I/I0) against the "
+                        "matching spectrometer/diode-array product of that "
+                        "case (instrument/absorbance_<label>.csv + png; "
+                        "post stage only)")
     g.add_argument("--instruments", choices=["on", "off"], default=None,
                    help="virtual instrument layer override (engine3.md "
                         "P2.5 §9): already data-driven by each detector "
@@ -671,6 +703,14 @@ def _build_trace_parser():
                    help="explicit-sphere mode below this count (matches "
                         "the brute-force traversal cap), continuum above")
     p.add_argument("--suppress-body", action="append", default=[])
+    p.add_argument("--conical", action="store_true",
+                   help="internal conical refraction at biaxial optic "
+                        "axes: degenerate rays fan into 2N cone children "
+                        "(default: arbitrary-basis two-sheet pass-through "
+                        "+ conical_guard count, unchanged physics)")
+    p.add_argument("--conical-fan", type=int, default=16, metavar="N")
+    p.add_argument("--conical-delta", type=float, default=1e-4,
+                   metavar="RAD")
     p.add_argument("--min-eff-samples", type=float, default=1000.0)
     p.add_argument("--no-gather-gate", action="store_true")
     p.add_argument("--temperature", type=float, default=None, metavar="DEG_C",
@@ -814,6 +854,18 @@ def _build_post_parser():
                    help="also write results/<case>/data/*.csv alongside "
                         "every chart (plus data/index.csv mapping file -> "
                         "entity/chart/units/provenance)")
+    g.add_argument("--ring-profile", default=None, metavar="SPEC",
+                   help="log-annular ring-detector readout: integrate each "
+                        "detector image into log-spaced annular bins about "
+                        "the optical axis; SPEC "
+                        "'n=32:rmin_mm=0.05:rmax_mm=10[:center=peak|chief|"
+                        "X,Y]' -> analysis/rings_<label>.csv + png")
+    g.add_argument("--reference-case", default=None, metavar="DIR",
+                   help="reference (blank) case dir for absorbance "
+                        "A(lambda) = -log10(I/I0) against that case's "
+                        "matching spectrometer/diode-array product -> "
+                        "instrument/absorbance_<label>.csv + png; refuses "
+                        "on mismatched instrument row or pixel grid")
     g.add_argument("--wavefront-point", default=None,
                    type=parse_wavefront_point, metavar="X_MM,Y_MM",
                    help="override render_wavefront's image (wavefront "

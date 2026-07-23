@@ -250,8 +250,54 @@ def test_emission_zero_integral_rejected(optroot):
 def test_emission_unknown_kind_rejected(optroot):
     (optroot / "emission" / "emitters.csv").write_text(
         'name,kind,table_csv,reference,notes\n'
-        'bb,blackbody,led_test.csv,"ref","x"\n')
-    with pytest.raises(MaterialError, match="needs engine support"):
+        'sparkly,glitter,led_test.csv,"ref","x"\n')
+    with pytest.raises(MaterialError, match="must be one of"):
+        optprops.load_emission(optroot / "emission" / "emitters.csv")
+
+
+# blackbody + lines kinds (samples-instruments round): supported at load —
+# blackbody synthesizes a dense Planck table (tabulated-SPD shape, zero
+# engine changes), lines carries discrete (lam, intensity) pairs with a
+# finite floor linewidth. Physics oracles (Wien peak, band-integral power,
+# per-line strata) live in test_structure/test_sources additions.
+def test_emission_blackbody_synthesizes_planck_table(optroot):
+    (optroot / "emission" / "emitters.csv").write_text(
+        'name,kind,table_csv,params,reference,notes\n'
+        'bb,blackbody,,temp_k:3000;lam_lo_nm:350;lam_hi_nm:2500,"ref","x"\n')
+    em = optprops.load_emission(optroot / "emission" / "emitters.csv")["bb"]
+    assert em["kind"] == "blackbody" and em["temp_k"] == 3000.0
+    # Wien displacement (B_lambda peak): lam_max = b/T, b = 2.8977719 mm*K
+    lam_pk = em["lam_nm"][em["relative_power"].argmax()]
+    assert lam_pk == pytest.approx(2.8977719e6 / 3000.0, abs=2.0)
+    assert em["relative_power"].max() == pytest.approx(1.0)
+    assert em["lam_nm"][0] == 350.0 and em["lam_nm"][-1] == 2500.0
+
+
+def test_emission_blackbody_missing_params_rejected(optroot):
+    (optroot / "emission" / "emitters.csv").write_text(
+        'name,kind,table_csv,params,reference,notes\n'
+        'bb,blackbody,,temp_k:3000,"ref","x"\n')
+    with pytest.raises(MaterialError, match="lam_lo_nm"):
+        optprops.load_emission(optroot / "emission" / "emitters.csv")
+
+
+def test_emission_lines_parsed_sorted_no_continuous_keys(optroot):
+    (optroot / "emission" / "emitters.csv").write_text(
+        'name,kind,table_csv,params,lines,reference,notes\n'
+        'hg,lines,,linewidth_nm:0.1,"546.07:1000;253.65:1500","ref","x"\n')
+    em = optprops.load_emission(optroot / "emission" / "emitters.csv")["hg"]
+    assert em["lines_nm"].tolist() == [253.65, 546.07]
+    assert em["intensity"].tolist() == [1500.0, 1000.0]
+    assert em["linewidth_nm"] == 0.1
+    # a consumer treating a line source as continuous must fail loudly
+    assert "lam_um" not in em and "relative_power" not in em
+
+
+def test_emission_lines_overlapping_linewidth_rejected(optroot):
+    (optroot / "emission" / "emitters.csv").write_text(
+        'name,kind,table_csv,params,lines,reference,notes\n'
+        'bad,lines,,linewidth_nm:5.0,"546.07:1;546.5:1","ref","x"\n')
+    with pytest.raises(MaterialError, match="overlaps adjacent"):
         optprops.load_emission(optroot / "emission" / "emitters.csv")
 
 

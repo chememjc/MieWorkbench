@@ -143,6 +143,12 @@ def detect_features(args, scene):
             feats.add("beam")
         if src.get("apodization"):
             feats.add("apodization")
+        # samples-instruments round: extended image-emitting source
+        # (per-pixel alias-method emission, sources.py). Python-routes
+        # until the C source sampler learns the alias tables (planned
+        # this round -- see cengine tranche in the round plan).
+        if src.get("image"):
+            feats.add("image_source")
     biref_approx = getattr(args, "biref_approx", False)
     for body in scene.bodies:
         if body.birefringent:
@@ -206,6 +212,20 @@ def detect_features(args, scene):
             feats.add("tpa")
         if body.kerr_n2_raw:
             feats.add("kerr")
+        # samples-instruments round: body-bound sample media (the `sample`
+        # body property -> a particle population bounded by this body's
+        # interior, host = the body's material). Python-routes in tranche 1;
+        # the continuum case is a planned C port (medium-stack-gated
+        # particle medium reusing the ensemble tables). The defensive
+        # getattr keeps this inert until scene bodies grow the attribute.
+        if getattr(body, "sample", None) is not None:
+            feats.add("sample_body")
+        # BTDF (transmitted-side measured scatter, this round): the ported
+        # "scatter" token covers BRDF-only ABg rows; a row carrying
+        # transmitted-side (A_t/B_t/g_t) columns must emit the reserved
+        # "scatter_btdf" token (already in the test_registry_tokens
+        # PYTHON_ONLY partition) where scatter rows are resolved below --
+        # C port deferred, documented in future.md.
     # thermo-optic shift: any optic body whose effective operating
     # temperature differs from its material reference AND carries a
     # thermo-optic model changes the index -> Python engine only (the C
@@ -287,14 +307,31 @@ def detect_features(args, scene):
         # the threshold: frozen spheres, complex S1/S2 speckle) stay on
         # the Python engine
         import common
-        from .mie import LogNormalDistribution, number_density
+        from .mie import LogNormalDistribution, number_density, MieEvaluator
         spec = common.parse_particles_spec(args.particles)
         dist = LogNormalDistribution(
             median_r=spec["median_um"] * 1e-6 / 2.0, gsd=spec["gsd"])
         mat_p = scene.matdb.get(spec["material"])
         rho_h = scene.ambient.density if scene.ambient.density > 0 \
             else 1.204
-        N, _ = number_density(spec["phi"], mat_p.density, rho_h, dist)
+        phi = spec["phi"]
+        if phi is None:
+            # tau= spec: resolve the target optical depth to a phi exactly
+            # like ParticleCloud will (same lam set, same closed form) so
+            # the explicit-vs-continuum routing decision here can never
+            # disagree with the mode the trace actually runs. (Previously
+            # this path crashed number_density(None, ...) — a tau spec
+            # could not route through --engine auto at all.)
+            from .particles import resolve_tau_phi
+            from .sources import wavelength_strata
+            lam_list = sorted({
+                float(l) for _, src in scene.sources
+                for l in wavelength_strata(src, args.nlambda)})
+            phi, _info = resolve_tau_phi(
+                spec["tau"], float(spec["box_size_m"][0]),
+                MieEvaluator(mat_p, scene.ambient), dist,
+                mat_p.density, rho_h, lam_list)
+        N, _ = number_density(phi, mat_p.density, rho_h, dist)
         count = N * float(np.prod(spec["box_size_m"]))
         thr = args.particle_threshold if args.particle_threshold \
             is not None else common.DEFAULTS["particle_threshold"]
@@ -312,6 +349,13 @@ def detect_features(args, scene):
     # 'auto' off C so --pol-transport is never quietly dropped).
     if getattr(args, "pol_transport", False):
         feats.add("pol_transport")
+    # samples-instruments round: internal conical refraction (biaxial
+    # optic-axis fan) is Python-only physics — biaxial scenes already
+    # Python-route via their own tokens, but the flag emits its token
+    # anyway ("every feature emits its token"): a --conical run on a
+    # uniaxial-only scene must not silently drop the fan by routing to C.
+    if getattr(args, "conical", False):
+        feats.add("conical")
     if args.viz_pattern:
         feats.add("viz_pattern")
     if args.save_fields:

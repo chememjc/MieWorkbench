@@ -1884,6 +1884,19 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
             else:
                 body_dict["filter"] = filter_raw
 
+        # samples-instruments round: `sample` names a sample/samples.miesamp
+        # row (or an inline spec) binding a particle population to THIS
+        # body's interior — the body's material is the host medium, its
+        # shape bounds the cloud (raytracer/particles.py). Pass-through
+        # string; the samples registry validates it engine-side.
+        sample_raw = str_prop_or_none(obj, "sample")
+        if sample_raw is not None:
+            if role != "optic":
+                warn("%s: sample is only meaningful on optic bodies "
+                     "(role=%s); ignoring" % (obj.Label, role), warnings)
+            else:
+                body_dict["sample"] = sample_raw
+
         crystal_axis_raw = str_prop_or_none(obj, "crystal_axis")
         if role == "optic":
             # ALWAYS emitted for optics (tracer default is local +x, but
@@ -2065,6 +2078,13 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
                          "bounds)" % (obj.Label, spectrum_raw), warnings)
                     source_dict["lambdamin_nm"] = None
                     source_dict["lambdamax_nm"] = None
+            # samples-instruments round: `image` names an image/images.mieimg
+            # row (extended image-emitting source — per-position radiance
+            # from a greyscale bitmap over the emit face; sources.py
+            # alias-method sampler). Pass-through string.
+            image_raw = str_prop_or_none(obj, "image")
+            if image_raw is not None:
+                source_dict["image"] = image_raw
             if hasattr(obj, "beam_waist"):
                 waist_mm = float(obj.beam_waist)
                 if waist_mm <= 0:
@@ -2160,6 +2180,11 @@ def extract_document(doc, stem, out_dir, strict, source_fcstd,
 
         if role != "source" and str_prop_or_none(obj, "spectrum") is not None:
             warn("%s: spectrum property is only meaningful on "
+                 "source bodies (role=%s); ignoring"
+                 % (obj.Label, role), warnings)
+
+        if role != "source" and str_prop_or_none(obj, "image") is not None:
+            warn("%s: image property is only meaningful on "
                  "source bodies (role=%s); ignoring"
                  % (obj.Label, role), warnings)
 

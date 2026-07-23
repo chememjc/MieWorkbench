@@ -76,6 +76,15 @@ PYTHON_ONLY = frozenset({
     "particles_explicit",               # explicit realization (continuum ported)
     "pol_transport",                    # P2 parallel-transport Q/J bookkeeping
     "time_directional_index",           # crystal e-ray n_g_eff (time+crystal)
+    "conical",                          # samples-instruments: internal conical
+                                        #   refraction fan (biaxial optic axis;
+                                        #   Python physics, --conical)
+    "sample_body",                      # samples-instruments: body-bound sample
+                                        #   media (`sample` property; continuum
+                                        #   C port is a planned tranche)
+    "image_source",                     # samples-instruments: extended image-
+                                        #   emitting source (alias sampler; C
+                                        #   sampler port is a planned tranche)
 })
 
 

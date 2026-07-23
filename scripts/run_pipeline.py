@@ -241,6 +241,12 @@ def trace_cmd(stem, case_dir, args):
         cmd += ["--particle-threshold", repr(args.particle_threshold)]
     for b in args.suppress_body:
         cmd += ["--suppress-body", b]
+    if getattr(args, "conical", False):
+        cmd += ["--conical"]
+        if args.conical_fan != 16:
+            cmd += ["--conical-fan", str(int(args.conical_fan))]
+        if args.conical_delta != 1e-4:
+            cmd += ["--conical-delta", repr(float(args.conical_delta))]
     if args.rough_fresnel is not None:
         cmd += ["--rough-fresnel", args.rough_fresnel]
     if getattr(args, "biref_approx", False):
@@ -321,6 +327,10 @@ def post_cmd(stem, case_dir, args):
         cmd += ["--spectrometer"]
     if args.instruments is not None:
         cmd += ["--instruments", args.instruments]
+    if getattr(args, "ring_profile", None):
+        cmd += ["--ring-profile", args.ring_profile]
+    if getattr(args, "reference_case", None):
+        cmd += ["--reference-case", args.reference_case]
     if args.emit_csv:
         cmd += ["--emit-csv"]
     if args.wavefront_point is not None:
