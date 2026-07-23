@@ -977,3 +977,178 @@ def refract_out_biaxial(K_int, n_hat, n2):
     tir = s2 < 0.0
     s = -np.sqrt(np.maximum(s2, 0.0))
     return _unit(K_t + s[:, None] * nh), tir
+
+
+# ===========================================================================
+# BIAXIAL conical refraction — optic axes, cone angle, per-ray dispatch, and
+# the perturbed two-sheet fan.
+#
+# The two sheets of the biaxial wave-normal surface touch at four points, the
+# two optic axes (binormals) +-c1, +-c2. There the eigenproblem in
+# biaxial_modes_for_k is doubly degenerate and biaxial_ray_from_k's gradient
+# has a conical (tangent-cone) singularity: a single wave normal along an
+# optic axis fans out into a whole CONE of ray directions (Hamilton's
+# internal conical refraction). Rather than special-case a closed-form ring
+# law, the design reproduces the cone from the SAME machinery used
+# everywhere else: perturb the wave normal by a tiny angle toward a set of
+# transverse azimuths and solve both sheets at each perturbed k. As the
+# perturbation shrinks the perturbed rays converge onto the exact Hamilton
+# cone, so the fan is correct by construction and shares every convention
+# (frame rows = principal axes in global coords; eps = n_i^2; slow = larger
+# n_phase) with the rest of the biaxial block.
+# ===========================================================================
+def biaxial_optic_axes(eps):
+    """The two optic axes (binormals) of a biaxial crystal, as (2,3) unit
+    vectors in the CRYSTAL PRINCIPAL frame (components along the principal
+    axes, i.e. the frame in which eps is diagonal).
+
+    For principal indices n1 < n2 < n3 (eps_i = n_i^2 sorted ascending) the
+    axes lie in the plane spanned by the extreme axes (n1 and n3) and are
+    symmetric about the n3 (largest-index) axis, tilted toward the n1 axis
+    by the polar angle theta measured FROM the n3 axis:
+
+        tan^2(theta) = (1/n1^2 - 1/n2^2) / (1/n2^2 - 1/n3^2)
+
+    (Born & Wolf, Principles of Optics 7th ed. Sec. 15.3.3, Eq. (16);
+    Landau & Lifshitz, Electrodynamics of Continuous Media Sec. 97. Same
+    formula the KTP principal-plane oracle in test_biaxial.py already uses.)
+    Verified against the existing solver: biaxial_modes_for_k's two sheet
+    indices coincide on these directions to solver precision.
+
+    eps : (3,) principal permittivities (n_x^2, n_y^2, n_z^2), any order.
+    Returns (2,3): [c1, c2] with c1, c2 symmetric about the extreme axis
+    (c1 tilted +theta, c2 tilted -theta). Degenerate uniaxial limits are
+    handled gracefully: eps of the two smallest principal values equal ->
+    theta = 0 -> both axes collapse onto the largest-index axis; the two
+    largest equal -> theta = 90deg -> both collapse onto the smallest-index
+    axis (the returned pair is then the SAME unit vector twice).
+    """
+    e = np.asarray(eps, dtype=np.float64).reshape(3)
+    order = np.argsort(e)                    # [i_small, i_mid, i_large]
+    ia, ib, ic = int(order[0]), int(order[1]), int(order[2])
+    inv = 1.0 / e
+    num = max(inv[ia] - inv[ib], 0.0)        # 1/n1^2 - 1/n2^2 >= 0
+    den = max(inv[ib] - inv[ic], 0.0)        # 1/n2^2 - 1/n3^2 >= 0
+    # arctan2 gives theta = 0 when num == 0 (two small eps equal) and
+    # theta = pi/2 when den == 0 (two large eps equal), so both uniaxial
+    # limits fall out without a branch.
+    theta = np.arctan2(np.sqrt(num), np.sqrt(den))
+    e_small = np.zeros(3); e_small[ia] = 1.0    # n1 (smallest-index) axis
+    e_large = np.zeros(3); e_large[ic] = 1.0    # n3 (largest-index) axis
+    ct, st = np.cos(theta), np.sin(theta)
+    c1 = ct * e_large + st * e_small
+    c2 = ct * e_large - st * e_small
+    # uniaxial limit: the axes collapse onto one principal axis (c1 || c2);
+    # return that merged axis twice, sign-canonicalized to be identical.
+    if abs(float(np.dot(c1, c2))) > 1.0 - 1e-12:
+        c2 = c1
+    return np.stack([c1, c2])
+
+
+def cone_half_angle(eps):
+    """Opening angle A (radians) of Hamilton's INTERNAL conical-refraction
+    cone: the angle between the two extreme (diametrically-opposite) ray
+    generators produced when a single wave normal points exactly along an
+    optic axis. Equivalently the angle between the two limiting s_ray
+    directions reached by approaching the optic axis with in-plane-of-the-
+    axes perturbations from the two opposite sides.
+
+        tan A = sqrt((n2^2 - n1^2)(n3^2 - n2^2)) / (n1 n3)
+
+    (Born & Wolf, Principles of Optics 7th ed. Sec. 15.3.3; Berry & Jeffrey,
+    "Conical diffraction", Prog. Optics 50 (2007) Sec. 2. One optic-axis
+    generator of this cone is the wave normal itself, so the cone is skewed
+    -- it TOUCHES the optic-axis direction -- and A is the full opening, not
+    a half-cone semi-angle; the conventional semi-angle is A/2.) Cross-checked
+    numerically against biaxial_ray_from_k at epsilon-perturbed wave normals
+    (test_biaxial.py) to <1e-8 relative.
+
+    eps : (3,) principal permittivities (n_x^2, n_y^2, n_z^2), any order.
+    Returns a Python float (radians).
+    """
+    e = np.asarray(eps, dtype=np.float64).reshape(3)
+    n1s, n2s, n3s = np.sort(e)               # n1^2 <= n2^2 <= n3^2
+    num = np.sqrt(max(n2s - n1s, 0.0) * max(n3s - n2s, 0.0))
+    den = np.sqrt(n1s * n3s)
+    return float(np.arctan2(num, den))
+
+
+def axis_proximity(k_hat, eps, frame):
+    """Per-ray angle (radians) from each wave normal to its NEAREST optic
+    axis -- the tracer's conical-refraction dispatch criterion. Zero exactly
+    on an axis; pi/2 farthest away.
+
+    k_hat : (N,3) unit wave-normal directions in GLOBAL coords.
+    eps   : (3,) principal permittivities (n_x^2, n_y^2, n_z^2).
+    frame : (3,3) or (N,3,3), rows = principal axes in global coords (the
+            SAME convention as biaxial_modes_for_k: v_crystal = frame @
+            v_global).
+    Returns (N,) angles. Optic axes are treated as undirected lines, so the
+    result is in [0, pi/2] (proximity to +-axis alike).
+    """
+    k = _unit(k_hat)
+    n = k.shape[0]
+    fr = _bcast_frame(frame, n)
+    axes_c = biaxial_optic_axes(eps)             # (2,3) crystal frame
+    # crystal -> global for each ray: v_global = frame^T @ v_crystal
+    axes_g = np.einsum("nji,kj->nki", fr, axes_c)   # (n,2,3)
+    cosang = np.abs(np.einsum("nki,ni->nk", axes_g, k))   # (n,2), line sense
+    cosang = np.clip(cosang, 0.0, 1.0)
+    return np.min(np.arccos(cosang), axis=1)
+
+
+def conical_fan(k_hat, frame, eps, n_fan, eps_angle):
+    """Perturbed two-sheet fan approximating Hamilton's internal cone for a
+    SINGLE degenerate wave normal k_hat (unit, GLOBAL coords) pointing at or
+    near an optic axis of the crystal. Perturbs k_hat by the small angle
+    eps_angle toward n_fan equally-spaced transverse azimuths and solves
+    BOTH sheets at each perturbed wave normal with the existing
+    biaxial_modes_for_k / biaxial_ray_from_k -- the 2*n_fan children trace
+    out the cone (max angle between any two s_ray -> cone_half_angle(eps) as
+    eps_angle -> 0, and the polarization D rotates by phi/2 around the ring,
+    the classic half-turn law).
+
+    k_hat     : (3,) unit wave normal, global coords (already inside the
+                crystal, at/near the optic axis).
+    frame     : (3,3) or (n_fan,3,3), rows = principal axes in global coords.
+    eps       : (3,) or (n_fan,3) principal permittivities (n_x^2..n_z^2).
+    n_fan     : number of azimuths; the returned arrays have 2*n_fan rows.
+    eps_angle : perturbation half-cone angle (radians); small (~1e-3).
+
+    Returns a dict of GLOBAL-frame arrays, slow-sheet block first then fast
+    (row j and row n_fan+j share azimuth phi_j):
+      k       (2N,3) unit perturbed wave normals,
+      s_ray   (2N,3) unit ray / Poynting directions,
+      D_hat   (2N,3) unit D-field eigenvectors (transverse to k),
+      n_phase (2N,)  phase indices,
+      n_ray   (2N,)  ray indices (n_phase * cos walk-off),
+      sheet   (2N,)  0 = slow, 1 = fast,
+      azimuth (2N,)  perturbation azimuth phi in [0, 2pi).
+    """
+    k0 = _unit(np.asarray(k_hat, dtype=np.float64).reshape(3))
+    # deterministic transverse basis (e1, e2) _|_ k0 (same trick as the
+    # biaxial eigen-solve): e1 from the global axis most orthogonal to k0.
+    ax = np.zeros(3)
+    ax[int(np.argmin(np.abs(k0)))] = 1.0
+    e1 = _unit(np.cross(k0, ax))
+    e2 = np.cross(k0, e1)
+    phi = 2.0 * np.pi * np.arange(n_fan, dtype=np.float64) / n_fan
+    that = np.cos(phi)[:, None] * e1 + np.sin(phi)[:, None] * e2   # (n_fan,3)
+    dirs = _unit(np.cos(eps_angle) * k0 + np.sin(eps_angle) * that)
+
+    modes = biaxial_modes_for_k(dirs, frame, eps)
+    K_slow = modes["n_slow"][:, None] * dirs
+    K_fast = modes["n_fast"][:, None] * dirs
+    s_slow, np_slow, nr_slow = biaxial_ray_from_k(K_slow, frame, eps)
+    s_fast, np_fast, nr_fast = biaxial_ray_from_k(K_fast, frame, eps)
+
+    cat = np.concatenate
+    return {
+        "k": cat([dirs, dirs]),
+        "s_ray": cat([s_slow, s_fast]),
+        "D_hat": cat([modes["D_slow"], modes["D_fast"]]),
+        "n_phase": cat([np_slow, np_fast]),
+        "n_ray": cat([nr_slow, nr_fast]),
+        "sheet": cat([np.zeros(n_fan), np.ones(n_fan)]),
+        "azimuth": cat([phi, phi]),
+    }

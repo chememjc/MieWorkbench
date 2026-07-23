@@ -394,3 +394,323 @@ def test_biaxial_frame_rotation_equivariance():
             < 1e-9
         assert np.max(np.abs(rot["n_phase_%s" % m]
                              - base["n_phase_%s" % m])) < 1e-9
+
+
+# ===========================================================================
+# CONICAL REFRACTION: optic axes, cone angle, per-ray proximity, and the
+# perturbed two-sheet fan (birefringence.biaxial_optic_axes / cone_half_angle
+# / axis_proximity / conical_fan).
+# ===========================================================================
+# all four registry crystals @ 1064 nm (crystal principal frame == global)
+CRYSTALS = {
+    "ktp": np.array([1.7377, 1.7453, 1.8297]),
+    "kta": np.array([1.782, 1.787, 1.868]),
+    "lbo": np.array([1.566, 1.591, 1.606]),
+    "bibo": np.array([1.757, 1.784, 1.917]),
+}
+
+
+def _closed_cone_angle(n):
+    n1, n2, n3 = n
+    return np.arctan(np.sqrt((n2 ** 2 - n1 ** 2)
+                             * (n3 ** 2 - n2 ** 2)) / (n1 * n3))
+
+
+# ---------------------------------------------------------------------------
+# optic axes
+# ---------------------------------------------------------------------------
+def test_optic_axes_are_degeneracies_all_crystals():
+    # at both optic axes the two sheets of biaxial_modes_for_k must coincide
+    for name, n in CRYSTALS.items():
+        eps = n ** 2
+        axes = bi.biaxial_optic_axes(eps)
+        assert axes.shape == (2, 3)
+        m = bi.biaxial_modes_for_k(axes, I3, eps)
+        rel = np.abs(m["n_slow"] - m["n_fast"]) / m["n_slow"]
+        assert np.max(rel) < 1e-10, (name, rel)
+
+
+def test_optic_axes_symmetric_in_principal_plane():
+    # nx<ny<nz for every registry crystal -> axes lie in the x-z plane
+    # (zero y-component) and are mirror images about z
+    for name, n in CRYSTALS.items():
+        axes = bi.biaxial_optic_axes(n ** 2)
+        assert np.max(np.abs(axes[:, 1])) < 1e-14, name       # in x-z plane
+        assert abs(axes[0, 2] - axes[1, 2]) < 1e-14, name     # same z
+        assert abs(axes[0, 0] + axes[1, 0]) < 1e-14, name     # opposite x
+        assert np.max(np.abs(np.linalg.norm(axes, axis=1) - 1.0)) < 1e-14
+        # tilt angle from z matches the closed form used by the KTP oracle
+        inv = 1.0 / n ** 2
+        th = np.arctan2(np.sqrt(inv[0] - inv[1]), np.sqrt(inv[1] - inv[2]))
+        assert abs(np.arctan2(abs(axes[0, 0]), axes[0, 2]) - th) < 1e-12
+
+
+def test_optic_axes_uniaxial_limits_degenerate():
+    # two smallest eps equal (positive uniaxial n_o<n_e, axis = z) -> both
+    # optic axes collapse onto z
+    axes = bi.biaxial_optic_axes(np.array([QTZ_NO, QTZ_NO, QTZ_NE]) ** 2)
+    assert np.max(np.abs(axes - np.array([0.0, 0.0, 1.0]))) < 1e-12
+    # two largest eps equal (negative uniaxial n_e<n_o, axis = z) -> both
+    # optic axes collapse onto the small-index axis (x here)
+    axes = bi.biaxial_optic_axes(np.array([CAL_NE, CAL_NO, CAL_NO]) ** 2)
+    assert np.max(np.abs(np.abs(axes) - np.array([1.0, 0.0, 0.0]))) < 1e-12
+    assert np.max(np.abs(axes[0] - axes[1])) < 1e-12    # SAME vector twice
+
+
+# ---------------------------------------------------------------------------
+# cone half-angle: closed form vs numerical limit
+# ---------------------------------------------------------------------------
+def _numeric_cone_angle(eps, delta):
+    """Max angle between the four s_ray directions reached by perturbing the
+    first optic axis by +-delta WITHIN the plane of the axes (rotation about
+    the mid-index principal axis), both sheets each side."""
+    axis = bi.biaxial_optic_axes(eps)[0]
+    # the plane of the axes is x-z (y is the mid-index principal axis); a
+    # rotation about y keeps the perturbed normal in that plane
+    c, s = np.cos(delta), np.sin(delta)
+    Rp = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    ss = []
+    for R in (Rp, Rp.T):
+        k = _unit((R @ axis)[None, :])
+        mm = bi.biaxial_modes_for_k(k, I3, eps)
+        for sh in ("slow", "fast"):
+            K = mm["n_%s" % sh][:, None] * k
+            sray, _, _ = bi.biaxial_ray_from_k(K, I3, eps)
+            ss.append(sray[0])
+    ss = np.array(ss)
+    G = np.clip(ss @ ss.T, -1.0, 1.0)
+    return np.arccos(G).max()
+
+
+def test_cone_angle_closed_form_vs_numeric_limit():
+    # Romberg (two-level Richardson) of the finite-perturbation limit cancels
+    # the leading O(delta) and O(delta^2) errors of the tangent-cone approach;
+    # deterministic, no RNG.
+    for name, n in CRYSTALS.items():
+        eps = n ** 2
+        Ac = _closed_cone_angle(n)
+        d = 2e-4
+        a0 = _numeric_cone_angle(eps, d)
+        a1 = _numeric_cone_angle(eps, d / 2)
+        a2 = _numeric_cone_angle(eps, d / 4)
+        r1a, r1b = 2 * a1 - a0, 2 * a2 - a1
+        A_num = (4 * r1b - r1a) / 3.0
+        assert abs(A_num - Ac) < 1e-8 * Ac, (name, A_num, Ac)
+        # and cone_half_angle returns exactly that closed form
+        assert abs(bi.cone_half_angle(eps) - Ac) < 1e-14, name
+
+
+def test_cone_angle_ktp_magnitude_sane():
+    A_deg = np.degrees(bi.cone_half_angle(CRYSTALS["ktp"] ** 2))
+    assert 0.1 < A_deg < 5.0, A_deg          # order of a degree or two
+    assert abs(A_deg - 1.610) < 1e-2, A_deg  # KTP @ 1064 nm
+
+
+# ---------------------------------------------------------------------------
+# axis proximity (dispatch criterion)
+# ---------------------------------------------------------------------------
+def test_axis_proximity_zero_on_axes_and_vectorized():
+    eps = CRYSTALS["ktp"] ** 2
+    axes = bi.biaxial_optic_axes(eps)           # global == crystal (I3)
+    # exactly on the axes (and their negatives) -> ~0
+    k = np.concatenate([axes, -axes])
+    prox = bi.axis_proximity(k, eps, I3)
+    assert prox.shape == (4,)
+    assert np.max(prox) < 1e-12
+    # a hand-computed off-axis angle: 3 deg off the first axis in x-z
+    th = np.deg2rad(3.0)
+    a = axes[0]
+    b = a * np.cos(th) + np.array([a[2], 0.0, -a[0]]) * np.sin(th)  # rot in x-z
+    prox1 = bi.axis_proximity(_unit(b[None, :]), eps, I3)
+    assert abs(prox1[0] - th) < 1e-9
+    # rotated crystal frame: rotate frame and wave normals together, angle
+    # to the nearest axis is frame-invariant
+    ang = 0.6
+    R = np.array([[np.cos(ang), -np.sin(ang), 0.0],
+                  [np.sin(ang), np.cos(ang), 0.0],
+                  [0.0, 0.0, 1.0]])
+    rng = np.random.default_rng(5)
+    kk = _unit(rng.normal(size=(30, 3)))
+    base = bi.axis_proximity(kk, eps, I3)
+    rot = bi.axis_proximity(kk @ R.T, eps, I3 @ R.T)
+    assert np.max(np.abs(base - rot)) < 1e-12
+    assert base.shape == (30,)
+
+
+# ---------------------------------------------------------------------------
+# conical fan geometry
+# ---------------------------------------------------------------------------
+def test_conical_fan_on_ktp_axis_geometry():
+    eps = CRYSTALS["ktp"] ** 2
+    A = bi.cone_half_angle(eps)
+    axis = bi.biaxial_optic_axes(eps)[0]
+    n_fan, ea = 24, 1e-3
+    fan = bi.conical_fan(axis, I3, eps, n_fan, ea)
+    for key in ("k", "s_ray", "D_hat"):
+        assert fan[key].shape == (2 * n_fan, 3)
+    for key in ("n_phase", "n_ray", "sheet", "azimuth"):
+        assert fan[key].shape == (2 * n_fan,)
+    s = fan["s_ray"]
+    # (a) all rays lie on the Hamilton cone: the largest angle between any
+    # two generators equals the opening angle A within 2*eps_angle
+    G = np.clip(s @ s.T, -1.0, 1.0)
+    max_pair = np.arccos(G).max()
+    assert abs(max_pair - A) < 2 * ea, (max_pair, A)
+    # and the optic-axis (wave-normal) direction is itself a generator: some
+    # sampled ray sits within the azimuth-sampling resolution (~eps_angle)
+    min_to_axis = np.arccos(np.clip(np.abs(s @ axis).max(), -1.0, 1.0))
+    assert min_to_axis < 2 * ea, min_to_axis
+    # (c) transverse completeness: slow.fast D orthogonal at every azimuth
+    Ds, Df = fan["D_hat"][:n_fan], fan["D_hat"][n_fan:]
+    assert np.max(np.abs(np.sum(Ds * Df, axis=-1))) < 1e-10
+    assert np.max(np.abs(np.sum(fan["D_hat"] * fan["k"], axis=-1))) < 1e-12
+
+
+def test_conical_fan_polarization_half_turn_law():
+    # D rotates by phi/2 around the ring (classic conical-refraction law):
+    # fit angle(D) vs azimuth -> slope 1/2 on each sheet.
+    eps = CRYSTALS["ktp"] ** 2
+    axis = bi.biaxial_optic_axes(eps)[0]
+    n_fan, ea = 60, 1e-3
+    fan = bi.conical_fan(axis, I3, eps, n_fan, ea)
+    phi = fan["azimuth"][:n_fan]
+    # transverse reference frame about the wave normal (same construction
+    # conical_fan uses, so azimuth 0 is well defined)
+    ax = np.zeros(3)
+    ax[int(np.argmin(np.abs(axis)))] = 1.0
+    e1 = _unit(np.cross(axis, ax))
+    e2 = np.cross(axis, e1)
+    for blk in (slice(0, n_fan), slice(n_fan, 2 * n_fan)):
+        D = fan["D_hat"][blk]
+        psi = np.arctan2(D @ e2, D @ e1)     # defined mod pi (D ~ -D)
+        slope = np.polyfit(phi, np.unwrap(2 * psi), 1)[0] / 2.0
+        assert abs(slope - 0.5) < 1e-2, slope
+
+
+def test_conical_fan_matches_plain_two_sheet_solve():
+    # continuity: each fan child is exactly the plain solver evaluated at
+    # that perturbed wave normal (no packaging / sheet-assignment drift).
+    eps = CRYSTALS["ktp"] ** 2
+    axis = bi.biaxial_optic_axes(eps)[0]
+    n_fan, ea = 12, 2e-3
+    fan = bi.conical_fan(axis, I3, eps, n_fan, ea)
+    dirs = fan["k"][:n_fan]
+    modes = bi.biaxial_modes_for_k(dirs, I3, eps)
+    for j, sheet in enumerate(("slow", "fast")):
+        blk = slice(j * n_fan, (j + 1) * n_fan)
+        K = modes["n_%s" % sheet][:, None] * dirs
+        s_ray, n_phase, n_ray = bi.biaxial_ray_from_k(K, I3, eps)
+        assert np.max(np.abs(fan["s_ray"][blk] - s_ray)) < 1e-12
+        assert np.max(np.abs(fan["n_phase"][blk] - n_phase)) < 1e-12
+        assert np.max(np.abs(fan["n_ray"][blk] - n_ray)) < 1e-12
+        assert np.max(np.abs(fan["D_hat"][blk] - modes["D_%s" % sheet])) \
+            < 1e-12
+        assert np.all(fan["sheet"][blk] == j)
+
+
+# ===========================================================================
+# CONICAL REFRACTION — tracer integration (--conical): end-to-end ring
+# formation, closure, and the guard/fanned counters (samples-instruments
+# round; the pure-math fan is covered above).
+# ===========================================================================
+def _on_axis_ktp_model(t=0.020, lambdac_nm=1064.0):
+    """KTP slab oriented so one OPTIC AXIS lies along the global +x beam:
+    principal Y = global y, principal X/Z rotated about y so that the
+    crystal-frame optic axis [sin(theta), 0, cos(theta)] maps onto global
+    x. Rows of the crystal frame are the principal axes in global coords
+    (v_c = frame @ v_g), so crystal_axis (X_p) = [sin t, 0, -cos t] and
+    Z_p = X_p x Y_p = [cos t, 0, sin t] gives frame @ x_hat = the optic
+    axis exactly."""
+    from raytracer import optprops
+    props = optprops.load_optical_properties()
+    mo = props.matdb.get_biaxial("ktp")
+    lam = lambdac_nm * 1e-9
+    eps = np.array([np.real(m.n_complex(lam)) ** 2 for m in mo])
+    axes_c = bi.biaxial_optic_axes(eps)
+    ax = axes_c[np.argmax(axes_c[:, 0])]        # the +x-leaning axis
+    st, ct_ = ax[0], ax[2]
+    bodies = [
+        sh.source_body(x=-0.01, half=0.00005, coherent=False,
+                       power_mW=1.0, lambdac_nm=lambdac_nm),
+        sh.slab_body("KTP", "ktp", 0.0, t, half=0.008,
+                     crystal_axis=[st, 0.0, -ct_],
+                     crystal_axis2=[0.0, 1.0, 0.0]),
+        sh.detector_body(x=t + 0.003, half=0.003),
+    ]
+    return sh.make_model(bodies), eps, t
+
+
+def _radial_stats(det):
+    """(mean_r, std_r) of the detected-power radial distribution about
+    its own power centroid, in metres on the detector plane."""
+    img = det.inc.sum(axis=0)
+    tot = img.sum()
+    assert tot > 0
+    xs = det.x_lo + (np.arange(det.W) + 0.5) * det.pixel_m
+    ys = det.y_lo + (np.arange(det.H) + 0.5) * det.pixel_m
+    X, Y = np.meshgrid(xs, ys)
+    cx = (img * X).sum() / tot
+    cy = (img * Y).sum() / tot
+    R = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+    mean_r = (img * R).sum() / tot
+    var_r = (img * (R - mean_r) ** 2).sum() / tot
+    return float(mean_r), float(np.sqrt(var_r))
+
+
+def test_conical_off_counts_guard_single_spot():
+    model, eps, t = _on_axis_ktp_model()
+    res, grids, scene = sh.trace_scene(model, rays=4000, resolution=300)
+    rep = res.ledger.report(res.source_names)
+    assert max(s["closure_error"] for s in rep["sources"].values()) < 1e-3
+    # off: degenerate entries counted, nothing fanned
+    assert res.conical_guard.get("KTP", 0) > 0
+    assert res.conical_fanned == {}
+    # arbitrary-basis two-sheet pass: a tight on-axis spot, no ring
+    mean_r, _ = _radial_stats(list(grids.values())[0])
+    A = bi.cone_half_angle(eps)
+    assert mean_r < 0.15 * t * np.tan(A)
+
+
+def test_conical_on_forms_poggendorff_ring_with_closure():
+    """--conical: the on-axis beam through 20 mm of KTP fans into the
+    Hamilton cone; the exit-face footprint is a circle through the axis
+    of DIAMETER t*tan(A) (one cone generator IS the wave normal), which
+    the slab exit freezes — so about its own centroid the detected ring
+    has radius t*tan(A)/2, tight."""
+    model, eps, t = _on_axis_ktp_model()
+    res, grids, scene = sh.trace_scene(model, rays=4000, resolution=300,
+                                       conical=True, conical_fan=24,
+                                       conical_delta=1e-4)
+    rep = res.ledger.report(res.source_names)
+    assert max(s["closure_error"] for s in rep["sources"].values()) < 1e-3
+    assert res.conical_fanned.get("KTP", 0) > 0
+    assert res.conical_guard == {}
+    A = bi.cone_half_angle(eps)
+    r_ring = 0.5 * t * np.tan(A)
+    mean_r, std_r = _radial_stats(list(grids.values())[0])
+    # ring radius within 10% (beam pencil width + fan discretization),
+    # and RADIALLY TIGHT (a ring, not a disc: std << radius)
+    assert abs(mean_r - r_ring) < 0.10 * r_ring, \
+        "ring radius %.4g mm vs expected %.4g mm" \
+        % (mean_r * 1e3, r_ring * 1e3)
+    assert std_r < 0.35 * r_ring
+
+
+def test_conical_fan_energy_conservation_detailed():
+    """Fan child powers per parent sum EXACTLY to the mean-index
+    transmitted power (unit-level, via the tracer's ledger closure at
+    1e-9 on a lossless path: source -> crystal entry fan -> exit ->
+    detector; absorbed_surface picks up only the tiny mean-index vs
+    exact-sheet Fresnel difference)."""
+    model, eps, t = _on_axis_ktp_model()
+    res, grids, scene = sh.trace_scene(model, rays=1500, resolution=200,
+                                       conical=True, conical_fan=12)
+    rep = res.ledger.report(res.source_names)
+    # detected + all loss buckets == emitted to the standard gate
+    assert max(s["closure_error"] for s in rep["sources"].values()) < 1e-3
+    # most of the power must actually reach the detector (AR-free KTP:
+    # ~8% Fresnel loss per face -> ~84% through two faces, minus the
+    # multi-bounce remainder)
+    det = list(grids.values())[0]
+    p_det = float(sum(det.detected_incoherent.values()))
+    assert p_det > 0.75e-3

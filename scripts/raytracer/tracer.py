@@ -175,7 +175,8 @@ class VizStore:
 
 class TraceResult:
     def __init__(self, detectors, ledger, viz, source_names,
-                 path_tally=None, shg_converted=None, conical_guard=None):
+                 path_tally=None, shg_converted=None, conical_guard=None,
+                 conical_fanned=None):
         self.detectors = detectors        # face_id -> DetectorGrid
         self.ledger = ledger
         self.viz = viz
@@ -198,6 +199,13 @@ class TraceResult:
         # counter only, zero RNG use, never a closure bucket; empty when no
         # ray ever traversed a degeneracy cone.
         self.conical_guard = conical_guard if conical_guard is not None \
+            else {}
+        # conical_fanned (--conical, samples-instruments round): {biaxial
+        # body label: ray count} -- degenerate entries that took the
+        # internal-conical-refraction fan instead of the arbitrary-basis
+        # two-sheet pass. Diagnostic tally (linear, shards add); empty
+        # when --conical is off or no ray hit an optic axis.
+        self.conical_fanned = conical_fanned if conical_fanned is not None \
             else {}
 
 
@@ -234,6 +242,8 @@ class Tracer:
         # label: ray count} accumulated by _birefringent_children, warned
         # once per body at the end of run() (see TraceResult.conical_guard)
         self.conical_guard = {}
+        # --conical fan tally: {biaxial body label: fanned ray count}
+        self.conical_fanned = {}
         # measured-scatter importance targets (§7.1): per-detector aim cones
         # {label -> (centre_world[3], radius_m)}. Precomputed once from the
         # detector grids so the scatter kernel can point children at their
@@ -327,7 +337,8 @@ class Tracer:
         return TraceResult(self.detectors, self.ledger, self.viz, names,
                            path_tally=self.path_tally,
                            shg_converted=self.shg_converted,
-                           conical_guard=self.conical_guard)
+                           conical_guard=self.conical_guard,
+                           conical_fanned=self.conical_fanned)
 
     # ------------------------------------------------------------------
     def step(self, batch):
@@ -2190,6 +2201,100 @@ class Tracer:
         return n_of(lam) - lam * d1
 
     # ------------------------------------------------------------------
+    def _conical_fan_children(self, sub, deg, res, eps_ent, frame, nh,
+                              ci, n1, Es_i, Ep_i, phys, body):
+        """Internal conical refraction (--conical): replace each
+        degenerate entry's two sheet children with 2*conical_fan cone
+        children from birefringence.conical_fan (perturbed two-sheet fan
+        — Hamilton cone geometry, phi/2 polarization half-turn, and the
+        Poggendorff double ring all emerge from the tested two-sheet
+        machinery; see that function's docstring).
+
+        Amplitudes: the transmitted polarization STATE at the degenerate
+        point is computed with the MEAN phase index (n_slow == n_fast to
+        O(delta) there, so the s/p Fresnel amplitudes are sheet-blind and
+        the dropped cross terms vanish by symmetry); each cone child j
+        carries a_j = D_hat_j . E_t — the complex projection of that
+        state onto its own displacement eigenvector — rescaled so
+        Sum|a_j|^2 equals the transmitted power EXACTLY (each azimuth's
+        slow/fast D-pair is a complete transverse basis, so the raw
+        Sum|a|^2 over 2N children is N * |E_t|^2). Relative phases around
+        the ring are kept — the children are coherent, so the gather can
+        interfere the ring physically. Fan solves are grouped by
+        (quantized k, lambda): a collimated on-axis beam costs ONE
+        conical_fan call, not one per ray.
+
+        Returns (children_batches, p_fan) with p_fan aligned to the
+        deg-row order (== transmitted power per parent, exact closure)."""
+        from . import birefringence as bir
+        cfg = self.cfg
+        rows = np.where(deg)[0]
+        # mean-index transmission at the degenerate point
+        n2m = 0.5 * (res["n_phase_slow"][rows]
+                     + res["n_phase_fast"][rows]).astype(np.complex128)
+        rs, rp, ts, tp, ct = fr.fresnel_coeffs(ci[rows], n1[rows], n2m)
+        _, _, Ts, Tp = fr.power_coeffs(rs, rp, ts, tp, ci[rows], ct,
+                                       n1[rows], n2m)
+        Ts = np.clip(Ts, 0.0, None)
+        Tp = np.clip(Tp, 0.0, None)
+        k_c = res["k_slow"][rows]          # central internal wave normal
+        s_t, p_t = fr.pol_basis(k_c, nh[rows])
+        Et_s = np.sqrt(phys * Ts) * np.exp(1j * np.angle(ts)) * Es_i[rows]
+        Et_p = np.sqrt(phys * Tp) * np.exp(1j * np.angle(tp)) * Ep_i[rows]
+        E_state = Et_s[:, None] * s_t + Et_p[:, None] * p_t     # (d,3) cplx
+        P_t = np.abs(Et_s) ** 2 + np.abs(Et_p) ** 2
+
+        lam_r = sub.lam[rows]
+        gkey = np.concatenate([np.round(k_c, 9), lam_r[:, None]], axis=1)
+        _, ginv = np.unique(gkey, axis=0, return_inverse=True)
+        children = []
+        p_fan = np.zeros(len(rows))
+        for g in range(int(ginv.max()) + 1):
+            ridx = np.where(ginv == g)[0]
+            fan = bir.conical_fan(k_c[ridx[0]], frame,
+                                  eps_ent[rows[ridx[0]]],
+                                  cfg.conical_fan, cfg.conical_delta)
+            twoN = len(fan["sheet"])
+            # complex projections onto each child D_hat: (nr, 2N)
+            a = np.einsum("rc,jc->rj", E_state[ridx], fan["D_hat"])
+            norm = np.sum(np.abs(a) ** 2, axis=1)
+            scale = np.sqrt(np.where(norm > 1e-300,
+                                     P_t[ridx] / np.maximum(norm, 1e-300),
+                                     0.0))
+            amp = a * scale[:, None]
+            par = rows[ridx]
+            rep = np.repeat(par, twoN)
+            ch = sub.select(rep)
+            _kill_differentials(ch)
+            pt.kill(ch)   # channel mix through the fan: not modeled
+            j = np.tile(np.arange(twoN), len(ridx))
+            ch.dir = fan["s_ray"][j]
+            D = fan["D_hat"][j]
+            sh = np.cross(ch.dir, D)
+            nrm = np.linalg.norm(sh, axis=-1, keepdims=True)
+            bad = nrm[:, 0] < 1e-12
+            sh = np.where(bad[:, None], s_t[0][None, :],
+                          sh / np.maximum(nrm, 1e-300))
+            ch.s_hat = sh
+            ch.Es = np.zeros(len(ch), dtype=np.complex128)
+            ch.Ep = amp.reshape(-1)
+            ch.pol_mode[:] = np.where(fan["sheet"][j] == 0, 2, 3)
+            ch.n_eff[:] = fan["n_ray"][j]
+            if cfg.track_time:
+                ch.n_g_eff[:] = self._biaxial_group_index(
+                    body, ch.lam, fan["k"][j], frame, fan["sheet"][j] == 0)
+            if ch.k_dir is None:
+                ch.k_dir = np.full((len(ch), 3), np.nan)
+            ch.k_dir[...] = fan["k"][j]
+            ch.push_medium(np.ones(len(ch), dtype=bool),
+                           np.full(len(ch), body.index))
+            keep = ch.power > 0
+            if np.any(keep):
+                children.append(ch.select(keep))
+            p_fan[ridx] += np.sum(np.abs(amp) ** 2, axis=1)
+        return children, p_fan
+
+    # ------------------------------------------------------------------
     def _biaxial_children(self, fid, grp, entering, n_hat, cos_i):
         """Biaxial-crystal boundary: slow/fast two-sheet double refraction.
 
@@ -2243,6 +2348,25 @@ class Tracer:
                 n1[s] = scene.medium_index(int(mm), sub.lam[s])
             res = bir.refract_in_biaxial(sub.dir, nh, frame, np.real(n1),
                                          eps[ent])
+            # --conical (samples-instruments round): internal wave normals
+            # within conical_delta of an optic axis take the Hamilton-cone
+            # fan below instead of the (basis-arbitrary) two-sheet split.
+            # Off: the degenerate entries are COUNTED into conical_guard
+            # (matching the uniaxial guard's audit contract) and behave
+            # exactly as before. eps varies per wavelength, so proximity is
+            # evaluated per unique lambda.
+            deg = np.zeros(len(ent), dtype=bool)
+            eps_ent = eps[ent]
+            for lv in np.unique(sub.lam):
+                lsel = sub.lam == lv
+                deg[lsel] = bir.axis_proximity(
+                    res["k_slow"][lsel], eps_ent[lsel][0],
+                    frame) < self.cfg.conical_delta
+            fan_on = getattr(self.cfg, "conical", False)
+            if np.any(deg) and not fan_on:
+                self.conical_guard[body.label] = \
+                    self.conical_guard.get(body.label, 0) + int(deg.sum())
+                deg[:] = False
             # incident Jones in the interface (s,p) basis
             s_new, p_new = fr.pol_basis(sub.dir, nh)
             p_old = np.cross(sub.dir, sub.s_hat)
@@ -2316,15 +2440,29 @@ class Tracer:
                 # match the two Berreman forward modes to the geometry solver's
                 # slow/fast sheets by NORMAL index q_z (both solve the same
                 # normal surface at the same tangential wavevector, so q_z
-                # coincide; robust away from the conical-point degeneracy).
+                # coincide). Near the conical-point degeneracy the two q_z
+                # merge and independent argmins can COLLIDE on one mode —
+                # which double-counted that mode's transmission (a ~T/2
+                # closure violation for an on-axis beam, found by the
+                # --conical off-mode oracle). The assignment is therefore
+                # forced DISTINCT: slow takes its argmin, fast takes the
+                # other column whenever both landed on the same one (a
+                # proper 2x2 assignment; identical to the old behavior
+                # away from degeneracy where the argmins already differ).
                 zc = -nh
                 qzt = np.real(bza["qz_t"])                    # (m,2)
                 idx = np.arange(len(ent))
+                j_of = {}
                 for name in ("slow", "fast"):
                     qz_res = res["n_phase_%s" % name] * np.sum(
                         res["k_%s" % name] * zc, axis=-1)
-                    j = np.argmin(np.abs(qzt - qz_res[:, None]), axis=1)
-                    tj = bza["t"][idx, j, :]                  # (m,2) s/p input
+                    j_of[name] = np.argmin(np.abs(qzt - qz_res[:, None]),
+                                           axis=1)
+                collide = j_of["slow"] == j_of["fast"]
+                j_of["fast"] = np.where(collide, 1 - j_of["slow"],
+                                        j_of["fast"])
+                for name in ("slow", "fast"):
+                    tj = bza["t"][idx, j_of[name], :]         # (m,2) s/p input
                     A = tj[:, 0] * Es_i + tj[:, 1] * Ep_i
                     sheet_field[name] = np.sqrt(phys) * A
 
@@ -2379,12 +2517,22 @@ class Tracer:
                 if ch.k_dir is None:
                     ch.k_dir = np.full((len(ent), 3), np.nan)
                 ch.k_dir[...] = k_hat
-                ok = ~res["tir_%s" % name]
+                ok = ~res["tir_%s" % name] & ~deg
                 ch.push_medium(ok, np.full(len(ent), body.index))
                 keep = ok & (ch.power > 0)
                 if np.any(keep):
                     out.append(ch.select(keep))
                 p_accounted[ent] += ch.power * ok
+
+            # ---- internal conical refraction fan (--conical) ----
+            if np.any(deg):
+                fan_children, p_fan = self._conical_fan_children(
+                    sub, deg, res, eps_ent, frame, nh, ci, n1,
+                    Es_i, Ep_i, phys, body)
+                out.extend(fan_children)
+                p_accounted[ent[deg]] += p_fan
+                self.conical_fanned[body.label] = \
+                    self.conical_fanned.get(body.label, 0) + int(deg.sum())
 
         # ---------------- EXIT: crystal -> outside ----------------
         exi = np.where(~entering)[0]

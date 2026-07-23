@@ -121,7 +121,8 @@ def make_model(bodies):
 
 
 def trace_scene(model, rays=20000, n_lambda=1, seed=3, power_floor=1e-12,
-                resolution=256, optprops=None, max_reflections=6):
+                resolution=256, optprops=None, max_reflections=6,
+                **cfg_kw):
     """Build Scene, run the tracer, return (result, grids, scene)."""
     import common
     from raytracer.scene import Scene
@@ -157,7 +158,7 @@ def trace_scene(model, rays=20000, n_lambda=1, seed=3, power_floor=1e-12,
              for fid in scene.detector_faces}
     cfg = TraceConfig(rays=rays, n_lambda=n_lambda, seed=seed,
                       power_floor=power_floor,
-                      max_reflections=max_reflections)
+                      max_reflections=max_reflections, **cfg_kw)
     tracer = Tracer(scene, cfg, grids)
     rng = np.random.default_rng(seed)
     batches = [sample_source(scene, scene.bodies[b], s, i, cfg.rays,

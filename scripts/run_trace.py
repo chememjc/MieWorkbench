@@ -602,6 +602,8 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
         # conical-point guard: per-crystal ray count (linear tally, shards
         # add; see TraceResult.conical_guard)
         "conical_guard": result.conical_guard,
+        # --conical fan tally (samples-instruments round; linear, shards add)
+        "conical_fanned": result.conical_fanned,
     }
 
 
@@ -690,6 +692,7 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
     path_tally = {}
     shg_converted = {}
     conical_guard = {}
+    conical_fanned = {}
     for pl in payloads:
         ledger.merge(pl["ledger"])
         for fid, dp in pl["detectors"].items():
@@ -700,6 +703,8 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
             shg_converted[k] = shg_converted.get(k, 0.0) + v
         for k, v in pl.get("conical_guard", {}).items():
             conical_guard[k] = conical_guard.get(k, 0) + v
+        for k, v in pl.get("conical_fanned", {}).items():
+            conical_fanned[k] = conical_fanned.get(k, 0) + v
     viz = VizStore()
     v0 = payloads[0]["viz"] if payloads else None
     if v0 is not None and len(v0):
@@ -711,7 +716,8 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
     names = [scene.bodies[i].label for i, _ in scene.sources]
     result = TraceResult(grids, ledger, viz, names, path_tally=path_tally,
                          shg_converted=shg_converted,
-                         conical_guard=conical_guard)
+                         conical_guard=conical_guard,
+                         conical_fanned=conical_fanned)
     return result, trace_s
 
 
@@ -1236,6 +1242,12 @@ def _main_locked(args, case_dir):
             guard_diag = case_diag.setdefault("conical_guard", {})
             for k, v in result.conical_guard.items():
                 guard_diag[k] = guard_diag.get(k, 0) + int(v)
+        if result.conical_fanned:
+            rep["conical_fanned_rays"] = {
+                k: int(v) for k, v in sorted(result.conical_fanned.items())}
+            fan_diag = case_diag.setdefault("conical_fanned", {})
+            for k, v in result.conical_fanned.items():
+                fan_diag[k] = fan_diag.get(k, 0) + int(v)
         audits.append(rep)
         gather_diags_all["seed%d" % seed] = gdiags
         detected_all["seed%d" % seed] = build_detected_block(grids, gdiags)
