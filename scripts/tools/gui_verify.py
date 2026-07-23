@@ -53,6 +53,10 @@ TELEPHOTO = os.path.join(DEMOS_DIR, "telephoto_zoom.MieWB")
 CAMERA_TRIPLET = os.path.join(DEMOS_DIR, "camera_triplet.MieWB")
 IRIS_DEMO = os.path.join(DEMOS_DIR, "bladed_iris_star.MieWB")
 
+PRIMITIVES_DIR = os.path.join(REPO, "primitives")
+CUVETTE_SQUARE = os.path.join(PRIMITIVES_DIR, "cuvette_square.FCStd")
+SOURCE_IMAGE = os.path.join(PRIMITIVES_DIR, "source_image.FCStd")
+
 WINDOW_W, WINDOW_H = 1600, 1000
 
 
@@ -78,8 +82,11 @@ def _require_real_display():
 _require_real_display()
 
 from PySide6.QtCore import Qt, QSettings  # noqa: E402
-from PySide6.QtWidgets import QApplication, QToolBar  # noqa: E402
-from PySide6.QtGui import QImage  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication, QCheckBox, QComboBox, QLineEdit, QScrollArea, QSpinBox,
+    QToolBar,
+)
+from PySide6.QtGui import QColor, QImage  # noqa: E402
 
 from mieworkbench.mainwindow import MainWindow  # noqa: E402
 from mieworkbench.widgets.vtkview import _ABSORBER_STYLE  # noqa: E402
@@ -244,6 +251,25 @@ def new_window(out_root):
     window.show()
     QApplication.processEvents()
     return window
+
+
+def _write_dummy_png(path, color):
+    """A tiny non-trivial (non-single-color-page) PNG fixture: a flat
+    color swatch is plenty to prove a gallery's thumbnail loader actually
+    picked the file up (looks_blank() is checked against the whole PANE
+    grab, which always has table/toolbar chrome around the thumbnails --
+    never against the swatch alone)."""
+    img = QImage(64, 64, QImage.Format.Format_RGB32)
+    img.fill(color)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    img.save(path, "PNG")
+
+
+def _tab_index_by_label(tabs, label):
+    for i in range(tabs.count()):
+        if tabs.tabText(i) == label:
+            return i
+    return -1
 
 
 def teardown_window(window):
@@ -697,6 +723,341 @@ def scenario_toolbar_contrast(ctx, window):
     ctx.shot(main_tb, "04-main-toolbar-checked.png")
 
 
+# ===========================================================================
+# Scenario 7: conical-toggle -- samples-instruments round: the --conical /
+# --conical-fan / --conical-delta CLI flags (internal conical refraction at
+# biaxial optic axes) surface in the ConfigMatrix's "Run Pipeline" dialog
+# purely via cli_specs.py parser introspection (no hand-authored widget
+# code in config_matrix.py); this scenario is really exercising that
+# introspection path, not conical-refraction physics.
+# ===========================================================================
+def scenario_conical_toggle(ctx, window):
+    ctx.step("open the Run Pipeline config dialog (non-modal: the private "
+             "_config_matrix_dialog builder, never .exec())")
+    dialog, _buttons = window._config_matrix_dialog("Run Pipeline", "Run")
+    dialog.show()
+    QApplication.processEvents()
+    cm = window.config_matrix
+
+    ctx.step("assert --conical/--conical-fan/--conical-delta were "
+             "introspected into config_matrix.widgets")
+    for dest in ("conical", "conical_fan", "conical_delta"):
+        ctx.check(dest in cm.widgets,
+                  "config_matrix.widgets has no entry for %r -- "
+                  "cli_specs.py's --%s flag did not surface in the "
+                  "auto-built dialog" % (dest, dest.replace("_", "-")))
+
+    ctx.step("assert widget kinds (checkbox / spinbox / validated line edit)")
+    ctx.check(isinstance(cm.widgets["conical"], QCheckBox),
+              "widgets['conical'] is a %s, expected QCheckBox"
+              % type(cm.widgets["conical"]).__name__)
+    ctx.check(isinstance(cm.widgets["conical_fan"], QSpinBox),
+              "widgets['conical_fan'] is a %s, expected QSpinBox"
+              % type(cm.widgets["conical_fan"]).__name__)
+    ctx.check(isinstance(cm.widgets["conical_delta"], QLineEdit),
+              "widgets['conical_delta'] is a %s, expected QLineEdit"
+              % type(cm.widgets["conical_delta"]).__name__)
+
+    ctx.step("assert the three dests live in the 'physics options "
+             "(stage: trace)' parser group")
+    group_of = {}
+    for group in cm._parser._action_groups:
+        for action in group._group_actions:
+            group_of[action.dest] = group.title
+    for dest in ("conical", "conical_fan", "conical_delta"):
+        ctx.check(group_of.get(dest) == "physics options (stage: trace)",
+                  "%r is in parser group %r, expected "
+                  "'physics options (stage: trace)'"
+                  % (dest, group_of.get(dest)))
+
+    ctx.step("toggle --conical on; set conical-fan=24, conical-delta=2e-4")
+    cm.widgets["conical"].setChecked(True)
+    cm.widgets["conical_fan"].setValue(24)
+    cm.widgets["conical_delta"].setText("2e-4")
+    QApplication.processEvents()
+
+    ctx.step("assert config_matrix.values() round-trips the edits")
+    values = cm.values()
+    ctx.check(values.get("conical") is True,
+              "values()['conical']=%r, expected True" % values.get("conical"))
+    ctx.check(values.get("conical_fan") == 24,
+              "values()['conical_fan']=%r, expected 24"
+              % values.get("conical_fan"))
+    ctx.check(values.get("conical_delta") == 2e-4,
+              "values()['conical_delta']=%r, expected 2e-4"
+              % values.get("conical_delta"))
+
+    ctx.step("scroll the dialog to the conical fields + screenshot")
+    scroll = dialog.findChild(QScrollArea)
+    if scroll is not None:
+        scroll.ensureWidgetVisible(cm.widgets["conical_fan"])
+        QApplication.processEvents()
+    ctx.shot(dialog, "01-conical-fields.png")
+    dialog.close()
+
+
+# ===========================================================================
+# Scenario 8: sample-property -- import a cuvette_square (nested WALL+
+# LIQUID pair), sub-select the liquid body, and assign a `sample` registry
+# row through the element editor's registry-combo pattern.
+# ===========================================================================
+def scenario_sample_property(ctx, window):
+    ctx.step("new .FCStd scene + import cuvette_square from the catalog")
+    ctx.check(os.path.isfile(CUVETTE_SQUARE),
+              "fixture missing: %s" % CUVETTE_SQUARE)
+    scene_path = os.path.join(ctx.out_dir, "scene.FCStd")
+    window.project.new_document(scene_path)
+    window.model_path = scene_path
+    window.project.import_primitive(CUVETTE_SQUARE, "Cuvette1")
+    QApplication.processEvents()
+    ctx.check(window.project.is_open(), "project failed to open a fresh document")
+
+    ctx.step("identify the wall (glass) and liquid (water) bodies")
+    bodies = window.project.element_bodies("Cuvette1")
+    ctx.check(len(bodies) == 2,
+              "cuvette_square import produced %d body(ies), expected 2 "
+              "(wall+liquid): %r" % (len(bodies), bodies))
+    wall_body = liquid_body = None
+    for b in bodies:
+        material = window.project.body(b)["properties"].get(
+            "material", {}).get("value")
+        if material == "water":
+            liquid_body = b
+        else:
+            wall_body = b
+    ctx.check(liquid_body is not None and wall_body is not None,
+              "could not tell the cuvette's wall/liquid bodies apart by "
+              "material among %r" % bodies)
+
+    ctx.step("select the element, then sub-select the liquid body via the "
+             "inspector member list (same path as the 'selection' scenario)")
+    window.selection.select(wall_body, (), origin="scene3d")
+    QApplication.processEvents()
+    ctx.check(window.selection.element == "Cuvette1",
+              "selection.element=%r, expected 'Cuvette1' (a bare-body pick "
+              "on a 2-body element should expand)" % window.selection.element)
+    member_list = window.inspector.member_list.list
+    target_item = None
+    for i in range(member_list.count()):
+        item = member_list.item(i)
+        if item.data(Qt.ItemDataRole.UserRole) == liquid_body:
+            target_item = item
+            break
+    ctx.check(target_item is not None,
+              "inspector member list has no row for the liquid body %r"
+              % liquid_body)
+    window.inspector.member_list._on_item_clicked(target_item)
+    QApplication.processEvents()
+    ctx.check(window.selection.body == liquid_body,
+              "selection.body=%r, expected the liquid body %r"
+              % (window.selection.body, liquid_body))
+
+    ctx.step("assert the element editor offers all 7 sample/samples.miesamp "
+             "rows in the 'sample' registry combo")
+    names = window.element_editor._registry_names("sample")
+    ctx.check(len(names) == 7,
+              "sample registry combo has %d row(s), expected 7: %r"
+              % (len(names), names))
+
+    ctx.step("add the 'sample' property, then set an explicit row")
+    window.element_editor.add_prop_combo.setCurrentText("sample")
+    window.element_editor.add_prop_button.click()
+    pump(0.5)
+    chosen = "colloidal_crystal_fcc" if "colloidal_crystal_fcc" in names \
+        else names[0]
+    window.element_editor._commit_property("sample", chosen)
+    pump(0.5)
+    value = window.project.body(liquid_body)["properties"].get(
+        "sample", {}).get("value")
+    ctx.check(value == chosen,
+              "liquid body's 'sample' property=%r, expected %r"
+              % (value, chosen))
+
+    ctx.step("screenshot the element editor showing the sample assignment")
+    ctx.shot(window.element_editor, "01-sample-assigned.png")
+
+
+# ===========================================================================
+# Scenario 9: image-source -- import source_image (bakes image=
+# usaf_style_target), assert the `image` registry combo + add the optional
+# `image_cone_deg` numeric property.
+# ===========================================================================
+def scenario_image_source(ctx, window):
+    ctx.step("new .FCStd scene + import source_image from the catalog")
+    ctx.check(os.path.isfile(SOURCE_IMAGE),
+              "fixture missing: %s" % SOURCE_IMAGE)
+    scene_path = os.path.join(ctx.out_dir, "scene.FCStd")
+    window.project.new_document(scene_path)
+    window.model_path = scene_path
+    window.project.import_primitive(SOURCE_IMAGE, "Src1")
+    QApplication.processEvents()
+    ctx.check(window.project.is_open(), "project failed to open a fresh document")
+
+    ctx.step("resolve the imported body's internal name via miewb_group "
+             "(Name != Label: FreeCAD keeps the template's original "
+             "internal Name, only Label is rewritten to 'Src1')")
+    src_bodies = window.project.element_bodies("Src1")
+    ctx.check(len(src_bodies) == 1,
+              "element_bodies('Src1') returned %r, expected exactly 1 "
+              "body (source_image is single-body)" % src_bodies)
+    src_name = src_bodies[0]
+
+    ctx.step("select the imported source body")
+    window.selection.select(src_name, (), origin="scene3d")
+    QApplication.processEvents()
+    ctx.check(window.selection.body == src_name,
+              "selection.body=%r, expected %r"
+              % (window.selection.body, src_name))
+
+    ctx.step("assert the baked image=usaf_style_target property + the "
+             "single-row 'image' registry combo")
+    body = window.project.body(src_name)
+    image_value = body["properties"].get("image", {}).get("value")
+    ctx.check(image_value == "usaf_style_target",
+              "Src1 image property=%r, expected 'usaf_style_target'"
+              % image_value)
+    names = window.element_editor._registry_names("image")
+    ctx.check(names == ["usaf_style_target"],
+              "image registry combo=%r, expected ['usaf_style_target']"
+              % names)
+
+    ctx.step("add the optional image_cone_deg field")
+    window.element_editor.add_prop_combo.setCurrentText("image_cone_deg")
+    window.element_editor.add_prop_button.click()
+    pump(0.5)
+    cone = window.project.body(src_name)["properties"].get(
+        "image_cone_deg", {}).get("value")
+    ctx.check(isinstance(cone, float) and 0.0 < cone <= 90.0,
+              "image_cone_deg default value=%r, expected a float in (0, 90]"
+              % cone)
+
+    ctx.step("screenshot the element editor showing image + image_cone_deg")
+    ctx.shot(window.element_editor, "01-image-source.png")
+
+
+# ===========================================================================
+# Scenario 10: library-tabs -- the PropEditorPane "Samples"/"Images" tabs
+# (opened via LibraryPane's Project/System-library "Open in editor", or
+# directly here through the private _open_prop_editor helper mainwindow
+# itself uses) render the 7 sample rows and the 1 image row.
+# ===========================================================================
+def scenario_library_tabs(ctx, window):
+    ctx.step("open the Property Library Editor at the Samples tab")
+    window._open_prop_editor("samples", "system")
+    QApplication.processEvents()
+    editor = window._prop_editor_window
+    ctx.check(editor is not None,
+              "_open_prop_editor() did not create a PropEditorPane")
+    samples_table = editor.editor("samples").table
+    ctx.check(samples_table.rowCount() == 7,
+              "Samples tab table has %d row(s), expected 7"
+              % samples_table.rowCount())
+
+    ctx.step("screenshot the Samples tab")
+    ctx.shot(editor, "01-samples-tab.png")
+
+    ctx.step("switch to the Images tab")
+    window._open_prop_editor("images", "system")
+    QApplication.processEvents()
+    images_table = editor.editor("images").table
+    ctx.check(images_table.rowCount() == 1,
+              "Images tab table has %d row(s), expected 1"
+              % images_table.rowCount())
+
+    ctx.step("screenshot the Images tab")
+    ctx.shot(editor, "02-images-tab.png")
+
+
+# ===========================================================================
+# Scenario 11: results-galleries -- a synthetic case dir with dummy PNGs
+# under instrument/ analysis/ imaging/ dls/ populates all four Results
+# galleries, including the NEW dls tab (dls_correlate.py's products).
+# ===========================================================================
+def scenario_results_galleries(ctx, window):
+    ctx.step("fixture a synthetic case dir with a dummy PNG under each of "
+             "instrument/ analysis/ imaging/ dls/")
+    case_dir = os.path.join(ctx.out_dir, "case")
+    swatches = (("instrument", QColor(220, 60, 60)),
+                ("analysis", QColor(60, 200, 90)),
+                ("imaging", QColor(70, 110, 230)),
+                ("dls", QColor(230, 170, 40)))
+    for sub, color in swatches:
+        _write_dummy_png(os.path.join(case_dir, sub, "%s_demo.png" % sub),
+                         color)
+
+    ctx.step("point the Results pane at the fixture (load_case, no monitor)")
+    window.central_tabs.setCurrentWidget(window.results)
+    window.results.load_case(case_dir, monitor=False)
+    QApplication.processEvents()
+
+    ctx.step("assert all four galleries picked up exactly one thumbnail")
+    for sub, _color in swatches:
+        gallery = window.results.galleries.get(sub)
+        ctx.check(gallery is not None,
+                  "ResultsPane has no gallery named %r" % sub)
+        ctx.check(len(gallery._paths) == 1,
+                  "%r gallery has %d thumbnail(s), expected 1: %r"
+                  % (sub, len(gallery._paths), gallery._paths))
+
+    ctx.step("screenshot each populated tab, incl. the new DLS tab")
+    tab_labels = {"instrument": "Instrument", "analysis": "Analysis",
+                 "imaging": "Imaging", "dls": "DLS"}
+    for i, (sub, label) in enumerate(tab_labels.items(), start=1):
+        idx = _tab_index_by_label(window.results.tabs, label)
+        ctx.check(idx >= 0, "Results pane has no %r tab" % label)
+        window.results.tabs.setCurrentIndex(idx)
+        QApplication.processEvents()
+        ctx.shot(window.results, "%02d-%s-tab.png" % (i, sub))
+
+
+# ===========================================================================
+# Scenario 12: lamp-primitives -- the catalog (LibraryPane Elements tab)
+# shows the 10 new samples-instruments primitives grouped under their
+# categories (Sources: tungsten_halogen/d2_lamp/hg_calibration/
+# source_image; Samples & Cells: sample_region + 5 more cells/baths).
+# ===========================================================================
+def scenario_lamp_primitives(ctx, window):
+    ctx.step("read the catalog tree's top-level categories + children")
+    tree = window.library.tree
+    by_category = {}
+    for i in range(tree.topLevelItemCount()):
+        group_item = tree.topLevelItem(i)
+        by_category[group_item.text(0)] = [
+            group_item.child(j).text(0) for j in range(group_item.childCount())]
+
+    ctx.step("assert the new Sources lamps/image-source primitives are present")
+    expected_sources = ["Tungsten-halogen (QTH) lamp", "Deuterium (D2) UV lamp",
+                        "Hg pen-lamp (calibration)", "Extended image source"]
+    ctx.check("Sources" in by_category,
+              "catalog tree has no 'Sources' category (found: %r)"
+              % sorted(by_category))
+    for label in expected_sources:
+        ctx.check(label in by_category["Sources"],
+                  "'Sources' category missing %r (has: %r)"
+                  % (label, by_category["Sources"]))
+
+    ctx.step("assert 'Samples & Cells' has sample_region + >=5 total cells")
+    ctx.check("Samples & Cells" in by_category,
+              "catalog tree has no 'Samples & Cells' category (found: %r)"
+              % sorted(by_category))
+    cells = by_category["Samples & Cells"]
+    ctx.check("Bare sample region (air)" in cells,
+              "'Samples & Cells' category missing 'Bare sample region "
+              "(air)' (has: %r)" % cells)
+    ctx.check(len(cells) >= 5,
+              "'Samples & Cells' category has %d item(s), expected >=5: %r"
+              % (len(cells), cells))
+
+    ctx.step("screenshot the catalog tree scrolled to 'Sources' (Elements tab)")
+    window.library.tabs.setCurrentIndex(0)
+    for i in range(tree.topLevelItemCount()):
+        if tree.topLevelItem(i).text(0) == "Sources":
+            tree.scrollToItem(tree.topLevelItem(i))
+            break
+    QApplication.processEvents()
+    ctx.shot(window.library, "01-catalog-tree.png")
+
+
 # ---------------------------------------------------------------------------
 # scenario registry
 # ---------------------------------------------------------------------------
@@ -708,6 +1069,12 @@ SCENARIOS = [
     ("full-trace-ghosts", scenario_full_trace_ghosts),
     ("plot-inspect", scenario_plot_inspect),
     ("toolbar-contrast", scenario_toolbar_contrast),
+    ("conical-toggle", scenario_conical_toggle),
+    ("sample-property", scenario_sample_property),
+    ("image-source", scenario_image_source),
+    ("library-tabs", scenario_library_tabs),
+    ("results-galleries", scenario_results_galleries),
+    ("lamp-primitives", scenario_lamp_primitives),
 ]
 
 
