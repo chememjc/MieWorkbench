@@ -186,3 +186,64 @@ def test_zero_width_band_is_monochromatic():
     lam = wavelength_strata(src, 5)
     assert lam.shape == (1,)
     assert lam[0] == pytest.approx(633e-9)
+
+
+# ---------------------------------------------------------------------------
+# blackbody rows (samples-instruments round): optprops.load_emission
+# synthesizes the Planck curve to a dense table AT LOAD, so the entry
+# carries the exact SAME lam_nm/relative_power keys a 'continuous' row
+# does — wavelength_strata needs ZERO kind-specific changes to sample it.
+# This proves that end-to-end through the unchanged tabulated path (no
+# Scene/registry involved, same spirit as _spectrum_src above).
+# ---------------------------------------------------------------------------
+def _blackbody_src(temp_k=3000.0, lam_lo_nm=350.0, lam_hi_nm=2500.0,
+                   n_table=2000):
+    from raytracer.optprops import planck_relative_power
+    lam_nm = np.linspace(lam_lo_nm, lam_hi_nm, n_table)
+    rel = planck_relative_power(lam_nm, temp_k)
+    return {"lambdac_nm": 650.0,
+            "_spectrum_lam_nm": lam_nm.astype(np.float64),
+            "_spectrum_pdf": rel.astype(np.float64)}
+
+
+@pytest.mark.parametrize("n", [1, 5, 16])
+def test_blackbody_strata_equal_power_quantiles(n):
+    src = _blackbody_src()
+    lam_m = wavelength_strata(src, n)
+    assert lam_m.shape == (n,)
+    lam_nm = lam_m * 1e9
+    # strata spread monotonically over the whole synthesized band
+    assert np.all(np.diff(lam_nm) > 0)
+    assert lam_nm.min() >= 350.0 - 1e-6
+    assert lam_nm.max() <= 2500.0 + 1e-6
+    # equal-power quantiles: CDF at each stratum sits at (k+0.5)/n, same
+    # inverse-CDF check test_strata_are_cdf_centers runs for 'continuous'
+    lam_ref, cdf = _reference_cdf(src["_spectrum_lam_nm"],
+                                  src["_spectrum_pdf"])
+    q_expect = (np.arange(n) + 0.5) / n
+    q_at_strata = np.interp(lam_nm, lam_ref, cdf)
+    assert np.allclose(q_at_strata, q_expect, atol=2e-3)
+
+
+def test_blackbody_strata_edges_respect_band_and_equal_power():
+    n = 8
+    src = _blackbody_src()
+    lam_m = wavelength_strata(src, n)
+    edges_nm = lam_m.edges * 1e9
+    assert edges_nm.shape == (n + 1,)
+    assert np.all(np.isfinite(edges_nm))
+    assert np.all(np.diff(edges_nm) > 0)          # non-overlapping
+    assert edges_nm[0] == pytest.approx(350.0, abs=1e-6)
+    assert edges_nm[-1] == pytest.approx(2500.0, abs=1e-6)
+    # total power splits ~uniformly across strata: integrate the PDF table
+    # between consecutive edges and compare to total/n
+    lam_nm, pdf = src["_spectrum_lam_nm"], src["_spectrum_pdf"]
+    total = np.trapezoid(pdf, lam_nm)
+    powers = []
+    for k in range(n):
+        lo, hi = edges_nm[k], edges_nm[k + 1]
+        xs = np.unique(np.concatenate([[lo], lam_nm[(lam_nm > lo)
+                                                     & (lam_nm < hi)], [hi]]))
+        powers.append(np.trapezoid(np.interp(xs, lam_nm, pdf), xs))
+    powers = np.asarray(powers)
+    assert np.allclose(powers, total / n, rtol=5e-3), powers

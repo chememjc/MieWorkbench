@@ -304,6 +304,112 @@ def stratum_domega(strata):
 _EDGE_TAIL_FRACTION = 0.25
 
 
+def _lines_stratum_counts(n_lambda, intensity):
+    """(counts, keep_idx, dropped_idx) for a 'lines' source's n_lambda
+    stratum budget over len(intensity) discrete lines, intensity-
+    proportional, every KEPT line getting >= 1 stratum.
+
+    n_lambda >= n_lines: every line is kept; counts[i] via the largest-
+    remainder (Hamilton) apportionment method on the ideal shares
+    n_lambda*weight_i (so an exactly-divisible ratio like 3:1:5 over 9
+    strata reproduces 3,1,5 exactly), then any line that still landed on
+    zero strata (possible for a very skewed weight, e.g. 4 strata over
+    weights 0.9/0.05/0.05) is bumped to 1 by stealing one stratum from
+    the currently largest-allocated line, repeated until no zero remains
+    — keeps the "every kept line >= 1" invariant without disturbing the
+    common (non-degenerate) case computed above.
+
+    n_lambda < n_lines: only the strongest n_lambda lines (by intensity)
+    survive, each getting exactly 1 stratum; keep_idx/dropped_idx (both
+    ascending original-index order) let the caller renormalize power
+    over the kept subset and warn about the drop."""
+    intensity = np.asarray(intensity, dtype=np.float64)
+    n_lines = intensity.size
+    weights = intensity / intensity.sum()
+    if n_lambda < n_lines:
+        rank = np.argsort(-intensity, kind="stable")
+        keep_idx = np.sort(rank[:n_lambda])
+        dropped_idx = np.sort(rank[n_lambda:])
+        return np.ones(n_lambda, dtype=np.int64), keep_idx, dropped_idx
+    raw = n_lambda * weights
+    floor = np.floor(raw).astype(np.int64)
+    remainder = int(n_lambda - floor.sum())
+    frac = raw - floor
+    order = np.argsort(-frac, kind="stable")
+    counts = floor.copy()
+    counts[order[:remainder]] += 1
+    while np.any(counts == 0):
+        zero_i = int(np.argmin(counts))
+        donor_i = int(np.argmax(counts))
+        counts[donor_i] -= 1
+        counts[zero_i] += 1
+    return counts, np.arange(n_lines), np.array([], dtype=np.int64)
+
+
+def _lines_strata(src, n_lambda):
+    """wavelength_strata's 'lines' regime: n_lambda strata distributed
+    over the source's discrete emission lines proportional to intensity
+    (see _lines_stratum_counts), one deterministic wavelength per
+    stratum (the line's own center — never an interpolated/synthetic
+    value; a physical lamp line is narrower than any bench resolution,
+    so every stratum belonging to one line samples that EXACT center)
+    and equal power per stratum (sample_source's ray-count-per-stratum
+    convention is what turns "more strata" into "more power" for a
+    louder line — this function only ever returns wavelength POSITIONS).
+
+    Edges (diagnostic — stratum_domega / time products only, see the
+    StratumWavelengths class doc): each line contributes a
+    linewidth_nm-wide band centered on it, split into that line's own
+    stratum-count equal contiguous sub-bands (all exact). Bands across
+    DIFFERENT lines are never adjacent in reality (the loader's overlap
+    check guarantees a real gap) but the returned edges array is a
+    single (n_strata+1,) shared-boundary sequence by contract — so at
+    each line-to-line transition the boundary is pinned to the NEXT
+    line's true lower edge (never a value inside a real line's own
+    band, so no stratum's width can go to zero or negative): this
+    inflates exactly one stratum per non-final line (its own last
+    stratum, which absorbs the inter-line gap into its reported width)
+    while every other stratum — everything interior to a line's own
+    split, and the entire final line — keeps its exact linewidth_nm (or
+    linewidth_nm/count) width. Absolute positions are otherwise the
+    line's own true nm values throughout; only that one inflated
+    boundary per gap is not "about its line center" by construction."""
+    lines_nm = np.asarray(src["_lines_nm"], dtype=np.float64)
+    intensity = np.asarray(src["_lines_intensity"], dtype=np.float64)
+    width_nm = float(src["_lines_linewidth_nm"])
+    counts, keep_idx, dropped_idx = _lines_stratum_counts(n_lambda, intensity)
+    if dropped_idx.size:
+        total = float(intensity.sum())
+        share = float(intensity[dropped_idx].sum()) / total if total else 0.0
+        import warnings
+        warnings.warn(
+            "lines source: n_lambda=%d < n_lines=%d — dropping the %d "
+            "weakest line(s) at %s nm (%.1f%% of total line power) to "
+            "fit the wavelength-stratum budget, and the %d kept line(s) "
+            "get EQUAL power (one stratum each — intensity ratios cannot "
+            "be represented below one stratum per line). Raise --nlambda "
+            "to at least the line count for proportional line powers."
+            % (n_lambda, intensity.size, dropped_idx.size,
+               ", ".join("%.4g" % v for v in lines_nm[dropped_idx]),
+               100.0 * share, keep_idx.size))
+    lines_nm = lines_nm[keep_idx]
+    lam_nm_list = []
+    edges_nm_list = []
+    for i, (center_nm, k) in enumerate(zip(lines_nm, counts)):
+        lo_nm = center_nm - 0.5 * width_nm
+        hi_nm = center_nm + 0.5 * width_nm
+        local = np.linspace(lo_nm, hi_nm, int(k) + 1)
+        if i == 0:
+            edges_nm_list.extend(local.tolist())
+        else:
+            edges_nm_list.pop()          # drop the previous true-hi
+            edges_nm_list.extend(local.tolist())   # incl. this true-lo
+        lam_nm_list.extend([center_nm] * int(k))
+    lam_m = np.asarray(lam_nm_list, dtype=np.float64) * 1e-9
+    edges_m = np.asarray(edges_nm_list, dtype=np.float64) * 1e-9
+    return _with_edges(lam_m, edges_m)
+
+
 def wavelength_strata(src, n_lambda):
     """Deterministic per-stratum wavelengths [m] (equal probability each),
     returned as a StratumWavelengths (an ndarray subclass carrying the
@@ -315,12 +421,21 @@ def wavelength_strata(src, n_lambda):
     sampling; per-ray birth_power is untouched). Edges sit at the CDF
     quantiles k/n mapped through the same inverse transform:
       * a tabulated emission spectrum (_spectrum_lam_nm/_spectrum_pdf, from
-        the emission registry): inverse-CDF of the piecewise-linear PDF —
-        densify each linear segment x16, cumulative-trapezoid CDF, invert;
+        the emission registry — 'continuous' rows and 'blackbody' rows
+        alike, the latter synthesized to a dense table AT LOAD by
+        optprops.load_emission so it needs no special case here):
+        inverse-CDF of the piecewise-linear PDF — densify each linear
+        segment x16, cumulative-trapezoid CDF, invert;
+      * discrete emission lines (_lines_nm/_lines_intensity/
+        _lines_linewidth_nm, an emission registry 'lines' row): see
+        _lines_strata — per-line stratum counts proportional to
+        intensity, each stratum at its line's exact center;
       * an asymmetric-Gaussian line (lambdamin/lambdamax bracket lambdac):
         two glued half-normals (the two OPEN tail edges are clamped to the
         _EDGE_TAIL_FRACTION quantile — a half-normal has no finite rim);
       * a single bound: a symmetric uniform band around lambdac."""
+    if src.get("_lines_nm") is not None:
+        return _lines_strata(src, n_lambda)
     lam_c = src["lambdac_nm"]
     lam_lo = src.get("lambdamin_nm")
     lam_hi = src.get("lambdamax_nm")

@@ -656,8 +656,10 @@ def test_library_expansion_counts(shipped_props):
     # was dropped as a duplicate of N-BAK4 (library_data/README.md), which
     # the plan's total didn't subtract. It grew to 847 when
     # scripts/tools/import_agf.py appended the Schott+Ohara Zemax AGF glass
-    # catalogs (679 new rows; see library_data/agf/README.md).
-    assert len(shipped_props.matdb) == 847
+    # catalogs (679 new rows; see library_data/agf/README.md). Grew to 849 on
+    # samples-instruments round: +decalin (index-matching bath liquid) and
+    # +dye_solution_green (aqueous KMnO4 Beer-Lambert absorbance standard).
+    assert len(shipped_props.matdb) == 849
     # P2: +1 for bs_5050_vis_45_ph (phase-carrying table-coating demo row)
     assert len(shipped_props.coatings) == 39
     assert len(shipped_props.filters) == 56

@@ -84,11 +84,20 @@ def lam_range_nm(scene):
     lo, hi = 1e9, 0.0
     for _, src in scene.sources:
         lam_tab = src.get("_spectrum_lam_nm")
+        lines_nm = src.get("_lines_nm")
         if lam_tab is not None:
             # a tabulated spectrum defines its own full range; detector
             # spectral bins must cover the whole table.
             span_lo = float(np.min(lam_tab))
             span_hi = float(np.max(lam_tab))
+        elif lines_nm is not None:
+            # discrete emission lines: span the outermost lines' bands
+            # (linewidth_nm/2 padding — the same quantity wavelength_strata
+            # uses for stratum edges) so detector spectral bins cover every
+            # line, including the outermost strata's finite edges.
+            half_w = 0.5 * float(src.get("_lines_linewidth_nm", 0.0))
+            span_lo = float(np.min(lines_nm)) - half_w
+            span_hi = float(np.max(lines_nm)) + half_w
         else:
             lc = src["lambdac_nm"]
             lmin = src.get("lambdamin_nm") or lc
@@ -475,6 +484,36 @@ def _merge_detector_payload(grid, dp):
     grid.time_records.extend(dp.get("time_records", []))
 
 
+def build_particle_media(args, scene, seed, particle_lams):
+    """All particle media for this trace: the CLI --particles world-box
+    cloud (if any) plus one body-bound medium per `sample`-tagged body
+    (samples-instruments round). Returns (media_list, diag) where diag
+    carries {"particles": cloud_diag} and/or {"samples": {label: diag}}
+    for case.json."""
+    from raytracer.particles import ParticleCloud, build_body_sample_media
+    media = []
+    diag = {}
+    if args.particles:
+        spec = common.parse_particles_spec(args.particles)
+        cloud = ParticleCloud(spec, scene,
+                              threshold=args.particle_threshold,
+                              seed=seed, lam_list=particle_lams,
+                              pol_scatter=not args.no_pol_scatter)
+        media.append(cloud)
+        diag["particles"] = cloud.diagnostics()
+    samples_reg = scene.optprops.samples \
+        if scene.optprops is not None else {}
+    body_media = build_body_sample_media(
+        scene, samples_reg, threshold=args.particle_threshold,
+        seed=seed, lam_list=particle_lams,
+        pol_scatter=not args.no_pol_scatter)
+    if body_media:
+        diag["samples"] = {m.body_label: m.diagnostics()
+                           for m in body_media}
+        media.extend(body_media)
+    return media, diag
+
+
 def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                   lam_range, particle_lams, export, viz_caps,
                   track_history=False, track_time=False, time_rec=None):
@@ -501,18 +540,10 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
                           args, "importance_limit", 1.0),
                       pol_transport=getattr(args, "pol_transport", False),
                       biref_approx=getattr(args, "biref_approx", False))
-    particles = None
-    part_diag = None
-    if args.particles:
-        from raytracer.particles import ParticleCloud
-        spec = common.parse_particles_spec(args.particles)
-        pseed = int(child_seq.generate_state(1)[0])
-        particles = ParticleCloud(spec, scene,
-                                  threshold=args.particle_threshold,
-                                  seed=pseed, lam_list=particle_lams,
-                                  pol_scatter=not args.no_pol_scatter)
-        part_diag = particles.diagnostics()
-    tracer = Tracer(scene, cfg, grids, particle_medium=particles)
+    pseed = int(child_seq.generate_state(1)[0])
+    media, media_diag = build_particle_media(args, scene, pseed,
+                                             particle_lams)
+    tracer = Tracer(scene, cfg, grids, particle_medium=media)
     # one RNG stream drives BOTH sample_source and the Tracer's internal
     # roughness/scatter draws (SeedSequence-spawned per worker).
     tracer.rng = rng
@@ -555,7 +586,11 @@ def _shard_worker(args, child_seq, worker_index, rays_i, total_rays,
         "detectors": {int(fid): _extract_detector_payload(g)
                       for fid, g in grids.items()},
         "viz": result.viz.as_array() if worker_index == 0 else None,
-        "particles": part_diag,
+        "particles": media_diag.get("particles"),
+        # body-bound sample media (samples-instruments round): per-body
+        # diagnostics, first shard's copy wins in the merge (per-shard
+        # they differ only in realization seed echoes)
+        "sample_media": media_diag.get("samples"),
         # per-body power-weighted bulk path (track_time only; linear
         # tally, shards add per key like the ledger flux)
         "path_tally": result.path_tally,
@@ -584,16 +619,13 @@ def _run_single(scene, args, seed, particle_lams, case_diag, export,
                           args, "importance_limit", 1.0),
                       pol_transport=getattr(args, "pol_transport", False),
                       biref_approx=getattr(args, "biref_approx", False))
-    particles = None
-    if args.particles:
-        from raytracer.particles import ParticleCloud
-        spec = common.parse_particles_spec(args.particles)
-        particles = ParticleCloud(spec, scene,
-                                  threshold=args.particle_threshold,
-                                  seed=seed, lam_list=particle_lams,
-                                  pol_scatter=not args.no_pol_scatter)
-        case_diag.setdefault("particles", particles.diagnostics())
-    tracer = Tracer(scene, cfg, grids, particle_medium=particles)
+    media, media_diag = build_particle_media(args, scene, seed,
+                                             particle_lams)
+    if media_diag.get("particles") is not None:
+        case_diag.setdefault("particles", media_diag["particles"])
+    if media_diag.get("samples"):
+        case_diag.setdefault("samples", media_diag["samples"])
+    tracer = Tracer(scene, cfg, grids, particle_medium=media)
     rng = np.random.default_rng(seed)
     batches = []
     for sid, (bidx, src) in enumerate(scene.sources):
@@ -668,6 +700,8 @@ def _run_sharded(scene, args, seed, lam_range, particle_lams, case_diag,
         viz.chunks.append(v0)
     if payloads and payloads[0].get("particles") is not None:
         case_diag.setdefault("particles", payloads[0]["particles"])
+    if payloads and payloads[0].get("sample_media"):
+        case_diag.setdefault("samples", payloads[0]["sample_media"])
     names = [scene.bodies[i].label for i, _ in scene.sources]
     result = TraceResult(grids, ledger, viz, names, path_tally=path_tally,
                          shg_converted=shg_converted,

@@ -146,6 +146,11 @@ def trace_scene(model, rays=20000, n_lambda=1, seed=3, power_floor=1e-12,
         if lam_tab is not None:
             lam_lo = min(lam_lo, float(np.min(lam_tab)) - 20.0)
             lam_hi = max(lam_hi, float(np.max(lam_tab)) + 20.0)
+        lines_nm = s.get("_lines_nm")            # discrete lines: cover them
+        if lines_nm is not None:
+            half_w = 0.5 * float(s.get("_lines_linewidth_nm", 0.0))
+            lam_lo = min(lam_lo, float(np.min(lines_nm)) - half_w - 20.0)
+            lam_hi = max(lam_hi, float(np.max(lines_nm)) + half_w + 20.0)
     grids = {fid: DetectorGrid(scene.faces[fid], resolution, 16,
                                (lam_lo * 1e-9, lam_hi * 1e-9),
                                label=scene.faces[fid].id)
