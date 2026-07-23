@@ -1,4 +1,4 @@
-#!/home3/optics/env/bin/python
+#!/usr/bin/env python3
 # =============================================================================
 # bench_engines.py — the c-engine go/no-go benchmark (plan: final gate).
 #
@@ -8,7 +8,7 @@
 # per-stage timings and speedups. The gate: geometric-mean trace+gather
 # speedup >= 1.5x, and no scene slower than Python.
 #
-#   /home3/optics/env/bin/python scripts/bench_engines.py \
+#   "$MIEWB_OPTICS_PYTHON" scripts/bench_engines.py \
 #       [--rays 1e6] [--resolution 2048] [--nlambda 9] [--out FILE]
 #       [--scenes name1,name2,...]     # default: every routable geometry/
 #
@@ -25,7 +25,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
-OPTICS = "/home3/optics/env/bin/python"
+import common  # noqa: E402  (stdlib-only shared contract hub)
+
+OPTICS = common.OPTICS_PYTHON
 
 
 def routable(model_json):

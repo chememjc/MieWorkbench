@@ -31,10 +31,10 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 from raytracer import optiland_bridge as ob   # noqa: E402
 import optimize                                # noqa: E402  (stdlib merit engine)
+import common  # noqa: E402
 
-OPTICS_PY = os.environ.get("MIEWB_OPTICS_PYTHON", "/home3/optics/env/bin/python")
-CENGINE = os.environ.get("MIEWB_CENGINE",
-                         str(REPO / "cengine" / "build" / "miewb-trace"))
+OPTICS_PY = common.OPTICS_PYTHON
+CENGINE = common.CENGINE_BINARY or str(REPO / "cengine" / "build" / "miewb-trace")
 
 
 def _geo(stem):
@@ -46,7 +46,7 @@ def _has(stem):
 
 
 def _mc_available():
-    return Path(OPTICS_PY).exists() and Path(CENGINE).exists()
+    return OPTICS_PY and Path(OPTICS_PY).exists() and Path(CENGINE).exists()
 
 
 # --------------------------------------------------------------------------

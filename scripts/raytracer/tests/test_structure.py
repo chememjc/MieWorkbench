@@ -2,7 +2,7 @@
 # test_structure.py — validation of structure.py: S(q) models (PY hard
 # sphere, Baxter sticky sphere, Teixeira fractal, powder paracrystal,
 # tabulated) + the sq_evaluate registry dispatcher.
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_structure.py -q
 # =============================================================================
 import sys

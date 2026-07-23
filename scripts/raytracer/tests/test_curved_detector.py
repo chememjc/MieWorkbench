@@ -2,7 +2,7 @@
 # test_curved_detector.py — Phase 10: curved (Sphere/Cylinder) detector grids,
 # incoherent path. Exercises the REAL Scene/Tracer pipeline (no FreeCAD) with
 # analytic sphere/cylinder detector faces built here.
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_curved_detector.py -q
 # =============================================================================
 import sys

@@ -32,7 +32,7 @@
 # staircase discretization -- this is NOT fixed by an area-equivalent
 # effective f/# correction (checked), because the staircase distorts the
 # OTF's *shape* near cutoff, not just its overall scale.
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_analysis_field.py -q
 # =============================================================================
 import sys

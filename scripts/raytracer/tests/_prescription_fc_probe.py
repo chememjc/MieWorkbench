@@ -8,7 +8,7 @@
 #   drift  : deliberately corrupted (radius +5 um) -> must raise ExtractError
 #
 # Interpreter: the FreeCAD AppImage (see CLAUDE.md):
-#   /home3/freecad/FreeCAD.AppImage -c _prescription_fc_probe.py -- \
+#   "$MIEWB_FREECAD" -c _prescription_fc_probe.py -- \
 #       --out <result.json> < /dev/null
 # Usual -c caveats: bare '--'; runs TWICE (idempotent writes); no __main__
 # guard; os._exit not sys.exit; print() may drop (log via Console too).

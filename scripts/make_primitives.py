@@ -4,7 +4,7 @@
 # (primitives/*.FCStd + *.meta.json sidecars) from primitivelib.PRIMITIVES.
 #
 # Interpreter: the FreeCAD AppImage:
-#   /home3/freecad/FreeCAD.AppImage -c scripts/make_primitives.py -- \
+#   "$MIEWB_FREECAD" -c scripts/make_primitives.py -- \
 #       [--outdir primitives] [--kind <name>|all] < /dev/null
 #
 # Adding a NEW primitive: either add a builder to primitivelib.py and rerun

@@ -17,7 +17,7 @@
 #   * engine routing: nonlinear/kerr/saturable/tpa bodies force Python
 #     (the P8 elements previously emitted NO token — regression).
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_shg_event.py -q
 # =============================================================================
 import json

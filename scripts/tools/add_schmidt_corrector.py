@@ -3,7 +3,7 @@
 # plate to the schmidt_cassegrain demo scene (called by make_demos.py).
 #
 # Interpreter: the FreeCAD AppImage:
-#   /home3/freecad/FreeCAD.AppImage -c scripts/tools/add_schmidt_corrector.py \
+#   "$MIEWB_FREECAD" -c scripts/tools/add_schmidt_corrector.py \
 #       -- --model demos/schmidt_cassegrain.FCStd < /dev/null
 #
 # Why hand-authored: the catalog lens_asphere primitive exposes only the

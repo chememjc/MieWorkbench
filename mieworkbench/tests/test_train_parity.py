@@ -21,14 +21,19 @@ import pytest
 
 sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "scripts")))
 
 from mieworkbench.core.project import Project  # noqa: E402
+import common  # noqa: E402
 
 pytestmark = pytest.mark.freecad
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PRIMITIVES = os.path.join(REPO, "primitives")
-APPIMAGE = os.environ.get("MIEWB_FREECAD", "/home3/freecad/FreeCAD.AppImage")
+if not common.FREECAD_APPIMAGE:
+    pytest.skip("MIEWB_FREECAD not configured", allow_module_level=True)
+APPIMAGE = common.FREECAD_APPIMAGE
 
 
 def run_permute(model_path, outdir, var, vmin, vmax, n):

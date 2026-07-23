@@ -16,7 +16,7 @@
 # in between the source and detector, so the incoherent direct-deposit path
 # is exercised — no coherent-gather dA subtlety is in play here (see the
 # scoped-limitation note in raytracer/sources.py for that).
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_gaussian_beam.py -q
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_gaussian_beam.py -q
 # =============================================================================
 import numpy as np
 import pytest

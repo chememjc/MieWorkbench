@@ -13,7 +13,7 @@
 #   raytracer.sources._lines_strata / wavelength_strata -- the actual
 #       StratumWavelengths (lam + edges) a 'lines' source dict produces.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_sources_lines.py -q
 # =============================================================================
 import sys

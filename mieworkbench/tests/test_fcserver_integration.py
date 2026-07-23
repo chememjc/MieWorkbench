@@ -17,9 +17,12 @@ import pytest
 
 sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "scripts")))
 
 from mieworkbench.core.fcclient import FcClient  # noqa: E402
 from mieworkbench.core.geomcache import GeomCache  # noqa: E402
+import common  # noqa: E402
 
 pytestmark = pytest.mark.freecad
 
@@ -30,8 +33,9 @@ LENS_DCX = os.path.join(REPO, "basemodels", "lens_dcx.FCStd")
 
 def extract_model_json(fcstd_path, out_dir):
     """Run the real extract_geometry.py on one model, return its model.json."""
-    appimage = os.environ.get("MIEWB_FREECAD",
-                              "/home3/freecad/FreeCAD.AppImage")
+    if not common.FREECAD_APPIMAGE:
+        pytest.skip("MIEWB_FREECAD not configured")
+    appimage = common.FREECAD_APPIMAGE
     script = os.path.join(REPO, "scripts", "extract_geometry.py")
     subprocess.run(
         [appimage, "-c", script, "--", "--models", fcstd_path,

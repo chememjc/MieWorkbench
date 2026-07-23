@@ -22,7 +22,7 @@
 #     (linear in I, quadratic in L at delta_k = 0, sinc^2 detuning null,
 #     0.5 clamp), local_intensity convention.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_nlo.py -q
 # =============================================================================
 import sys

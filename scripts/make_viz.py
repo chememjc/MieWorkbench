@@ -7,7 +7,7 @@ docstring).
 
 Must run under pvpython, e.g.::
 
-    /home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython \
+    "$MIEWB_PVPYTHON" \
         --force-offscreen-rendering scripts/make_viz.py \
         --case-dir results/example/quick --model-json geometry/example/model.json
 

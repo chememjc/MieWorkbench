@@ -8,7 +8,7 @@
 # never physically interact — lets one scene exercise two detectors with
 # genuinely different --save-fields-detectors outcomes.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_save_fields_detectors.py -q
 # =============================================================================
 import copy

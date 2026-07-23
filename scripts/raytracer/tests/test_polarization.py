@@ -7,7 +7,7 @@
 #     equal power split, orthogonal Jones, and NO interference between
 #     pol strata in the gather (co-located co-polarized populations in
 #     different strata add in intensity, not amplitude)
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_polarization.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_polarization.py -v
 # =============================================================================
 import sys
 from pathlib import Path

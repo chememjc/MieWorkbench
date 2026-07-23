@@ -10,7 +10,7 @@
 # imaging bench can form a real image of the bitmap. See
 # sources.load_image_gray/_sample_image_points/_image_emission_dirs.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_image_source.py -q
 # =============================================================================
 import sys

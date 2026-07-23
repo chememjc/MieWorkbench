@@ -37,7 +37,7 @@
 #     Gaussian transverse profile through the existing differentials
 #     machinery.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_nlo_elements.py -q
 # =============================================================================
 import sys

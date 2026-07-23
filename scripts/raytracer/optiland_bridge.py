@@ -7,7 +7,7 @@
 #
 # Interpreter: env/bin/python  (the project GUI venv, which is where Optiland
 # is installed -- see INSTALL.md's "Optional: the Optiland parity oracle"
-# section). This module is NOT importable under /home3/optics/env (the engine
+# section). This module is NOT importable under "$MIEWB_OPTICS_PYTHON"'s env (the engine
 # env), which deliberately never gets Optiland; the engine itself never imports
 # this module (guarded by the task contract). It DOES import raytracer.optprops
 # (numpy-only, importable under both envs) to resolve glass indices from the

@@ -4,7 +4,7 @@
 # model.json fixture (same scenehelpers bodies test_viz_pattern.py's
 # build_scene() uses), so it never needs a real FreeCAD extract in CI.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_preview_rays.py -q
 # =============================================================================
 import json

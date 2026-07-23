@@ -2,7 +2,7 @@
 # test_materials.py -- pytest suite for scripts/raytracer/materials.py
 #
 # Run with:
-#   /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_materials.py -v
+#   "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_materials.py -v
 # =============================================================================
 import csv
 import sys

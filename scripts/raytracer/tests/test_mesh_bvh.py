@@ -2,7 +2,7 @@
 # test_mesh_bvh.py — validation of mesh.py: STL reading (binary + ASCII),
 # welded indexed mesh, BVH + batched Moller-Trumbore, and MeshFace against an
 # analytic sphere. Run:
-#   /home3/optics/env/bin/python -m pytest raytracer/tests/test_mesh_bvh.py -q
+#   "$MIEWB_OPTICS_PYTHON" -m pytest raytracer/tests/test_mesh_bvh.py -q
 # =============================================================================
 import struct
 import sys

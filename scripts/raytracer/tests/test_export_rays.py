@@ -10,7 +10,7 @@
 #     incoherent tally count; Sum(power) equals the ledger detected power.
 #   * write_rays_full subsample cap + meta kept_fraction bookkeeping.
 #
-# Run: /home3/optics/env/bin/python -m pytest raytracer/tests/test_export_rays.py -q
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest raytracer/tests/test_export_rays.py -q
 # =============================================================================
 import json
 import sys

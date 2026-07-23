@@ -12,11 +12,11 @@
 #     via _primitivelib_fc_probe.py, same pattern as
 #     mieworkbench/tests/test_fcserver_integration.py's extract_model_json.
 #     Gated behind MIEWB_RUN_FREECAD=1 (same convention used project-wide)
-#     since they need /home3/freecad/FreeCAD.AppImage.
+#     since they need "$MIEWB_FREECAD".
 #
 # Run:
-#   /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_primitivelib.py -q
-#   MIEWB_RUN_FREECAD=1 /home3/optics/env/bin/python -m pytest \
+#   "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_primitivelib.py -q
+#   MIEWB_RUN_FREECAD=1 "$MIEWB_OPTICS_PYTHON" -m pytest \
 #       scripts/raytracer/tests/test_primitivelib.py -q   # + FreeCAD checks
 # =============================================================================
 import json
@@ -33,13 +33,14 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import primitivelib as pl  # noqa: E402  (metadata-only import; no FreeCAD)
+import common  # noqa: E402
 
 RUN_FREECAD = os.environ.get("MIEWB_RUN_FREECAD") == "1"
 freecad_only = pytest.mark.skipif(
-    not RUN_FREECAD,
+    not RUN_FREECAD or not common.FREECAD_APPIMAGE,
     reason="set MIEWB_RUN_FREECAD=1 to run FreeCAD-backed primitivelib tests")
 
-FREECAD_APPIMAGE = os.environ.get("MIEWB_FREECAD", "/home3/freecad/FreeCAD.AppImage")
+FREECAD_APPIMAGE = common.FREECAD_APPIMAGE
 PROBE_SCRIPT = Path(__file__).resolve().parent / "_primitivelib_fc_probe.py"
 
 # -- kinds affected by each rename (per the requirements) -------------------

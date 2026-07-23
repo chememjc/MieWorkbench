@@ -19,7 +19,7 @@
 #     block's own phi2.
 #   * run_pipeline forwards --gdd-budget verbatim.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_gdd_budget.py -q
 # =============================================================================
 import json

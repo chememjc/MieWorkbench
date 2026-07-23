@@ -39,7 +39,7 @@
 #     for the Phi10 beam), so no clean ring at 2.70 mm forms there; the
 #     deflection angle is asserted instead (documented).
 #
-# Run: /home3/optics/env/bin/python -m pytest raytracer/tests/test_scenes_e2e.py -q
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest raytracer/tests/test_scenes_e2e.py -q
 # (from scripts/).  CUDA gather is used automatically when available.
 # =============================================================================
 import sys

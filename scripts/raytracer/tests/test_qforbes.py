@@ -5,8 +5,8 @@
 # finite differences, round-trip through the model.json surface schema, and
 # a reduces-to-Asphere sanity check. The 1e-12 agreement against prysm's own
 # Qbfs/Qcon lives in mieworkbench/tests/test_qforbes_prysm_oracle.py (run
-# under env/bin/python, which has prysm; /home3/optics/env does not). Run:
-#   /home3/optics/env/bin/python -m pytest raytracer/tests/test_qforbes.py -q
+# under env/bin/python, which has prysm; "$MIEWB_OPTICS_PYTHON"'s env does not). Run:
+#   "$MIEWB_OPTICS_PYTHON" -m pytest raytracer/tests/test_qforbes.py -q
 # =============================================================================
 import sys
 from pathlib import Path

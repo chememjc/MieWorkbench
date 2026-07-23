@@ -19,8 +19,13 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
+
+sys.path.insert(0, os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "scripts")))
+import common  # noqa: E402  (stdlib-only shared contract hub)
 
 FCJSON_PREFIX = "@FCJSON "
 
@@ -46,7 +51,7 @@ class FcDead(RuntimeError):
 
 
 def default_freecad_appimage():
-    return os.environ.get("MIEWB_FREECAD", "/home3/freecad/FreeCAD.AppImage")
+    return common.FREECAD_APPIMAGE
 
 
 def _server_script():

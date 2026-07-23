@@ -27,7 +27,7 @@
 #     sampling -- otherwise "best focus" differs by the sampling weight alone).
 #
 # Interpreter: env/bin/python (has Optiland + numpy). It shells out to the
-# optics env (/home3/optics/env/bin/python, override MIEWB_OPTICS_PYTHON) to
+# optics env ("$MIEWB_OPTICS_PYTHON", override via env var) to
 # run the C engine; both are gated -- absent -> the caller skips.
 # =============================================================================
 import json
@@ -45,15 +45,17 @@ if str(SCRIPTS) not in sys.path:
 
 from raytracer import optiland_bridge as ob   # noqa: E402  (env has optiland)
 
-OPTICS_PY = os.environ.get("MIEWB_OPTICS_PYTHON",
-                           "/home3/optics/env/bin/python")
+import common  # noqa: E402  (stdlib-only shared contract hub)
+
+OPTICS_PY = common.OPTICS_PYTHON
 CENGINE = os.environ.get("MIEWB_CENGINE",
                          str(REPO / "cengine" / "build" / "miewb-trace"))
 
 
 def mc_available():
     """True iff the optics-env python and the C-engine binary are present."""
-    return Path(OPTICS_PY).exists() and Path(CENGINE).exists()
+    return (bool(OPTICS_PY) and Path(OPTICS_PY).exists()
+            and Path(CENGINE).exists())
 
 
 # --------------------------------------------------------------------------

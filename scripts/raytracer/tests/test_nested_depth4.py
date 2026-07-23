@@ -10,9 +10,9 @@
 # is authored+extracted OFFLINE (FreeCAD AppImage; geometry/ is gitignored)
 # and these tests skip with an actionable message if geometry/nested4/
 # model.json is missing, rather than shelling out to FreeCAD themselves:
-#   /home3/freecad/FreeCAD.AppImage -c scripts/make_test_scenes.py -- \
+#   "$MIEWB_FREECAD" -c scripts/make_test_scenes.py -- \
 #       --outdir basemodels --scene nested4 < /dev/null
-#   /home3/freecad/FreeCAD.AppImage -c scripts/extract_geometry.py -- \
+#   "$MIEWB_FREECAD" -c scripts/extract_geometry.py -- \
 #       --models nested4.FCStd --outdir geometry < /dev/null
 #
 #   test_classification         extraction succeeds; all 6 pairwise
@@ -38,7 +38,7 @@
 #                                filter check) to honestly bound that
 #                                omission rather than hide it.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_nested_depth4.py -q
 # =============================================================================
 import json
@@ -81,9 +81,9 @@ def _model_path():
 requires_nested4 = pytest.mark.skipif(
     not _model_path().exists(),
     reason="author+extract nested4: "
-    "/home3/freecad/FreeCAD.AppImage -c scripts/make_test_scenes.py -- "
+    "$MIEWB_FREECAD -c scripts/make_test_scenes.py -- "
     "--outdir basemodels --scene nested4 < /dev/null  &&  "
-    "/home3/freecad/FreeCAD.AppImage -c scripts/extract_geometry.py -- "
+    "$MIEWB_FREECAD -c scripts/extract_geometry.py -- "
     "--models nested4.FCStd --outdir geometry < /dev/null")
 
 

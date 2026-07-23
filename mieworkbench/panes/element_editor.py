@@ -126,7 +126,7 @@ from ..core.facemaps import (   # noqa: F401  (re-exported for back-compat)
 )
 from ..core.units import label_with_unit
 
-DEFAULT_OPTPROPS_ROOT = "/home3/raytracegui/opticalproperties"
+DEFAULT_OPTPROPS_ROOT = str(common.OPTPROPS_DIR)
 
 CONTRACT_PROPERTIES = (
     "material", "power", "lambdac", "lambdamin", "lambdamax", "coherent",

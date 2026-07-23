@@ -5,7 +5,7 @@
 #   * DOUBLE SLIT: fringe pitch lambda*L/d within 1%, visibility > 0.9
 #   * single slit: sinc^2 first zero within 2%
 #   * undersampling gate raises; torch and numpy backends agree
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_gather.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_gather.py -v
 # =============================================================================
 import sys
 from pathlib import Path

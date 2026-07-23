@@ -2,7 +2,7 @@
 # =============================================================================
 # fast_eval.py — fast merit-function evaluator for the optimizer round.
 #
-# Interpreter: /home3/optics/env/bin/python (the OPTICS env; it shells out
+# Interpreter: "$MIEWB_OPTICS_PYTHON" (the OPTICS env; it shells out
 # to the FreeCAD AppImage and to run_trace.py/post_process.py under their
 # own pinned interpreters, and imports the Qt-free
 # mieworkbench.core.fcclient for the persistent-worker protocol client).
@@ -73,7 +73,7 @@
 #         out["merits"]["Body003.Pad001.Face5.total_power_W"]
 #
 # CLI (mostly for benchmarking / smoke use):
-#     /home3/optics/env/bin/python scripts/fast_eval.py \
+#     "$MIEWB_OPTICS_PYTHON" scripts/fast_eval.py \
 #         --model example.FCStd --backend worker \
 #         --eval lenspos=2.5,sphered=28 --eval lenspos=0,sphered=30
 # =============================================================================

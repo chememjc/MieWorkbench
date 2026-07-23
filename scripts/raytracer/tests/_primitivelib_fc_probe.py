@@ -6,7 +6,7 @@
 # label/placement/prop preservation).
 #
 # Interpreter: the FreeCAD AppImage (see CLAUDE.md):
-#   /home3/freecad/FreeCAD.AppImage -c _primitivelib_fc_probe.py -- \
+#   "$MIEWB_FREECAD" -c _primitivelib_fc_probe.py -- \
 #       --out <result.json> < /dev/null
 #
 # Usual -c caveats: bare '--' before args; script runs TWICE (writing the

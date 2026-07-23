@@ -7,7 +7,7 @@
 #   * polarized apply_to_batch: Jones rotation into the interface basis and
 #     per-polarization amplitudes, with exact energy partition.
 # The legacy lamellar behavior stays pinned by test_grating_roughness.py.
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          raytracer/tests/test_grating_models.py -q   (from scripts/)
 # =============================================================================
 import sys

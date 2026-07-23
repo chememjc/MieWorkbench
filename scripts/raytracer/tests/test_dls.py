@@ -13,7 +13,7 @@
 #     shape/keys and that the fitted Gamma is positive and within a factor
 #     of 3 of D*q^2.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #        scripts/raytracer/tests/test_dls.py -q -m "not slow"   (fast subset)
 #      ... (drop -m) once with the slow smoke.
 # =============================================================================

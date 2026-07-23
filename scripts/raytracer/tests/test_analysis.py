@@ -2,7 +2,7 @@
 # test_analysis.py — Zernike/Strehl wavefront-analysis oracles:
 # Noll bookkeeping, orthonormality, exact coefficient recovery, OPD-from-rays
 # geometry, Maréchal Strehl.
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_analysis.py -q
 # =============================================================================
 import sys

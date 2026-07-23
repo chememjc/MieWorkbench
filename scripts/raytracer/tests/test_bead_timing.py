@@ -11,7 +11,7 @@
 #      drawn 0.25 m stub — WITHOUT mutating batch.opl (the coherence
 #      path): every recorded window is strictly positive.
 #
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_bead_timing.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_bead_timing.py -v
 # =============================================================================
 import sys
 from pathlib import Path

@@ -10,7 +10,7 @@
 #      (N,11) input, keeps rgb the active scalars, and still accepts
 #      legacy (N,9)/(N,10) arrays without it.
 #
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_ray_dimming.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_ray_dimming.py -v
 # =============================================================================
 import sys
 from pathlib import Path

@@ -13,7 +13,7 @@
 #     analytic onset loci (asserted programmatically)
 #
 # Runs under the optics env (no meent needed — uses inline / shipped tables):
-#   /home3/optics/env/bin/python -m pytest raytracer/tests/test_grating_rcwa_v2.py -q
+#   "$MIEWB_OPTICS_PYTHON" -m pytest raytracer/tests/test_grating_rcwa_v2.py -q
 # =============================================================================
 import sys
 from pathlib import Path

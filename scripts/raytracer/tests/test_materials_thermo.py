@@ -2,7 +2,7 @@
 # test_materials_thermo.py -- Schott power-series dispersion model, thermo-optic
 # n(lambda, T) (Schott TIE-19), and the relaxed Sellmeier-C validator.
 #
-#   /home3/optics/env/bin/python -m pytest \
+#   "$MIEWB_OPTICS_PYTHON" -m pytest \
 #       scripts/raytracer/tests/test_materials_thermo.py -v
 # =============================================================================
 import sys

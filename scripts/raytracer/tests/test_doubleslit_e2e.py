@@ -6,7 +6,7 @@
 #
 # Requires geometry/doubleslit/model.json (run make_test_scenes.py +
 # extract_geometry.py first); skipped otherwise. Takes ~1-3 min.
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_doubleslit_e2e.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_doubleslit_e2e.py -v
 # =============================================================================
 import sys
 from pathlib import Path

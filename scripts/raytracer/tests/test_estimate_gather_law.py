@@ -13,7 +13,7 @@
 # and spr/rate/init are all calibratable via common.calibrated_rate() /
 # common.record_calibration() against RESULTS_DIR/.calibration.json.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_estimate_gather_law.py -q
 # =============================================================================
 import sys

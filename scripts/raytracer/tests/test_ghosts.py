@@ -15,7 +15,7 @@
 #   * Flag OFF: track_history=False leaves refl_hist None and rays_full.npz
 #     carries no refl_hist key (tracer output otherwise untouched).
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_ghosts.py -q
 # =============================================================================
 import json

@@ -2,7 +2,7 @@
 # =============================================================================
 # preview_rays.py — lightweight ray-overlay preview for the GUI's 3D views.
 #
-# Interpreter: /home3/optics/env/bin/python   (numpy/scipy; NO PySide/vtk-py
+# Interpreter: "$MIEWB_OPTICS_PYTHON"   (numpy/scipy; NO PySide/vtk-py
 # GUI deps — this module may import scripts/raytracer/* freely, but the GUI
 # side (mieworkbench/core/raypreview.py) only ever shells out to it via
 # QProcess, it never imports it directly).

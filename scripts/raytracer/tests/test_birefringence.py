@@ -1,7 +1,7 @@
 # =============================================================================
 # test_birefringence.py — closed-form validation of birefringence.py:
 # uniaxial double refraction (n_e(theta), eigenbasis, refract_in/out, walk-off).
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_birefringence.py -q
 # =============================================================================
 import sys

@@ -4,8 +4,8 @@
 # the soft-import error message. Mirrors the structure/conventions of
 # test_mie_particles.py.
 #
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_tmatrix.py -q
-#      /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_tmatrix.py -q -m "not slow"
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_tmatrix.py -q
+#      "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_tmatrix.py -q -m "not slow"
 # =============================================================================
 import sys
 from pathlib import Path

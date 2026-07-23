@@ -7,7 +7,7 @@
 # directory needed -- synthetic cubes/entries throughout, plus one
 # synthetic-h5 end-to-end check of render_detector's wiring.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_detector_instrument.py -v
 # =============================================================================
 import sys

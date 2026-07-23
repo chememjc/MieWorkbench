@@ -11,7 +11,7 @@
 #
 # Run with the FreeCAD AppImage (its bundled Python has the FreeCAD modules):
 #
-#   /home3/freecad/FreeCAD.AppImage -c scripts/extract_geometry.py -- \
+#   "$MIEWB_FREECAD" -c scripts/extract_geometry.py -- \
 #       --models example.FCStd [--outdir geometry] [--strict] < /dev/null
 #
 # NOTE on sys.argv under the FreeCAD AppImage console (-c) mode: argv[0] is

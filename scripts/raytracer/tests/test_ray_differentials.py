@@ -8,7 +8,7 @@
 # path the tracer uses, and the numerical dP_hit / dD are compared against the
 # analytic module outputs. Focal tests confirm the wavefront patch collapses at
 # the mirror focus (R/2) and the single-surface refraction focus (n2 R/(n2-n1)).
-# Run: /home3/optics/env/bin/python -m pytest raytracer/tests/test_ray_differentials.py -q
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest raytracer/tests/test_ray_differentials.py -q
 # =============================================================================
 import sys
 from pathlib import Path

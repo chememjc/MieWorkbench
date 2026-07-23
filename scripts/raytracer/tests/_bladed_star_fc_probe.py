@@ -11,7 +11,7 @@
 #
 # Interpreter: the FreeCAD AppImage (CLAUDE.md rules -- bare '--', runs twice /
 # idempotent, no __main__ guard, os._exit, log to Console+print):
-#   /home3/freecad/FreeCAD.AppImage -c _bladed_star_fc_probe.py -- \
+#   "$MIEWB_FREECAD" -c _bladed_star_fc_probe.py -- \
 #       --outdir <dir> < /dev/null
 # =============================================================================
 import argparse

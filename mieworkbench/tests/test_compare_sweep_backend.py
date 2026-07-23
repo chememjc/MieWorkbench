@@ -5,7 +5,7 @@ GUI venv this test suite normally runs under does NOT provide (see
 CLAUDE.md's pinned-interpreter table). So this test builds tiny synthetic
 case directories (report.json + detectors/*.h5, written with the GUI
 venv's own h5py — that IS available there) and then runs compare_sweep.py
-as a SUBPROCESS under /home3/optics/env/bin/python, exactly the way the
+as a SUBPROCESS under "$MIEWB_OPTICS_PYTHON", exactly the way the
 GUI's ComparePane does. Skipped outright if that interpreter is missing
 (e.g. a bare clone with no optics env installed yet).
 """
@@ -22,11 +22,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPARE_SWEEP = REPO_ROOT / "scripts" / "compare_sweep.py"
-OPTICS_PYTHON = os.environ.get("MIEWB_OPTICS_PYTHON",
-                               "/home3/optics/env/bin/python")
+
+import sys  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import common  # noqa: E402  (stdlib-only shared contract hub)
+
+OPTICS_PYTHON = common.OPTICS_PYTHON
 
 pytestmark = pytest.mark.skipif(
-    not os.path.exists(OPTICS_PYTHON),
+    not OPTICS_PYTHON or not os.path.exists(OPTICS_PYTHON),
     reason="optics env python not present on this machine")
 
 

@@ -19,7 +19,7 @@
 #   * path_tally: per-body power-weighted bulk path lands under the body
 #     label and matches power * L for a single-pass slab.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_time_core.py -q
 # =============================================================================
 import sys

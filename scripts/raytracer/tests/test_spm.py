@@ -13,7 +13,7 @@
 #     P_pk * L_eff), error cases.
 #   * sc_superk emission row loads (37 points, 400-2400 nm).
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_spm.py -q
 # =============================================================================
 import sys

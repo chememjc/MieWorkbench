@@ -21,7 +21,7 @@
 #       vs incoherent physics (ringing overshoot) THROUGH the real
 #       render path.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_image_sim.py -q
 # =============================================================================
 import json

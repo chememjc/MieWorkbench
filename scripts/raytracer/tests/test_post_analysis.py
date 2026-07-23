@@ -16,7 +16,7 @@
 #   (c) both are silent no-ops (no crash, no analysis/ dir) when their
 #       inputs are absent.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_post_analysis.py -q
 # =============================================================================
 import json

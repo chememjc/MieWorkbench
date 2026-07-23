@@ -176,7 +176,7 @@ def _require_pytmatrix():
         "pytmatrix is an OPTICS-ENV-ONLY dependency (never the GUI venv, "
         "never FreeCAD's python — see INSTALL.md 'The optics environment'"
         "). Install it there:\n"
-        "    /home3/optics/env/bin/pip install pytmatrix==0.3.3\n"
+        "    $MIEWB_OPTICS_PYTHON -m pip install pytmatrix==0.3.3\n"
         "(substitute your local optics env's bin/pip if MIEWB_OPTICS_PYTHON "
         "points elsewhere). Original import error: %r"
         % (sys.executable, _PYTMATRIX_IMPORT_ERROR))

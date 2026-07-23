@@ -2,7 +2,7 @@
 # fc_server.py - persistent headless FreeCAD worker for MieWorkbench.
 #
 # Launch (stdin is the request channel - do NOT redirect from /dev/null):
-#   /home3/freecad/FreeCAD.AppImage -c scripts/fcserver/fc_server.py
+#   "$MIEWB_FREECAD" -c scripts/fcserver/fc_server.py
 #
 # Protocol: newline-delimited JSON.
 #   request  : {"id": N, "op": "<name>", "params": {...}}

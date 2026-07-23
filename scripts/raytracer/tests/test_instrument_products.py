@@ -14,7 +14,7 @@
 #      + post_process.parse_ring_spec/render_ring_profile) and
 #      --reference-case absorbance (post_process.render_absorbance).
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_instrument_products.py -v
 # =============================================================================
 import csv

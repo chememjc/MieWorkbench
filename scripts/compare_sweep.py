@@ -3,13 +3,13 @@
 
 MUST run under the optics env (numpy + matplotlib + h5py):
 
-    /home3/optics/env/bin/python scripts/compare_sweep.py \
+    "$MIEWB_OPTICS_PYTHON" scripts/compare_sweep.py \
         --manifest results/<model>/sweep-<case>.manifest.json \
         [--out results/comparisons/sweep_<model>_<case>] [--ref <stem>]
 
 or, for ad-hoc comparison of arbitrary finished cases (no variable axis):
 
-    /home3/optics/env/bin/python scripts/compare_sweep.py \
+    "$MIEWB_OPTICS_PYTHON" scripts/compare_sweep.py \
         --cases results/example/quick results/example/normal \
         [--out results/comparisons/<name>] [--ref <case-label>]
 

@@ -2,7 +2,7 @@
 # =============================================================================
 # run_dls.py — real traced-dynamics dynamic light scattering (DLS) driver.
 #
-# Interpreter: /home3/optics/env/bin/python  (numpy/scipy/torch/h5py)
+# Interpreter: "$MIEWB_OPTICS_PYTHON"  (numpy/scipy/torch/h5py)
 #
 # Traces a TIME SEQUENCE of coherent speckle fields off a Brownian particle
 # suspension and persists them so scripts/dls_correlate.py can extract the

@@ -19,7 +19,7 @@
 #   curved_focal   a concave cylindrical (CurvedDetectorGrid) screen hugging
 #                  the PCX focus catches >90% of the focused power.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_new_scenes_e2e.py -q
 # =============================================================================
 import sys

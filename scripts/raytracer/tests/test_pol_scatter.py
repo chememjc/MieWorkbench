@@ -8,7 +8,7 @@
 #   a = (s1+s2)/2 (|A|^2+|B|^2), b = (s2-s1)/2 (|A|^2-|B|^2),
 #   c = (s2-s1) Re(A conj B),   s1=|S1|^2, s2=|S2|^2.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #      scripts/raytracer/tests/test_pol_scatter.py -q
 # =============================================================================
 import sys

@@ -10,7 +10,7 @@
 # checks the blackened rim absorbs the edge-incident light the clear rim
 # transmits.
 #
-# Run: MIEWB_RUN_FREECAD=1 /home3/optics/env/bin/python -m pytest \
+# Run: MIEWB_RUN_FREECAD=1 "$MIEWB_OPTICS_PYTHON" -m pytest \
 #         scripts/raytracer/tests/test_edge_blackened.py -q -m ''
 # =============================================================================
 import os
@@ -25,9 +25,11 @@ SCRIPTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SCRIPTS.parent))
 
+import common  # noqa: E402
+
 RUN_FREECAD = os.environ.get("MIEWB_RUN_FREECAD") == "1"
-FREECAD = os.environ.get("MIEWB_FREECAD", "/home3/freecad/FreeCAD.AppImage")
-OPTPROPS = str(SCRIPTS.parent / "opticalproperties")
+FREECAD = common.FREECAD_APPIMAGE
+OPTPROPS = str(common.OPTPROPS_DIR)
 
 pytestmark = [
     pytest.mark.slow,

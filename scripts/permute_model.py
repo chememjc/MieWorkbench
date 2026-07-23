@@ -13,7 +13,7 @@
 # Custom args MUST be preceded by a bare "--" so FreeCAD's own arg parser
 # hands the remainder to sys.argv untouched:
 #
-#   /home3/freecad/FreeCAD.AppImage -c scripts/permute_model.py -- \
+#   "$MIEWB_FREECAD" -c scripts/permute_model.py -- \
 #       --model example.FCStd \
 #       --var lenspos --min -5 --max 5 --n 2 \
 #       --var sphered --min 20 --max 40 --n 0 \

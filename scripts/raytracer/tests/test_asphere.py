@@ -2,7 +2,7 @@
 # test_asphere.py — validation of surfaces.Asphere (conic + polynomial optical
 # asphere) and the analytic normal_derivative shape operators on every
 # primitive. Run:
-#   /home3/optics/env/bin/python -m pytest raytracer/tests/test_asphere.py -q
+#   "$MIEWB_OPTICS_PYTHON" -m pytest raytracer/tests/test_asphere.py -q
 # =============================================================================
 import sys
 from pathlib import Path

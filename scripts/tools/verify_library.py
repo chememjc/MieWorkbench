@@ -4,7 +4,7 @@
 # opticalproperties/ library (Workstream G). Run under the optics-env
 # interpreter (numpy/scipy are hard dependencies of the raytracer package):
 #
-#   /home3/optics/env/bin/python scripts/tools/verify_library.py [--root DIR]
+#   "$MIEWB_OPTICS_PYTHON" scripts/tools/verify_library.py [--root DIR]
 #                                                                 [--json OUT]
 #                                                                 [--tol 2e-4]
 #

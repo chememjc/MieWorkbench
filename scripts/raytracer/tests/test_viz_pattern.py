@@ -9,7 +9,7 @@
 #      (the pattern rays run in a separate viz-only pass).
 #   3. The overlay rays actually land in the viz store (rays.npy content).
 #
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_viz_pattern.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_viz_pattern.py -v
 # =============================================================================
 import sys
 from pathlib import Path

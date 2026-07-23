@@ -6,7 +6,7 @@
 # directory needed. post_process.detector_qe_curve_for_label pins the
 # label -> owning-body ownership match.
 #
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_detector_qe.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_detector_qe.py -v
 # =============================================================================
 import sys
 from pathlib import Path

@@ -1836,7 +1836,7 @@ def load_optical_properties(root=None, db=None):
 
 
 # ---------------------------------------------------------------------------
-# Self-check: /home3/optics/env/bin/python -m raytracer.optprops  (from scripts/)
+# Self-check: "$MIEWB_OPTICS_PYTHON" -m raytracer.optprops  (from scripts/)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     props = load_optical_properties()

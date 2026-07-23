@@ -4,7 +4,7 @@
 # Usage (args via env to dodge the FreeCAD `-c` arg-parsing hang; always
 # close stdin for one-shot runs):
 #   FC_REQUEST_FILE=/path/req.json FC_RESPONSE_FILE=/path/resp.json \
-#     /home3/freecad/FreeCAD.AppImage -c scripts/fcserver/fc_batch.py < /dev/null
+#     "$MIEWB_FREECAD" -c scripts/fcserver/fc_batch.py < /dev/null
 #
 # req.json : {"ops": [{"op": "<name>", "params": {...}}, ...]}
 # resp.json: {"responses": [{"ok": true, "result": ...} | {"ok": false, ...}]}

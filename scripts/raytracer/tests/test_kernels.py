@@ -2,7 +2,7 @@
 # test_kernels.py — closed-form validation of the physics kernels:
 # fresnel.py (Snell/Fresnel/TIR/polarization), thinfilm.py (TMM),
 # surfaces.py (analytic intersections + trim containment).
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_kernels.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_kernels.py -v
 # =============================================================================
 import sys
 from pathlib import Path

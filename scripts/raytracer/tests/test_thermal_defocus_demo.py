@@ -7,7 +7,7 @@
 # (test_materials_thermo.py) by proving temperature propagates all the way
 # through the tracer to the detected image.
 #
-#   /home3/optics/env/bin/python -m pytest \
+#   "$MIEWB_OPTICS_PYTHON" -m pytest \
 #       scripts/raytracer/tests/test_thermal_defocus_demo.py -v
 # =============================================================================
 import json

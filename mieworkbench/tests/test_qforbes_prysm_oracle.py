@@ -3,7 +3,7 @@
 # first-radial-derivative vs prysm's own Qbfs/Qcon Forbes-polynomial surfaces,
 # to 1e-12. Run under env/bin/python (the project GUI venv, which has
 # numpy/scipy AND prysm installed -- see INSTALL.md's "Optional: prysm
-# oracle" section); NOT under /home3/optics/env, which is never modified by
+# oracle" section); NOT under "$MIEWB_OPTICS_PYTHON"'s env, which is never modified by
 # this round, and does not have prysm.
 #
 # prysm dependency: installed via

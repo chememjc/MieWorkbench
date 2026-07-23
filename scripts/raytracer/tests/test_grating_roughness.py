@@ -2,7 +2,7 @@
 # test_grating_roughness.py — closed-form validation of grating.py
 # (vector grating equation + lamellar efficiency model) and roughness.py
 # (TIS specular factor + Beckmann microfacet sampling).
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_grating_roughness.py -v
 # =============================================================================
 import sys

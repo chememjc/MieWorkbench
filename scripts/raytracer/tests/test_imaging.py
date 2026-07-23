@@ -25,7 +25,7 @@
 #     design_field_fan -> field-curvature sign + rough magnitude vs the
 #     Petzval formula.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_imaging.py -q
 # =============================================================================
 import json

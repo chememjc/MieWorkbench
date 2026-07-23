@@ -3,7 +3,7 @@
 # tolerance.py — sensitivity analysis + Monte-Carlo yield tolerancing (with
 # an optional per-draw focus compensator) over the fast evaluator.
 #
-# Interpreter: /home3/optics/env/bin/python (the OPTICS env: fast_eval.py
+# Interpreter: "$MIEWB_OPTICS_PYTHON" (the OPTICS env: fast_eval.py
 # shells out to FreeCAD / run_trace.py / post_process.py under their own
 # pinned interpreters, and the nested compensator reuses optimize.py's
 # scipy engine).
@@ -56,7 +56,7 @@
 # mirrors the CLI (explicit CLI flags win).
 #
 # Typical use:
-#     /home3/optics/env/bin/python scripts/tolerance.py \
+#     "$MIEWB_OPTICS_PYTHON" scripts/tolerance.py \
 #         --model tolerance_lens.FCStd \
 #         --tolerance lenspos:0:normal:0.5 --tolerance lensdy:0:normal:0.5 \
 #         --operand spot_rms:0:1 --draws 40 --merit-threshold 1.2e5 \

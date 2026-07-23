@@ -8,7 +8,7 @@
 # are stdlib-only by contract, so this runs fine under any interpreter, but
 # lives under the engine test tree per repo convention).
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_run_pipeline_forwarding.py -q
 # =============================================================================
 import sys

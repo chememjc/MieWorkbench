@@ -2,7 +2,7 @@
 # test_mie_particles.py — Mie tables vs canonical values (Wiscombe MIEV0
 # test cases, Rayleigh limit), phase-function normalization/sampling,
 # phi -> number density, and the continuum-medium energy split.
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_mie_particles.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_mie_particles.py -v
 # =============================================================================
 import sys
 from pathlib import Path

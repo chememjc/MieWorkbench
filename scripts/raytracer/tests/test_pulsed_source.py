@@ -16,7 +16,7 @@
 #     dict assert of the exact expression run_trace.py uses, since
 #     spinning up the full CLI pipeline here would be out of scope.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_pulsed_source.py -q
 # =============================================================================
 import sys

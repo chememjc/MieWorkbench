@@ -22,7 +22,7 @@
 #   * wavelength_strata's new StratumWavelengths return type (edges +
 #     stratum_domega) and its backward compatibility.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_time_products.py -q
 # =============================================================================
 import json

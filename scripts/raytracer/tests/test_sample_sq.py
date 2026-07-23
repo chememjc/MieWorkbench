@@ -3,7 +3,7 @@
 # ensemble (mie.EnsembleTables) and explicit paracrystal LATTICE realizations
 # (particles.ExplicitRealization). Companion to test_mie_particles.py (whose
 # sq=None path stays byte-identical).
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_sample_sq.py -q
 # =============================================================================
 import sys

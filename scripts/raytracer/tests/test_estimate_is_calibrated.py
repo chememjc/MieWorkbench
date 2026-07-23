@@ -5,7 +5,7 @@
 # runtime law itself (see estimate() in common.py) — it only reports
 # whether estimate() would have found a real .calibration.json sample.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_estimate_is_calibrated.py -q
 # =============================================================================
 import sys

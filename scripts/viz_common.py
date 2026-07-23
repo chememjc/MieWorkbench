@@ -40,7 +40,7 @@ connection, no view/source creation at import time).
 
 Must run under::
 
-    /home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython \
+    "$MIEWB_PVPYTHON" \
         --force-offscreen-rendering <driver>.py ...
 """
 

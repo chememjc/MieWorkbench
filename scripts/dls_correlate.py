@@ -2,7 +2,7 @@
 # =============================================================================
 # dls_correlate.py — dynamic light scattering (DLS) correlator.
 #
-# Interpreter: /home3/optics/env/bin/python  (numpy/scipy/h5py/matplotlib)
+# Interpreter: "$MIEWB_OPTICS_PYTHON"  (numpy/scipy/h5py/matplotlib)
 #
 # Reads the persisted speckle field sequence written by run_dls.py
 # (<case>/dls/frames.h5) and computes, per detector:

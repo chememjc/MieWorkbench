@@ -4,7 +4,7 @@
 # both operate purely on synthetic spectral_cube_mean-shaped arrays, the
 # same (bins, H, W) power cube [W] run_trace.py always saves.
 #
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_detector_photometric.py -v
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_detector_photometric.py -v
 # =============================================================================
 import sys
 from pathlib import Path

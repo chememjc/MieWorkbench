@@ -11,7 +11,7 @@
 #   * the opticalproperties/figure registry loader;
 #   * the cengine routing token (figure_error is Python-only).
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #         scripts/raytracer/tests/test_figure_error.py -q
 # =============================================================================
 import math

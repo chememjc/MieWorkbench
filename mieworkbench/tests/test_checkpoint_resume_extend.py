@@ -36,11 +36,10 @@ sys.path.insert(0, os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "scripts")))
 
 import common                                               # noqa: E402
-# this worktree's cengine/build/ is gitignored and not built per-worktree;
-# fall back to the shared machine build (CLAUDE.md's pinned-tool
-# convention) unless the environment already names one.
-os.environ.setdefault(
-    "MIEWB_CENGINE", "/home3/raytracegui/cengine/build/miewb-trace")
+# cengine/build/ is gitignored and not built per-worktree: in an agent
+# worktree the C engine resolves absent and the C-dependent cases skip.
+# Point MIEWB_CENGINE (env var or miewb.env) at a shared machine build
+# to run them there.
 from raytracer import cengine                               # noqa: E402
 from PySide6.QtCore import Qt                                # noqa: E402
 from PySide6.QtWidgets import QDialog, QDialogButtonBox      # noqa: E402

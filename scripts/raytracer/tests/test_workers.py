@@ -7,7 +7,7 @@
 # gather ONCE. These tests pin the merge identity, the ledger merge, the
 # workers=1 short-circuit (must NOT spawn) and coherent/export correctness.
 #
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_workers.py -q
 # =============================================================================
 import sys

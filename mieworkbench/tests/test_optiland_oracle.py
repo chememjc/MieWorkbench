@@ -10,7 +10,7 @@
 #   QT_QPA_PLATFORM=offscreen env/bin/python -m pytest \
 #       mieworkbench/tests/test_optiland_oracle.py -q
 # The oracle cases additionally shell out to the optics env's C engine
-# (/home3/optics/env + cengine/build/miewb-trace); absent -> those cases skip.
+# ("$MIEWB_OPTICS_PYTHON"'s env + cengine/build/miewb-trace); absent -> those cases skip.
 # The bridge structural + unit-contract tests need only Optiland + a
 # geometry/<stem>/model.json cache.
 #

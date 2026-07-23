@@ -2,7 +2,7 @@
 # test_biaxial.py — closed-form validation of the biaxial two-sheet solver in
 # birefringence.py: quartic normal-surface roots, D eigenmodes, walk-off,
 # uniaxial/isotropic limits, interface in/out/internal-reflection.
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_biaxial.py -q
 # =============================================================================
 import sys

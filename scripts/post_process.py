@@ -2,7 +2,7 @@
 # =============================================================================
 # post_process.py — rerunnable rendering/analysis stage.
 #
-# Interpreter: /home3/optics/env/bin/python
+# Interpreter: "$MIEWB_OPTICS_PYTHON"
 #
 # Reads  : results/<model>/<case>/{case.json, audit.json, rays.npy,
 #          detectors/*.h5} + geometry/<model>/model.json + materials.csv

@@ -8,7 +8,7 @@
 # with nothing in between, so every emitted watt lands on the detector and
 # the ledger's detected_W is exactly the sum of both populations' tallies.
 #
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_detected_per_source.py -q
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_detected_per_source.py -q
 # =============================================================================
 import sys
 from pathlib import Path

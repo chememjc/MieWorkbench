@@ -2,14 +2,14 @@
 # =============================================================================
 # gen_usaf_target.py — generate the shipped USAF-1951-STYLE resolution
 # target bitmap for the extended image-emitting source (samples-instruments
-# round). Interpreter: /home3/optics/env/bin/python (numpy + matplotlib).
+# round). Interpreter: "$MIEWB_OPTICS_PYTHON" (numpy + matplotlib).
 #
 # NOT a licensed reproduction of the MIL-STD-150A artwork — a public-domain
 # STYLE-ALIKE: three-bar elements (horizontal + vertical pairs) in
 # 2x-descending groups around the center, on a bright-emits convention
 # (white bars on black = the bars EMIT light, like a backlit chrome-on-
 # glass target). Regenerate with:
-#   /home3/optics/env/bin/python scripts/tools/gen_usaf_target.py
+#   "$MIEWB_OPTICS_PYTHON" scripts/tools/gen_usaf_target.py
 # Writes opticalproperties/image/usaf_style_target.png (512x512, 8-bit grey).
 # =============================================================================
 import numpy as np

@@ -2,7 +2,7 @@
 # =============================================================================
 # optimize.py — merit-function optimizer over the fast evaluator.
 #
-# Interpreter: /home3/optics/env/bin/python (the OPTICS env: scipy +
+# Interpreter: "$MIEWB_OPTICS_PYTHON" (the OPTICS env: scipy +
 # nevergrad/cma live there, and fast_eval.py shells out to FreeCAD /
 # run_trace.py / post_process.py under their own pinned interpreters).
 #
@@ -56,7 +56,7 @@
 # the CLI (explicit CLI flags win).
 #
 # Typical use:
-#     /home3/optics/env/bin/python scripts/optimize.py \
+#     "$MIEWB_OPTICS_PYTHON" scripts/optimize.py \
 #         --model example.FCStd --var lenspos:-4:-8:8 \
 #         --operand spot_rms:0:1 --algorithm local --budget 20
 # =============================================================================

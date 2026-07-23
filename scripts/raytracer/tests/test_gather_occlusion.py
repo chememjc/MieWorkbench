@@ -9,7 +9,7 @@
 #     prefilter (n_faces_active == 0) and leaves the image identical
 #   * torch and numpy apply the SAME mask (agree to 5e-3)
 #   * shadow-edge lands within `tile` pixels of the geometric projection
-# Run: /home3/optics/env/bin/python -m pytest \
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest \
 #          scripts/raytracer/tests/test_gather_occlusion.py -v
 # =============================================================================
 import sys

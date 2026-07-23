@@ -4,7 +4,7 @@
 # .MieWB round-trip; plus a FreeCAD-gated end-to-end cross-check (extractor
 # verify + emit-from-prescription, and the deliberate-mismatch hard error).
 #
-#   /home3/optics/env/bin/python -m pytest raytracer/tests/test_prescription.py -q
+#   "$MIEWB_OPTICS_PYTHON" -m pytest raytracer/tests/test_prescription.py -q
 #   MIEWB_RUN_FREECAD=1 ... (adds the extractor cross-check)
 # =============================================================================
 import json
@@ -27,10 +27,9 @@ from raytracer import prescription as pr  # noqa: E402
 
 RUN_FREECAD = os.environ.get("MIEWB_RUN_FREECAD") == "1"
 freecad_only = pytest.mark.skipif(
-    not RUN_FREECAD,
+    not RUN_FREECAD or not common.FREECAD_APPIMAGE,
     reason="set MIEWB_RUN_FREECAD=1 to run the FreeCAD extractor cross-check")
-FREECAD_APPIMAGE = os.environ.get("MIEWB_FREECAD",
-                                  "/home3/freecad/FreeCAD.AppImage")
+FREECAD_APPIMAGE = common.FREECAD_APPIMAGE
 PROBE = Path(__file__).resolve().parent / "_prescription_fc_probe.py"
 
 COVERED = sorted(pl.prescription_kinds())

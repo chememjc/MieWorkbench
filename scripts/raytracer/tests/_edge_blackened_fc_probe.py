@@ -9,7 +9,7 @@
 # bends its rim rays outward into the cylindrical barrel -> a real edge
 # interaction that the blackening swallows (ghost/stray-light suppression).
 #
-#   /home3/freecad/FreeCAD.AppImage -c _edge_blackened_fc_probe.py -- \
+#   "$MIEWB_FREECAD" -c _edge_blackened_fc_probe.py -- \
 #       --outdir <dir> < /dev/null
 # =============================================================================
 import argparse

@@ -10,7 +10,7 @@
 #   * every library-derived CSV (materials n/k, coating R/T) carries a
 #     non-empty reference/provenance column on every row
 #
-# Run: /home3/optics/env/bin/python -m pytest scripts/raytracer/tests/test_emit_csv_e2e.py -q
+# Run: "$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/test_emit_csv_e2e.py -q
 # =============================================================================
 import csv
 import json

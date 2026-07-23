@@ -5,7 +5,7 @@ numbers.
 
 MUST run under the optics env python (numpy + matplotlib + h5py):
 
-    /home3/optics/env/bin/python scripts/compare_runs.py \
+    "$MIEWB_OPTICS_PYTHON" scripts/compare_runs.py \
         --cases results/example/quick results/example/normal \
         [--out results/comparisons/<name>]
 

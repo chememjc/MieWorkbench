@@ -2,7 +2,7 @@
 # =============================================================================
 # run_trace.py — the optical solver stage.
 #
-# Interpreter: /home3/optics/env/bin/python   (numpy/scipy/torch/miepython)
+# Interpreter: "$MIEWB_OPTICS_PYTHON"   (numpy/scipy/torch/miepython)
 #
 # Reads  : geometry/<model>/model.json (validated contract from
 #          extract_geometry.py), materials.csv, coatings.csv

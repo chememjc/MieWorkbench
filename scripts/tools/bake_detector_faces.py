@@ -3,7 +3,7 @@
 # body properties on the saved demo scene (called by make_demos.py).
 #
 # Interpreter: the FreeCAD AppImage:
-#   /home3/freecad/FreeCAD.AppImage -c scripts/tools/bake_detector_faces.py \
+#   "$MIEWB_FREECAD" -c scripts/tools/bake_detector_faces.py \
 #       -- --model demos/michelson.FCStd --pin 'Screen=Body.Tip.Face3' ... \
 #       < /dev/null
 #

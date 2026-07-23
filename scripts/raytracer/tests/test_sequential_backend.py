@@ -1,6 +1,6 @@
 # =============================================================================
 # test_sequential_backend.py -- P4b engine-side routing + DLS machinery
-# (engine3.md Sec 5/8). Runs under /home3/optics/env/bin/python (NO Optiland,
+# (engine3.md Sec 5/8). Runs under "$MIEWB_OPTICS_PYTHON" (NO Optiland,
 # NO FreeCAD): it exercises the operand->backend routing table, the
 # single-sourced merit residual form, the damped-least-squares driver on an
 # analytic bowl, and the sequential-backend guards in optimize.py/tolerance.py

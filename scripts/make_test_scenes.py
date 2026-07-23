@@ -2,7 +2,7 @@
 # make_test_scenes.py — author validation FCStd scenes programmatically.
 #
 # Interpreter: the FreeCAD AppImage:
-#   /home3/freecad/FreeCAD.AppImage -c scripts/make_test_scenes.py -- \
+#   "$MIEWB_FREECAD" -c scripts/make_test_scenes.py -- \
 #       [--outdir .] [--scene doubleslit] < /dev/null
 #
 # --scene <name> builds one scene; --scene all builds every scene in SCENES.
