@@ -611,6 +611,32 @@ round.
   ancestry counter, mirroring the Python fix) would close this asymmetry;
   not yet started.
 
+### (f) samples-instruments demo-shakedown findings (2026-07-23)
+
+Two engine seams surfaced by the new demos' shakedown, LOUD failures
+(the closure gate aborts the run), documented in demos/UXNOTES.md:
+
+- **C-engine continuum-scatter divergence in TIR-trapping shells**
+  **[M · Med]**. A continuum sample INSIDE a closed glass cell (cuvette/
+  vial/vat walls) diverges the C engine's closure (1e48+) — scattered
+  children trapped by TIR at the glass shell cascade through the
+  C iteration valve (heuristic split_factor budget; the Python engine's
+  new exact per-lineage hop cap truncates the same trap honestly with a
+  warning). The demos work around it with bare `sample_region` volumes.
+  Seams: cengine/src/trace.c iteration valve (align with the Python
+  per-lineage cap — carry a per-ray hop counter, e.g. extend event_ctr
+  gating) + investigate whether the C fresnel branch amplifies at
+  grazing incidence from weakly absorbing media (the Python twin of
+  that bug was fixed this round in fresnel.cos_theta_t; check
+  kernels/fresnel.h's branch rule against the same water->lossless
+  case).
+- **`ambient_material` is hardcoded to air** **[S · Med]**. extract's
+  model.json always writes ambient_material=air; a DLS bench wants a
+  water ambient (index-matching the sample region) and today nothing —
+  no body property, no simparam — can set it. Expose it (body-less
+  model-level property or CLI override) and the dls_goniometer
+  demonstrator can graduate to a Gamma = D q^2 gated oracle.
+
 ## Roadmap rating index (every open item, 2-axis)
 
 One row per open item, grouped by the section it lives in. Effort/impact per the
