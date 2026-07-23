@@ -495,8 +495,9 @@ def test_body_medium_unwired_features_fail_loudly():
 
     scene = _FakeSphereScene([0.0, 0.0, 0.0], 5e-3)
     body = _FakeBody(0, "Liquid", "water", [-5e-3] * 3, [5e-3] * 3)
-    with pytest.raises(NotImplementedError, match="sq_model"):
-        BodyParticleMedium("s", _sample_row(sq_model="py"), body, scene)
+    # sq_model is now WIRED (samples-instruments S(q) round) — a py row
+    # must NOT raise; see test_sample_sq.py for its physics. shape != sphere
+    # still needs the T-matrix wiring and raises.
     with pytest.raises(NotImplementedError, match="shape"):
         BodyParticleMedium("s", _sample_row(shape="spheroid",
                                             aspect_ratio=1.5), body, scene)

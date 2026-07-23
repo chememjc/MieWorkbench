@@ -157,9 +157,34 @@ class EnsembleTables:
     mu_ext(lambda) = N * Int pi r^2 Qext(r,lambda) p(r) dr        [1/m]
     albedo(lambda) = Int r^2 Qsca p / Int r^2 Qext p
     scatter radius sampling weight ~ r^2 Qsca(r) p(r)
+
+    STRUCTURE FACTOR S(q) (samples-instruments round). If `sq` is supplied
+    the medium is a CORRELATED suspension (inter-particle interference),
+    not the default independent-scatterer cloud. `sq` is either
+      * a prebuilt callable S(q_per_um) -> array, or
+      * a (sq_model, sq_params, context) triple dispatched through
+        structure.sq_evaluate (units: q in 1/um).
+    Two things change (both energy-exact by construction — particles.py
+    _continuum reads only mu_ext + albedo):
+      * the ANGULAR sampling density becomes p_Mie(theta)*S(q(theta)) —
+        forward scattering is suppressed where S<1 at low q;
+      * the SCATTERING coefficient is scaled by the phase-function-weighted
+        mean structure factor <S>_p = Int p(theta) S(q) dOmega /
+        Int p(theta) dOmega, so mu_sca' = mu_sca*<S>_p, mu_abs unchanged,
+        mu_ext = mu_abs + mu_sca'.  The polarized azimuth law is untouched
+        (S(q) is theta-only; azimuth stays uniform in the continuum path).
+
+    HONEST LIMIT — polydispersity decoupling: a single S(q) at the
+    effective structure scale multiplies the SIZE-AVERAGED phase function
+    (the local monodisperse approximation / "decoupling approximation").
+    The registry supplies the structure scale through context
+    {"phi_v": ensemble volume fraction, "r_mean_um": volume-weighted mean
+    radius}; per-size S(q) coupling (the full Kotlarchyk-Chen cross term)
+    is NOT modelled.
     """
 
-    def __init__(self, evaluator, dist, n_density, lam_list, n_quad=48):
+    def __init__(self, evaluator, dist, n_density, lam_list, n_quad=48,
+                 sq=None):
         self.ev = evaluator
         self.dist = dist
         self.N = n_density
@@ -181,6 +206,91 @@ class EnsembleTables:
                 "albedo": (mu_sca / mu_ext) if mu_ext > 0 else 0.0,
                 "radius_weights": w_r, "qext": qext, "qsca": qsca, "g": g,
             }
+
+        # --- optional inter-particle structure factor S(q) ---
+        self._sq = None
+        self.sq_model = None
+        if sq is not None:
+            if callable(sq):
+                self._sq = sq
+                self.sq_model = getattr(sq, "sq_model", "callable")
+            else:
+                sq_model, sq_params, context = sq
+
+                def _make(_m, _p, _c):
+                    from . import structure
+                    return lambda qv: structure.sq_evaluate(_m, _p, qv, _c)
+                self._sq = _make(sq_model, sq_params, context)
+                self.sq_model = sq_model
+            # reference lambda for scalar diagnostics = nearest to the mean
+            self.sq_ref_lam = float(self.lam_list[int(np.argmin(np.abs(
+                self.lam_list - float(np.mean(self.lam_list)))))])
+            for lam in self.lam_list:
+                base = self._by_lam[float(lam)]
+                mu_grid, S_vals, q_um, mean_S, cdf = self._sq_lam(lam, base)
+                mu_ext_old = base["mu_ext"]
+                mu_sca_old = base["mu_sca"]
+                mu_abs = mu_ext_old - mu_sca_old        # absorption unchanged
+                mu_sca_new = mu_sca_old * mean_S
+                mu_ext_new = mu_abs + mu_sca_new
+                base["mu_ext"] = mu_ext_new
+                base["mu_sca"] = mu_sca_new
+                base["albedo"] = ((mu_sca_new / mu_ext_new)
+                                  if mu_ext_new > 0 else 0.0)
+                base["sq_mean_S"] = mean_S
+                base["sq_qmax"] = float(q_um.max()) if q_um.size else 0.0
+                base["sq_mu"] = mu_grid
+                base["sq_cdf"] = cdf
+
+    def _sq_lam(self, lam, base):
+        """Build the S(q)-corrected angular sampler + <S>_p at one lambda.
+
+        Returns (mu_grid, S_vals, q_per_um, mean_S, cdf).
+
+        Decoupling: the size-AVERAGED phase function P_ens(mu) =
+        sum_r radius_weights[r] * p_r(mu) (scattering-weighted, the same
+        weights the two-step radius/mu sampler marginalizes to) is what
+        S(q) multiplies — one structure factor for the whole size mix.
+        """
+        w_r = base["radius_weights"]
+        mu_grid = None
+        P_ens = None
+        for i, r in enumerate(self.radii):
+            mu_i, p_i, _ = self.ev.phase_function(r, lam)
+            if P_ens is None:
+                mu_grid = mu_i
+                P_ens = np.zeros_like(mu_i)
+            P_ens = P_ens + w_r[i] * p_i
+
+        # --- q-UNIT CONVERSION (the honest bit). mie.py is METRES-internal
+        # (lam in metres, radii in metres) but structure.py wants q in
+        # INVERSE MICROMETRES. So convert lambda to um first:
+        #   lambda_um = lam_m * 1e6
+        #   q(theta) = 2 * (2 pi n_host / lambda_um) * sin(theta/2)  [1/um]
+        # with sin(theta/2) = sqrt((1-mu)/2). n_host = Re(host index) at
+        # this lambda (the evaluator's host material). Backscatter (mu=-1)
+        # gives q_max = 4 pi n_host / lambda_um exactly — the grid top,
+        # pinned by test_sample_sq.py to catch a 1e-6/1e-9 unit slip. ---
+        n_host = float(np.real(
+            self.ev.mat_h.n_complex(np.atleast_1d(lam))[0]))
+        lam_um = float(lam) * 1e6
+        q_um = (4.0 * np.pi * n_host / lam_um) * np.sqrt(
+            np.clip((1.0 - mu_grid) / 2.0, 0.0, None))
+        S_vals = np.asarray(self._sq(q_um), dtype=np.float64)
+
+        # <S>_p = Int p S dOmega / Int p dOmega. Azimuthal symmetry makes
+        # dOmega = 2 pi dmu, and the 2 pi cancels in the ratio -> a plain
+        # trapezoid ratio over mu (numpy quadrature on the 1024-pt grid).
+        den = float(np.trapezoid(P_ens, mu_grid))
+        num = float(np.trapezoid(P_ens * S_vals, mu_grid))
+        mean_S = (num / den) if den != 0.0 else 1.0
+
+        pdf = np.clip(P_ens * S_vals, 0.0, None)
+        cdf = np.concatenate([[0.0], np.cumsum(
+            0.5 * (pdf[1:] + pdf[:-1]) * np.diff(mu_grid))])
+        if cdf[-1] > 0:
+            cdf = cdf / cdf[-1]
+        return mu_grid, S_vals, q_um, mean_S, cdf
 
     def _nearest(self, lam):
         i = int(np.argmin(np.abs(self.lam_list - float(lam))))
@@ -206,12 +316,20 @@ class EnsembleTables:
         (particles.py ExplicitRealization.intercept)."""
         n = len(d_in)
         mu = np.empty(n)
-        # group by radius for phase-CDF reuse (radii come from the shared
-        # quadrature grid, so few uniques)
-        for rv in np.unique(r):
-            sel = r == rv
-            mu[sel] = self.ev.sample_scatter_mu(rv, lam, rng,
-                                                int(sel.sum()))
+        if self._sq is not None:
+            # S(q)-correlated suspension: draw theta directly from the
+            # size-averaged p(theta)*S(q(theta)) CDF (decoupling — the
+            # per-ray radius is not used for the direction here).
+            t = self._nearest(lam)
+            u = rng.uniform(0.0, 1.0, n)
+            mu = np.interp(u, t["sq_cdf"], t["sq_mu"])
+        else:
+            # group by radius for phase-CDF reuse (radii come from the
+            # shared quadrature grid, so few uniques)
+            for rv in np.unique(r):
+                sel = r == rv
+                mu[sel] = self.ev.sample_scatter_mu(rv, lam, rng,
+                                                    int(sel.sum()))
         phi = rng.uniform(0.0, 2.0 * np.pi, n)
         # build frames around d_in
         a = np.zeros_like(d_in)
@@ -225,7 +343,7 @@ class EnsembleTables:
                 + (st * np.sin(phi))[:, None] * t2)
 
     def diagnostics(self):
-        return {
+        d = {
             "N_per_m3": self.N,
             "radii_um": (self.radii / 1e-6).tolist(),
             "lambda_nm": (self.lam_list / 1e-9).tolist(),
@@ -236,3 +354,11 @@ class EnsembleTables:
                        self._by_lam[float(l)]["albedo"]
                        for l in self.lam_list},
         }
+        if self._sq is not None:
+            d["sq_model"] = self.sq_model
+            d["sq_mean_S"] = {("%.1f" % (l / 1e-9)):
+                              self._by_lam[float(l)]["sq_mean_S"]
+                              for l in self.lam_list}
+            # <S>_p at the reference lambda (the mu_sca scale factor)
+            d["mu_sca_scale"] = self._by_lam[self.sq_ref_lam]["sq_mean_S"]
+        return d

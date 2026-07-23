@@ -141,7 +141,16 @@ class ParticleCloud:
     against the real solvent."""
 
     def __init__(self, spec, scene, threshold=1e6, seed=0,
-                 lam_list=(633e-9,), pol_scatter=True, host=None):
+                 lam_list=(633e-9,), pol_scatter=True, host=None, sq=None):
+        # `sq` (samples-instruments round): inter-particle structure factor,
+        # threaded straight into EnsembleTables. None (the CLI --particles
+        # path) is byte-identical to the pre-S(q) engine. Accepted forms:
+        #   None                          no S(q) (independent scatterers)
+        #   callable S(q_per_um)->array   prebuilt structure factor
+        #   (sq_model, sq_params)         context (phi_v, r_mean_um) filled
+        #                                 in below from the resolved f_v +
+        #                                 volume-weighted mean radius
+        #   (sq_model, sq_params, context) context supplied verbatim
         # local copy: a tau= spec gets its resolved phi filled in below,
         # without mutating the caller's dict.
         self.spec = spec = dict(spec)
@@ -179,7 +188,7 @@ class ParticleCloud:
                                           self.dist)
         self.count = self.N * self.box_volume
         self.tables = EnsembleTables(self.evaluator, self.dist, self.N,
-                                     lam_list)
+                                     lam_list, sq=self._resolve_sq(sq))
         self.rng = np.random.default_rng(seed)
         self.mode = "explicit" if self.count <= threshold else "continuum"
         self.explicit = None
@@ -213,7 +222,37 @@ class ParticleCloud:
         if self.tau_resolved is not None:
             d["tau_resolved"] = dict(self.tau_resolved, resolved_phi=
                                      self.spec["phi"])
+        if self.explicit is not None and self.explicit.lattice_info \
+                is not None:
+            # explicit lattice realization overrode the phi/tau count with
+            # the kept lattice-site count — echo BOTH so case.json shows it
+            d["lattice"] = dict(self.explicit.lattice_info,
+                                phi_count=self.count)
         return d
+
+    def _resolve_sq(self, sq):
+        """Normalize the `sq` argument into what EnsembleTables wants
+        (None / callable / (model, params, context)). A bare
+        (model, params) pair gets its trace-time context injected from the
+        just-resolved ensemble: volume fraction f_v and the
+        VOLUME-WEIGHTED mean radius Int r^4 p(r) dr / Int r^3 p(r) dr,
+        computed on the same quadrature grid the tables use (so it honours
+        the log-normal truncation)."""
+        if sq is None or callable(sq):
+            return sq
+        sq = tuple(sq)
+        if len(sq) == 3:
+            return sq
+        if len(sq) != 2:
+            raise ValueError(
+                "ParticleCloud sq must be None, a callable, or a "
+                "(model, params[, context]) tuple; got %r" % (sq,))
+        sq_model, sq_params = sq
+        r_q, w_q = self.dist.quadrature()
+        den = float(np.sum(w_q * r_q ** 3))
+        r_mean_m = (float(np.sum(w_q * r_q ** 4)) / den) if den > 0 else 0.0
+        context = {"phi_v": float(self.f_v), "r_mean_um": r_mean_m / 1e-6}
+        return (sq_model, sq_params, context)
 
     # ------------------------------------------------------------------
     # region hooks (overridden by BodyParticleMedium: the region is a
@@ -306,16 +345,44 @@ class ExplicitRealization:
     def __init__(self, cloud, scene, count, rng):
         import warnings
         self.cloud = cloud
-        if count > self.MAX_BRUTE:
-            raise ValueError(
-                "explicit particle count %d exceeds the brute-force cap "
-                "%d — raise --particle-threshold to force continuum mode "
-                "or reduce phi/box size" % (count, self.MAX_BRUTE))
-        if count > 50_000:
-            warnings.warn("explicit mode with %d spheres will be slow "
-                          "(brute-force traversal)" % count)
-        self.radii = cloud.dist.sample(rng, count)
-        self.centers = self._place(scene, count, rng)
+        self.lattice_info = None
+        # PARACRYSTAL + explicit mode: a real lattice realization replaces
+        # dart-throwing (the phi/tau-derived `count` is OVERRIDDEN by the
+        # number of kept lattice sites). See _place_lattice.
+        row = getattr(cloud, "sample_row", None)
+        use_lattice = (row is not None
+                       and row.get("sq_model") == "paracrystal"
+                       and row.get("mode") == "explicit")
+        if use_lattice:
+            self.centers = self._place_lattice(scene, rng, row["sq_params"])
+            count = len(self.centers)
+            if count < 1:
+                raise ValueError(
+                    "paracrystal lattice realization kept 0 sites — the "
+                    "lattice constant a_um is larger than the sample body "
+                    "or every jittered site fell outside it")
+            if count > self.MAX_BRUTE:
+                raise ValueError(
+                    "paracrystal lattice has %d sites, exceeding the "
+                    "brute-force cap %d — raise a_um or shrink the sample "
+                    "body" % (count, self.MAX_BRUTE))
+            if count > 50_000:
+                warnings.warn("explicit lattice with %d sites will be slow "
+                              "(brute-force traversal)" % count)
+            self.radii = cloud.dist.sample(rng, count)
+            self.lattice_info["n_sites"] = count
+            self._check_lattice_overlap(warnings)
+        else:
+            if count > self.MAX_BRUTE:
+                raise ValueError(
+                    "explicit particle count %d exceeds the brute-force cap "
+                    "%d — raise --particle-threshold to force continuum mode "
+                    "or reduce phi/box size" % (count, self.MAX_BRUTE))
+            if count > 50_000:
+                warnings.warn("explicit mode with %d spheres will be slow "
+                              "(brute-force traversal)" % count)
+            self.radii = cloud.dist.sample(rng, count)
+            self.centers = self._place(scene, count, rng)
         # per-particle extinction collision radius at the mean lambda
         lam0 = float(np.mean(cloud.tables.lam_list))
         qext, qsca, _ = cloud.evaluator.efficiencies(
@@ -388,6 +455,90 @@ class ExplicitRealization:
                 "volume fraction too high for non-overlapping spheres?"
                 % (placed, count, attempts))
         return centers
+
+    # ------------------------------------------------------------------
+    # explicit paracrystal lattice realization
+    # ------------------------------------------------------------------
+    _LATTICE_BASIS = {
+        "sc": [(0.0, 0.0, 0.0)],
+        "bcc": [(0.0, 0.0, 0.0), (0.5, 0.5, 0.5)],
+        "fcc": [(0.0, 0.0, 0.0), (0.5, 0.5, 0.0),
+                (0.5, 0.0, 0.5), (0.0, 0.5, 0.5)],
+    }
+
+    def _place_lattice(self, scene, rng, sq_params):
+        """Conventional-cubic-cell lattice sites (fcc/bcc/sc) at constant
+        a_um, tiled over the cloud's AABB, then Gaussian-jittered by
+        sigma = g*a per axis and CLIPPED to the region
+        (cloud.contains_points — the real body interior for body-bound
+        media, the AABB for a world box). Particle COUNT = kept sites.
+
+        The lattice is referenced to the WORLD ORIGIN (site positions are
+        integer-cell multiples of a), so a scene with several sampled
+        bodies shares one coherent lattice frame.
+        """
+        lattice = sq_params["lattice"]
+        if lattice not in self._LATTICE_BASIS:
+            raise ValueError("paracrystal lattice must be fcc/bcc/sc, got %r"
+                             % (lattice,))
+        a = float(sq_params["a_um"]) * 1e-6          # metres
+        g = float(sq_params["g"])
+        sigma = g * a
+        lo, hi = np.asarray(self.cloud.lo), np.asarray(self.cloud.hi)
+
+        # integer cell indices covering the AABB (pad by one cell so
+        # face/edge-centred basis atoms near the border are not missed)
+        rngs = [np.arange(int(np.floor(lo[d] / a)) - 1,
+                          int(np.ceil(hi[d] / a)) + 2) for d in range(3)]
+        I, J, K = np.meshgrid(rngs[0], rngs[1], rngs[2], indexing="ij")
+        cells = np.stack([I.ravel(), J.ravel(), K.ravel()], axis=-1)
+        sites = []
+        for b in self._LATTICE_BASIS[lattice]:
+            sites.append((cells + np.asarray(b)) * a)
+        sites = np.concatenate(sites, axis=0)
+        # keep only cell sites whose UNJITTERED position is in the AABB
+        inb = np.all((sites >= lo) & (sites <= hi), axis=-1)
+        sites = sites[inb]
+        n_generated = len(sites)
+
+        jittered = sites + rng.normal(0.0, sigma, size=sites.shape) \
+            if sigma > 0 else sites.copy()
+        keep = np.asarray(self.cloud.contains_points(jittered), dtype=bool)
+        centers = jittered[keep]
+        # base (pre-jitter) positions of the KEPT sites — for jitter stats
+        self._lattice_base = sites[keep]
+        self.lattice_info = {
+            "lattice": lattice, "a_um": a / 1e-6, "g": g,
+            "sigma_um": sigma / 1e-6,
+            "n_sites_generated": int(n_generated),
+        }
+        return centers
+
+    def _check_lattice_overlap(self, warnings):
+        """Warn ONCE if any two jittered spheres overlap at the chosen
+        a/g/radius combo — lattice packing is the author's choice, so this
+        is advisory (never a rejection)."""
+        if len(self.centers) < 2:
+            return
+        try:
+            from scipy.spatial import cKDTree
+        except Exception:
+            return
+        rmax = float(self.radii.max())
+        tree = cKDTree(self.centers)
+        n_overlap = 0
+        for i, j in tree.query_pairs(2.0 * rmax):
+            d = float(np.linalg.norm(self.centers[i] - self.centers[j]))
+            if d < self.radii[i] + self.radii[j]:
+                n_overlap += 1
+        self.lattice_info["n_overlapping_pairs"] = int(n_overlap)
+        if n_overlap:
+            warnings.warn(
+                "paracrystal lattice (%s a=%.4g um g=%.3g) produced %d "
+                "overlapping sphere pair(s) after jitter — the packing is "
+                "the author's choice; particles are kept as placed"
+                % (self.lattice_info["lattice"], self.lattice_info["a_um"],
+                   self.lattice_info["g"], n_overlap))
 
     def intercept(self, tracer, batch, t, fid):
         seg_max = np.where(fid >= 0, t, 1.0)
@@ -571,11 +722,6 @@ class BodyParticleMedium(ParticleCloud):
 
     def __init__(self, sample_name, row, body, scene, threshold=1e6,
                  seed=0, lam_list=(633e-9,), pol_scatter=True):
-        if row.get("sq_model", "none") != "none":
-            raise NotImplementedError(
-                "sample %r: sq_model=%s is not wired into the ensemble "
-                "tables yet (S(q) integration lands later this round)"
-                % (sample_name, row["sq_model"]))
         if row.get("shape", "sphere") != "sphere":
             raise NotImplementedError(
                 "sample %r: shape=%s needs the T-matrix evaluator wiring "
@@ -620,9 +766,16 @@ class BodyParticleMedium(ParticleCloud):
                 "round) — ignoring" % sample_name)
         self.host_material_name = body.material
         host = scene.matdb.get(body.material)
+        # inter-particle structure factor: build the (model, params) pair
+        # from the registry row; ParticleCloud injects the trace-time
+        # context (phi_v, r_mean_um) once f_v is resolved. sq_model='none'
+        # stays sq=None so those rows are byte-identical to the CLI path.
+        sq = None
+        if row.get("sq_model", "none") != "none":
+            sq = (row["sq_model"], row["sq_params"])
         super().__init__(spec, scene, threshold=threshold, seed=seed,
                          lam_list=lam_list, pol_scatter=pol_scatter,
-                         host=host)
+                         host=host, sq=sq)
 
     # region hooks ------------------------------------------------------
     def segment_range(self, batch, seg_max):
