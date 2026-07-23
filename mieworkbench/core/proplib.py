@@ -11,8 +11,8 @@ loader's return objects intentionally drop columns like nk_file/table_csv
 paths once they're resolved into arrays, so the editor pane needs its own
 raw read for those).
 
-CATEGORY_INFO is the one place that knows the on-disk layout for each of
-the six registries: where the registry csv lives (registry_rel, resolved
+CATEGORY_INFO is the one place that knows the on-disk layout for each
+registry: where the registry csv lives (registry_rel, resolved
 new-extension-first / legacy-.csv-fallback exactly like the loaders), where
 its rows' referenced table/nk files live (file_dir, relative to root) and
 which registry column(s) name those files (file_cols), plus the per-item
@@ -35,7 +35,8 @@ from raytracer.materials import MaterialError, resolve_prop_path  # noqa: E402
 
 CATEGORIES = ("materials", "coatings", "polarizers", "filters", "gratings",
               "uniaxial", "diffusers", "detectors", "emission", "biaxial",
-              "figures", "nonlinear", "scatter", "instruments")
+              "figures", "nonlinear", "scatter", "instruments", "samples",
+              "images")
 
 # subdir=None means the registry lives directly at <root>/<filename>.
 # comment_prefix (optional, default None): set for a registry whose csv
@@ -136,6 +137,37 @@ CATEGORY_INFO = {
         "file_cols": ("qe_table", "responsivity_table", "detector_qe_table"),
         "file_alt_ext": ".mietab",
     },
+    "samples": {
+        "registry_rel": "sample/samples.miesamp",
+        # rows are self-contained EXCEPT sq_model=table rows, whose
+        # sq_params string carries a 'table:<name>' key resolving into
+        # this tables/ dir -- that filename is buried inside sq_params,
+        # not a plain top-level column, so file_cols is intentionally
+        # empty (table_path()/table_data()/the promote-to-system file
+        # copy all key off file_cols; a sq_model=table row's table isn't
+        # auto-copied by LibraryManager today -- copy it by hand
+        # alongside the row).
+        "file_dir": "sample/tables",
+        "file_cols": (),
+        "file_alt_ext": ".mietab",
+    },
+    "images": {
+        "registry_rel": "image/images.mieimg",
+        # rows name an actual bitmap/.npy FILE living directly next to
+        # the registry csv (image/<file>), not a per-row spectral TABLE
+        # in a tables/ subdir with a .mietab alt-extension fallback --
+        # CATEGORY_INFO's file_dir/file_cols/file_alt_ext shape is built
+        # for the latter, so it doesn't fit cleanly here. Exposed as a
+        # registry-only category instead: registry_rows()/
+        # registry_fieldnames() work normally, but table_path()/
+        # table_data() and the LibraryManager file-copy-on-promote path
+        # are all no-ops (file_dir=None) -- the `file` column's target is
+        # HAND-MANAGED (copy the image file yourself when moving a row
+        # between the system and project libraries).
+        "file_dir": None,
+        "file_cols": (),
+        "file_alt_ext": None,
+    },
 }
 
 
@@ -208,6 +240,8 @@ class PropLibrary:
             "nonlinear": list(getattr(props, "nonlinear", {}) or {}),
             "scatter": list(getattr(props, "scatter", {}) or {}),
             "instruments": list(getattr(props, "instruments", {}) or {}),
+            "samples": list(getattr(props, "samples", {}) or {}),
+            "images": list(getattr(props, "images", {}) or {}),
         }
 
     def material_names(self):

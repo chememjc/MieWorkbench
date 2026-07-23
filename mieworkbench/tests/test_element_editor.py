@@ -232,6 +232,109 @@ def test_spectrum_property_renders_as_registry_combo(qtbot):
     assert editor.currentText() == "led_white_2733k"
 
 
+def test_sample_property_renders_as_registry_combo(qtbot):
+    from PySide6.QtWidgets import QComboBox
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    # the samples registry (7 shipped rows) feeds the sample property's
+    # value options -- sample is optic-only (a particle population bound
+    # to the body's interior; the body's own `material` is the solvent)
+    names = pane._registry_names("sample")
+    assert len(names) == 7
+    assert "latex_100nm_water" in names
+    assert "hard_sphere_py" in names
+    editor = pane._make_property_editor("sample", "latex_100nm_water")
+    assert isinstance(editor, QComboBox)
+    items = [editor.itemText(i) for i in range(editor.count())]
+    assert "latex_100nm_water" in items
+    assert editor.currentText() == "latex_100nm_water"
+
+
+def test_image_property_renders_as_registry_combo(qtbot):
+    from PySide6.QtWidgets import QComboBox
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    # the images registry feeds the image property's value options --
+    # image is source-only (an extended image-emitting source)
+    names = pane._registry_names("image")
+    assert names == ["usaf_style_target"]
+    editor = pane._make_property_editor("image", "usaf_style_target")
+    assert isinstance(editor, QComboBox)
+    items = [editor.itemText(i) for i in range(editor.count())]
+    assert "usaf_style_target" in items
+    assert editor.currentText() == "usaf_style_target"
+
+
+def test_sample_add_and_remove_round_trips(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    pane.add_prop_combo.setCurrentText("sample")
+    pane.add_prop_button.click()
+    value = project.body("Lens")["properties"]["sample"]["value"]
+    assert value in pane._registry_names("sample")
+    qtbot.waitUntil(lambda: "sample" in _prop_labels(pane), timeout=2000)
+
+    pane._on_remove_property("sample")
+    assert "sample" not in project.body("Lens")["properties"]
+    qtbot.waitUntil(lambda: "sample" not in _prop_labels(pane), timeout=2000)
+
+
+def test_image_and_image_cone_deg_add_and_remove_round_trips(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    pane.add_prop_combo.setCurrentText("image")
+    pane.add_prop_button.click()
+    assert project.body("Lens")["properties"]["image"]["value"] \
+        == "usaf_style_target"
+    qtbot.waitUntil(lambda: "image" in _prop_labels(pane), timeout=2000)
+
+    pane.add_prop_combo.setCurrentText("image_cone_deg")
+    pane.add_prop_button.click()
+    value = project.body("Lens")["properties"]["image_cone_deg"]["value"]
+    assert isinstance(value, float)
+    assert 0.0 < value <= 90.0
+    qtbot.waitUntil(
+        lambda: label_with_unit("image_cone_deg") in _prop_labels(pane),
+        timeout=2000)
+
+    pane._on_remove_property("image")
+    pane._on_remove_property("image_cone_deg")
+    assert "image" not in project.body("Lens")["properties"]
+    assert "image_cone_deg" not in project.body("Lens")["properties"]
+    qtbot.waitUntil(
+        lambda: "image" not in _prop_labels(pane)
+        and label_with_unit("image_cone_deg") not in _prop_labels(pane),
+        timeout=2000)
+
+
+def test_image_cone_deg_is_numeric_and_commits_a_float(qtbot, tmp_path):
+    structure, faces = make_two_body_scene(tmp_path)
+    project = FakeProject(structure, faces)
+    pane = ElementEditorPane()
+    qtbot.addWidget(pane)
+    pane.set_project(project)
+    pane.set_face_selection("Lens", set())
+
+    project.set_property("Lens", "image_cone_deg", 15.0)
+    pane.set_face_selection("Lens", set())
+    pane._refresh_properties()
+
+    pane._commit_property("image_cone_deg", 45.0)
+    value = project.body("Lens")["properties"]["image_cone_deg"]["value"]
+    assert value == 45.0
+    assert isinstance(value, float)
+
+
 def _two_face_detector_scene(tmp_path):
     """make_two_body_scene, but the Screen detector gets a 2nd face so the
     detector_face combo has something to choose between."""

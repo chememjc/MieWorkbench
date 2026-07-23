@@ -4,10 +4,10 @@ optical property library registries edited by panes/prop_editor.py.
 This is a PURE-DATA module (no Qt, no I/O): COLUMN_SCHEMA describes every
 column of every registry PropLibrary/core.proplib.CATEGORY_INFO exposes
 (materials, coatings, polarizers, filters, gratings, uniaxial, diffusers,
-detectors, emission, biaxial, figures, nonlinear, scatter, instruments);
-TABLE_COLUMN_SCHEMA does the same for the per-row spectral TABLE files
-those registries reference (the tuples in panes/prop_editor.py's
-TABLE_SCHEMA/CATEGORY_TABS).
+detectors, emission, biaxial, figures, nonlinear, scatter, instruments,
+samples, images); TABLE_COLUMN_SCHEMA does the same for the per-row
+spectral TABLE files those registries reference (the tuples in
+panes/prop_editor.py's TABLE_SCHEMA/CATEGORY_TABS).
 
 Content is distilled from three sources that must agree (and the
 drift-proofing test in mieworkbench/tests/test_libschema.py enforces it
@@ -32,12 +32,18 @@ Two of these registries have a shape the others don't:
     those lines before csv.DictReader, and prop_editor's
     _atomic_write_registry re-prepends them on save.
   - instrument/instruments.mieinst is WIDE and CLASS-discriminated the
-    same way ('class' picks camera/powermeter/spectrometer/polarimeter/
-    wavefront_sensor/autocorrelator); three PLACEHOLDER classes
-    (polarimeter/wavefront_sensor/autocorrelator) have hard-validated
-    column schemas in optprops.py but no shipped rows yet -- documented
-    here anyway since load_instruments will enforce them the moment a row
-    of that class is authored.
+    same way ('class' picks camera/powermeter/spectrometer/diode_array/
+    polarimeter/wavefront_sensor/autocorrelator); three PLACEHOLDER
+    classes (polarimeter/wavefront_sensor/autocorrelator) have
+    hard-validated column schemas in optprops.py but no shipped rows yet
+    -- documented here anyway since load_instruments will enforce them
+    the moment a row of that class is authored. diode_array (a physical
+    linear-array detector at a spectrograph focal plane, rendered by
+    post_process.render_diode_array) DOES have a shipped row and shares
+    several columns with camera/spectrometer (pixel_pitch_um,
+    full_well_e, read_noise_e, bit_depth, adc_gain_e_per_dn,
+    integration_time_s_default, stray_light_floor, detector_qe_table)
+    plus its own pixel_height_um/n_px.
 
 Validation is advisory only (Sec.4 of the round brief this module was
 written for): the loaders in optprops.py/materials.py are the one hard
@@ -664,18 +670,22 @@ _INSTRUMENTS = {
     "class": ColumnInfo(
         "Instrument-model discriminator -- selects which of this row's "
         "other columns are read (the rest stay blank) and which "
-        "post_process.render_instrument dispatcher handles it.",
-        format="enum: camera | powermeter | spectrometer | polarimeter | "
-               "wavefront_sensor | autocorrelator (the last three are "
-               "PLACEHOLDER classes with a validated schema but no shipped "
-               "rows yet)",
+        "post_process.render_instrument/render_diode_array dispatcher "
+        "handles it.",
+        format="enum: camera | powermeter | spectrometer | diode_array | "
+               "polarimeter | wavefront_sensor | autocorrelator (the last "
+               "three are PLACEHOLDER classes with a validated schema but "
+               "no shipped rows yet)",
         validator={"kind": "enum",
                    "values": ("camera", "powermeter", "spectrometer",
-                              "polarimeter", "wavefront_sensor",
-                              "autocorrelator")}),
+                              "diode_array", "polarimeter",
+                              "wavefront_sensor", "autocorrelator")}),
     "pixel_pitch_um": ColumnInfo(
-        "Camera pixel pitch (assumed square).",
-        units="um", format="float > 0 -- required iff class=camera",
+        "Pixel pitch. camera: assumed square. diode_array: pitch along "
+        "the dispersion axis (paired with pixel_height_um for the "
+        "cross-dispersion dimension).",
+        units="um",
+        format="float > 0 -- required iff class in {camera, diode_array}",
         validator={"kind": "float", "gt": 0.0}),
     "width_px": ColumnInfo(
         "Camera sensor width.",
@@ -696,15 +706,18 @@ _INSTRUMENTS = {
         format="filename (e.g. 'camera_generic_qe.mietab') -- required "
                "iff class=camera"),
     "full_well_e": ColumnInfo(
-        "Camera pixel full-well capacity (saturation clipping level).",
+        "Pixel full-well capacity (saturation clipping level). camera: "
+        "per-pixel. diode_array: per-element (typically an "
+        "instrument-level operating figure, not the bare-chip datasheet "
+        "spec -- see a diode_array row's own `notes` for provenance).",
         units="electrons",
-        format="float > 0 -- required iff class=camera",
+        format="float > 0 -- required iff class in {camera, diode_array}",
         validator={"kind": "float", "gt": 0.0}),
     "read_noise_e": ColumnInfo(
-        "Camera read noise (RMS electrons added per readout, 'full' mode "
-        "only).",
+        "Read noise (RMS electrons added per readout, 'full' mode only). "
+        "camera and diode_array both use this column.",
         units="electrons rms",
-        format="float >= 0 -- required iff class=camera",
+        format="float >= 0 -- required iff class in {camera, diode_array}",
         validator={"kind": "float", "ge": 0.0}),
     "dark_current_e_per_s": ColumnInfo(
         "Camera dark current.",
@@ -712,18 +725,24 @@ _INSTRUMENTS = {
         format="float >= 0 -- required iff class=camera",
         validator={"kind": "float", "ge": 0.0}),
     "bit_depth": ColumnInfo(
-        "Camera ADC bit depth (quantization applied to the counts image).",
-        units="bits", format="int > 0 -- required iff class=camera",
+        "ADC bit depth (quantization applied to the counts image/trace). "
+        "camera and diode_array both use this column.",
+        units="bits",
+        format="int > 0 -- required iff class in {camera, diode_array}",
         validator={"kind": "int", "gt": 0}),
     "adc_gain_e_per_dn": ColumnInfo(
-        "Camera ADC gain (electrons per digital number/count).",
+        "ADC gain (electrons per digital number/count). camera and "
+        "diode_array both use this column (a diode_array row's gain is "
+        "often DERIVED as full_well_e / (2**bit_depth - 1) rather than a "
+        "separately published number -- see the row's `notes`).",
         units="electrons/DN",
-        format="float > 0 -- required iff class=camera",
+        format="float > 0 -- required iff class in {camera, diode_array}",
         validator={"kind": "float", "gt": 0.0}),
     "integration_time_s_default": ColumnInfo(
-        "Camera default exposure/integration time used when a run doesn't "
-        "override it.",
-        units="s", format="float > 0 -- required iff class=camera",
+        "Default exposure/integration time used when a run doesn't "
+        "override it. camera and diode_array both use this column.",
+        units="s",
+        format="float > 0 -- required iff class in {camera, diode_array}",
         validator={"kind": "float", "gt": 0.0}),
     "responsivity_table": ColumnInfo(
         "Filename of the powermeter's per-wavelength responsivity table "
@@ -781,15 +800,20 @@ _INSTRUMENTS = {
         units="um", format="float > 0 -- required iff class=spectrometer",
         validator={"kind": "float", "gt": 0.0}),
     "stray_light_floor": ColumnInfo(
-        "Spectrometer stray-light floor added to the reported spectrum.",
+        "Stray-light floor added to the reported spectrum/trace. "
+        "spectrometer and diode_array both use this column.",
         units="fraction",
-        format="float in [0,1) -- required iff class=spectrometer",
+        format="float in [0,1) -- required iff class in {spectrometer, "
+               "diode_array}",
         validator={"kind": "float", "range": (0.0, 1.0)}),
     "detector_qe_table": ColumnInfo(
-        "Filename of the spectrometer's internal detector "
-        "quantum-efficiency table (column 'qe', in instrument/tables/).",
+        "Filename of the internal detector quantum-efficiency table "
+        "(column 'qe', in instrument/tables/). spectrometer and "
+        "diode_array both use this column -- a diode_array row is "
+        "typically the physical-array counterpart of a spectrometer row "
+        "and reuses the SAME digitized QE curve (see the row's `notes`).",
         format="filename (e.g. 'spectrometer_generic_qe.mietab') -- "
-               "required iff class=spectrometer"),
+               "required iff class in {spectrometer, diode_array}"),
     "analyzer_states": ColumnInfo(
         "Polarimeter number of distinct analyzer states sampled per "
         "measurement (PLACEHOLDER class -- see module note).",
@@ -826,6 +850,140 @@ _INSTRUMENTS = {
         units="fs",
         format="float > 0 -- required iff class=autocorrelator",
         validator={"kind": "float", "gt": 0.0}),
+    "pixel_height_um": ColumnInfo(
+        "diode_array pixel height (the long, non-dispersive dimension of "
+        "each element of the physical linear array -- unlike a camera's "
+        "square pixel_pitch_um, a diode array's pixels are usually a tall "
+        "thin rectangle, e.g. 8 x 200 um).",
+        units="um", format="float > 0 -- required iff class=diode_array",
+        validator={"kind": "float", "gt": 0.0}),
+    "n_px": ColumnInfo(
+        "diode_array pixel count (the physical array length -- unlike a "
+        "camera's width_px/height_px, a linear array has just one count "
+        "along its dispersion axis).",
+        format="int > 0 -- required iff class=diode_array",
+        validator={"kind": "int", "gt": 0}),
+    "reference": _REFERENCE,
+    "notes": _NOTES,
+}
+
+# ---------------------------------------------------------------------------
+# sample/samples.miesamp -- particle-population registry (samples-
+# instruments round). A row is a named particle population (material,
+# size distribution, loading) plus an optional inter-particle structure
+# factor S(q); bound to a scene via the `sample` body property on a
+# liquid-fill solid (raytracer/particles.py). See the section comment
+# above load_samples() in scripts/raytracer/optprops.py for the full
+# sq_model/sq_params grammar this mirrors.
+# ---------------------------------------------------------------------------
+_SAMPLES = {
+    "name": _name("sample (particle population)"),
+    "particle_material": ColumnInfo(
+        "materials.miemat row supplying the particle's own complex "
+        "index n,k (the body's own `material` property is the HOST "
+        "medium the particles are suspended in, not this).",
+        format="materials.miemat row name (must exist)"),
+    "dist": ColumnInfo(
+        "Particle size distribution family.",
+        format="enum: lognormal | mono",
+        validator={"kind": "enum", "values": ("lognormal", "mono")}),
+    "median_um": ColumnInfo(
+        "Median particle DIAMETER (the --particles CLI convention, not "
+        "radius).",
+        units="um", format="float > 0",
+        validator={"kind": "float", "gt": 0.0}),
+    "gsd": ColumnInfo(
+        "Lognormal geometric standard deviation. Ignored (forced to "
+        "exactly 1.0) when dist=mono. Optional for dist=lognormal, "
+        "defaults to 1.6.",
+        format="float >= 1.0, optional (default 1.6, dist=lognormal only)",
+        validator={"kind": "float", "ge": 1.0}),
+    "phi": ColumnInfo(
+        "Particle mass fraction (loading). Exactly one of `phi`/`tau` is "
+        "required -- the loader hard-errors if both or neither are set.",
+        units="fraction", format="float in (0,1) -- phi XOR tau required",
+        validator={"kind": "float", "range": (0.0, 1.0)}),
+    "tau": ColumnInfo(
+        "Target optical depth the loading is solved for at trace time "
+        "instead of a fixed mass fraction. Exactly one of `phi`/`tau` is "
+        "required.",
+        format="float > 0 -- phi XOR tau required",
+        validator={"kind": "float", "gt": 0.0}),
+    "mode": ColumnInfo(
+        "Realization strategy. 'auto' picks continuum vs explicit "
+        "per-particle placement by particle count; 'continuum' forces a "
+        "density-field realization; 'explicit' forces real per-particle "
+        "placement (required for a coherent Bragg/speckle run against a "
+        "sq_model=paracrystal lattice).",
+        format="enum: auto | continuum | explicit (default auto)",
+        validator={"kind": "enum",
+                   "values": ("auto", "continuum", "explicit")}),
+    "count": ColumnInfo(
+        "Optional explicit particle count override (otherwise derived "
+        "from phi/tau + the body volume at trace time).",
+        format="int > 0, optional",
+        validator={"kind": "int", "gt": 0}),
+    "sq_model": ColumnInfo(
+        "Inter-particle structure factor S(q) model. 'none' = "
+        "independent scatterers (S=1). See sq_params for each model's "
+        "required/optional keys.",
+        format="enum: none | py | baxter | fractal | paracrystal | table "
+               "(default none)",
+        validator={"kind": "enum",
+                   "values": ("none", "py", "baxter", "fractal",
+                              "paracrystal", "table")}),
+    "sq_params": ColumnInfo(
+        "sq_model-specific parameters (blank when sq_model=none). py: "
+        "optional phi_hs/r_hs_um. baxter: required tau_stick>0, optional "
+        "phi_hs/r_hs_um. fractal: required xi_um>0, df in (1,3], optional "
+        "r0_um. paracrystal: required lattice=fcc|bcc|sc, a_um>0, g in "
+        "(0,1). table: required table:<name> resolving to "
+        "sample/tables/<name>.mietab (columns q_per_um,s).",
+        format="':'-keyed ';'-separated 'key:value' pairs, e.g. "
+               "'phi_hs:0.30' or 'lattice:fcc;a_um:0.35;g:0.04'"),
+    "shape": ColumnInfo(
+        "Particle shape. 'spheroid' unlocks aspect_ratio != 1 "
+        "(orientation-averaged T-matrix); a sphere row's aspect_ratio "
+        "must stay exactly 1.0.",
+        format="enum: sphere | spheroid (default sphere)",
+        validator={"kind": "enum", "values": ("sphere", "spheroid")}),
+    "aspect_ratio": ColumnInfo(
+        "Spheroid aspect ratio (length/diameter of the volume-equivalent "
+        "sphere). Must be exactly 1.0 when shape=sphere -- use "
+        "shape=spheroid for a nonspherical particle.",
+        format="float > 0, optional (default 1.0; must be 1.0 for "
+               "shape=sphere)",
+        validator={"kind": "float", "gt": 0.0}),
+    "solvent_visc_pas": ColumnInfo(
+        "Host solvent dynamic viscosity, used for Brownian-motion-linked "
+        "derivations (e.g. a Baxter/PY stickiness-vs-diffusion cross "
+        "check). Optional.",
+        units="Pa s", format="float > 0, optional",
+        validator={"kind": "float", "gt": 0.0}),
+    "reference": _REFERENCE,
+    "notes": _NOTES,
+}
+
+# ---------------------------------------------------------------------------
+# image/images.mieimg -- extended-source image registry (samples-
+# instruments round). A row names a greyscale bitmap/.npy file living
+# NEXT TO the registry csv; bound to a scene via the `image` body property
+# on a source (+ optional image_cone_deg on the same body), sampled as a
+# per-position radiance map (sources.py alias-method sampler). Pixel data
+# is read by the engine, not by this GUI-facing registry -- the loader
+# only validates the file's existence/extension and the reference
+# contract.
+# ---------------------------------------------------------------------------
+_IMAGES = {
+    "name": _name("source image"),
+    "file": ColumnInfo(
+        "Filename of the greyscale bitmap or 2-D .npy array, resolved "
+        "directly next to images.mieimg (there is no tables/ subdir and "
+        "no alt-extension fallback for this column -- unlike every other "
+        "registry's table/nk_file column, the exact filename+extension "
+        "given here must exist as-is).",
+        format="filename with one of: .png .jpg .jpeg .tif .tiff .bmp "
+               ".npy"),
     "reference": _REFERENCE,
     "notes": _NOTES,
 }
@@ -849,6 +1007,8 @@ COLUMN_SCHEMA = {
     "nonlinear": _NONLINEAR,
     "scatter": _SCATTER,
     "instruments": _INSTRUMENTS,
+    "samples": _SAMPLES,
+    "images": _IMAGES,
 }
 
 

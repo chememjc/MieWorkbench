@@ -33,6 +33,8 @@ REGISTRY_RELPATHS = {
     "nonlinear": "nonlinear/nonlinear.mienlo",
     "scatter": "scatter/bsdf.miebsdf",
     "instruments": "instrument/instruments.mieinst",
+    "samples": "sample/samples.miesamp",
+    "images": "image/images.mieimg",
 }
 
 # nonlinear/nonlinear.mienlo allows full-line '#' comments ahead of its csv

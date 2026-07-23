@@ -34,13 +34,17 @@ CATEGORY_BY_LABEL = {
     "gratings": "Gratings", "uniaxial": "Birefringence",
     "biaxial": "Biaxial", "figures": "Figure Errors",
     "nonlinear": "Nonlinear", "scatter": "BSDF",
-    "instruments": "Instruments",
+    "instruments": "Instruments", "samples": "Samples",
+    "images": "Images",
 }
 
-# the five categories landed alongside libschema.py's COLUMN_SCHEMA drift
-# test (they were previously missing from CATEGORY_INFO/CATEGORY_TABS
-# entirely -- not just undocumented) -- exercised individually below.
-NEW_CATEGORIES = ("biaxial", "figures", "nonlinear", "scatter", "instruments")
+# the categories landed alongside libschema.py's COLUMN_SCHEMA drift test
+# (they were previously missing from CATEGORY_INFO/CATEGORY_TABS entirely
+# -- not just undocumented) -- exercised individually below. samples/
+# images (samples-instruments round) have no per-row spectral TABLE (see
+# CATEGORY_TABS' comment) so they carry a None schema like the others here.
+NEW_CATEGORIES = ("biaxial", "figures", "nonlinear", "scatter", "instruments",
+                  "samples", "images")
 
 
 def _tmp_system_manager(tmp_path, with_project=False):
@@ -60,11 +64,12 @@ def test_tab_count_and_labels(qtbot):
     pane = PropEditorPane(mgr)
     qtbot.addWidget(pane)
 
-    assert pane.tabs.count() == 11
+    assert pane.tabs.count() == 13
     labels = [pane.tabs.tabText(i) for i in range(pane.tabs.count())]
     assert labels == ["Materials", "Coatings", "Polarizers", "Filters",
                       "Gratings", "Birefringence", "Biaxial",
-                      "Figure Errors", "Nonlinear", "BSDF", "Instruments"]
+                      "Figure Errors", "Nonlinear", "BSDF", "Instruments",
+                      "Samples", "Images"]
 
 
 def test_row_counts_match_registries(qtbot):
@@ -565,6 +570,7 @@ NEW_CATEGORY_BAD_CELL = (
     ("nonlinear", "linbo3_d", "kind", "not_a_real_kind"),
     ("scatter", "polished_fused_silica", "model", "not_abg"),
     ("instruments", "camera_generic", "class", "not_a_real_class"),
+    ("samples", "latex_100nm_water", "dist", "not_a_real_dist"),
 )
 
 
@@ -598,6 +604,8 @@ def test_new_category_known_bad_cell_flags_amber_and_clears(
     ("nonlinear", "linbo3_d"),
     ("scatter", "polished_fused_silica"),
     ("instruments", "camera_generic"),
+    ("samples", "latex_100nm_water"),
+    ("images", "usaf_style_target"),
 ))
 def test_new_category_edit_commit_round_trips(qtbot, tmp_path, category,
                                                row_name):

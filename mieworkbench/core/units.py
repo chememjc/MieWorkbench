@@ -47,6 +47,10 @@ PROPERTY_UNITS = {
     "saturable": None,              # registry name or inline 'sat:I_sat=..:T0=..'
     "tpa_beta": "cm/GW",            # two-photon-absorption coefficient
     "kerr_n2": None,                # registry name or inline 'n2:<m2/W>'
+    # samples-instruments round
+    "sample": None,                 # samples.miesamp registry name (optic)
+    "image": None,                  # images.mieimg registry name (source)
+    "image_cone_deg": "deg",        # image source emission cone half-angle
 }
 
 # Geometry/transform panels (values live in FreeCAD sheets / placements).

@@ -1,7 +1,7 @@
 """prop_editor.py -- PropEditorPane: the "editor mode" for the optical
 property library (materials / coatings / polarizers / filters / gratings /
 uniaxial + biaxial birefringence / figure errors / nonlinear (chi2/pockels/
-saturable/Kerr) / BSDF scatter / instruments).
+saturable/Kerr) / BSDF scatter / instruments / samples / images).
 
 One QTabWidget, one tab per registry. Each tab (_CategoryEditor) shows the
 registry's rows in a QTableWidget (columns = the registry csv's own header,
@@ -61,7 +61,12 @@ INVALID_CELL_COLOR = QColor(140, 90, 0)
 # "responsivity_a_w" table -- one fixed required_cols tuple can't cover
 # both, so Import-table stays off for that tab; the chart still plots
 # whatever the selected row's actual table file contains, since
-# _render_chart reads real headers, not TABLE_SCHEMA).
+# _render_chart reads real headers, not TABLE_SCHEMA) OR whose rows are
+# self-contained/reference a non-spectral file (samples: most rows carry
+# no file at all, and a sq_model=table row's S(q) table has a
+# q_per_um/s shape Import-table isn't built for; images: the referenced
+# file is a bitmap/.npy, not a csv table -- see core.proplib.CATEGORY_INFO
+# for both categories' file-handling notes).
 CATEGORY_TABS = (
     ("materials", "Materials", ("wavelength_nm", "n", "k")),
     ("coatings", "Coatings", ("wavelength_nm", "Rs", "Rp", "Ts", "Tp")),
@@ -75,6 +80,8 @@ CATEGORY_TABS = (
     ("nonlinear", "Nonlinear", None),
     ("scatter", "BSDF", None),
     ("instruments", "Instruments", None),
+    ("samples", "Samples", None),
+    ("images", "Images", None),
 )
 TABLE_SCHEMA = {cat: schema for cat, _, schema in CATEGORY_TABS}
 

@@ -78,6 +78,14 @@ Contract property semantics (cribbed from scripts/extract_geometry.py's
                     must name specific faces (no whole-body form).
   surface_override  per-face map declaring an analytic surface (e.g. an
                     asphere) in place of the tessellated mesh.
+  sample            optic-only; sample/samples.miesamp row name binding a
+                    particle population to this body's INTERIOR (the
+                    body's own `material` is the host/solvent medium).
+  image             source-only; image/images.mieimg row name (an
+                    extended image-emitting source: a per-position
+                    radiance map sampled Lambertian over the emit face);
+                    image_cone_deg (deg, optional, (0,90]) restricts the
+                    emission cone half-angle.
 """
 
 import math
@@ -127,14 +135,15 @@ CONTRACT_PROPERTIES = (
     "roughness", "diffuser", "scatter", "filter", "polarizer",
     "polarizer_axis", "crystal_axis", "crystal_axis2", "grating",
     "surface_override", "mirror", "absorbance", "qe_curve", "detector_face",
-    "temperature",
+    "temperature", "sample", "image", "image_cone_deg",
 )
 REGISTRY_PROPERTIES = ("material", "polarizer", "filter", "coating",
                        "grating", "diffuser", "scatter", "qe_curve",
-                       "spectrum")
+                       "spectrum", "sample", "image")
 NUMERIC_PROPERTIES = ("power", "lambdac", "lambdamin", "lambdamax", "mirror",
                       "absorbance", "beam_waist", "m2", "pulse_energy",
-                      "pulse_duration", "rep_rate", "temperature")
+                      "pulse_duration", "rep_rate", "temperature",
+                      "image_cone_deg")
 BOOL_PROPERTIES = ("coherent",)
 
 # offered in the Active Properties value dropdowns alongside registry rows
@@ -167,6 +176,7 @@ PROPERTY_DEFAULTS = {
     "pulse_duration": 0.1,     # ps FWHM (100 fs)
     "rep_rate": 8e7,           # Hz
     "temperature": 20.0,       # deg C (glass catalog reference temperature)
+    "image_cone_deg": 30.0,    # deg half-angle (arbitrary, in-range default)
 }
 # Registry-valued properties default to a well-known entry when the
 # library has it, else the first name alphabetically.
@@ -254,6 +264,14 @@ TOOLTIPS = {
     "temperature": "Per-body operating temperature in deg C; shifts glasses "
                    "with a thermo-optic model (Schott TIE-19 dn/dT). Overrides "
                    "the scene-global --temperature. Routes to the Python engine.",
+    "sample": "sample/samples.miesamp registry name: bind a particle "
+             "population to this body's interior; the body's material is "
+             "the solvent (optic-only).",
+    "image": "image/images.mieimg registry name: emit this bitmap as a "
+            "per-position radiance map (Lambertian) (source-only).",
+    "image_cone_deg": "Emission cone half-angle in degrees, (0, 90] -- "
+                      "restricts an `image` source's default Lambertian "
+                      "emission (optional).",
 }
 
 
@@ -495,12 +513,15 @@ class ElementEditorPane(QWidget):
             "diffusers": list(getattr(props, "diffusers", {}) or {}),
             "detectors": list(getattr(props, "detectors", {}) or {}),
             "emission": list(getattr(props, "emission", {}) or {}),
+            "samples": list(getattr(props, "samples", {}) or {}),
+            "images": list(getattr(props, "images", {}) or {}),
         }
 
     _REGISTRY_CATEGORY = {"polarizer": "polarizers", "filter": "filters",
                           "coating": "coatings", "grating": "gratings",
                           "diffuser": "diffusers", "qe_curve": "detectors",
-                          "spectrum": "emission"}
+                          "spectrum": "emission", "sample": "samples",
+                          "image": "images"}
 
     def _material_names(self):
         return list(self._library_categories().get("materials", []))
