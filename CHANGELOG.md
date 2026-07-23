@@ -2,6 +2,52 @@
 
 Per-round changelog, maintained from the c-engine round onward. Earlier history (2026-07-06 through 2026-07-09, Phases A-C through object-placer) is in `git log`, not reconstructed here.
 
+## env-paths round — 2026-07-23
+
+Machine-specific paths (FreeCAD AppImage, optics-env python, ParaView
+pvpython, CUDA nvcc + SM arch) now have ONE source of truth: gitignored
+`<repo>/miewb.env`, so a clone anywhere configures itself once and nothing
+machine-specific lives in code or docs.
+
+- **`miewb.env` + `miewb.env.example`**: plain KEY=value (literal values, no
+  shell syntax); committed fully-commented template. Precedence: exported
+  `MIEWB_*` env var > miewb.env entry > hard `UnconfiguredError` at import
+  for the three required tools (`MIEWB_FREECAD`/`MIEWB_OPTICS_PYTHON`/
+  `MIEWB_PVPYTHON`). An explicitly EMPTY value = "configured absent" (tool
+  deliberately not installed): `run_pipeline` skips viz with a NOTICE when
+  ParaView is absent; `require_tool()` errors cleanly at launch otherwise.
+  `MIEWB_ALLOW_UNCONFIGURED=1` escape hatch (used by the GUI entry point and
+  test conftests); `MIEWB_ENV_FILE` relocates the file for tests.
+- **`scripts/setup_env.sh`**: interactive probe (AppImage/pvpython/optics
+  env/`/usr/local/cuda-*`/nvidia-smi arch) with confirm/override, plus
+  `--freecad/--optics-python/--pvpython/--nvcc/--cuda-arch/--non-interactive/
+  --print` for CI; idempotent re-runs; never writes a half-configured file.
+- **`scripts/miewb_env.sh`**: sourceable wrapper — exports `MIEWB_INST_DIR`
+  (repo root) + every miewb.env key not already set (env-wins), line-parsed,
+  never shell-sourced. Doc command examples now assume it:
+  `"$MIEWB_OPTICS_PYTHON" -m pytest …`.
+- **GUI Settings → Tool Paths edits miewb.env directly** (QSettings no longer
+  stores paths; one-time migration discards stored-but-untouched legacy
+  defaults, keeps real user values). Exported-env-var fields shown locked;
+  empty = "absent (configured)". Unconfigured machine: the GUI starts with a
+  banner and auto-opens Settings instead of dying at import.
+  `env_overrides()` now pushes every RESOLVED value onto pipeline
+  subprocesses so children always agree with the dialog.
+- **cengine CUDA unification**: `MIEWB_NVCC`/`MIEWB_CUDA_ARCH` from miewb.env
+  flow through `build.sh` → CMake (`CUDACXX`/`CMAKE_CUDA_COMPILER` still
+  honored; `/usr/local/cuda-13` + arch 89 demoted to legacy fallbacks) and
+  `vendor/fetch_finufft.sh` reads the same keys.
+- **Literal sweep**: `/home3` hardcodes removed from code
+  (`element_editor.DEFAULT_OPTPROPS_ROOT`, `fcclient`, `bench_engines`,
+  9 test files) and from all living docs except CLAUDE.md (this machine's
+  operator map — its table stays literal with a pointer note); docstring
+  usage banners now say `"$MIEWB_OPTICS_PYTHON"` etc. The one sanctioned
+  in-code literal block is `settings._LEGACY_DEFAULTS` (QSettings-migration
+  filter for pre-round stored defaults).
+- New tests: `test_env_config.py` (parser/precedence/escape hatch/editor,
+  subprocess import-gate), `test_settings_envfile.py` (Settings↔file,
+  env-lock, migration); gui_verify scenario `settings-toolpaths`.
+
 ## samples-instruments round — 2026-07-23
 
 Scattering-instrument bench work: liquid/particle samples with real structure

@@ -50,11 +50,17 @@ nine library-validation template scenes + automated sweep runner
 | system `python3` | stdlib only | `run_pipeline.py`, `sweep_variants.py`, `miewb_tool.py`, `common.py`, `cli_specs.py`, `train_solver.py` (pure stdlib BY CONTRACT — shared with FreeCAD's numpy-less python) |
 | GUI venv | `env/bin/python` (PySide6 6.11 + vtk 9.6 + numpy/scipy/h5py) | `python -m mieworkbench`, GUI pytest, `make_demos.py` + `run_demo_equivalence.py` (they drive a full Project session; NO LONGER system python3) |
 
-All tool paths/dirs are env-overridable: `MIEWB_FREECAD`,
-`MIEWB_OPTICS_PYTHON`, `MIEWB_PVPYTHON`, `MIEWB_GEOMETRY_DIR`,
-`MIEWB_RESULTS_DIR`, `MIEWB_OPTPROPS_DIR` (defaults in `common.py` are this
-machine's pins). `MIEWB_PROGRESS=1` makes stages emit `@MIEWB {json}`
-progress lines; every stage also heartbeats `<case>/progress.json`.
+Machine paths live in ONE place: gitignored `<repo>/miewb.env` (created by
+`scripts/setup_env.sh`, shell-loaded by `source scripts/miewb_env.sh`, parsed
+directly by `common.py` — exported `MIEWB_*` env vars win over file entries;
+required tools missing both = import-time error; empty value = "configured
+absent"). The literal paths in the table above are THIS machine's miewb.env
+contents — never hardcode them in code or docs; use the `MIEWB_FREECAD` /
+`MIEWB_OPTICS_PYTHON` / `MIEWB_PVPYTHON` / `MIEWB_NVCC` / `MIEWB_CUDA_ARCH`
+keys (+ `MIEWB_GEOMETRY_DIR`/`MIEWB_RESULTS_DIR`/`MIEWB_OPTPROPS_DIR`/
+`MIEWB_GUI_PYTHON`/`MIEWB_CENGINE` optional overrides). `MIEWB_PROGRESS=1`
+makes stages emit `@MIEWB {json}` progress lines; every stage also
+heartbeats `<case>/progress.json`.
 
 ## One-command flows
 

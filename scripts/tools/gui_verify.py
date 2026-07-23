@@ -88,6 +88,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 from PySide6.QtGui import QColor, QImage  # noqa: E402
 
+import common  # noqa: E402  (stdlib-only shared contract hub)
 from mieworkbench.mainwindow import MainWindow  # noqa: E402
 from mieworkbench.widgets.vtkview import _ABSORBER_STYLE  # noqa: E402
 from mieworkbench.panes.tolerance_pane import (  # noqa: E402
@@ -1058,6 +1059,72 @@ def scenario_lamp_primitives(ctx, window):
     ctx.shot(window.library, "01-catalog-tree.png")
 
 
+# ===========================================================================
+# Scenario: settings-toolpaths -- the Tool Paths page edits miewb.env
+# (single source of truth) in place, preserves comments, and locks
+# fields overridden by an exported MIEWB_* variable.
+# ===========================================================================
+def scenario_settings_toolpaths(ctx, window):
+    from mieworkbench.core.settings import Settings, SettingsDialog
+
+    ctx.step("scratch miewb.env copy (never touch the real file)")
+    scratch = os.path.join(ctx.out_dir, "scratch-miewb.env")
+    with open(scratch, "w") as fh:
+        fh.write("# scratch header comment\n"
+                 "MIEWB_FREECAD=%s\n"
+                 "MIEWB_OPTICS_PYTHON=%s\n"
+                 "MIEWB_PVPYTHON=\n"
+                 % (common.FREECAD_APPIMAGE or "/missing/FreeCAD.AppImage",
+                    common.OPTICS_PYTHON or "/missing/python"))
+
+    ctx.step("dialog shows resolved values + configured-absent state")
+    settings = Settings(env_file=scratch)
+    dialog = SettingsDialog(settings, window)
+    dialog.show()
+    QApplication.processEvents()
+    ctx.check(dialog._edits["freecad"].text()
+              == (common.FREECAD_APPIMAGE or "/missing/FreeCAD.AppImage"),
+              "freecad field=%r" % dialog._edits["freecad"].text())
+    ctx.check(dialog._status_labels["pvpython"].text()
+              == "absent (configured)",
+              "pvpython status=%r, expected absent (configured)"
+              % dialog._status_labels["pvpython"].text())
+    ctx.shot(dialog, "01-toolpaths-resolved.png")
+
+    ctx.step("edit pvpython + OK writes miewb.env, comments survive")
+    dialog._edits["pvpython"].setText("/bogus/bin/pvpython")
+    QApplication.processEvents()
+    ctx.check(dialog._status_labels["pvpython"].text() == "missing",
+              "pvpython status=%r after bogus edit, expected missing"
+              % dialog._status_labels["pvpython"].text())
+    dialog._on_accept()
+    text = open(scratch).read()
+    ctx.check("MIEWB_PVPYTHON=/bogus/bin/pvpython" in text,
+              "edit not written to scratch miewb.env: %r" % text)
+    ctx.check("# scratch header comment" in text,
+              "comment lost on rewrite: %r" % text)
+    ctx.check(settings.pvpython() == "/bogus/bin/pvpython",
+              "Settings does not re-read the edited file")
+
+    ctx.step("exported MIEWB_FREECAD locks the field read-only")
+    os.environ["MIEWB_FREECAD"] = "/locked/by/env/FreeCAD.AppImage"
+    try:
+        dialog2 = SettingsDialog(Settings(env_file=scratch), window)
+        dialog2.show()
+        QApplication.processEvents()
+        ctx.check(not dialog2._edits["freecad"].isEnabled(),
+                  "freecad field editable despite exported MIEWB_FREECAD")
+        ctx.check(dialog2._edits["freecad"].text()
+                  == "/locked/by/env/FreeCAD.AppImage",
+                  "locked field shows %r, expected the exported value"
+                  % dialog2._edits["freecad"].text())
+        ctx.shot(dialog2, "02-toolpaths-env-locked.png")
+        dialog2.reject()
+    finally:
+        del os.environ["MIEWB_FREECAD"]
+    dialog.reject()
+
+
 # ---------------------------------------------------------------------------
 # scenario registry
 # ---------------------------------------------------------------------------
@@ -1075,6 +1142,7 @@ SCENARIOS = [
     ("library-tabs", scenario_library_tabs),
     ("results-galleries", scenario_results_galleries),
     ("lamp-primitives", scenario_lamp_primitives),
+    ("settings-toolpaths", scenario_settings_toolpaths),
 ]
 
 

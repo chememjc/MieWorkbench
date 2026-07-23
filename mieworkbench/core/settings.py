@@ -1,19 +1,24 @@
-"""Settings - persistent tool-path / directory configuration for MieWorkbench.
+"""Settings - tool-path / directory configuration for MieWorkbench.
 
-Wraps QSettings("CurtisAnalytical", "MieWorkbench") so the GUI remembers
-where the pinned interpreters and data directories live across sessions,
-without ever hard-coding a machine-specific path in this module. The
-*defaults* (what a fresh install shows before the user changes anything)
-come straight from scripts/common.py - the same stdlib-only module the
-pipeline scripts themselves use to resolve MIEWB_FREECAD / MIEWB_OPTICS_
-PYTHON / MIEWB_PVPYTHON / MIEWB_GEOMETRY_DIR / MIEWB_RESULTS_DIR /
-MIEWB_OPTPROPS_DIR - so "default" already reflects any of those env vars
-that happened to be set when the GUI process started.
+Machine paths live in ONE place: <repo>/miewb.env (created by
+scripts/setup_env.sh, parsed by scripts/common.py). This module's path
+fields read and WRITE that file directly - a change in the Settings
+dialog is immediately visible to CLI runs and vice versa. QSettings
+("CurtisAnalytical", "MieWorkbench") now stores only non-path UI
+preferences (booleans, animation keys, the RunDialog session skip...).
+Legacy QSettings-stored paths are migrated into miewb.env once (values
+equal to the old baked defaults are discarded - the old dialog stored
+untouched defaults too).
 
-RunController reads env_overrides() and layers it on top of the current
-process environment before launching run_pipeline.py, so a value the user
-changed in the Settings dialog reaches every pipeline subprocess without
-the user having to export anything by hand.
+Resolution per path field: exported MIEWB_* env var (locked in the
+dialog) > live miewb.env entry (re-read per call, so dialog and
+controllers never go stale) > repo-derived default for directories /
+None for tools (unconfigured or configured absent).
+
+RunController (and the optimize/tolerance controllers) read
+env_overrides() and layer it onto the subprocess environment before
+launching run_pipeline.py, so every child resolves exactly what the
+dialog shows even if the shell exported something stale.
 """
 
 import os
@@ -33,50 +38,130 @@ from PySide6.QtWidgets import (
 ORG_NAME = "CurtisAnalytical"
 APP_NAME = "MieWorkbench"
 
-# settings key -> (env var name, common.py default, "file" | "dir", label)
+# settings key -> (env var name, "file" | "dir", label)
 FIELDS = [
-    ("freecad", "MIEWB_FREECAD", common.FREECAD_APPIMAGE, "file",
-     "FreeCAD AppImage"),
-    ("optics_python", "MIEWB_OPTICS_PYTHON", common.OPTICS_PYTHON, "file",
-     "Optics env python"),
-    ("pvpython", "MIEWB_PVPYTHON", common.PVPYTHON, "file", "pvpython"),
-    ("geometry_dir", "MIEWB_GEOMETRY_DIR", common.GEOMETRY_DIR, "dir",
-     "Geometry cache dir"),
-    ("results_dir", "MIEWB_RESULTS_DIR", common.RESULTS_DIR, "dir",
-     "Results dir"),
-    ("optprops_dir", "MIEWB_OPTPROPS_DIR", common.OPTPROPS_DIR, "dir",
-     "Optical properties dir"),
+    ("freecad", "MIEWB_FREECAD", "file", "FreeCAD AppImage"),
+    ("optics_python", "MIEWB_OPTICS_PYTHON", "file", "Optics env python"),
+    ("pvpython", "MIEWB_PVPYTHON", "file", "pvpython"),
+    ("geometry_dir", "MIEWB_GEOMETRY_DIR", "dir", "Geometry cache dir"),
+    ("results_dir", "MIEWB_RESULTS_DIR", "dir", "Results dir"),
+    ("optprops_dir", "MIEWB_OPTPROPS_DIR", "dir", "Optical properties dir"),
 ]
+
+_FIELD_BY_KEY = {f[0]: f for f in FIELDS}
+
+# Repo-derived directory defaults (tools have NO default any more).
+_DIR_DEFAULTS = {
+    "geometry_dir": str(common.PROJECT_DIR / "geometry"),
+    "results_dir": str(common.PROJECT_DIR / "results"),
+    "optprops_dir": str(common.PROJECT_DIR / "opticalproperties"),
+}
+
+# The pre-miewb.env baked defaults, FROZEN for the one-time QSettings
+# migration only: the old dialog stored every field on OK (including
+# untouched defaults), so a stored value equal to one of these means
+# "not user intent" and must NOT be migrated onto a fresh miewb.env.
+# This is the single sanctioned absolute-path literal block left in the GUI.
+_LEGACY_DEFAULTS = {
+    "freecad": ["/home3/freecad/FreeCAD.AppImage"],
+    "optics_python": ["/home3/optics/env/bin/python"],
+    "pvpython": ["/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12"
+                 "-x86_64/bin/pvpython"],
+    "geometry_dir": [_DIR_DEFAULTS["geometry_dir"]],
+    "results_dir": [_DIR_DEFAULTS["results_dir"]],
+    "optprops_dir": [_DIR_DEFAULTS["optprops_dir"]],
+}
+
+_MIGRATION_FLAG = "paths_migrated_to_miewb_env"
 
 
 class Settings:
-    """Thin wrapper over QSettings; all values are plain strings (paths)."""
+    """Path fields resolve through miewb.env; everything else QSettings."""
 
-    def __init__(self):
+    def __init__(self, env_file=None):
         self._qs = QSettings(ORG_NAME, APP_NAME)
+        self._env_file = str(env_file) if env_file else str(common.ENV_FILE)
+        self._migrate_qsettings_paths()
+
+    @property
+    def env_file(self):
+        return self._env_file
 
     # -- defaults -------------------------------------------------------------
     @staticmethod
     def default(key):
-        for k, _env, default, _kind, _label in FIELDS:
-            if k == key:
-                return str(default)
+        """Repo-derived default for directory fields; '' for tools (no
+        baked default any more - miewb.env is the source of truth)."""
+        if key in _DIR_DEFAULTS:
+            return _DIR_DEFAULTS[key]
+        if key in _FIELD_BY_KEY:
+            return ""
         raise KeyError("unknown settings key %r" % key)
+
+    # -- path-field resolution --------------------------------------------------
+    def env_locked(self, key):
+        """True when an exported env var overrides this field (the dialog
+        shows it read-only; unset the variable to edit here)."""
+        field = _FIELD_BY_KEY.get(key)
+        return field is not None and field[1] in os.environ
+
+    def _resolve_path_field(self, key):
+        """env var > live miewb.env > dir default / None (tools).
+        '' anywhere = configured absent -> None."""
+        env_var = _FIELD_BY_KEY[key][1]
+        if env_var in os.environ:
+            return os.environ[env_var] or None
+        try:
+            cfg = common.load_env_file(self._env_file)
+        except ValueError:
+            cfg = {}
+        if env_var in cfg:
+            return cfg[env_var] or None
+        return _DIR_DEFAULTS.get(key)
 
     # -- generic get/set --------------------------------------------------------
     def get(self, key, default=None):
+        if key in _FIELD_BY_KEY:
+            resolved = self._resolve_path_field(key)
+            if resolved is not None:
+                return resolved
+            return default
         stored = self._qs.value(key, None)
         if stored is not None and stored != "":
             return stored
-        if default is not None:
-            return default
-        try:
-            return self.default(key)
-        except KeyError:
-            return None
+        return default
 
     def set(self, key, value):
+        if key in _FIELD_BY_KEY:
+            common.update_env_file(
+                {_FIELD_BY_KEY[key][1]: "" if value is None else str(value)},
+                self._env_file)
+            return
         self._qs.setValue(key, value)
+        self._qs.sync()
+
+    # -- one-time QSettings -> miewb.env migration ------------------------------
+    def _migrate_qsettings_paths(self):
+        if self._qs.value(_MIGRATION_FLAG, None):
+            return
+        try:
+            cfg = common.load_env_file(self._env_file)
+        except ValueError:
+            cfg = {}
+        moved = {}
+        for key, env_var, _kind, _label in FIELDS:
+            stored = self._qs.value(key, None)
+            if stored in (None, ""):
+                continue
+            if str(stored) in _LEGACY_DEFAULTS[key]:
+                continue  # stored-but-untouched old default, not user intent
+            if env_var not in cfg:  # miewb.env / setup_env.sh wins otherwise
+                moved[env_var] = str(stored)
+        if moved:
+            common.update_env_file(moved, self._env_file)
+        for key, _env, _kind, _label in FIELDS:
+            self._qs.remove(key)
+        self._qs.setValue(_MIGRATION_FLAG, "true")
         self._qs.sync()
 
     # -- boolean UI preferences (view toggles etc.) ----------------------------
@@ -114,22 +199,24 @@ class Settings:
 
     # -- autodetect / diagnostics ---------------------------------------------
     def autodetect(self):
-        """Return {key: {"path": str, "exists": bool}} for every field."""
+        """Return {key: {"path": str|None, "exists": bool}} per field."""
         report = {}
-        for key, _env, _default, _kind, _label in FIELDS:
+        for key, _env, _kind, _label in FIELDS:
             path = self.get(key)
-            report[key] = {"path": path, "exists": os.path.exists(path)}
+            report[key] = {"path": path,
+                           "exists": bool(path) and os.path.exists(path)}
         return report
 
     def env_overrides(self):
-        """{"MIEWB_FREECAD": "...", ...} for values that differ from the
-        common.py default - what RunController layers onto a subprocess
-        environment."""
+        """{"MIEWB_FREECAD": "...", ...} - the RESOLVED value of every
+        path field (a None tool becomes "" = configured absent), layered
+        onto subprocess environments by the run/optimize/tolerance
+        controllers so children agree with the dialog even if the shell
+        exported something stale."""
         out = {}
-        for key, env_var, default, _kind, _label in FIELDS:
+        for key, env_var, _kind, _label in FIELDS:
             value = self.get(key)
-            if str(value) != str(default):
-                out[env_var] = str(value)
+            out[env_var] = "" if value is None else str(value)
         return out
 
 
@@ -148,13 +235,27 @@ class SettingsDialog(QDialog):
 
         self._edits = {}
         self._status_labels = {}
+        self._initial = {}
 
         form = QFormLayout()
-        for key, env_var, default, kind, label in FIELDS:
-            edit = QLineEdit(str(self.settings.get(key)))
-            edit.setToolTip(
-                "%s (env override: %s; default: %s)" % (label, env_var,
-                                                         default))
+        header = QLabel(
+            "Paths are stored in <b>%s</b> (single source of truth, "
+            "shared with CLI runs; created by scripts/setup_env.sh). "
+            "Leave a field empty for a tool this machine doesn't have."
+            % self.settings.env_file)
+        header.setWordWrap(True)
+        form.addRow(header)
+        for key, env_var, kind, label in FIELDS:
+            value = self.settings.get(key)
+            self._initial[key] = "" if value is None else str(value)
+            edit = QLineEdit(self._initial[key])
+            if self.settings.env_locked(key):
+                edit.setEnabled(False)
+                edit.setToolTip(
+                    "%s is overridden by the exported %s environment "
+                    "variable — unset it to edit here" % (label, env_var))
+            else:
+                edit.setToolTip("%s (miewb.env key: %s)" % (label, env_var))
             browse = QPushButton("Browse…")
             browse.setToolTip("Choose the %s for %s" % (
                 "file" if kind == "file" else "directory", label))
@@ -234,15 +335,26 @@ class SettingsDialog(QDialog):
         return page
 
     def _refresh_status(self):
-        for key, _env, _default, _kind, _label in FIELDS:
-            path = self._edits[key].text()
-            ok = os.path.exists(path)
+        for key, _env, _kind, _label in FIELDS:
+            path = self._edits[key].text().strip()
             label = self._status_labels[key]
+            if not path:
+                label.setText("absent (configured)")
+                label.setStyleSheet("color: #f39c12;")
+                continue
+            ok = os.path.exists(path)
             label.setText("found" if ok else "missing")
             label.setStyleSheet(
                 "color: #2ecc71;" if ok else "color: #e74c3c;")
 
     def _on_accept(self):
-        for key, _env, _default, _kind, _label in FIELDS:
-            self.settings.set(key, self._edits[key].text())
+        updates = {}
+        for key, env_var, _kind, _label in FIELDS:
+            if self.settings.env_locked(key):
+                continue
+            text = self._edits[key].text().strip()
+            if text != self._initial[key]:
+                updates[env_var] = text
+        if updates:
+            common.update_env_file(updates, self.settings.env_file)
         self.accept()

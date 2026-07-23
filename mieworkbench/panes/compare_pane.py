@@ -245,7 +245,9 @@ class ComparePane(QWidget):
     def _resolve_python(self):
         if self.settings is not None:
             try:
-                return self.settings.optics_python()
+                resolved = self.settings.optics_python()
+                if resolved:  # None = unconfigured machine, fall through
+                    return resolved
             except Exception:
                 pass
         return default_optics_python()
