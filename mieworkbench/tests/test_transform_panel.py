@@ -558,3 +558,41 @@ def test_polar_group_custom_axis_vector(qtbot):
     pos = project.current_placement("Lens").pos
     assert abs(np.linalg.norm(pos) - 10.0) < 1e-9
     assert abs(pos[2]) < 1e-9
+
+
+def test_pose_expr_editor_sets_clears_and_disables(qtbot):
+    project, _fake = make_scene()
+    panel = TransformPanel()
+    qtbot.addWidget(panel)
+    panel.set_project(project)
+    panel.set_scene_view(FakeView())
+    panel.set_body("DET")           # anchored detector at (120,0,0)
+
+    # the pose-expression group is enabled for an anchored element
+    assert panel._pose_group.isEnabled()
+    before = pos_of(project, "DET")
+
+    # type an expression over the live variable gap(=25) into pos_x
+    panel._pose_edits["pos_x"].setText("gap")
+    panel._commit_pose_expr("pos_x")
+    assert np.allclose(pos_of(project, "DET")[0], 25.0)      # baked
+    assert project.pose_expressions("DET") == {"pos_x": "gap"}
+    assert "(= 25" in panel._pose_evals["pos_x"].text()      # eval readout
+
+    # clearing the field removes the expression, keeps the baked literal
+    panel._pose_edits["pos_x"].setText("")
+    panel._commit_pose_expr("pos_x")
+    assert project.pose_expressions("DET") == {}
+    assert np.allclose(pos_of(project, "DET")[0], 25.0)
+
+    # one undo restores the pre-expression pose
+    project.undo()
+    project.undo()
+    assert np.allclose(pos_of(project, "DET"), before)
+
+
+def test_pose_expr_editor_disabled_when_chained(qtbot):
+    panel, project, _view = make_train_panel(qtbot, chained=True)
+    panel.set_body("L2")                        # chained
+    panel._refresh_pose_expr()
+    assert not panel._pose_group.isEnabled()

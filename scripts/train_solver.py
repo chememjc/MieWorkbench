@@ -64,6 +64,15 @@ expression engine, NOT this grammar — the two diverge deliberately.
 Variables may reference each other; resolve_variables() evaluates them in
 dependency order and reports circular references by naming the full
 cycle path.
+
+Anchored elements normally carry a literal world placement, but they may
+ALSO be expression-driven: rec["pose_expr"] holds a {field: expr} subset
+of POSE_EXPR_FIELDS (pos_x/pos_y/pos_z world position components and
+rot_rx/rot_ry/rot_rz world Euler angles). place_anchored() bakes those
+against the same variables, so a goniometer detector at `R*cos(theta)`,
+`R*sin(theta)` re-solves when the variables change. Pose expressions are
+valid on anchored elements ONLY (a chained element with one is an error);
+solve_chain returns such baked placements alongside the chained ones.
 """
 
 import ast
@@ -75,6 +84,14 @@ DEG = math.pi / 180.0
 
 TRANSMIT_PORTS = ("out", "transmit")
 ROT_ORDERS = ("xyz", "xzy", "yxz", "yzx", "zxy", "zyx")
+
+# Anchored-pose expression fields (see place_anchored). pos_x/y/z override
+# the corresponding literal world position component; rot_rx/ry/rz drive the
+# world orientation as an intrinsic Euler triad (rec["rot_order"], default
+# "xyz" — the SAME euler_matrix3 convention the chain tilt fields use).
+POSE_POS_FIELDS = ("pos_x", "pos_y", "pos_z")
+POSE_ROT_FIELDS = ("rot_rx", "rot_ry", "rot_rz")
+POSE_EXPR_FIELDS = POSE_POS_FIELDS + POSE_ROT_FIELDS
 
 
 class TrainError(ValueError):
@@ -701,6 +718,76 @@ def _edge_value(rec, key, variables, default=0.0):
 
 
 # ---------------------------------------------------------------------------
+# Anchored pose expressions
+# ---------------------------------------------------------------------------
+def has_pose_expr(rec):
+    """True when an element record carries any non-empty anchored-pose
+    expression (rec["pose_expr"], a {field: expr} subset of
+    POSE_EXPR_FIELDS)."""
+    pe = rec.get("pose_expr") or {}
+    return any(pe.get(k) not in (None, "") for k in POSE_EXPR_FIELDS)
+
+
+def _pose_value(rec, field, raw, variables):
+    try:
+        return eval_expr(raw, variables)
+    except ExprError as e:
+        raise ExprError("element %r, pose field %s: %s"
+                        % (rec.get("label"), field, e))
+
+
+def place_anchored(rec, base, variables):
+    """Bake an ANCHORED element's world placement from its pose
+    expressions (rec["pose_expr"]) over the resolved `variables`. Returns
+    `base` unchanged when the element carries no pose expression (today's
+    literal behaviour — byte-identical).
+
+    Semantics (kept deliberately simple + deterministic so both the GUI
+    and the headless permute path produce bit-identical results):
+      * pos_x/pos_y/pos_z — per-component: a component WITH an expression
+        is evaluated; a component WITHOUT one keeps `base`'s literal
+        position value.
+      * rot_rx/rot_ry/rot_rz — if ANY rotation field is present, the WHOLE
+        orientation is rebuilt from the three angles (a missing angle
+        defaults to 0) as an intrinsic Euler triad in rec["rot_order"]
+        (default "xyz"); if NO rotation field is present, `base`'s
+        rotation is kept. Pose angles are WORLD-frame degrees (the tilt /
+        chain convention — DEGREES-native).
+
+    Pose expressions are ONLY valid on anchored elements: a chained
+    element with a pose expression is a hard error (the two placement
+    mechanisms are mutually exclusive)."""
+    if not has_pose_expr(rec):
+        return base
+    if rec.get("mode") == "chained":
+        raise TrainError(
+            "element %r has anchored-pose expression(s) but is chained; "
+            "pose expressions are valid on anchored elements only "
+            "(unchain it, or clear the pose expressions)"
+            % rec.get("label"))
+    pe = rec.get("pose_expr") or {}
+    if base is not None:
+        pos = [float(c) for c in base["pos_mm"]]
+        quat = [float(c) for c in base["quat"]]
+    else:
+        pos = [0.0, 0.0, 0.0]
+        quat = [0.0, 0.0, 0.0, 1.0]
+    for i, field in enumerate(POSE_POS_FIELDS):
+        raw = pe.get(field)
+        if raw not in (None, ""):
+            pos[i] = _pose_value(rec, field, raw, variables)
+    if any(pe.get(f) not in (None, "") for f in POSE_ROT_FIELDS):
+        order = rec.get("rot_order") or "xyz"
+        angs = []
+        for field in POSE_ROT_FIELDS:
+            raw = pe.get(field)
+            angs.append(_pose_value(rec, field, raw, variables)
+                        if raw not in (None, "") else 0.0)
+        quat = matrix3_to_quat(euler_matrix3(order, *angs))
+    return {"pos_mm": pos, "quat": quat}
+
+
+# ---------------------------------------------------------------------------
 # Chain topology
 # ---------------------------------------------------------------------------
 def sort_chain(records):
@@ -975,7 +1062,9 @@ def solve_chain(records, anchors, variables):
                (Chained records' entries are ignored/overwritten.)
     variables: {name: float} — already resolved (see resolve_variables).
 
-    Returns {"placements": {label: placement}   (chained only),
+    Returns {"placements": {label: placement}   (chained elements, plus
+                                                  anchored elements that
+                                                  carry a pose expression),
              "frames":     {label: {port: frame}},
              "order":      [labels in solve order]}.
     """
@@ -988,6 +1077,15 @@ def solve_chain(records, anchors, variables):
     for label in order:
         rec = records[label]
         if rec.get("mode") == "chained":
+            if has_pose_expr(rec):
+                raise TrainError(
+                    "element %r is chained but carries anchored-pose "
+                    "expression(s) %s; pose expressions are valid on "
+                    "anchored elements only (unchain it, or clear the pose "
+                    "expressions)"
+                    % (label, sorted(k for k in POSE_EXPR_FIELDS
+                                     if (rec.get("pose_expr")
+                                         or {}).get(k) not in (None, ""))))
             ref = rec["ref"]
             port = rec.get("port") or _default_port(records[ref])
             try:
@@ -1001,11 +1099,20 @@ def solve_chain(records, anchors, variables):
             placements[label] = pl
             incoming[label] = parent_frame
         else:
-            try:
-                pl = anchors[label]
-            except KeyError:
+            base = anchors.get(label)
+            if has_pose_expr(rec):
+                # anchored, but its world pose is expression-driven: bake it
+                # (this placement seeds the frame AND is flushed like a
+                # chained one, so it can be swept). place_anchored keeps
+                # unexpressed components from `base` and may be given None
+                # only when every pose component is expressed.
+                pl = place_anchored(rec, base, variables)
+                placements[label] = pl
+            elif base is None:
                 raise TrainError("anchored element %r has no known "
                                  "placement" % label)
+            else:
+                pl = base
             incoming[label] = None
         solved[label] = pl
         all_frames[label] = exit_frames(rec, pl, incoming[label], variables)

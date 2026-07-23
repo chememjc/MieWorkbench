@@ -31,8 +31,8 @@ from PySide6.QtCore import QObject, Signal
 from .fcclient import FcClient
 from .geomcache import GeomCache
 from .train import (
-    TRAIN_GROUP, EDGE_FIELDS, FIELD_PROPS, TrainModel, edge_props,
-    variables_from_sheets,
+    TRAIN_GROUP, EDGE_FIELDS, FIELD_PROPS, POSE_EXPR_FIELDS, POSE_FIELD_PROPS,
+    TrainModel, edge_props, variables_from_sheets,
 )
 from .transforms import (
     BodyState, Operation, Placement, ReferenceResolver, place_about_ops,
@@ -733,6 +733,103 @@ class Project(QObject):
         self.set_chain(element, edge,
                        text=text or "Reposition %s" % element)
 
+    # -- anchored-pose expressions (miewb_expr_pos_*/rot_*) -----------------------
+    def pose_expressions(self, element):
+        """{field: expr} anchored-pose expressions currently on `element`
+        (empty when none). Convenience passthrough to the TrainModel."""
+        return self.train().pose_expressions(str(element))
+
+    def set_pose_expression(self, element, field, expr, text=None):
+        """Drive an ANCHORED element's world pose field with a variable
+        expression (train_solver grammar over miewb_vars), then re-bake +
+        ripple — one undo step. `field` is one of
+        train_solver.POSE_EXPR_FIELDS (pos_x/pos_y/pos_z world mm,
+        rot_rx/rot_ry/rot_rz world degrees). An empty/None `expr` CLEARS
+        the field (see clear_pose_expression).
+
+        Refuses a chained element (pose expressions and chaining are
+        mutually exclusive) and refuses a spreadsheet-bound placement.
+        Raises ProjectError on an unknown field or an unparseable/
+        unresolvable expression (named against the live variables)."""
+        element = str(element)
+        field = str(field)
+        if expr in (None, ""):
+            return self.clear_pose_expression(element, field, text=text)
+        if field not in POSE_EXPR_FIELDS:
+            raise ProjectError(
+                "unknown pose field %r (one of %s)"
+                % (field, ", ".join(POSE_EXPR_FIELDS)))
+        tm = self.train()
+        if element not in tm.records():
+            raise ProjectError("unknown element %r" % element)
+        if tm.is_chained(element):
+            raise ProjectError(
+                "%s is chained; pose expressions are valid on anchored "
+                "elements only — unchain it first" % element)
+        body = tm.primary_body_name(element)
+        if self.body(body).get("placement_bound"):
+            raise ProjectError(
+                "%s's position is driven by a spreadsheet expression; "
+                "unbind it before adding a pose expression" % element)
+        try:
+            import train_solver
+            train_solver.eval_expr(expr, self.train_variables())
+        except Exception as exc:
+            raise ProjectError("%s pose field %s: %s" % (element, field, exc))
+        prop = POSE_FIELD_PROPS[field]
+        self.begin_macro(text or "Set %s expression on %s" % (field, element))
+        try:
+            self.set_property(body, prop, str(expr), ptype="string",
+                              group=TRAIN_GROUP)
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        self.opticsChanged.emit()
+
+    def clear_pose_expression(self, element, field, text=None):
+        """Remove one anchored-pose expression field (the element keeps
+        its currently-baked literal placement) and ripple — one undo step.
+        A no-op (still a clean return) when the field has no expression."""
+        element = str(element)
+        field = str(field)
+        if field not in POSE_EXPR_FIELDS:
+            raise ProjectError(
+                "unknown pose field %r (one of %s)"
+                % (field, ", ".join(POSE_EXPR_FIELDS)))
+        tm = self.train()
+        if element not in tm.records():
+            raise ProjectError("unknown element %r" % element)
+        body = tm.primary_body_name(element)
+        prop = POSE_FIELD_PROPS[field]
+        if (self.body(body).get("properties", {}) or {}).get(prop) is None:
+            return
+        self.begin_macro(text or "Clear %s expression on %s"
+                         % (field, element))
+        try:
+            self.remove_property(body, prop)
+            self._push_ripple_moves()
+        except Exception:
+            self.abort_macro()
+            raise
+        self.end_macro()
+        self.opticsChanged.emit()
+
+    def _clear_all_pose_expr(self, element):
+        """Remove every anchored-pose expression property on `element`'s
+        primary body (undoable children; the CALLER owns the macro). Used
+        by move_element to make a dragged pose literal — the same
+        expression->literal convention a chained drag applies via
+        sync_chain_from_pose."""
+        tm = self.train()
+        body = tm.primary_body_name(element)
+        props = self.body(body).get("properties", {}) or {}
+        for field in POSE_EXPR_FIELDS:
+            prop = POSE_FIELD_PROPS[field]
+            if props.get(prop) is not None:
+                self.remove_property(body, prop)
+
     # -- global variables (miewb_vars sheet) ---------------------------------------
     def variables_sheet(self):
         """The miewb_vars sheet echo dict, or None."""
@@ -1320,15 +1417,26 @@ class Project(QObject):
         """Pane-facing move that keeps the optical train consistent: a
         chained element's edge fields re-derive from the new pose, and
         everything chained downstream follows rigidly. One undo step.
-        (apply_operation stays the raw primitive — no ripple.)"""
+        (apply_operation stays the raw primitive — no ripple.)
+
+        An anchored element carrying pose expressions has them CLEARED by
+        a spatial move (the dragged pose becomes literal) — the same
+        expression->literal convention a chained drag applies via
+        sync_chain_from_pose, so a drag is never silently reverted by the
+        next variable edit."""
         element = self.element_group(body_name)
         tm = self.train()
+        has_pose = tm.has_pose_expr(element)
         in_train = element in tm.records() and (
             tm.is_chained(element) or tm.downstream_of(element))
-        if not in_train:
+        if not in_train and not has_pose:
             return self.apply_operation(body_name, operation)
         self.begin_macro("Move %s" % self._body_label(body_name))
         try:
+            if has_pose:
+                # drop the pose expressions FIRST so the ripple below (and
+                # every later variable edit) leaves the dragged pose alone
+                self._clear_all_pose_expr(element)
             placement = self.apply_operation(body_name, operation)
             if tm.is_chained(element):
                 edge = {k: float(v) for k, v in self.train().derive_edge(

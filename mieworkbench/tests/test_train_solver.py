@@ -740,3 +740,108 @@ def test_solve_chain_bad_port_names_available():
     anchors = {"SRC": {"pos_mm": [0, 0, 0], "quat": [0, 0, 0, 1]}}
     with pytest.raises(ts.TrainError, match="which has ports"):
         ts.solve_chain(recs, anchors, {})
+
+
+# ---------------------------------------------------------------------------
+# Anchored pose expressions (place_anchored / solve_chain)
+# ---------------------------------------------------------------------------
+def _anchored(label="DET", **pose):
+    rec = {"label": label, "mode": "anchored",
+           "local": {"entry": [0.0, 0.0, 0.0], "exit": [0.0, 0.0, 0.0],
+                     "axis": [1.0, 0.0, 0.0], "up": [0.0, 0.0, 1.0]}}
+    if pose:
+        rec["pose_expr"] = pose
+    return rec
+
+
+_BASE = {"pos_mm": [1.0, 2.0, 3.0], "quat": [0.0, 0.0, 0.0, 1.0]}
+
+
+def test_has_pose_expr():
+    assert not ts.has_pose_expr(_anchored())
+    assert not ts.has_pose_expr(_anchored(pos_x=""))          # empty ignored
+    assert ts.has_pose_expr(_anchored(pos_x="R*cos(theta)"))
+    assert ts.has_pose_expr(_anchored(rot_rz="theta"))
+
+
+def test_place_anchored_no_expr_returns_base_identity():
+    rec = _anchored()
+    assert ts.place_anchored(rec, _BASE, {}) is _BASE   # untouched literal
+
+
+def test_place_anchored_position_components():
+    rec = _anchored(pos_x="R*cos(theta)", pos_y="R*sin(theta)")
+    v = {"R": 40.0, "theta": 90.0}
+    pl = ts.place_anchored(rec, _BASE, v)
+    assert np.allclose(pl["pos_mm"], [0.0, 40.0, 3.0], atol=1e-12)  # z kept
+    assert np.allclose(pl["quat"], _BASE["quat"])                   # rot kept
+
+
+def test_place_anchored_goniometer_sweep_angles():
+    rec = _anchored(pos_x="R*cos(theta)", pos_y="R*sin(theta)",
+                    rot_rz="theta")
+    for theta, want in ((0.0, [40.0, 0.0]), (90.0, [0.0, 40.0]),
+                        (180.0, [-40.0, 0.0])):
+        pl = ts.place_anchored(rec, _BASE, {"R": 40.0, "theta": theta})
+        assert np.allclose(pl["pos_mm"][:2], want, atol=1e-9)
+        # rot_rz=theta about world Z: cross-check vs transforms Euler
+        want_q = tr.quat_from_euler(0.0, 0.0, theta)
+        d = min(np.linalg.norm(np.array(pl["quat"]) - want_q),
+                np.linalg.norm(np.array(pl["quat"]) + want_q))
+        assert d < 1e-9
+
+
+def test_place_anchored_rotation_rebuilt_ignores_base_rotation():
+    # a rotation expression rebuilds the WHOLE orientation from the euler
+    # triad (unset angles = 0), independent of base's quat
+    base = {"pos_mm": [0.0, 0.0, 0.0],
+            "quat": tr.quat_from_euler(11.0, 22.0, 33.0).tolist()}
+    rec = _anchored(rot_ry="ang")
+    pl = ts.place_anchored(rec, base, {"ang": 45.0})
+    want_q = tr.quat_from_euler(0.0, 45.0, 0.0)
+    d = min(np.linalg.norm(np.array(pl["quat"]) - want_q),
+            np.linalg.norm(np.array(pl["quat"]) + want_q))
+    assert d < 1e-9
+
+
+def test_solve_chain_bakes_anchored_pose_placement():
+    rec = _anchored("DET", pos_x="R*cos(theta)", pos_y="R*sin(theta)")
+    out = ts.solve_chain({"DET": rec}, {"DET": _BASE},
+                         {"R": 40.0, "theta": 90.0})
+    assert "DET" in out["placements"]        # baked, so it can be flushed
+    assert np.allclose(out["placements"]["DET"]["pos_mm"],
+                       [0.0, 40.0, 3.0], atol=1e-9)
+
+
+def test_solve_chain_no_pose_expr_not_in_placements():
+    # literal anchored elements are byte-identical to before: absent from
+    # placements, no ripple
+    out = ts.solve_chain({"DET": _anchored("DET")}, {"DET": _BASE}, {})
+    assert "DET" not in out["placements"]
+
+
+def test_solve_chain_anchored_pose_seeds_downstream_chain():
+    # a pose-driven anchored element is a valid chain parent (its baked
+    # pose seeds the child's beam frame)
+    src = _anchored("SRC", pos_x="d")
+    src["local"] = {"entry": [0.0, 0.0, 0.0], "exit": [0.0, 0.0, 0.0],
+                    "axis": [1.0, 0.0, 0.0], "up": [0.0, 0.0, 1.0]}
+    child = _plate("A", "SRC", 10)
+    out = ts.solve_chain({"SRC": src, "A": child}, {"SRC": _BASE},
+                         {"d": 7.0})
+    # SRC baked to x=7; child entry (local -1) at 7+10 -> pos 18
+    assert np.allclose(out["placements"]["SRC"]["pos_mm"][0], 7.0, atol=1e-9)
+    assert np.allclose(out["placements"]["A"]["pos_mm"][0], 18.0, atol=1e-9)
+
+
+def test_solve_chain_chained_with_pose_expr_refused():
+    child = _plate("A", "SRC", 10, pose_expr={"pos_x": "1"})
+    with pytest.raises(ts.TrainError, match="valid on anchored"):
+        ts.solve_chain({"SRC": _source(), "A": child},
+                       {"SRC": _BASE}, {})
+
+
+def test_place_anchored_bad_expression_names_field():
+    rec = _anchored("DET", pos_x="R*cos(nope)")
+    with pytest.raises(ts.ExprError, match="pose field pos_x"):
+        ts.place_anchored(rec, _BASE, {"R": 40.0})

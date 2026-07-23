@@ -59,6 +59,13 @@ BOOL_FIELDS = ("fold", "folded", "flip")
 EDGE_FIELDS = ("distance", "decenter_x", "decenter_y",
                "tilt_rx", "tilt_ry", "tilt_rz")
 
+# anchored-pose expression fields (train_solver.POSE_EXPR_FIELDS) <-> the
+# miewb_expr_<field> primary-body property that stores each expression.
+POSE_EXPR_FIELDS = train_solver.POSE_EXPR_FIELDS
+EXPR_PREFIX = "miewb_expr_"
+POSE_PROP_FIELDS = {EXPR_PREFIX + f: f for f in POSE_EXPR_FIELDS}
+POSE_FIELD_PROPS = {v: k for k, v in POSE_PROP_FIELDS.items()}
+
 PORTS_PROP = "miewb_train_ports"
 EXCLUDE_PROP = "miewb_exclude"
 ASSEMBLY_PROP = "miewb_assembly"
@@ -214,8 +221,26 @@ class TrainModel:
             if val in (None, ""):
                 continue
             rec[field] = bool(val) if field in BOOL_FIELDS else val
+        pose = {}
+        for prop, field in POSE_PROP_FIELDS.items():
+            val = _prop_value(primary, prop)
+            if val in (None, ""):
+                continue
+            pose[field] = val
+        if pose:
+            rec["pose_expr"] = pose
         rec["local"] = self.local_ports(element)
         return rec
+
+    def pose_expressions(self, element):
+        """{field: expr} anchored-pose expressions currently on `element`
+        (empty when none). Fields are a subset of POSE_EXPR_FIELDS."""
+        return dict((self.records().get(element) or {}).get("pose_expr")
+                    or {})
+
+    def has_pose_expr(self, element):
+        rec = self.records().get(element)
+        return bool(rec) and train_solver.has_pose_expr(rec)
 
     def records(self):
         if self._records is None:
@@ -359,6 +384,13 @@ class TrainModel:
                     "error",
                     "%s is chained but its placement is expression-bound; "
                     "unchain it or remove the placement expression"
+                    % element))
+            if self.has_pose_expr(element):
+                problems.append((
+                    "error",
+                    "%s is chained but carries anchored-pose expression(s); "
+                    "pose expressions are valid on anchored elements only "
+                    "(unchain it, or clear the pose expressions)"
                     % element))
         try:
             self.solve(variables)

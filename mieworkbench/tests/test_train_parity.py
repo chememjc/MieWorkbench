@@ -159,6 +159,72 @@ def extract_model_json(fcstd_path, out_dir):
         return json.load(fh)
 
 
+def build_pose_expr_scene(project, R=40.0, theta=0.0):
+    """An ANCHORED goniometer detector whose world pose is variable-driven
+    (pos_x=R*cos(theta), pos_y=R*sin(theta), rot_rz=theta) — the anchored
+    pose-expression path (future.md a2)."""
+    fc, doc = project.fc, project.doc
+    fc.request("create_sheet", {"doc": doc, "label": "miewb_vars"})
+    fc.request("set_cell", {"doc": doc, "sheet": "miewb_vars",
+                            "cell": "B1", "raw": "=%g" % R, "alias": "R"})
+    fc.request("set_cell", {"doc": doc, "sheet": "miewb_vars",
+                            "cell": "B2", "raw": "=%g" % theta,
+                            "alias": "theta"})
+    project._refetch_structure()
+    for kind, label in (("laser_collimated", "SRC"),
+                        ("detector_plane", "DET")):
+        project.import_primitive(
+            os.path.join(PRIMITIVES, "%s.FCStd" % kind), label)
+    project.set_pose_expression("DET", "pos_x", "R*cos(theta)")
+    project.set_pose_expression("DET", "pos_y", "R*sin(theta)")
+    project.set_pose_expression("DET", "rot_rz", "theta")
+
+
+@pytest.mark.parametrize("theta", [0.0, 90.0, 180.0, 37.5])
+def test_pose_expr_parity_across_theta(project, tmp_path, theta):
+    """GUI bake vs headless permute bake of an anchored pose expression
+    must agree to 1e-9 across a theta sweep (incl. the cardinal angles)."""
+    build_pose_expr_scene(project, R=40.0, theta=0.0)
+    project.save()
+
+    # GUI-side prediction at this theta
+    tm = project.train()
+    import train_solver
+    variables = train_solver.resolve_variables({"R": "40", "theta": str(theta)})
+    predicted = tm.solve(variables)["placements"]
+    assert "DET" in predicted           # anchored-pose bake is in placements
+
+    outdir = tmp_path / "variants"
+    run_permute(project.fcstd_path, outdir, "miewb_vars.theta",
+                theta, theta, 0)
+    # common.variant_name slug: '.'->'p', '-'->'m'
+    slug = ("%g" % theta).replace(".", "p").replace("-", "m")
+    variant = outdir / ("parity-miewb_vars_theta%s.FCStd" % slug)
+    assert variant.exists(), sorted(os.listdir(outdir))
+
+    got = placements_from_worker(project.fc, variant)
+    assert_placements_close(got, predicted, ["DET"])
+    # sanity: theta actually placed it on the R=40 circle
+    x, y = got["DET"]["pos_mm"][0], got["DET"]["pos_mm"][1]
+    assert abs((x * x + y * y) ** 0.5 - 40.0) < 1e-6
+
+
+def test_pose_expr_parity_same_value_roundtrip(project, tmp_path):
+    """Same variable value: permute's re-bake reproduces the GUI's baked
+    anchored-pose placement exactly."""
+    build_pose_expr_scene(project, R=40.0, theta=25.0)
+    gui = {b["label"]: project.body_states[b["name"]].current.to_dict()
+           for b in project.structure["bodies"]}
+    project.save()
+
+    outdir = tmp_path / "variants"
+    run_permute(project.fcstd_path, outdir, "miewb_vars.theta", 25.0, 25.0, 0)
+    variant = outdir / "parity-miewb_vars_theta25.FCStd"
+    assert variant.exists(), sorted(os.listdir(outdir))
+    got = placements_from_worker(project.fc, variant)
+    assert_placements_close(got, gui, ["SRC", "DET"])
+
+
 def test_unfolded_mirror_excluded_from_extraction(project, tmp_path):
     """miewb_exclude (set by unfold) removes the fold mirror from the
     physics contract entirely; refolding restores it."""

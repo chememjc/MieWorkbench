@@ -45,6 +45,13 @@ BOOL_FIELDS = ("fold", "folded", "flip")
 PORTS_PROP = "miewb_train_ports"
 EXPR_PREFIX = "miewb_expr_"
 
+# Anchored-pose expression properties: miewb_expr_<pose field> on the
+# element's primary body, group "MieTrain" (see train_solver.place_anchored).
+# They share the miewb_expr_ prefix but drive VIRTUAL placement components,
+# not real body properties, so bake_expressions skips them and read_records
+# folds them into the solver record's pose_expr dict instead.
+POSE_EXPR_PROPS = {EXPR_PREFIX + f: f for f in train_solver.POSE_EXPR_FIELDS}
+
 
 class TrainApplyError(RuntimeError):
     pass
@@ -148,6 +155,14 @@ def read_records(doc):
             if val in (None, ""):
                 continue
             rec[field] = bool(val) if field in BOOL_FIELDS else str(val)
+        pose = {}
+        for prop, field in POSE_EXPR_PROPS.items():
+            val = getattr(primary, prop, None)
+            if val in (None, ""):
+                continue
+            pose[field] = str(val)
+        if pose:
+            rec["pose_expr"] = pose
         loc = _local_ports(doc, element, primary)
         if loc is not None:
             rec["local"] = loc
@@ -163,6 +178,11 @@ def bake_expressions(doc, variables):
     for body in _bodies(doc):
         for pname in list(body.PropertiesList):
             if not pname.startswith(EXPR_PREFIX):
+                continue
+            if pname in POSE_EXPR_PROPS:
+                # anchored-pose expressions drive virtual placement
+                # components, not real properties — the train solve
+                # (apply_train -> solve_chain) bakes them, not this loop.
                 continue
             target = pname[len(EXPR_PREFIX):]
             expr = getattr(body, pname, None)
@@ -187,7 +207,11 @@ def apply_train(doc, log=None):
     variables = read_variables(doc)
     bake_expressions(doc, variables)
     records, anchors = read_records(doc)
-    if not any(r.get("mode") == "chained" for r in records.values()):
+    # solve when the scene has ANY derived placement: a chained element, or
+    # an anchored element with a pose expression (goniometer-style sweeps).
+    if not any(r.get("mode") == "chained"
+               or train_solver.has_pose_expr(r)
+               for r in records.values()):
         return 0
     try:
         solved = train_solver.solve_chain(records, anchors, variables)
@@ -200,8 +224,10 @@ def apply_train(doc, log=None):
             bound = _placement_expression(body)
             if bound is not None:
                 raise TrainApplyError(
-                    "chained element %s: body %s placement is "
-                    "expression-bound (%s)" % (element, body.Name, bound))
+                    "derived-placement element %s: body %s placement is "
+                    "expression-bound (%s); a spreadsheet-bound placement "
+                    "cannot also be chain/pose driven"
+                    % (element, body.Name, bound))
             body.Placement = FreeCAD.Placement(
                 FreeCAD.Vector(*[float(v) for v in pl["pos_mm"]]),
                 FreeCAD.Rotation(*[float(v) for v in pl["quat"]]))

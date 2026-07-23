@@ -274,3 +274,119 @@ def test_candidate_edge_refuses_cycles_and_unknown_ports():
         tm.candidate_edge("L1", "L1")
     with pytest.raises(train_solver.TrainError, match="no port"):
         tm.candidate_edge("DET", "L1", "reflect")
+
+
+# ---------------------------------------------------------------------------
+# Anchored pose expressions (Project API + ripple/undo/drag)
+# ---------------------------------------------------------------------------
+def _set_var(project, name, value_raw, row):
+    """Write one miewb_vars value cell through the undoable Project path."""
+    from mieworkbench.core.variables import cell_plan
+    project.apply_variable_cells(
+        cell_plan(name, row=row, value=value_raw), text="Set %s" % name)
+
+
+def test_pose_expression_bakes_and_sweeps():
+    project, _ = make_scene()
+    # add R, theta variables (gap occupies row 1)
+    _set_var(project, "R", "40", row=2)
+    _set_var(project, "theta", "0", row=3)
+    # DET starts anchored at (120,0,0); drive it onto a goniometer circle
+    project.set_pose_expression("DET", "pos_x", "R*cos(theta)")
+    project.set_pose_expression("DET", "pos_y", "R*sin(theta)")
+    project.set_pose_expression("DET", "rot_rz", "theta")
+    # theta=0 -> (40,0, z-kept)
+    assert np.allclose(_pos(project, "DET")[:2], [40.0, 0.0], atol=1e-9)
+
+    _set_var(project, "theta", "90", row=3)
+    assert np.allclose(_pos(project, "DET")[:2], [0.0, 40.0], atol=1e-9)
+    _set_var(project, "theta", "180", row=3)
+    assert np.allclose(_pos(project, "DET")[:2], [-40.0, 0.0], atol=1e-9)
+
+    # the expressions live as miewb_expr_* props on the primary body
+    props = project.body("DET")["properties"]
+    assert props["miewb_expr_pos_x"]["value"] == "R*cos(theta)"
+    assert props["miewb_expr_pos_x"]["group"] == TRAIN_GROUP
+    assert project.pose_expressions("DET") == {
+        "pos_x": "R*cos(theta)", "pos_y": "R*sin(theta)", "rot_rz": "theta"}
+
+
+def test_pose_expression_variable_edit_undo_restores():
+    project, _ = make_scene()
+    _set_var(project, "R", "40", row=2)
+    _set_var(project, "theta", "0", row=3)
+    project.set_pose_expression("DET", "pos_x", "R*cos(theta)")
+    project.set_pose_expression("DET", "pos_y", "R*sin(theta)")
+    at0 = _pos(project, "DET")
+    _set_var(project, "theta", "90", row=3)
+    assert np.allclose(_pos(project, "DET")[:2], [0.0, 40.0], atol=1e-9)
+    project.undo()      # ONE undo (the variable-edit macro) restores pose
+    assert np.allclose(_pos(project, "DET"), at0, atol=1e-9)
+
+
+def test_set_pose_expression_undo_clears_prop_and_pose():
+    project, _ = make_scene()
+    _set_var(project, "R", "40", row=2)
+    before = _pos(project, "DET")
+    project.set_pose_expression("DET", "pos_x", "R")
+    assert np.allclose(_pos(project, "DET")[0], 40.0, atol=1e-9)
+    project.undo()
+    assert "miewb_expr_pos_x" not in project.body("DET")["properties"]
+    assert np.allclose(_pos(project, "DET"), before, atol=1e-9)
+
+
+def test_clear_pose_expression_returns_to_literal():
+    project, _ = make_scene()
+    _set_var(project, "R", "40", row=2)
+    project.set_pose_expression("DET", "pos_x", "R")
+    project.clear_pose_expression("DET", "pos_x")
+    assert project.pose_expressions("DET") == {}
+    # editing the variable no longer moves it (pose is now literal)
+    moved = _pos(project, "DET")
+    _set_var(project, "R", "99", row=2)
+    assert np.allclose(_pos(project, "DET"), moved, atol=1e-9)
+
+
+def test_pose_expression_refused_on_chained_element():
+    project, _ = make_scene()
+    project.set_chain("L1", {"ref": "SRC", "distance": "10"})
+    with pytest.raises(ProjectError, match="chained"):
+        project.set_pose_expression("L1", "pos_x", "5")
+
+
+def test_pose_expression_bad_field_and_expression_named():
+    project, _ = make_scene()
+    with pytest.raises(ProjectError, match="unknown pose field"):
+        project.set_pose_expression("DET", "pos_q", "5")
+    with pytest.raises(ProjectError, match="pos_x"):
+        project.set_pose_expression("DET", "pos_x", "nope*2")
+
+
+def test_drag_clears_pose_expression_to_literal():
+    project, _ = make_scene()
+    _set_var(project, "R", "40", row=2)
+    _set_var(project, "theta", "0", row=3)
+    project.set_pose_expression("DET", "pos_x", "R*cos(theta)")
+    project.set_pose_expression("DET", "pos_y", "R*sin(theta)")
+    # a spatial drag makes the pose literal (expr -> literal, like a chained
+    # drag re-derives its edge fields); the props are removed
+    project.move_element("DET", Operation("translate", {"vector_mm": [0, 0, 5]}))
+    assert project.pose_expressions("DET") == {}
+    dragged = _pos(project, "DET")
+    assert np.allclose(dragged, [40.0, 0.0, 5.0], atol=1e-9)
+    # a later variable edit does NOT snap it back
+    _set_var(project, "theta", "90", row=3)
+    assert np.allclose(_pos(project, "DET"), dragged, atol=1e-9)
+
+
+def test_pose_expression_validate_flags_chained():
+    project, _ = make_scene()
+    project.set_pose_expression("L1", "pos_x", "5")   # L1 anchored: fine
+    # now chain it directly on the body props (bypassing set_chain's guard)
+    # to exercise the validate() message
+    project.set_property("L1", "miewb_train_mode", "chained",
+                         ptype="string", group=TRAIN_GROUP)
+    project.set_property("L1", "miewb_train_ref", "SRC",
+                         ptype="string", group=TRAIN_GROUP)
+    problems = project.train().validate()
+    assert any("anchored-pose" in m for _s, m in problems)

@@ -172,6 +172,9 @@ class TransformPanel(QWidget):
         # -- absolute pose + reference readout ------------------------------
         lay.addWidget(self._build_absolute_group())
 
+        # -- anchored pose expressions (variable-driven world pose) ---------
+        lay.addWidget(self._build_pose_expr_group())
+
         # -- snap to optical axis -------------------------------------------
         lay.addWidget(self._build_snap_group())
 
@@ -304,6 +307,7 @@ class TransformPanel(QWidget):
         if enabled:
             self._refresh_absolute()
             self._refresh_positioning()
+            self._refresh_pose_expr()
         else:
             self.btn_again.setEnabled(False)
 
@@ -757,6 +761,131 @@ class TransformPanel(QWidget):
         gl.addWidget(self.delta, 5, 0, 1, 7)
         return g
 
+    # -- anchored pose expressions ---------------------------------------------
+    _POSE_FIELDS = (("pos_x", "X", "mm"), ("pos_y", "Y", "mm"),
+                    ("pos_z", "Z", "mm"), ("rot_rx", "Rx", "deg"),
+                    ("rot_ry", "Ry", "deg"), ("rot_rz", "Rz", "deg"))
+
+    def _build_pose_expr_group(self):
+        """Per-field variable expressions for an ANCHORED element's world
+        pose (goniometer sweeps: pos_x = R*cos(theta) ...). Mirrors the
+        Train editor's "expr (= value)" affordance: type an expression to
+        drive the field, clear it to return to a literal pose. Collapsed
+        by default (the literal spinboxes above are the primary surface)."""
+        g = QGroupBox("Pose expressions (variables)")
+        g.setToolTip(
+            "Drive this anchored element's world pose fields with "
+            "expressions over the global variables (miewb_vars), so the "
+            "pose re-solves on every variable edit / sweep. %s"
+            % train_solver.EXPR_HELP)
+        g.setCheckable(True)
+        body = QWidget()
+        gl = QGridLayout(body)
+        gl.setContentsMargins(0, 0, 0, 0)
+        _lay = QVBoxLayout(g)
+        _lay.addWidget(body)
+        g.toggled.connect(body.setVisible)
+        g.setChecked(False)
+        body.setVisible(False)
+        self._pose_group = g
+        self._pose_edits = {}
+        self._pose_evals = {}
+        for row, (field, label, unit) in enumerate(self._POSE_FIELDS):
+            gl.addWidget(QLabel(label), row, 0)
+            e = QLineEdit()
+            e.setPlaceholderText("literal")
+            e.setToolTip("Expression for world %s (%s); empty = literal pose"
+                         % (label, unit))
+            e.editingFinished.connect(lambda f=field: self._commit_pose_expr(f))
+            gl.addWidget(e, row, 1)
+            ev = QLabel("")
+            ev.setStyleSheet("color: gray;")
+            gl.addWidget(ev, row, 2)
+            self._pose_edits[field] = e
+            self._pose_evals[field] = ev
+        self.pose_status = QLabel("")
+        self.pose_status.setStyleSheet("color: gray;")
+        self.pose_status.setWordWrap(True)
+        gl.addWidget(self.pose_status, len(self._POSE_FIELDS), 0, 1, 3)
+        return g
+
+    def _pose_element(self):
+        if self.project is None or not self.body_name:
+            return None
+        try:
+            return self.project.element_group(self.body_name)
+        except Exception:
+            return None
+
+    def _refresh_pose_expr(self):
+        if not hasattr(self, "_pose_group"):
+            return
+        element = self._pose_element()
+        if element is None:
+            self._pose_group.setEnabled(False)
+            return
+        try:
+            tm = self.project.train()
+            rec = tm.records().get(element) or {}
+            exprs = tm.pose_expressions(element)
+        except Exception:
+            self._pose_group.setEnabled(False)
+            return
+        chained = rec.get("mode") == "chained"
+        bound = bool(self.project.body(self.body_name).get("placement_bound"))
+        # pose expressions are anchored-only + incompatible with a
+        # spreadsheet-bound placement
+        self._pose_group.setEnabled(not chained and not bound)
+        if chained:
+            self._pose_group.setToolTip(
+                "Unavailable: %s is chained — pose expressions are for "
+                "anchored elements only." % element)
+        variables = self.project.train_variables()
+        for field, _label, unit in self._POSE_FIELDS:
+            e = self._pose_edits[field]
+            if e.hasFocus():
+                continue
+            txt = str(exprs.get(field, ""))
+            e.blockSignals(True)
+            e.setText(txt)
+            e.blockSignals(False)
+            ev = self._pose_evals[field]
+            if not txt:
+                ev.setText("")
+                continue
+            try:
+                v = train_solver.eval_expr(txt, variables)
+                ev.setText("(= %.4g %s)" % (v, unit))
+            except train_solver.TrainError:
+                ev.setText("(unresolved)")
+
+    def _commit_pose_expr(self, field):
+        element = self._pose_element()
+        if element is None:
+            return
+        text = self._pose_edits[field].text().strip()
+        current = self.project.pose_expressions(element).get(field, "")
+        if text == current:
+            return
+        try:
+            self.project.set_pose_expression(element, field, text)
+        except Exception as exc:
+            if self.isVisible():
+                QMessageBox.warning(self, "MieWorkbench", str(exc))
+            else:
+                self.pose_status.setText("Pose expression failed: %s" % exc)
+            self._refresh_pose_expr()
+            return
+        self.pose_status.setText(
+            "Cleared %s." % field if not text
+            else "%s = %s" % (field, text))
+        self.history.addItem("%s: pose %s %s"
+                             % (self.body_name, field,
+                                "cleared" if not text else "= %s" % text))
+        self.history.scrollToBottom()
+        self._refresh_pose_expr()
+        self._refresh_absolute()
+
     def _current_placement(self):
         if self.project is None or not self.body_name:
             return None
@@ -1152,13 +1281,15 @@ class TransformPanel(QWidget):
         project.sceneLoaded.connect(self.polar_ref.notify_scene_changed)
         project.sceneLoaded.connect(
             lambda: (self._refresh_ref_combo(), self._refresh_absolute(),
-                     self._refresh_positioning()))
+                     self._refresh_positioning(), self._refresh_pose_expr()))
         project.propertiesChanged.connect(
-            lambda _n: self._refresh_positioning())
+            lambda _n: (self._refresh_positioning(),
+                        self._refresh_pose_expr()))
         project.bodiesMoved.connect(
             lambda _d: (self.toward._emit(), self.about._emit(),
                         self._refresh_absolute(), self._refresh_positioning(),
-                        self._refresh_snap_position()))
+                        self._refresh_snap_position(),
+                        self._refresh_pose_expr()))
         self._refresh_ref_combo()
         self._refresh_positioning()
         self._update_polar_eval()
@@ -1193,6 +1324,7 @@ class TransformPanel(QWidget):
         self.snap_status.setText("")
         self._refresh_absolute()
         self._refresh_positioning()
+        self._refresh_pose_expr()
 
     # -- operations ---------------------------------------------------------------
     def _axis_spec(self):

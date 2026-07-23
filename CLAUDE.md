@@ -282,8 +282,15 @@ fields; `sinr`/`cosr`/… take radians); cycle-checked with the full path
 named; `train_solver.EXPR_HELP` is the one grammar string) usable in
 chain fields, dim cells (FreeCAD expr `=<<miewb_vars>>.name * 1mm` — the
 `* 1mm` is REQUIRED, and dim cells use FreeCAD's OWN expression engine,
-not this grammar), and float body props via `miewb_expr_<prop>`
-(baked by GUI and permute). Editing a variable rebuilds every primitive
+not this grammar), float body props via `miewb_expr_<prop>`
+(baked by GUI and permute), and ANCHORED element world poses via
+`miewb_expr_pos_x/_y/_z` + `miewb_expr_rot_rx/_ry/_rz` (group `MieTrain`
+on the primary body; `train_solver.place_anchored` bakes them inside the
+shared `solve_chain`, so a goniometer detector at `pos_x=R*cos(theta)`
+sweeps — anchored-only, a chained element with one is refused; a spatial
+drag clears them to a literal pose like a chain drag re-derives its edge;
+GUI editor = transform_panel "Pose expressions"). Editing a variable
+rebuilds every primitive
 whose dim sheet references `miewb_vars` (GUI:
 `Project.apply_variable_cells`; headless:
 `permute_model.extend_touched_for_miewb_vars`). Sweeps: `--sweep-mode

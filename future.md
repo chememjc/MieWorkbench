@@ -317,13 +317,17 @@ From the design-usability-round shakedown (now consolidated into
 `demos/UXNOTES.md`) — the pain points too large for that round's fix
 loop (each names its seam):
 
-- **Expressions/variables for ANCHORED placements.** Chain edges accept
-  the full expression grammar; anchored poses are literal xyz/quat only
-  (`Project.apply_operation` / `transform_panel`). The moment a pose
-  isn't a beam relationship (a 90° side-scatter detector, a field-source
-  fan) you drop to hand-computed literals that can't sweep. Natural
-  shape: `miewb_expr_*`-style expression baking for placement fields, or
-  a polar/spherical place-about-point operation in `core/transforms.py`.
+- ~~**Expressions/variables for ANCHORED placements.**~~ LANDED
+  (`samples-instruments`): anchored elements carry `miewb_expr_pos_x/_y/_z`
+  and `miewb_expr_rot_rx/_ry/_rz` expression props (group `MieTrain` on the
+  primary body); `train_solver.place_anchored` bakes them from `miewb_vars`
+  inside the SHARED `solve_chain` (GUI ripple + headless `train_fcstd`
+  bake, pinned by `test_train_parity.py` across a θ sweep). Anchored-only
+  (a chained element with one is refused); a spatial drag clears them to a
+  literal pose (chain-drag convention). GUI: transform_panel "Pose
+  expressions (variables)" per-field editor with the `expr (= value)`
+  affordance. The one-shot polar place-about-point (`place_about_point`)
+  remains for computing a literal pose without persisting expressions.
 - **A `--particles` cloud is not a chain-referenceable body** — no way to
   chain a detector "40 mm at 90° from the cloud center" (nephelometer
   ring). Needs a lightweight non-solid "region anchor" element the train
@@ -523,7 +527,7 @@ narrative + exact code seam for each stays in its own section above (or in
 ### Backlog (a2) — placement/authoring affordances
 | Item | Effort | Impact | Note |
 |--|:--:|:--:|--|
-|Expressions/variables for anchored placements|M|Med|side-scatter detectors, field fans can't sweep today|
+|Expressions/variables for anchored placements|M|Med|**DONE (samples-instruments)** — `miewb_expr_pos_*/rot_*` baked by `train_solver.place_anchored` in the shared solve; GUI + headless, parity-pinned|
 |`--particles` cloud as chain-referenceable anchor|M|Low|nephelometer-ring authoring|
 |Field-angle source-fan wizard|S|Med|removes hand-computed `y=L·tanθ` placement|
 |Co-located transparent detectors|S|Low|"measure a plane two ways" without overlap-fail|
