@@ -351,3 +351,36 @@ def test_face_exclude_and_eps():
     assert hit[0] and abs(t[0] - 0.02) < 1e-12
     t2, hit2 = face.intersect(o, d, exclude_mask=np.array([True]))
     assert not hit2[0]
+
+
+def test_cos_theta_t_weakly_absorbing_incident_propagating_branch():
+    """Regression (samples-instruments round): a WEAKLY ABSORBING incident
+    medium (water, k~1e-8) into an exactly lossless glass used to flip the
+    propagating root — Im(1-s2) picks up numerical-dust negativity from
+    n1's absorption, the principal sqrt has Im(ct) < 0 by ~1e-13, and the
+    unconditional Im(n2*ct) >= 0 decay rule negated ct. The near-cancelling
+    denominator then gave |rs| ~ 15 (R ~ 230 instead of 0.004), and a
+    nested-cylinder chord loop amplified every bounce — the
+    vial_cylindrical 1e16 closure explosion. The branch rule now applies
+    the radiation condition Re(n2*ct) >= 0 in the effectively-propagating
+    regime and the decay condition only for genuinely evanescent roots."""
+    n1 = np.array([1.3321009 + 1.4655e-08j])   # water @633 (tabulated k)
+    n2 = np.array([1.52 + 0.0j])               # lossless soda-lime glass
+    ci = np.array([0.99998373])
+    ct = fr.cos_theta_t(ci, n1, n2)
+    assert np.real(ct[0]) > 0.99                     # propagating, forward
+    rs, rp, ts, tp, ct2 = fr.fresnel_coeffs(ci, n1, n2)
+    assert np.abs(rs[0]) < 1.0 and np.abs(rp[0]) < 1.0
+    Rs, Rp, Ts, Tp = fr.power_coeffs(rs, rp, ts, tp, ci, ct2, n1, n2)
+    # normal-incidence water->glass: R ~ 0.44%, R+T = 1
+    assert Rs[0] == pytest.approx(0.0044, abs=0.001)
+    assert Rs[0] + Ts[0] == pytest.approx(1.0, abs=1e-6)
+    # genuine TIR branch untouched: glass->air past the critical angle
+    n1g = np.array([1.52 + 0.0j])
+    n2a = np.array([1.0 + 0.0j])
+    ci_tir = np.array([0.5])                    # 60 deg > critical 41.1 deg
+    ct_tir = fr.cos_theta_t(ci_tir, n1g, n2a)
+    assert abs(np.real(ct_tir[0])) < 1e-12      # evanescent: pure imaginary
+    assert np.imag(n2a[0] * ct_tir[0]) > 0      # decays into medium 2
+    rs_t, _, _, _, _ = fr.fresnel_coeffs(ci_tir, n1g, n2a)
+    assert np.abs(rs_t[0]) == pytest.approx(1.0, abs=1e-12)   # |r|=1 at TIR

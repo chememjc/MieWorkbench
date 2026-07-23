@@ -39,8 +39,24 @@ def cos_theta_t(cos_i, n1, n2):
     # Snell invariant: (n1/n2)^2 sin_i^2
     s2 = (n1 / n2) ** 2 * sin_i2
     ct = np.sqrt(1.0 - s2 + 0j)
-    # Branch: transmitted wave must decay into medium 2 => Im(n2 * ct) >= 0.
-    flip = np.imag(n2 * ct) < 0.0
+    # Branch selection. The decay condition Im(n2*ct) >= 0 governs a
+    # genuinely EVANESCENT/absorbed root; for an effectively PROPAGATING
+    # one (|Im| at numerical-dust scale relative to |q|) the radiation
+    # condition Re(n2*ct) >= 0 governs instead. The old unconditional
+    # Im-rule flipped a perfectly propagating root whenever the INCIDENT
+    # medium was weakly absorbing (water, k~1e-8) and n2 exactly lossless:
+    # 1-s2 picks up a ~-1e-13 imaginary from n1's absorption, the
+    # principal sqrt then has Im(ct) < 0 by dust, and the flip turned
+    # ct = +0.99999 into -0.99999 — the near-cancelling Fresnel
+    # denominator (n1 ci + n2 ct ~ n1 - n2) made |rs| ~ 15, and a
+    # nested-cylinder chord loop amplified every bounce by |rs|^2 ~ 230
+    # (the samples-instruments vial_cylindrical closure explosion, 1 mW
+    # in -> 1e8 W booked; only water->lossless-glass pairs triggered it:
+    # decalin (k=0) leaves Im exactly 0, bk7 (k>0) keeps Im(q) > 0).
+    q = n2 * ct
+    im, re = np.imag(q), np.real(q)
+    propagating = np.abs(im) <= 1e-9 * np.abs(q)
+    flip = np.where(propagating, re < 0.0, im < 0.0)
     ct = np.where(flip, -ct, ct)
     return ct
 
