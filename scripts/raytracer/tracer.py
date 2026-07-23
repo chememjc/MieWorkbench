@@ -195,13 +195,21 @@ class Tracer:
                  roughness_module=None, particle_medium=None):
         """detectors: {face_id: DetectorGrid} prepared by the caller.
         grating_module/roughness_module: optional hooks (P3-F) exposing
-        apply(...) kernels; particle_medium: optional hook (P3-E)."""
+        apply(...) kernels; particle_medium: optional hook (P3-E) — a
+        single medium OR a list (samples-instruments round: the CLI
+        --particles world-box cloud and any number of body-bound sample
+        media coexist; step() chains their intercepts)."""
         self.scene = scene
         self.cfg = config
         self.detectors = detectors
         self.grating = grating_module
         self.rough = roughness_module
-        self.particles = particle_medium
+        if particle_medium is None:
+            self.particle_media = []
+        elif isinstance(particle_medium, (list, tuple)):
+            self.particle_media = list(particle_medium)
+        else:
+            self.particle_media = [particle_medium]
         self.ledger = PowerLedger(len(scene.sources))
         self.viz = VizStore()
         self.rng = np.random.default_rng(config.seed)
@@ -318,11 +326,21 @@ class Tracer:
 
         # ---- particle medium interception (P3-E hook) ----
         # scattered/collided children start fresh from their scatter point
-        # and are merged into this step's children at the end
+        # and are merged into this step's children at the end. Media chain:
+        # each medium sees the batch the previous one left. Body-bound
+        # sample media only touch rays whose CURRENT MEDIUM is their body,
+        # so distinct bodies never double-count; a CLI --particles box
+        # deliberately overlapped with a sampled body would compound both
+        # attenuations (author responsibility, documented).
         particle_children = None
-        if self.particles is not None:
-            t, fid, batch, particle_children = \
-                self.particles.intercept(self, batch, t, fid)
+        for medium in self.particle_media:
+            t, fid, batch, med_children = \
+                medium.intercept(self, batch, t, fid)
+            if med_children is not None:
+                particle_children = med_children \
+                    if particle_children is None \
+                    else RayBatch.concatenate([particle_children,
+                                               med_children])
             n = len(batch)
             if n == 0:
                 return self._apply_floors(particle_children) \

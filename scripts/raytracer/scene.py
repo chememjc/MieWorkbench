@@ -149,7 +149,9 @@ class Body:
                  "nonlinear", "pockels_voltage", "pockels_gap_mm",
                  "pockels_mats", "saturable_raw", "saturable_spec",
                  "tpa_beta", "kerr_n2_raw", "kerr_n2_value", "shg_spec",
-                 "temperature_c")
+                 "temperature_c",
+                 # samples-instruments round: body-bound sample media
+                 "sample", "bbox_m")
 
     def __init__(self, index, rec):
         self.index = index
@@ -245,6 +247,18 @@ class Body:
         self.shg_spec = None     # P7b: resolved chi2_process row (Scene)
         self.kerr_n2_raw = rec.get("kerr_n2") or None
         self.kerr_n2_value = None           # m^2/W
+
+        # ---- samples-instruments round: body-bound sample media ----------
+        # 'sample' names a sample/samples.miesamp registry row; the tracer
+        # builds a particle medium bounded by THIS body's interior with the
+        # body's own material as the host (raytracer/particles.py
+        # BodyParticleMedium). bbox_m is the extractor's world-space AABB
+        # (metres) — placement bounds for explicit realizations.
+        self.sample = rec.get("sample") or None
+        bb = rec.get("bbox_m")
+        self.bbox_m = ((np.asarray(bb["min"], dtype=np.float64),
+                        np.asarray(bb["max"], dtype=np.float64))
+                       if bb else None)
 
     def filter_alpha(self, lam_m):
         """Additive bulk absorption coefficient [1/m] at wavelength(s) [m]
@@ -561,10 +575,27 @@ class Scene:
                                ", ".join(sorted(emission)) or
                                "<none loaded — pass optprops>"))
                     entry = emission[spec_name]
-                    src["_spectrum_lam_nm"] = np.asarray(entry["lam_nm"],
-                                                         dtype=np.float64)
-                    src["_spectrum_pdf"] = np.asarray(entry["relative_power"],
+                    if entry["kind"] == "lines":
+                        # discrete emission lines -- NO lam_nm/relative_power
+                        # keys (optprops.load_emission's docstring); the
+                        # per-line stratum allocation lives in
+                        # sources.wavelength_strata, keyed off these three
+                        # arrays/scalar instead of a tabulated PDF.
+                        src["_lines_nm"] = np.asarray(entry["lines_nm"],
                                                       dtype=np.float64)
+                        src["_lines_intensity"] = np.asarray(
+                            entry["intensity"], dtype=np.float64)
+                        src["_lines_linewidth_nm"] = float(
+                            entry["linewidth_nm"])
+                    else:
+                        # continuous or blackbody (blackbody is synthesized
+                        # to a dense table AT LOAD -- see load_emission's
+                        # docstring -- so it carries the SAME lam_nm/
+                        # relative_power keys and needs no special case here)
+                        src["_spectrum_lam_nm"] = np.asarray(
+                            entry["lam_nm"], dtype=np.float64)
+                        src["_spectrum_pdf"] = np.asarray(
+                            entry["relative_power"], dtype=np.float64)
                 self.sources.append((body.index, src))
                 # source bodies contribute no intersectable geometry (the
                 # housing is not traced), but the emitting face itself is
@@ -998,3 +1029,49 @@ class Scene:
             best_t[better] = t[better]
             best_f[better] = fid
         return best_t, best_f
+
+    def point_inside_body(self, pts, body_index, direction=None,
+                          max_hits=64):
+        """Parity (even-odd) containment test: True where pts (N,3, metres)
+        lie strictly inside the closed solid of body body_index.
+
+        Marches a probe ray from each point along `direction` (default a
+        fixed irrational-ish direction that avoids axis-aligned tangency on
+        boxes/cylinders), counting crossings with THIS BODY'S faces only.
+        Each march step advances 100 nm past the hit — the same t_eps scale
+        the face intersectors use — so a quadric face hit twice by one
+        probe is counted twice (nearest-hit-per-face alone would break
+        parity). Used for sample-medium particle placement (rejection
+        sampling), not per-bounce physics — cost is one-off.
+        """
+        body = self.bodies[body_index]
+        if not body.closed:
+            raise ValueError(
+                "point_inside_body: body %s is not a closed solid"
+                % body.label)
+        pts = np.asarray(pts, dtype=np.float64)
+        if direction is None:
+            direction = np.array([0.912871, 0.365148, 0.182574])
+        d = np.asarray(direction, dtype=np.float64)
+        d = d / np.linalg.norm(d)
+        n = len(pts)
+        crossings = np.zeros(n, dtype=np.int64)
+        pos = pts.copy()
+        active = np.ones(n, dtype=bool)
+        dirs = np.broadcast_to(d, (n, 3)).copy()
+        for _ in range(max_hits):
+            idx = np.where(active)[0]
+            if len(idx) == 0:
+                break
+            best_t = np.full(len(idx), np.inf)
+            for fid in body.face_ids:
+                t, hit = self.faces[fid].intersect(pos[idx], dirs[idx])
+                better = hit & (t < best_t)
+                best_t[better] = t[better]
+            hit_any = np.isfinite(best_t)
+            crossings[idx[hit_any]] += 1
+            adv = idx[hit_any]
+            pos[adv] = pos[adv] + (best_t[hit_any] + 1e-7)[:, None] \
+                * dirs[adv]
+            active[idx[~hit_any]] = False
+        return (crossings % 2) == 1

@@ -14,7 +14,12 @@
 # =============================================================================
 import numpy as np
 
-MEDIUM_STACK_DEPTH = 4
+# raised 4 -> 8 in the samples-instruments round: a cuvette nested in an
+# index-matching bath inside a vat wall is depth 4 exactly, which left
+# zero margin (the 5th push died). 8 covers every buildable composition;
+# cost is (n, 8) int16/int32 vs (n, 4) — negligible. The C engine's
+# raybuf.h MEDIUM_STACK_DEPTH mirrors this constant — keep them in sync.
+MEDIUM_STACK_DEPTH = 8
 AMBIENT = -1
 # refl_hist width: the ghost/stray-light history records the face id of each
 # reflection event, one slot per reflection generation, capped at this depth

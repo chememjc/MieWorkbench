@@ -132,10 +132,16 @@ def resolve_tau_phi(tau, box_length_m, evaluator, dist, rho_p, rho_h,
 
 
 class ParticleCloud:
-    """Facade: builds the right mode from a parsed --particles spec."""
+    """Facade: builds the right mode from a parsed --particles spec.
+
+    host: optional Material override for the suspending medium (default
+    scene.ambient — the historic CLI-box behavior). Body-bound sample
+    media (BodyParticleMedium below) pass the sample body's own material
+    so Mie contrast, densities, and scattered-path opl are all computed
+    against the real solvent."""
 
     def __init__(self, spec, scene, threshold=1e6, seed=0,
-                 lam_list=(633e-9,), pol_scatter=True):
+                 lam_list=(633e-9,), pol_scatter=True, host=None):
         # local copy: a tau= spec gets its resolved phi filled in below,
         # without mutating the caller's dict.
         self.spec = spec = dict(spec)
@@ -147,12 +153,13 @@ class ParticleCloud:
         self.hi = self.lo + np.asarray(spec["box_size_m"])
         self.box_volume = float(np.prod(spec["box_size_m"]))
         mat_p = scene.matdb.get(spec["material"])
+        self.host = host if host is not None else scene.ambient
         self.dist = LogNormalDistribution(
             median_r=spec["median_um"] * 1e-6 / 2.0,   # median DIAMETER um
             gsd=spec["gsd"])
         rho_p = mat_p.density
-        rho_h = scene.ambient.density if scene.ambient.density > 0 else 1.204
-        self.evaluator = MieEvaluator(mat_p, scene.ambient)
+        rho_h = self.host.density if self.host.density > 0 else 1.204
+        self.evaluator = MieEvaluator(mat_p, self.host)
         self.tau_resolved = None
         if spec.get("phi") is None:
             tau = spec.get("tau")
@@ -209,6 +216,23 @@ class ParticleCloud:
         return d
 
     # ------------------------------------------------------------------
+    # region hooks (overridden by BodyParticleMedium: the region is a
+    # body's interior instead of a world AABB)
+    # ------------------------------------------------------------------
+    def segment_range(self, batch, seg_max):
+        """Per-ray [t0, t1] sub-range of the segment [0, seg_max] that
+        lies inside this medium's region (t1 <= t0 where it misses)."""
+        return _slab_overlap(batch.pos, batch.dir, seg_max,
+                             self.lo, self.hi)
+
+    def contains_points(self, pts):
+        """(N,) bool: which points lie inside the medium's region."""
+        return np.all((pts >= self.lo) & (pts <= self.hi), axis=-1)
+
+    def region_label(self):
+        return "particles"
+
+    # ------------------------------------------------------------------
     # tracer hook
     # ------------------------------------------------------------------
     def intercept(self, tracer, batch, t, fid):
@@ -220,8 +244,7 @@ class ParticleCloud:
 
     def _continuum(self, tracer, batch, t, fid):
         seg_max = np.where(fid >= 0, t, 1.0)     # escapers still traverse
-        t0, t1 = _slab_overlap(batch.pos, batch.dir, seg_max,
-                               self.lo, self.hi)
+        t0, t1 = self.segment_range(batch, seg_max)
         cross = t1 > t0
         if not np.any(cross):
             return t, fid, batch, None
@@ -239,7 +262,7 @@ class ParticleCloud:
         if np.any(p_abs > 0):
             tracer.ledger.credit("particle_absorbed",
                                  batch.source_id[idx], p_abs,
-                                 where="particles")
+                                 where=self.region_label())
         make = p_scat > 0
         children = None
         if np.any(make):
@@ -303,26 +326,43 @@ class ExplicitRealization:
 
     def _place(self, scene, count, rng):
         """Dart-throwing with a hash grid; rejects overlaps and points
-        inside optic solids (exact for sphere bodies, bbox otherwise)."""
+        inside optic solids (exact for sphere bodies, bbox otherwise).
+        Candidate darts are drawn in the cloud's AABB then filtered
+        through cloud.contains_points IN BATCHES — for the classic box
+        cloud that filter is a no-op; for a body-bound sample medium it
+        is the (vectorized) parity containment test, so the per-dart
+        cost stays amortized."""
         lo, hi = self.cloud.lo, self.cloud.hi
         cell = max(2.0 * self.radii.max(), 1e-6)
         dims = np.maximum(((hi - lo) / cell).astype(int), 1)
         grid = {}
         centers = np.empty((count, 3))
-        # optic-body rejection geometry
+        # optic-body rejection geometry (the sample HOST body itself is
+        # exempt — its interior IS the region the particles live in)
+        host_idx = getattr(self.cloud, "body_index", None)
         sph = []
         for b in scene.bodies:
-            if b.role != "optic":
+            if b.role != "optic" or b.index == host_idx:
                 continue
             for fidx in b.face_ids:
                 s = scene.faces[fidx].surface
                 if s.__class__.__name__ == "Sphere":
                     sph.append((s.c, s.r))
+        chunk = max(4096, min(count * 4, 65536))
+        cand = np.empty((0, 3))
+        cand_i = 0
         placed = 0
         attempts = 0
         while placed < count and attempts < count * 200:
             attempts += 1
-            p = rng.uniform(lo, hi)
+            if cand_i >= len(cand):
+                pts = rng.uniform(lo, hi, size=(chunk, 3))
+                pts = pts[self.cloud.contains_points(pts)]
+                if len(pts) == 0:
+                    continue      # counted attempt; empty region draw
+                cand, cand_i = pts, 0
+            p = cand[cand_i]
+            cand_i += 1
             r = self.radii[placed]
             if any(np.linalg.norm(p - c) < R + r for c, R in sph):
                 continue
@@ -351,8 +391,7 @@ class ExplicitRealization:
 
     def intercept(self, tracer, batch, t, fid):
         seg_max = np.where(fid >= 0, t, 1.0)
-        t0, t1 = _slab_overlap(batch.pos, batch.dir, seg_max,
-                               self.cloud.lo, self.cloud.hi)
+        t0, t1 = self.cloud.segment_range(batch, seg_max)
         cross = np.where(t1 > t0)[0]
         if len(cross) == 0:
             return t, fid, batch, None
@@ -494,10 +533,144 @@ class ExplicitRealization:
         if np.any(absorbed > 0):
             tracer.ledger.credit("particle_absorbed",
                                  child.source_id, absorbed,
-                                 where="particles")
+                                 where=self.cloud.region_label())
 
         # remove collided rays from the surface-bound batch
         keep = np.ones(len(batch), dtype=bool)
         keep[coll_rows] = False
         batch2 = batch.select(keep)
         return t[keep], fid[keep], batch2, child
+
+
+# ---------------------------------------------------------------------------
+# Body-bound sample media (samples-instruments round)
+# ---------------------------------------------------------------------------
+class BodyParticleMedium(ParticleCloud):
+    """A particle population bound to ONE body's interior — the engine
+    half of the `sample` body property (sample/samples.miesamp registry).
+
+    Region semantics: continuum interception applies to exactly the rays
+    whose CURRENT MEDIUM is the host body (the tracer's LIFO medium stack
+    already proves those segments lie wholly inside the body — the segment
+    runs from the ray's position to its next surface hit), so the in-region
+    range is the ENTIRE segment [0, seg_max]: exact for arbitrary body
+    shapes, no slab approximation, nesting-correct (a cuvette liquid nested
+    in a wall nested in a bath binds only its own body index). Explicit
+    realizations dart-throw inside the body via Scene.point_inside_body
+    (parity containment), bounded by the extractor's bbox_m AABB.
+
+    Host medium = the body's own material row: Mie contrast m_rel, host
+    density for the phi(mass)->N conversion, tau resolution, and the
+    scattered-path opl all use the real solvent.
+
+    tau semantics: the target optical depth is resolved along the body
+    AABB's X extent (the beam-axis convention shared with the CLI box
+    spec); for a cuvette that IS the path length. Documented in
+    docs/RAYTRACER.md samples section.
+    """
+
+    def __init__(self, sample_name, row, body, scene, threshold=1e6,
+                 seed=0, lam_list=(633e-9,), pol_scatter=True):
+        if row.get("sq_model", "none") != "none":
+            raise NotImplementedError(
+                "sample %r: sq_model=%s is not wired into the ensemble "
+                "tables yet (S(q) integration lands later this round)"
+                % (sample_name, row["sq_model"]))
+        if row.get("shape", "sphere") != "sphere":
+            raise NotImplementedError(
+                "sample %r: shape=%s needs the T-matrix evaluator wiring "
+                "(lands later this round)" % (sample_name, row["shape"]))
+        if body.bbox_m is None:
+            raise ValueError(
+                "sample %r: body %s carries no bbox_m — re-extract the "
+                "geometry (older model.json predates body bounding boxes)"
+                % (sample_name, body.label))
+        if body.material in (None, "", "none", "detector"):
+            raise ValueError(
+                "sample %r: body %s needs a real host material (the "
+                "sample's solvent), got %r"
+                % (sample_name, body.label, body.material))
+        lo, hi = body.bbox_m
+        spec = {
+            "box_corner_m": [float(x) for x in lo],
+            "box_size_m": [float(x) for x in (hi - lo)],
+            "material": row["particle_material"],
+            "phi": row["phi"], "tau": row["tau"],
+            "median_um": row["median_um"], "gsd": row["gsd"],
+        }
+        self.sample_name = sample_name
+        self.sample_row = row
+        self.body_index = body.index
+        self.body_label = body.label
+        # needed by contains_points BEFORE super().__init__ (an explicit-
+        # mode realization dart-throws through it during construction)
+        self._scene_ref = scene
+        # mode forcing: registry 'continuum'/'explicit' override the
+        # count-vs-threshold auto rule (MAX_BRUTE still guards explicit)
+        mode = row.get("mode", "auto")
+        if mode == "continuum":
+            threshold = -1.0
+        elif mode == "explicit":
+            threshold = float("inf")
+        if row.get("count") is not None:
+            import warnings
+            warnings.warn(
+                "sample %r: 'count' override is not consumed yet (explicit "
+                "counts derive from phi/tau; lattice modes land later this "
+                "round) — ignoring" % sample_name)
+        self.host_material_name = body.material
+        host = scene.matdb.get(body.material)
+        super().__init__(spec, scene, threshold=threshold, seed=seed,
+                         lam_list=lam_list, pol_scatter=pol_scatter,
+                         host=host)
+
+    # region hooks ------------------------------------------------------
+    def segment_range(self, batch, seg_max):
+        """[0, seg_max] for rays currently INSIDE the host body, empty
+        range otherwise — medium-stack membership is the containment
+        proof (see class docstring)."""
+        inside = batch.current_medium() == self.body_index
+        t0 = np.zeros(len(seg_max))
+        t1 = np.where(inside, seg_max, 0.0)
+        return t0, t1
+
+    def contains_points(self, pts):
+        return self._scene_ref.point_inside_body(pts, self.body_index)
+
+    def region_label(self):
+        return "sample:%s" % self.body_label
+
+    def diagnostics(self):
+        d = super().diagnostics()
+        d.update({
+            "sample": self.sample_name,
+            "body": self.body_label,
+            "host_material": self.host_material_name,
+        })
+        return d
+
+
+def build_body_sample_media(scene, samples_registry, threshold=1e6,
+                            seed=0, lam_list=(633e-9,), pol_scatter=True):
+    """One BodyParticleMedium per scene body carrying a `sample` property.
+    The property value must name a samples registry row (inline specs are
+    the CLI --particles path's job). Seeds are decorrelated per body so
+    two sampled bodies never share a realization."""
+    media = []
+    for body in scene.bodies:
+        name = getattr(body, "sample", None)
+        if not name:
+            continue
+        if name not in samples_registry:
+            raise ValueError(
+                "body %s: sample %r is not in the samples registry "
+                "(sample/samples.miesamp has: %s)"
+                % (body.label, name,
+                   ", ".join(sorted(samples_registry)) or "<empty>"))
+        medium = BodyParticleMedium(
+            name, samples_registry[name], body, scene,
+            threshold=threshold,
+            seed=(int(seed) * 1000003 + body.index) & 0x7fffffff,
+            lam_list=lam_list, pol_scatter=pol_scatter)
+        media.append(medium)
+    return media

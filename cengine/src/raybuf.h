@@ -27,7 +27,9 @@
 #include <stdint.h>
 #include "kernels/kmath.h"
 
-#define MEDIUM_STACK_DEPTH 4    /* rays.py:17 */
+#define MEDIUM_STACK_DEPTH 8    /* MUST mirror rays.py MEDIUM_STACK_DEPTH
+                                 * (raised 4->8, samples-instruments round:
+                                 * cuvette-in-bath-in-vat nesting) */
 #define AMBIENT (-1)            /* rays.py:18 */
 #define HIST_DEPTH 8            /* rays.py:22 (ghost refl_hist slots) */
 

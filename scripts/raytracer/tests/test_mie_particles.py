@@ -337,3 +337,169 @@ def test_particles_phi_tau_mutually_exclusive():
         "box=0,0,0:1,1,1;material=water;tau=0.5;median_um=5")
     assert spec["tau"] == pytest.approx(0.5)
     assert spec["phi"] is None
+
+
+# ---------------------------------------------------------------------------
+# Body-bound sample media (samples-instruments round): BodyParticleMedium
+# binds a particle population to ONE body's interior; host = the body's own
+# material; continuum interception = medium-stack membership (full segment);
+# explicit placement = parity containment inside the body.
+# ---------------------------------------------------------------------------
+class _FakeSphereScene:
+    """Fake scene whose 'body 0' interior is an analytic sphere — exercises
+    the contains_points path without real faces."""
+
+    def __init__(self, center, radius):
+        self.matdb = _FakeDB()
+        self.matdb.mats["polystyrene"] = _ConstMat(1.59, 0.0, 1050.0)
+        self.ambient = _ConstMat(1.0, 0.0, 1.204)
+        self.bodies = []
+        self._c = np.asarray(center)
+        self._r = radius
+
+    def point_inside_body(self, pts, body_index):
+        assert body_index == 0
+        return np.linalg.norm(np.asarray(pts) - self._c[None, :],
+                              axis=-1) < self._r
+
+
+class _FakeBody:
+    def __init__(self, index, label, material, lo, hi):
+        self.index = index
+        self.label = label
+        self.material = material
+        self.bbox_m = (np.asarray(lo, dtype=float),
+                       np.asarray(hi, dtype=float))
+
+
+def _sample_row(**over):
+    row = {"particle_material": "polystyrene", "dist": "lognormal",
+           "median_um": 10.0, "gsd": 1.0, "phi": 2e-3, "tau": None,
+           "mode": "auto", "count": None, "sq_model": "none",
+           "sq_params": {}, "shape": "sphere", "aspect_ratio": 1.0,
+           "solvent_visc_pas": None, "reference": "test", "notes": ""}
+    row.update(over)
+    return row
+
+
+def test_body_medium_continuum_binds_to_medium_stack():
+    """Rays INSIDE the body attenuate over their FULL segment; rays in
+    ambient are untouched — no slab geometry involved."""
+    from raytracer.particles import BodyParticleMedium
+
+    scene = _FakeSphereScene([0.0, 0.0, 0.0], 5e-3)
+    body = _FakeBody(0, "Liquid", "water", [-5e-3] * 3, [5e-3] * 3)
+    med = BodyParticleMedium("s", _sample_row(mode="continuum"), body,
+                             scene, seed=1, lam_list=[633e-9])
+    assert med.mode == "continuum"
+    # host is the body's water, not the ambient air
+    assert med.host is scene.matdb.mats["water"]
+
+    class _FakeTracer:
+        ledger = PowerLedger(1)
+    n = 4000
+    batch = RayBatch(n)
+    batch.pos[:] = [0.0, 0.0, 0.0]
+    batch.dir[:] = [1.0, 0.0, 0.0]
+    batch.s_hat[:] = [0.0, 0.0, 1.0]
+    batch.Es[:] = np.sqrt(0.5 / n)
+    batch.Ep[:] = np.sqrt(0.5 / n)
+    batch.lam[:] = 633e-9
+    batch.birth_power[:] = 1.0 / n
+    # first half of the rays are inside body 0, second half in ambient
+    inside = np.zeros(n, dtype=bool)
+    inside[:n // 2] = True
+    batch.push_medium(inside, np.zeros(n, dtype=np.int64))
+
+    seg = 4e-3
+    t = np.full(n, seg)
+    fid = np.zeros(n, dtype=np.int32)
+    p_half = batch.power[:n // 2].sum()
+    p_amb = batch.power[n // 2:].sum()
+    t2, fid2, batch2, child = med.intercept(_FakeTracer(), batch, t, fid)
+    mu = med.tables.mu_ext(633e-9)
+    tau = mu * seg
+    assert 0.01 < tau < 5.0, tau
+    assert batch2.power[:n // 2].sum() == pytest.approx(
+        p_half * np.exp(-tau), rel=1e-9)
+    assert batch2.power[n // 2:].sum() == pytest.approx(p_amb, rel=1e-12)
+    # children only from the inside rays, born incoherent
+    assert child is not None
+    assert child.power.sum() == pytest.approx(
+        p_half * (1 - np.exp(-tau)), rel=1e-9)   # albedo 1 (k=0)
+
+
+def test_body_medium_explicit_places_inside_body_only():
+    from raytracer.particles import BodyParticleMedium
+
+    scene = _FakeSphereScene([0.0, 0.0, 0.0], 3e-3)
+    body = _FakeBody(0, "Vial", "water", [-3e-3] * 3, [3e-3] * 3)
+    med = BodyParticleMedium(
+        "s", _sample_row(mode="explicit", phi=0.02, median_um=50.0),
+        body, scene, seed=5, lam_list=[633e-9])
+    assert med.mode == "explicit"
+    ex = med.explicit
+    assert len(ex.radii) > 10
+    r = np.linalg.norm(ex.centers, axis=-1)
+    assert np.all(r < 3e-3)           # every center inside the sphere
+
+
+def test_body_medium_host_changes_mie_contrast():
+    """Same particles in water host vs the CLI air-ambient cloud: the
+    relative index and mu_ext must differ (water host lowers contrast)."""
+    from raytracer.particles import BodyParticleMedium, ParticleCloud
+
+    scene = _FakeSphereScene([0.0, 0.0, 0.0], 5e-3)
+    body = _FakeBody(0, "Liquid", "water", [-5e-3] * 3, [5e-3] * 3)
+    row = _sample_row(mode="continuum")
+    med = BodyParticleMedium("s", row, body, scene, seed=1,
+                             lam_list=[633e-9])
+    spec = {"box_corner_m": [-5e-3] * 3, "box_size_m": [10e-3] * 3,
+            "material": "polystyrene", "phi": row["phi"],
+            "median_um": row["median_um"], "gsd": row["gsd"]}
+    cloud = ParticleCloud(spec, scene, threshold=-1.0, seed=1,
+                          lam_list=[633e-9])
+    m_body = med.evaluator.m_rel(633e-9)
+    m_cloud = cloud.evaluator.m_rel(633e-9)
+    assert abs(np.real(m_body) - 1.59 / 1.33) < 1e-6
+    assert abs(np.real(m_cloud) - 1.59) < 1e-6
+    assert med.tables.mu_ext(633e-9) != pytest.approx(
+        cloud.tables.mu_ext(633e-9), rel=1e-3)
+
+
+def test_build_body_sample_media_registry_lookup():
+    from raytracer.particles import build_body_sample_media
+
+    scene = _FakeSphereScene([0.0, 0.0, 0.0], 5e-3)
+    b0 = _FakeBody(0, "Liquid", "water", [-5e-3] * 3, [5e-3] * 3)
+    b0.sample = "latex"
+    b1 = _FakeBody(1, "Wall", "water", [-6e-3] * 3, [6e-3] * 3)
+    b1.sample = None
+    scene.bodies = [b0, b1]
+    media = build_body_sample_media(
+        scene, {"latex": _sample_row(mode="continuum")}, seed=3,
+        lam_list=[633e-9])
+    assert len(media) == 1
+    assert media[0].body_label == "Liquid"
+    assert media[0].region_label() == "sample:Liquid"
+    d = media[0].diagnostics()
+    assert d["sample"] == "latex" and d["host_material"] == "water"
+
+    b0.sample = "nope"
+    with pytest.raises(ValueError, match="not in the samples registry"):
+        build_body_sample_media(scene, {"latex": _sample_row()}, seed=3)
+
+
+def test_body_medium_unwired_features_fail_loudly():
+    from raytracer.particles import BodyParticleMedium
+
+    scene = _FakeSphereScene([0.0, 0.0, 0.0], 5e-3)
+    body = _FakeBody(0, "Liquid", "water", [-5e-3] * 3, [5e-3] * 3)
+    with pytest.raises(NotImplementedError, match="sq_model"):
+        BodyParticleMedium("s", _sample_row(sq_model="py"), body, scene)
+    with pytest.raises(NotImplementedError, match="shape"):
+        BodyParticleMedium("s", _sample_row(shape="spheroid",
+                                            aspect_ratio=1.5), body, scene)
+    body.bbox_m = None
+    with pytest.raises(ValueError, match="bbox_m"):
+        BodyParticleMedium("s", _sample_row(), body, scene)
