@@ -27,8 +27,11 @@ simparams (1e4 rays, 512² pixels, 5 spectral bins for most, 3 for filters/broad
 
 ## Building the templates
 
+Commands below assume a one-time `scripts/setup_env.sh` and, per shell,
+`source scripts/miewb_env.sh` (loads `miewb.env`, exports `MIEWB_INST_DIR`).
+
 ```bash
-/home3/freecad/FreeCAD.AppImage -c scripts/make_library_tests.py -- \
+"$MIEWB_FREECAD" -c scripts/make_library_tests.py -- \
     --out demos/library_tests
 ```
 

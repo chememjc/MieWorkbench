@@ -198,10 +198,13 @@ one specific face should do the same instead of hardcoding a `FaceN=`
 literal that would silently drift if `new_body_pad`'s face numbering ever
 changed.
 
-Once your entry and builder are in place, regenerate the library:
+Once your entry and builder are in place, regenerate the library. (Commands
+below assume a one-time `scripts/setup_env.sh` and, per shell, `source
+scripts/miewb_env.sh` — INSTALL.md §5 — which puts `$MIEWB_FREECAD` in
+your environment.)
 
 ```bash
-/home3/freecad/FreeCAD.AppImage -c scripts/make_primitives.py -- \
+"$MIEWB_FREECAD" -c scripts/make_primitives.py -- \
     --kind lens_dcx < /dev/null   # or --kind all to rebuild everything
 ```
 
@@ -939,7 +942,7 @@ SuperK EXR-20). A supercontinuum-style source pairs `spectrum=<row>`
 with a digitized SPD table in `emission/tables/*.mietab` (§8b above);
 an SPM-broadened source sets `spm='gamma:<W⁻¹km⁻¹>:length:<m>'`.
 Regenerate with
-`/home3/freecad/FreeCAD.AppImage -c scripts/make_primitives.py -- --kind <name> < /dev/null`.
+`"$MIEWB_FREECAD" -c scripts/make_primitives.py -- --kind <name> < /dev/null`.
 
 ---
 

@@ -856,7 +856,8 @@ the legend above.
 - `sweep_variants.py --jobs jobs.json` + `compare_runs.py` are wired; a
   worked multi-job example lives in README §sweeps.
 - Detector `.h5` at detailed preset (4096^2 x 32 bins) ≈ 2 GB/detector; mind
-  `/` at ~97% (outputs can be pointed at /home3 via --case-dir).
+  `/` at ~97% (outputs can be pointed at a roomier disk via `--case-dir`,
+  or by setting `MIEWB_RESULTS_DIR` in miewb.env).
   `--save-fields` adds two more full-resolution complex float64 arrays per
   `(source, lam, pol)` key on top of that (seed 0 only) — budget
   accordingly for polarization-heavy, high-resolution `--save-fields` runs.

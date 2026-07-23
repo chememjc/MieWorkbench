@@ -2,7 +2,9 @@
 
 Running MieWorkbench without the GUI — a repo clone plus the pinned
 tools (or `MIEWB_*` overrides, see CLAUDE.md's interpreter table) is
-sufficient.
+sufficient. Commands below assume a one-time `scripts/setup_env.sh` and,
+per shell, `source scripts/miewb_env.sh` (loads `miewb.env`, exports
+`MIEWB_INST_DIR`).
 
 ## Pack, run, inspect
 
@@ -52,7 +54,7 @@ Two independent suites, two interpreters, never cross-imported:
 
 ```bash
 # engine (pure Python + numpy/scipy/torch; no FreeCAD, no Qt)
-/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q
+"$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/ -q
 #   (-m "not slow" skips the end-to-end cases for a fast loop)
 
 # GUI (PySide6 + VTK; headless via Qt's offscreen platform plugin)
@@ -67,10 +69,15 @@ MIEWB_RUN_FREECAD=1 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbe
 
 ## Environment overrides
 
-All tool paths/dirs are env-overridable: `MIEWB_FREECAD`,
-`MIEWB_OPTICS_PYTHON`, `MIEWB_PVPYTHON`, `MIEWB_GEOMETRY_DIR`,
-`MIEWB_RESULTS_DIR`, `MIEWB_OPTPROPS_DIR` — defaults in `scripts/common.py`
-reflect whatever was set when the process started, so a machine-specific
-install never has to be hard-coded anywhere. `MIEWB_PROGRESS=1` makes
-every stage emit `@MIEWB {json}` progress lines (consumed by the GUI's
-`RunController`, otherwise just informational on stdout).
+A fresh remote clone is configured by running `scripts/setup_env.sh`
+(`--non-interactive` for CI/scripted installs), which probes the machine
+and writes `<repo>/miewb.env` (gitignored — see `miewb.env.example` for
+the file's full contract); `source scripts/miewb_env.sh` then loads it
+into the shell. All tool paths/dirs remain env-overridable on top of
+that: `MIEWB_FREECAD`, `MIEWB_OPTICS_PYTHON`, `MIEWB_PVPYTHON`,
+`MIEWB_GEOMETRY_DIR`, `MIEWB_RESULTS_DIR`, `MIEWB_OPTPROPS_DIR` — an
+exported environment variable always beats the `miewb.env` entry, so a
+machine-specific install never has to be hard-coded anywhere.
+`MIEWB_PROGRESS=1` makes every stage emit `@MIEWB {json}` progress lines
+(consumed by the GUI's `RunController`, otherwise just informational on
+stdout).

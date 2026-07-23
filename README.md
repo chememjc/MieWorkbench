@@ -1037,7 +1037,11 @@ GUI-internal `miewb_primitive`/`miewb_group` tags) is fully specified in
 
 ### 4.2 `.MieWB` — a portable workbench
 
-A ZIP archive, built and read by `scripts/miewb_tool.py`:
+A ZIP archive, built and read by `scripts/miewb_tool.py`. Running any
+pipeline entry point on a bare clone (including `miewb_tool.py` itself)
+needs a configured `miewb.env` (`scripts/setup_env.sh`, INSTALL.md §5) —
+or `MIEWB_ALLOW_UNCONFIGURED=1` for tool-less operations like `sniff`
+that don't shell out to FreeCAD/optics-python/pvpython.
 
 ```
 manifest.json          {"format":"MieWB","version":1,"created":...,
@@ -1145,6 +1149,12 @@ All CLI options below are read from each script's own `--help` (or, for
 the three FreeCAD-only scripts, their argparse source — the FreeCAD
 AppImage's `-c` batch mode does not reliably print `--help` output).
 
+Commands below assume a one-time `scripts/setup_env.sh` and, per shell,
+`source scripts/miewb_env.sh` (INSTALL.md §5) — that's what puts
+`$MIEWB_FREECAD`/`$MIEWB_OPTICS_PYTHON`/`$MIEWB_PVPYTHON` in your
+environment. Repo-relative `env/bin/python` and system `python3` calls
+need no such setup.
+
 ### 5.1 `run_pipeline.py` — the orchestrator (system `python3`)
 *Guide: [pipeline-cli.md](docs/guide/pipeline-cli.md)*
 
@@ -1217,7 +1227,7 @@ One writer per case — see §6.
 ### 5.3 `extract_geometry.py` — FreeCAD headless
 
 ```
-/home3/freecad/FreeCAD.AppImage -c scripts/extract_geometry.py -- \
+"$MIEWB_FREECAD" -c scripts/extract_geometry.py -- \
     --models example.FCStd [--outdir geometry] [--strict] < /dev/null
 ```
 
@@ -1229,7 +1239,7 @@ on any face that falls back to mesh-only representation.
 ### 5.4 `permute_model.py` — parameter sweeps (FreeCAD headless)
 
 ```
-/home3/freecad/FreeCAD.AppImage -c scripts/permute_model.py -- \
+"$MIEWB_FREECAD" -c scripts/permute_model.py -- \
     --model example.FCStd --var lenspos --min -5 --max 5 --n 2 \
     [--outdir basemodels] [--unit mm] < /dev/null
 ```
@@ -1277,7 +1287,7 @@ their trace-stage prerequisite wasn't used.
 ### 5.6 `make_viz.py` — 3D visualization (ParaView `pvpython`)
 
 ```
-/home3/paraview/.../bin/pvpython --force-offscreen-rendering scripts/make_viz.py \
+"$MIEWB_PVPYTHON" --force-offscreen-rendering scripts/make_viz.py \
     --case-dir CASE_DIR --model-json MODEL_JSON [--views v1,v2,...] \
     [--resolution WIDTHxHEIGHT] [--out DIR] [--smoke] [--skip-vtkexport]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
@@ -1368,7 +1378,7 @@ workbench with no GUI at all.
 ### 5.10 `make_primitives.py` — generate the element library (FreeCAD headless)
 
 ```
-/home3/freecad/FreeCAD.AppImage -c scripts/make_primitives.py -- \
+"$MIEWB_FREECAD" -c scripts/make_primitives.py -- \
     [--outdir primitives] [--kind <name>|all] < /dev/null
 ```
 
@@ -1379,7 +1389,7 @@ Builds `primitives/*.FCStd` + `.meta.json` sidecars from
 ### 5.11 `make_test_scenes.py` — validation scene catalog (FreeCAD headless)
 
 ```
-/home3/freecad/FreeCAD.AppImage -c scripts/make_test_scenes.py -- \
+"$MIEWB_FREECAD" -c scripts/make_test_scenes.py -- \
     [--outdir DIR] [--scene NAME|all] < /dev/null
 ```
 
@@ -1414,20 +1424,37 @@ python3 scripts/common.py
 
 ### 5.13 Environment variables
 
-All tool paths and data directories are overridable — either by exporting
-these before launching anything, or via the GUI's **File → Settings…**
-dialog (which persists the same values through `QSettings` and layers
-them onto every pipeline subprocess it launches):
+Machine-specific tool paths and data directories are single-sourced in
+gitignored `<repo>/miewb.env`, written once per machine by
+`scripts/setup_env.sh` (INSTALL.md §5) and read by `scripts/common.py` at
+import — every interpreter stack and the GUI see the same values. Each
+key can also be set as an exported environment variable, which always
+wins over the miewb.env entry; the GUI's **File → Settings… → Tool
+Paths** dialog edits the miewb.env file itself, so a value set there
+persists the same way a manual edit would:
 
-| Variable | Overrides | Default |
+| Key | Points at | Required |
 |---|---|---|
-| `MIEWB_FREECAD` | FreeCAD AppImage path | `/home3/freecad/FreeCAD.AppImage` |
-| `MIEWB_OPTICS_PYTHON` | optics-env Python interpreter | `/home3/optics/env/bin/python` |
-| `MIEWB_PVPYTHON` | ParaView's `pvpython` | `/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython` |
-| `MIEWB_GEOMETRY_DIR` | `geometry/` output root | `<repo>/geometry` |
-| `MIEWB_RESULTS_DIR` | `results/` output root | `<repo>/results` |
-| `MIEWB_OPTPROPS_DIR` | `opticalproperties/` library root | `<repo>/opticalproperties` |
-| `MIEWB_PROGRESS` | when `1`, stages also print `@MIEWB {json}` progress lines to stdout | unset (progress.json heartbeat is always written regardless) |
+| `MIEWB_FREECAD` | FreeCAD AppImage | yes |
+| `MIEWB_OPTICS_PYTHON` | optics-env Python interpreter | yes |
+| `MIEWB_PVPYTHON` | ParaView's `pvpython` | yes (empty = no ParaView on this machine, viz stage skips) |
+| `MIEWB_NVCC` | CUDA `nvcc` (>=13) for the C-engine GPU build | no (empty = CPU-only C-engine build) |
+| `MIEWB_CUDA_ARCH` | GPU SM architecture, e.g. `89` (`cengine/build.sh`) | no (empty = CPU-only C-engine build) |
+| `MIEWB_GUI_PYTHON` | the GUI venv's python | no (default `<repo>/env/bin/python`) |
+| `MIEWB_GEOMETRY_DIR` | `geometry/` output root | no (default `<repo>/geometry`) |
+| `MIEWB_RESULTS_DIR` | `results/` output root | no (default `<repo>/results`) |
+| `MIEWB_OPTPROPS_DIR` | `opticalproperties/` library root | no (default `<repo>/opticalproperties`) |
+| `MIEWB_CENGINE` | C-engine binary override | no (default `<repo>/cengine/build/miewb-trace`) |
+
+`MIEWB_ALLOW_UNCONFIGURED=1` lets `common.py` import with the three
+required keys unresolved (used by `mieworkbench/__main__.py` and the test
+conftests); every other stage still errors if it actually needs a tool
+that came back `None`. `source scripts/miewb_env.sh` exports the whole
+miewb.env file (plus `MIEWB_INST_DIR`, the repo root) into your shell.
+
+One runtime-only toggle, not a miewb.env key: `MIEWB_PROGRESS` — when
+`1`, stages also print `@MIEWB {json}` progress lines to stdout (the
+`progress.json` heartbeat is written either way).
 
 ### 5.14 `optimize.py` — merit-function optimizer (optics env python)
 *Guide: [optimize.md](docs/guide/optimize.md)*
@@ -1593,7 +1620,7 @@ never cross-import between them:
 
 ```bash
 # the engine (pure Python + numpy/scipy/torch; no FreeCAD, no Qt)
-/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q
+"$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/ -q
 # (slow end-to-end cases, e.g. test_gather.py/test_doubleslit_e2e.py, are
 #  marked `slow`: add -m "not slow" to skip them for a fast loop)
 

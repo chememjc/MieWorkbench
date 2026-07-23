@@ -69,17 +69,27 @@ approximation.
 
 | Tool | Path | Notes |
 |---|---|---|
-| FreeCAD | `/home3/freecad/FreeCAD.AppImage` | FreeCAD 1.1.1, headless `-c` console mode |
-| optics env python | `/home3/optics/env/bin/python` | numpy/scipy/torch/miepython/h5py/matplotlib |
-| ParaView / pvpython | `/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython` | ParaView 6.1.1 |
+| FreeCAD | `$MIEWB_FREECAD` | FreeCAD 1.1.1, headless `-c` console mode |
+| optics env python | `$MIEWB_OPTICS_PYTHON` | numpy/scipy/torch/miepython/h5py/matplotlib |
+| ParaView / pvpython | `$MIEWB_PVPYTHON` | ParaView 6.1.1 |
 | GUI venv python | `env/bin/python` | PySide6 GUI + the Optiland *sequential* preview/optimizer-evaluation bridge (not a pipeline stage) |
 | orchestrators (`run_pipeline.py`, `sweep_variants.py`) | system `python3` | stdlib only — never imports FreeCAD/numpy/paraview |
 
-These paths are the **env-overridable defaults** in `scripts/common.py`:
-`FREECAD_APPIMAGE` (`MIEWB_FREECAD`), `OPTICS_PYTHON`
-(`MIEWB_OPTICS_PYTHON`), `PVPYTHON` (`MIEWB_PVPYTHON`), and `GUI_PYTHON`
-(`MIEWB_GUI_PYTHON`, default `env/bin/python`) — each reads its
-environment variable and falls back to this machine's pin. `GUI_PYTHON`
+These paths are machine-specific and are never baked into the repo: run
+`scripts/setup_env.sh` once per machine to probe and write `<repo>/miewb.env`
+(gitignored; see `miewb.env.example` for the file's full contract), and
+`source scripts/miewb_env.sh` per shell to export `MIEWB_FREECAD`,
+`MIEWB_OPTICS_PYTHON`, `MIEWB_PVPYTHON`, `MIEWB_NVCC`, `MIEWB_CUDA_ARCH`,
+and `MIEWB_INST_DIR` (the repo root) — the command examples below assume
+this has been done, so `"$MIEWB_FREECAD"`/`"$MIEWB_OPTICS_PYTHON"`/
+`"$MIEWB_PVPYTHON"` are copy-pasteable. `scripts/common.py` resolves the
+same keys itself at import (`FREECAD_APPIMAGE`, `OPTICS_PYTHON`,
+`PVPYTHON`) plus `GUI_PYTHON` (`MIEWB_GUI_PYTHON`, default
+`env/bin/python`), in precedence order: an exported `MIEWB_*` environment
+variable beats a `miewb.env` entry beats a hard import-time error naming
+`scripts/setup_env.sh`; an explicitly EMPTY value (e.g. no ParaView on a
+headless machine) means "configured absent" and only the consuming stage
+errors. `GUI_PYTHON`
 hosts the PySide6 workbench and its Optiland sequential engine (used for
 the interactive ray preview and as the optimizer's paraxial evaluator);
 it is **not** one of the four pipeline stages — the nonsequential coherent
@@ -215,19 +225,19 @@ and `fields/` HDF5 groups only appear when the trace was run with
 
 ```bash
 # 1. geometry extraction (note the bare "--" before extract_geometry.py's own flags)
-/home3/freecad/FreeCAD.AppImage -c scripts/extract_geometry.py -- --models example.FCStd
+"$MIEWB_FREECAD" -c scripts/extract_geometry.py -- --models example.FCStd
 
 # 2. the ray trace itself
-/home3/optics/env/bin/python scripts/run_trace.py \
+"$MIEWB_OPTICS_PYTHON" scripts/run_trace.py \
     --model-json geometry/example/model.json --case-dir results/example/quick \
     --rays 1e5 --resolution 512 --nlambda 5 --spectral-bins 16
 
 # 3. rendering/analysis (rerunnable without re-tracing)
-/home3/optics/env/bin/python scripts/post_process.py \
+"$MIEWB_OPTICS_PYTHON" scripts/post_process.py \
     --case-dir results/example/quick --model-json geometry/example/model.json
 
 # 4. 3D visualization
-/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython \
+"$MIEWB_PVPYTHON" \
     --force-offscreen-rendering scripts/make_viz.py \
     --case-dir results/example/quick --model-json geometry/example/model.json
 ```
@@ -1153,7 +1163,7 @@ back to the first `Spreadsheet::Sheet` found, with a warning, if none is
 labeled `dim`) and sweeps named aliases on it:
 
 ```bash
-/home3/freecad/FreeCAD.AppImage -c scripts/permute_model.py -- \
+"$MIEWB_FREECAD" -c scripts/permute_model.py -- \
     --model example.FCStd \
     --var lenspos --min -5 --max 5 --n 2 \
     --var sphered --min 20 --max 20 --n 0
@@ -2558,7 +2568,7 @@ trace can already saturate every core/GPU). Logs: `results/log.extract`
 ### 8.2 `run_trace.py` (optics env python — the solver)
 
 ```
-/home3/optics/env/bin/python scripts/run_trace.py
+"$MIEWB_OPTICS_PYTHON" scripts/run_trace.py
     --model-json PATH --case-dir DIR
     [--rays F=1e5] [--nlambda N=5] [--resolution N=512] [--spectral-bins N=16]
     [--max-reflections N=6] [--power-floor F=1e-4]
@@ -2651,7 +2661,7 @@ without reconstructing the scene. Both flags are **seed 0 only**, like
 ### 8.3 `post_process.py` / `compare_runs.py` / `make_viz.py` (rendering)
 
 ```
-/home3/optics/env/bin/python scripts/post_process.py \
+"$MIEWB_OPTICS_PYTHON" scripts/post_process.py \
     --case-dir DIR --model-json PATH [--viz-generations N]
     [--dim-rays {off,linear,sqrt}] [--dim-rays-floor PCT]
     [--photometric] [--spectrometer] [--instruments {on,off}]
@@ -2778,7 +2788,7 @@ inverts; the space-invariant sim is object-oriented) with the
 better-agreeing orientation reported.
 
 ```
-/home3/optics/env/bin/python scripts/compare_runs.py \
+"$MIEWB_OPTICS_PYTHON" scripts/compare_runs.py \
     --cases DIR [DIR ...] [--out DIR]
 ```
 Overlays several finished cases' detector results: one
@@ -2791,7 +2801,7 @@ and a printed summary table. `--out` defaults to
 that name would exceed 120 characters).
 
 ```
-/home3/optics/env/bin/python scripts/compare_sweep.py \
+"$MIEWB_OPTICS_PYTHON" scripts/compare_sweep.py \
     (--manifest PATH | --cases DIR [DIR ...]) [--out DIR] [--ref REF]
 ```
 The sweep-comparison companion to `compare_runs.py`. `--manifest`
@@ -2857,7 +2867,7 @@ itself writes). After the batch, every job that produced a
 ### 8.5 `extract_geometry.py` / `permute_model.py` / `make_test_scenes.py` (FreeCAD headless)
 
 ```
-/home3/freecad/FreeCAD.AppImage -c scripts/extract_geometry.py -- \
+"$MIEWB_FREECAD" -c scripts/extract_geometry.py -- \
     [--models FCSTD ...] [--outdir DIR] [--strict]
 ```
 No `--models` scans `PROJECT_DIR/*.FCStd` + `BASEMODELS_DIR/*.FCStd`.
@@ -2868,7 +2878,7 @@ the trace-time `--strict-analytic` flag, §5.8, which controls whether the
 *tracer* accepts an already-extracted mesh face).
 
 ```
-/home3/freecad/FreeCAD.AppImage -c scripts/permute_model.py -- \
+"$MIEWB_FREECAD" -c scripts/permute_model.py -- \
     --model FCSTD --var ALIAS --min F --max F --n N [--var ...]...
     [--outdir DIR] [--unit mm]
 ```
@@ -2876,7 +2886,7 @@ the trace-time `--strict-analytic` flag, §5.8, which controls whether the
 must appear the same number of times (paired positionally, §5.9).
 
 ```
-/home3/freecad/FreeCAD.AppImage -c scripts/make_test_scenes.py -- \
+"$MIEWB_FREECAD" -c scripts/make_test_scenes.py -- \
     [--outdir DIR] [--scene NAME|all]
 ```
 `--scene` (default `doubleslit`) accepts either a single scene name or
@@ -2899,7 +2909,7 @@ now lists six parsers (`pipeline, trace, post, viz, optimize, tolerance`,
 up from the original four pipeline stages in §1).
 
 ```
-/home3/optics/env/bin/python scripts/optimize.py --model FCSTD \
+"$MIEWB_OPTICS_PYTHON" scripts/optimize.py --model FCSTD \
     --var NAME:START:LO:HI [--var ...]... \
     --operand OPERAND[@DETECTOR]:TARGET:WEIGHT [--operand ...]... \
     [--algorithm {local,global}] [--budget N] [--tol F] \
@@ -2919,7 +2929,7 @@ re-evaluates the best design once with coherence as authored (skip with
 is its validation fixture.
 
 ```
-/home3/optics/env/bin/python scripts/tolerance.py --model FCSTD \
+"$MIEWB_OPTICS_PYTHON" scripts/tolerance.py --model FCSTD \
     --tolerance NAME:NOMINAL:DIST:BAND [--tolerance ...]... \
     --operand OPERAND[@DETECTOR]:TARGET:WEIGHT [--operand ...]... \
     [--draws N] [--merit-threshold X] [--compensator VAR:LO:HI] \
@@ -2950,7 +2960,7 @@ field decorrelation is genuine particle-displacement physics rather than
 an analytic model.
 
 ```
-/home3/optics/env/bin/python scripts/run_dls.py
+"$MIEWB_OPTICS_PYTHON" scripts/run_dls.py
     --model-json PATH --case-dir DIR
     --frames N --dt-ms F
     [--temp-k F=293.15] [--rays F=1e5] [--nlambda N=1]
@@ -2993,7 +3003,7 @@ solvent_visc_pas, n_particles, rays, nlambda, frames, dt_ms,
 sample_row_json`.
 
 ```
-/home3/optics/env/bin/python scripts/dls_correlate.py
+"$MIEWB_OPTICS_PYTHON" scripts/dls_correlate.py
     --case-dir DIR [--aperture-px K] [--emit-csv]
 ```
 
@@ -3119,7 +3129,7 @@ exactly like `--seeds` on a rough-surface scene (§5.4).
 ## 10. Test scene catalog (`make_test_scenes.py`)
 
 ```bash
-/home3/freecad/FreeCAD.AppImage -c scripts/make_test_scenes.py -- --scene all
+"$MIEWB_FREECAD" -c scripts/make_test_scenes.py -- --scene all
 python3 scripts/run_pipeline.py --models basemodels/lens_pcx.FCStd --preset quick
 ```
 
@@ -3189,7 +3199,7 @@ physics modules against a real extracted FreeCAD geometry.
 `scripts/raytracer/tests/` (935 tests total — see the actual count with
 `--collect-only -q`; the table below covers the physics-pinning core, not
 every file; run with
-`/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -v`;
+`"$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/ -v`;
 `test_gather.py` and `test_doubleslit_e2e.py` take minutes):
 
 | Test file | Physics pinned | Tolerance |

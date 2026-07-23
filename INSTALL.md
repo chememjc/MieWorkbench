@@ -12,22 +12,25 @@ the engine itself see [docs/RAYTRACER.md](docs/RAYTRACER.md).
 
 ## 1. What you need
 
-MieWorkbench composes **four independent interpreters**, each pinned by
-path in `scripts/common.py` and each overridable via an `MIEWB_*`
-environment variable or the GUI's **File → Settings…** dialog (see
-README.md §5.13). Nothing here needs to be installed *inside* this repo's
-own virtualenv except the GUI's own Python dependencies (§3) — the other
-three are external tools you point the workbench at.
+MieWorkbench composes **four independent interpreters**. Their paths are
+recorded once, per machine, in gitignored `<repo>/miewb.env` — written by
+`scripts/setup_env.sh` (§5) — which `scripts/common.py` reads at import
+time; an exported `MIEWB_*` environment variable always overrides the
+miewb.env entry, and the GUI's **File → Settings…** dialog (see README.md
+§5.13) edits the same file in place. Nothing here needs to be installed
+*inside* this repo's own virtualenv except the GUI's own Python
+dependencies (§3) — the other three are external tools you point the
+workbench at.
 
-| # | Tool | Used by | This machine's pin |
+| # | Tool | Used by | miewb.env key |
 |---|---|---|---|
-| 1 | System `python3` (3.10+) | `run_pipeline.py`, `sweep_variants.py`, `miewb_tool.py`, `common.py`, `cli_specs.py` | whatever `python3` resolves to |
-| 2 | FreeCAD 1.1+ AppImage | `extract_geometry.py`, `permute_model.py`, `make_test_scenes.py`, `make_primitives.py` | `/home3/freecad/FreeCAD.AppImage` (FreeCAD 1.1.1) |
-| 3 | "The optics environment" — a Python env with numpy/scipy/torch(-CUDA)/h5py/miepython/matplotlib | `run_trace.py`, `post_process.py`, `compare_runs.py`, `optimize.py`, `tolerance.py`, `fast_eval.py`, the engine's own pytest suite | `/home3/optics/env/bin/python` |
-| 4 | ParaView 5.13+/6.x with `pvpython` | `make_viz.py` | `/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython` (ParaView 6.1.1) |
-| 5 | GUI venv (PySide6 + VTK + …) | `mieworkbench`, GUI pytest | `env/` inside this repo |
+| 1 | System `python3` (3.10+) | `run_pipeline.py`, `sweep_variants.py`, `miewb_tool.py`, `common.py`, `cli_specs.py` | *(none — whatever `python3` resolves to)* |
+| 2 | FreeCAD 1.1+ AppImage | `extract_geometry.py`, `permute_model.py`, `make_test_scenes.py`, `make_primitives.py` | `MIEWB_FREECAD` (required) |
+| 3 | "The optics environment" — a Python env with numpy/scipy/torch(-CUDA)/h5py/miepython/matplotlib | `run_trace.py`, `post_process.py`, `compare_runs.py`, `optimize.py`, `tolerance.py`, `fast_eval.py`, the engine's own pytest suite | `MIEWB_OPTICS_PYTHON` (required) |
+| 4 | ParaView 5.13+/6.x with `pvpython` | `make_viz.py` | `MIEWB_PVPYTHON` (required key, empty value allowed — "no ParaView here") |
+| 5 | GUI venv (PySide6 + VTK + …) | `mieworkbench`, GUI pytest | *(none — defaults to `env/` inside this repo; `MIEWB_GUI_PYTHON` overrides)* |
 
-You do not need all five to do useful work — see §6 for a minimal
+You do not need all five to do useful work — see §7 for a minimal
 headless install (just #1, #2, #3, and optionally #4).
 
 A GPU is **not** required, but an NVIDIA driver + CUDA-capable GPU is
@@ -76,13 +79,12 @@ and make it executable:
 chmod +x FreeCAD_1.1.1-Linux-x86_64-py311.AppImage
 ```
 
-Put it wherever you like; you'll point `MIEWB_FREECAD` (or the Settings
-dialog) at its path if it isn't at the default
-`/home3/freecad/FreeCAD.AppImage`. AppImages need FUSE to run directly
+Put it wherever you like — record its path as `MIEWB_FREECAD` in step §5
+(`scripts/setup_env.sh`). AppImages need FUSE to run directly
 (`sudo apt install libfuse2` on 22.04, `libfuse2t64` or the `--appimage-
 extract-and-run` flag on 24.04 where FUSE2 may be absent); if FUSE isn't
-available, extract and run: `./FreeCAD*.AppImage --appimage-extract` then
-point `MIEWB_FREECAD` at `squashfs-root/AppRun`.
+available, extract and run: `./FreeCAD*.AppImage --appimage-extract` and
+record `squashfs-root/AppRun` as `MIEWB_FREECAD` instead.
 
 FreeCAD's headless `-c` mode has a few sharp edges (a script runs twice
 per invocation, `--help`/argparse `SystemExit` is swallowed, stdin must be
@@ -98,9 +100,7 @@ miepython, and matplotlib. The **optical-design tools** (`optimize.py`,
 `tolerance.py` — merit-function optimization and Monte-Carlo tolerancing)
 additionally need **`nevergrad`** (the CMA-ES / directed global optimizer
 backend) and **`cma`** (the standalone CMA-ES it wraps); both are pure-Python
-wheels with no CUDA dependency. This machine's copy lives at
-`/home3/optics/env/bin/python` (Python 3.11, `torch` built for CUDA 13).
-To build an equivalent environment elsewhere:
+wheels with no CUDA dependency. To build the environment:
 
 ```bash
 python3 -m venv /path/to/optics/env
@@ -117,26 +117,29 @@ python3 -m venv /path/to/optics/env
 `nevergrad`/`cma` are only needed if you run the optimizer or tolerancer
 (or their GUI docks); the trace/post/viz pipeline works without them.
 
-Point `MIEWB_OPTICS_PYTHON` (or Settings) at `/path/to/optics/env/bin/python`.
-A conda/mamba environment with the same packages works identically —
-`common.py` only cares that the path is a working Python interpreter with
-those packages importable.
+Record `/path/to/optics/env/bin/python` as `MIEWB_OPTICS_PYTHON` in step
+§5 (`scripts/setup_env.sh`). A conda/mamba environment with the same
+packages works identically — `common.py` only cares that the path is a
+working Python interpreter with those packages importable.
 
 ### 3.3 ParaView
 
 Download a ParaView 5.13+ or 6.x binary distribution
 (https://www.paraview.org/download/) that bundles `pvpython` — do **not**
 rely on a distro package, which typically omits the Python bindings this
-project needs. This machine uses ParaView 6.1.1
-(`ParaView-6.1.1-MPI-Linux-Python3.12-x86_64`). Extract it anywhere and
-point `MIEWB_PVPYTHON` (or Settings) at `<extracted>/bin/pvpython`.
+project needs. Extract it anywhere (e.g.
+`ParaView-6.1.1-MPI-Linux-Python3.12-x86_64`) and record
+`<extracted>/bin/pvpython` as `MIEWB_PVPYTHON` in step §5
+(`scripts/setup_env.sh`) — or leave it configured *empty* if this machine
+has no ParaView; the viz stage then skips cleanly with a NOTICE instead of
+failing.
 
 When invoking `pvpython` directly for `scripts/make_viz.py` (outside the
 GUI, which always adds this flag itself), pass
 `--force-offscreen-rendering` — see the module docstring:
 
 ```bash
-/home3/paraview/ParaView-6.1.1-MPI-Linux-Python3.12-x86_64/bin/pvpython \
+/path/to/ParaView/bin/pvpython \
     --force-offscreen-rendering scripts/make_viz.py \
     --case-dir results/example/quick --model-json geometry/example/model.json
 ```
@@ -148,8 +151,8 @@ T-matrix scattering for non-spherical, `shape=spheroid` sample-registry
 rows, docs/RAYTRACER.md §5.13) is a **soft, optics-env-only** dependency
 on [pytmatrix](https://github.com/jleinonen/pytmatrix) (MIT) — a
 `sphere`-shape sample row never imports it, and every other feature in the
-repo works without it. Install it into `/home3/optics/env` (or your
-equivalent optics env) ONLY — never the GUI venv, never FreeCAD's python.
+repo works without it. Install it into the optics environment (§3.2)
+ONLY — never the GUI venv, never FreeCAD's python.
 
 **pytmatrix 0.3.3's own `setup.py` no longer builds under numpy 2.x** (its
 `numpy.distutils`-based Fortran extension build predates numpy's
@@ -159,7 +162,9 @@ the Fortran extension by hand with `numpy.f2py`'s meson backend and drops
 the built package straight into `site-packages`:
 
 ```bash
-OPTICS=/home3/optics/env   # substitute your optics env root
+OPTICS=/path/to/optics/env   # substitute your optics env root; if you've
+                              # already sourced scripts/miewb_env.sh, this
+                              # is $(dirname "$(dirname "$MIEWB_OPTICS_PYTHON")")
 
 # 1. pytmatrix's PyPI sdist (0.3.3) — has the Fortran sources but is
 #    MISSING pytmatrix.pyf (the f2py interface file); fetch that
@@ -235,7 +240,7 @@ files (`model.json`, `.h5` detector cubes, etc.) with these lighter deps.
 [prysm](https://github.com/brandondube/prysm)'s own Forbes-polynomial
 implementation to 1e-12. prysm is MIT-licensed but not on a normal release
 cadence (PyPI is stale), so it is installed from a **pinned git SHA** into
-this same `env/` venv — never into `/home3/optics/env`, and never imported
+this same `env/` venv — never into the optics env, and never imported
 by the engine itself (test-only oracle dependency):
 
 ```bash
@@ -263,7 +268,7 @@ all agree to floating-point round-off. This arbiter must exist **before**
 any Optiland-based optimizer/designer (P4b) adds a second physics truth.
 
 Optiland is a normal PyPI package, installed into the SAME `env/` GUI venv
-— never into `/home3/optics/env`, and never imported by the engine itself
+— never into the optics env, and never imported by the engine itself
 (the bridge `scripts/raytracer/optiland_bridge.py` is the ONLY module that
 imports it, and it runs under `env/bin/python`):
 
@@ -280,7 +285,7 @@ optional Optiland extra we do not install).
 
 The oracle cases additionally shell out to the optics-env C engine to
 generate the Monte-Carlo comparison bundle (`run_trace.py --export-rays`);
-if `/home3/optics/env` or `cengine/build/miewb-trace` is absent they skip.
+if the optics env or `cengine/build/miewb-trace` is absent they skip.
 The bridge structural + unit-contract tests need only Optiland. Skip the
 whole file with `pytest.importorskip("optiland")` when Optiland isn't
 installed. The two adjudications that reconciled the engines to machine
@@ -294,7 +299,7 @@ docstring.
 per-order amplitudes over a `(lambda, theta, phi)` grid; docs/archive/engine3.md §7.5,
 docs/RAYTRACER.md §5.5/§7.5) using [meent](https://github.com/kc-ml2/meent)
 (MIT), a rigorous coupled-wave (RCWA) solver. Like the oracles above it is
-installed into the SAME `env/` GUI venv — never into `/home3/optics/env` —
+installed into the SAME `env/` GUI venv — never into the optics env —
 and is **never imported by the engine**: the generated `.mietab` is committed
 and the tracer only interpolates it. It is a generation-time (authoring)
 dependency:
@@ -316,29 +321,93 @@ step entirely unless you are re-generating grating tables.
 
 ---
 
-## 5. First run
+## 5. Configure machine paths (`scripts/setup_env.sh`)
+
+Machine-specific tool paths live in ONE gitignored file,
+`<repo>/miewb.env` — never in source. `scripts/setup_env.sh` creates it;
+run it once per machine, after §3/§4:
 
 ```bash
-# 1. sanity-check the pinned tool paths and a battery of pure-math
-#    invariants (path checks will show FAIL until you fix them in step 2)
+scripts/setup_env.sh
+```
+
+Run with no flags at a terminal, it walks an interactive probe: it looks
+for FreeCAD/the optics Python/`pvpython`/`nvcc` at a few common
+locations and on `$PATH`, prompts you to confirm or type a path for
+anything it can't find on its own, and reads the GPU's SM architecture
+off `nvidia-smi` for `MIEWB_CUDA_ARCH`. `MIEWB_FREECAD` and
+`MIEWB_OPTICS_PYTHON` are required — the script won't write a file
+missing either. `MIEWB_PVPYTHON` and the two CUDA keys can be left
+empty (deliberately "not installed here"); it asks before doing so.
+
+For CI/scripted installs, pass the paths as flags and skip the prompts:
+
+```bash
+scripts/setup_env.sh --non-interactive \
+    --freecad /path/to/FreeCAD.AppImage \
+    --optics-python /path/to/optics/env/bin/python \
+    --pvpython /path/to/ParaView/bin/pvpython \
+    --nvcc /usr/local/cuda-13/bin/nvcc --cuda-arch 89
+```
+
+`--pvpython ''`/`--nvcc ''`/`--cuda-arch ''` configure that key absent
+(a missing `--freecad`/`--optics-python` under `--non-interactive` exits
+2 and writes nothing). `--print` shows the file that would be written
+without writing it. Re-running is idempotent: an existing miewb.env
+value wins over a fresh probe unless a flag overrides it.
+
+The file itself is flat `KEY=value` lines (see `miewb.env.example` for
+the full contract and comments):
+
+```
+MIEWB_FREECAD=/path/to/FreeCAD.AppImage
+MIEWB_OPTICS_PYTHON=/path/to/optics/env/bin/python
+MIEWB_PVPYTHON=/path/to/ParaView/bin/pvpython
+MIEWB_NVCC=
+MIEWB_CUDA_ARCH=
+```
+
+**Precedence** (checked by `scripts/common.py` at import, for every
+interpreter stack): an exported `MIEWB_*` environment variable beats a
+miewb.env entry, which beats nothing — a required key (`MIEWB_FREECAD`,
+`MIEWB_OPTICS_PYTHON`, `MIEWB_PVPYTHON`) missing from both is a hard
+`UnconfiguredError` at import, naming this script. An **empty** value
+(`MIEWB_PVPYTHON=`) means "configured absent": the pipeline's viz stage
+skips cleanly with a NOTICE instead of erroring, and empty CUDA keys
+give a CPU-only C-engine build (§ C engine, below) — this is the normal
+shape of a headless-server miewb.env (§7). `MIEWB_ALLOW_UNCONFIGURED=1`
+is an escape hatch that lets an unconfigured machine import anyway
+(unresolved tools resolve to `None`, so only the stage that actually
+needs one fails); the GUI sets it for itself, and so do the test
+conftests.
+
+To use these paths directly in a shell (rather than relying on `common.py`
+to read miewb.env per invocation), source the loader — it exports every
+key plus `MIEWB_INST_DIR` (the repo root), letting doc examples like
+`"$MIEWB_OPTICS_PYTHON" -m pytest ...` work verbatim:
+
+```bash
+source scripts/miewb_env.sh
+```
+
+The GUI's **File → Settings… → Tool Paths** page edits this same
+`miewb.env` file in place (a one-time migration folds in any paths from
+an older QSettings-only install); launching the GUI on a machine with no
+miewb.env opens that dialog automatically instead of failing.
+
+## 6. First run
+
+```bash
+# 1. sanity-check the configured tool paths and a battery of pure-math
+#    invariants
 python3 scripts/common.py
 
-# 2. if any of FreeCAD / optics-python / pvpython aren't at this
-#    machine's defaults, either export overrides:
-export MIEWB_FREECAD=/path/to/FreeCAD.AppImage
-export MIEWB_OPTICS_PYTHON=/path/to/optics/env/bin/python
-export MIEWB_PVPYTHON=/path/to/ParaView/bin/pvpython
-#    ...or launch the GUI once and fix them under File > Settings... —
-#    that dialog persists the same values (via QSettings) and applies
-#    them to every pipeline subprocess it launches, so you don't need
-#    the exports for GUI use once set there.
-
-# 3. generate the primitive element library if primitives/ is empty
+# 2. generate the primitive element library if primitives/ is empty
 #    (it ships populated in this repo, but regenerate after editing
 #    scripts/primitivelib.py — see CUSTOMIZE.md)
-/path/to/FreeCAD.AppImage -c scripts/make_primitives.py -- --kind all < /dev/null
+"$MIEWB_FREECAD" -c scripts/make_primitives.py -- --kind all < /dev/null
 
-# 4. launch the GUI
+# 3. launch the GUI
 env/bin/python -m mieworkbench
 ```
 
@@ -363,7 +432,7 @@ at this checkout's `bin/mieworkbench`, associating `.FCStd`/`.MieWB`/
 
 ---
 
-## 6. Headless-server install (no GUI)
+## 7. Headless-server install (no GUI)
 
 A machine that only needs to run jobs — e.g. the target of an "Export Run
 Script" from a workstation, or a CI runner — needs none of the GUI
@@ -372,9 +441,18 @@ virtualenv (§4). Just:
 - system `python3` (for `run_pipeline.py`/`miewb_tool.py`),
 - the FreeCAD AppImage (§3.1),
 - the optics environment (§3.2),
-- ParaView (§3.3), only if you want `viz/*.png` renders — omit `--steps`
-  down to `extract,trace,post` (or accept that the viz stage will fail)
-  if you don't have it.
+- ParaView (§3.3), only if you want `viz/*.png` renders — configure
+  `MIEWB_PVPYTHON` empty and omit it otherwise (§5).
+
+Configure the machine (§5) non-interactively in one line — an empty
+`--pvpython` is a deliberate "no ParaView here", after which the
+pipeline's viz stage skips cleanly with a NOTICE instead of failing:
+
+```bash
+scripts/setup_env.sh --non-interactive \
+    --freecad /path/to/FreeCAD.AppImage \
+    --optics-python /path/to/optics/env/bin/python --pvpython ''
+```
 
 Usage, given a `.MieWB` produced elsewhere (by the GUI's "Export Run
 Script", or `miewb_tool.py pack`):
@@ -391,12 +469,15 @@ given. See README.md §4 and §5.9 for the full format/CLI reference.
 
 ---
 
-## 7. Verification
+## 8. Verification
 
 ```bash
+# commands below assume a one-time `scripts/setup_env.sh` (§5) and,
+# per shell, `source scripts/miewb_env.sh`
+
 # engine suite (~1336 tests currently; see the actual count with
 # --collect-only -q)
-/home3/optics/env/bin/python -m pytest scripts/raytracer/tests/ -q
+"$MIEWB_OPTICS_PYTHON" -m pytest scripts/raytracer/tests/ -q
 
 # GUI suite, headless
 QT_QPA_PLATFORM=offscreen env/bin/python -m pytest mieworkbench/tests -q
@@ -417,8 +498,10 @@ populated with `case.json`, `audit.json`, `detectors/*.h5`, `images/`,
 
 The compiled trace/gather engine gives ~10x on trace-bound scenes and
 ~6x on coherent scenes (see `cengine/BENCHMARKS.md`). Requirements:
-gcc >= 11, cmake >= 3.22, ninja, OpenMP; CUDA 13 for the GPU gather
-(`/usr/local/cuda-13`; without it the engine builds CPU-only).
+gcc >= 11, cmake >= 3.22, ninja, OpenMP; CUDA >= 13 for the GPU gather.
+`build.sh` reads `MIEWB_NVCC`/`MIEWB_CUDA_ARCH` from miewb.env
+(`scripts/setup_env.sh` probes both — `--nvcc`/`--cuda-arch` to set
+them explicitly); leaving either empty builds CPU-only.
 
     cd cengine && ./build.sh          # -> cengine/build/miewb-trace
     ./build.sh test                   # C unit tests
