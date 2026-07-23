@@ -658,7 +658,7 @@ def test_library_expansion_counts(shipped_props):
     # scripts/tools/import_agf.py appended the Schott+Ohara Zemax AGF glass
     # catalogs (679 new rows; see library_data/agf/README.md). Grew to 849 on
     # samples-instruments round: +decalin (index-matching bath liquid) and
-    # +dye_solution_green (aqueous KMnO4 Beer-Lambert absorbance standard).
+    # +dye_solution_kmno4 (aqueous KMnO4 Beer-Lambert absorbance standard).
     assert len(shipped_props.matdb) == 849
     # P2: +1 for bs_5050_vis_45_ph (phase-carrying table-coating demo row)
     assert len(shipped_props.coatings) == 39

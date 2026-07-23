@@ -155,7 +155,7 @@ def test_shipped_db_backward_compat():
     (which appended ~679 new glass rows and backfilled thermo-optic data
     onto rows it could confidently name-match, e.g. bk7 -> N-BK7)."""
     db = MaterialDB.load()
-    assert len(db) == 847
+    assert len(db) == 849
     assert db.get("bk7").has_thermo
     dndt = (db.get("bk7").n_complex(587.6e-9, T=21.0).real
             - db.get("bk7").n_complex(587.6e-9, T=20.0).real)
