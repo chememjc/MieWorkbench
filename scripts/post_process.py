@@ -48,7 +48,8 @@ from raytracer.analysis_field import (psf_from_fields,   # noqa: E402
                                       normalize_psf, radial_profile,
                                       mtf2d, mtf50, encircled_energy,
                                       ee_radius, image_coherent,
-                                      image_incoherent, image_partial)
+                                      image_incoherent, image_partial,
+                                      log_annular_power)
 from raytracer.analysis import (fit_zernike, opd_from_rays,  # noqa: E402
                                 strehl_marechal, noll_name,
                                 fringe_index, noll_to_nm, zernike_basis)
@@ -368,10 +369,10 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
     # opticalproperties/instrument/instruments.mieinst profile (engine3.md
     # P2.5 §9). Purely a post-process view over the same ideal cube the
     # rest of this function already rendered.
-    render_instrument(cube, lam_lo, lam_hi, pixel_area, outdir_instr,
-                      outdir_spec, safe, label, report,
-                      instrument_bodies or {}, instrument_registry or {},
-                      case_seed, csv_emitter=csv_emitter)
+    instrument_result = render_instrument(
+        cube, lam_lo, lam_hi, pixel_area, outdir_instr, outdir_spec, safe,
+        label, report, instrument_bodies or {}, instrument_registry or {},
+        case_seed, csv_emitter=csv_emitter, pixel_m=pixel_m)
 
     if csv_emitter is not None:
         # scalar metrics: dump every already-computed number in this
@@ -383,6 +384,7 @@ def render_detector(h5path, outdir_img, outdir_spec, report,
              if k != "per_source"})
         csv_emitter.emit("metrics_%s.csv" % safe, ["metric", "value"],
                          metrics, entity=label, chart="scalar_metrics")
+    return instrument_result
 
 
 # =============================================================================
@@ -461,6 +463,65 @@ def linear_fit_r2(x, y):
     return float(slope), float(intercept), float(r2)
 
 
+def _axis_wavelength_fit(cube, lam_lo, lam_hi, pixel_m, collapse_axis, n):
+    """Shared dispersion-fit primitive (power-weighted wavelength centroid
+    per surviving pixel index along ONE detector-plane axis, plus a
+    lambda(position) linear fit) -- factored out so _render_spectrometer's
+    x-axis convention and render_diode_array's axis auto-detection
+    (_pick_dispersion_axis below) share one implementation and can never
+    silently disagree about the centroid/masking/fit math.
+
+    collapse_axis: 1 sums over rows (cube axis 1, H) leaving columns (W) as
+    the surviving pixel axis -- x-dispersion, _render_spectrometer's
+    original (and only) convention; 2 sums over columns (W) leaving rows
+    (H) -- y-dispersion. `n` is the surviving axis's pixel count (W or H
+    respectively; the caller already knows it from cube.shape).
+
+    Returns (centers_m (n,) physical pixel-center coordinates [[i+0.5]*
+    pixel_m], lam_nm (n,) power-weighted wavelength centroid -- NaN where
+    invalid, valid (n,) bool [that column/row's total power >= 1e-6 of the
+    brightest one, matching lambda_centroid_map's masking rule], slope,
+    intercept, r2 [linear_fit_r2 of lam_nm vs centers_m in MM, restricted
+    to valid; None,None,None if fewer than 2 valid pixels])."""
+    col_total, col_lam = spectral_centroid(cube.sum(axis=collapse_axis),
+                                           lam_lo, lam_hi)
+    peak = float(col_total.max()) if col_total.size else 0.0
+    valid = (col_total >= 1e-6 * peak) if peak > 0 \
+        else np.zeros_like(col_total, dtype=bool)
+    centers_m = (np.arange(n) + 0.5) * pixel_m
+    slope, intercept, r2 = linear_fit_r2(centers_m[valid] / 1e-3,
+                                         col_lam[valid])
+    return centers_m, col_lam, valid, slope, intercept, r2
+
+
+def _pick_dispersion_axis(cube, lam_lo, lam_hi, pixel_m):
+    """Auto-detect a detector-plane spectral cube's (bins, H, W) dispersion
+    axis for render_diode_array: fits _axis_wavelength_fit along BOTH
+    candidate axes (x: collapse rows, keep W; y: collapse columns, keep H)
+    and keeps whichever spans the larger power-weighted wavelength RANGE
+    across its own valid pixels -- a real spectrograph's dispersion axis
+    varies over its full bandpass, while the cross-dispersion (perpendicular)
+    axis is uniform (to within noise) at a fixed wavelength. A tie
+    (including the degenerate all-invalid cube) resolves to x, matching
+    _render_spectrometer's historical fixed assumption.
+
+    Returns (axis ('x'|'y'), centers_m, lam_nm, valid, slope, intercept, r2)
+    -- the winning axis's own _axis_wavelength_fit tuple, axis-tagged."""
+    bins, H, W = cube.shape
+    x_fit = _axis_wavelength_fit(cube, lam_lo, lam_hi, pixel_m, 1, W)
+    y_fit = _axis_wavelength_fit(cube, lam_lo, lam_hi, pixel_m, 2, H)
+
+    def _valid_range(lam_nm, valid):
+        return float(np.nanmax(lam_nm[valid]) - np.nanmin(lam_nm[valid])) \
+            if np.any(valid) else 0.0
+
+    x_range = _valid_range(x_fit[1], x_fit[2])
+    y_range = _valid_range(y_fit[1], y_fit[2])
+    if y_range > x_range:
+        return ("y",) + y_fit
+    return ("x",) + x_fit
+
+
 def _render_spectrometer(cube, lam_lo, lam_hi, pixel_m, extent_mm,
                          outdir_img, outdir_spec, safe, label, report):
     cube = np.maximum(cube, 0.0)
@@ -477,19 +538,20 @@ def _render_spectrometer(cube, lam_lo, lam_hi, pixel_m, extent_mm,
     plt.close(fig)
 
     # collapse y (sum power over rows first, THEN take the centroid) --
-    # equivalent to a power-weighted mean over the whole column
-    col_total, col_lam = spectral_centroid(cube.sum(axis=1), lam_lo, lam_hi)
-    peak = float(col_total.max()) if col_total.size else 0.0
-    col_valid = (col_total >= 1e-6 * peak) if peak > 0 \
-        else np.zeros_like(col_total, dtype=bool)
-    xmm = (np.arange(cube.shape[2]) + 0.5) * pixel_m / 1e-3
+    # equivalent to a power-weighted mean over the whole column. Factored
+    # into _axis_wavelength_fit (collapse_axis=1, x is the fixed
+    # dispersion-axis assumption here -- render_diode_array is the one that
+    # auto-detects between x/y via _pick_dispersion_axis).
+    W = cube.shape[2]
+    centers_m, col_lam, col_valid, slope, intercept, r2 = \
+        _axis_wavelength_fit(cube, lam_lo, lam_hi, pixel_m, 1, W)
+    xmm = centers_m / 1e-3
 
     spec = {"lambda_min_nm": None, "lambda_max_nm": None,
            "dispersion_nm_per_mm": None, "fit_r2": None}
     if np.any(valid2d):
         spec["lambda_min_nm"] = float(np.nanmin(lam_map))
         spec["lambda_max_nm"] = float(np.nanmax(lam_map))
-    slope, intercept, r2 = linear_fit_r2(xmm[col_valid], col_lam[col_valid])
     if slope is None:
         print("[post] NOTE: %s spectrometer dispersion fit skipped "
               "(fewer than 2 valid detector columns)" % label)
@@ -806,29 +868,238 @@ def render_instrument_spectrometer(cube, lam_lo, lam_hi, entry, mode, seed,
     if seed_val is not None:
         block["seed"] = seed_val
     report["detectors"][label]["instrument"].update(block)
+    # returned for --reference-case absorbance (render_absorbance): the
+    # exact (wavelength, power) arrays this call just wrote, so a reference
+    # (blank) case can be recomputed with the identical row/mode without
+    # re-deriving the resolution-convolution + QE + floor math a second
+    # time in a different function.
+    return out_lam_nm, spectrum_W
+
+
+# =============================================================================
+# diode_array class (samples-instruments round): a PHYSICAL linear-array
+# readout of a dispersed spectrum on the detector plane -- unlike
+# spectrometer_generic (an idealized resolution-convolved spectrum with no
+# concept of discrete physical pixels), this bins the ideal simulation grid
+# onto the array's REAL pixel geometry (n_px pixels of pixel_pitch_um along
+# the dispersion axis, integrating pixel_height_um across the perpendicular
+# axis) and then runs the array through the same camera-style electron/
+# noise/ADC chain render_instrument_camera uses (detector.
+# spectral_cube_to_electrons -> shot+read noise (full mode) -> full-well
+# clip -> bit-depth quantization).
+#
+# Dispersion axis + lambda(position) calibration reuse _pick_dispersion_axis
+# / _axis_wavelength_fit -- the SAME centroid-fit machinery
+# _render_spectrometer's dispersion-vs-x plot uses (just auto-detecting
+# axis instead of assuming x), so the two renderers can never silently
+# disagree about which way a scene disperses.
+#
+# Placement: the array's active window (both the dispersion-axis n_px*
+# pixel_pitch_um span AND the perpendicular-axis pixel_height_um
+# integration band) is centered on the illuminated band's OWN power
+# centroid on the simulation grid -- a real spectrograph's linear array is
+# aligned to the beam at build time, not to the simulation grid's
+# arbitrary (0,0) corner. Simulation pixels whose center falls outside the
+# array's dispersion-axis window are dropped (power lost off the ends of a
+# too-narrow/miscentered array is physically real, not a bug); the
+# perpendicular window falls back to the single nearest simulation row/
+# column if pixel_height_um is narrower than one simulation pixel.
+# =============================================================================
+def render_diode_array(cube, lam_lo, lam_hi, pixel_m, entry, mode, seed,
+                       outdir_instr, safe, label, report, csv_emitter=None):
+    """diode_array class. Returns (lambda_nm (n_px,) or None if the
+    dispersion fit failed, counts_DN (n_px,) int64) -- the calibration
+    array + final quantized readout, reused verbatim by render_absorbance
+    for the --reference-case recompute."""
+    cube = np.maximum(np.asarray(cube, dtype=np.float64), 0.0)
+    bins, H, W = cube.shape
+    axis, centers_m, lam_nm, valid, slope, intercept, r2 = \
+        _pick_dispersion_axis(cube, lam_lo, lam_hi, pixel_m)
+
+    # normalize into a canonical (bins, perp, disp) layout regardless of
+    # which physical axis won
+    cube_n = cube if axis == "x" else np.moveaxis(cube, 1, 2)
+    perp_n, disp_n = cube_n.shape[1], cube_n.shape[2]
+    perp_centers_m = (np.arange(perp_n) + 0.5) * pixel_m
+    disp_centers_m = (np.arange(disp_n) + 0.5) * pixel_m
+
+    # illuminated-band power centroid on the simulation grid (both axes) --
+    # the array's active window is centered here, not on the grid's corner
+    perp_profile = cube_n.sum(axis=(0, 2))
+    perp_total = float(perp_profile.sum())
+    perp_centroid_m = float(np.dot(perp_centers_m, perp_profile)
+                            / perp_total) if perp_total > 0 \
+        else float(perp_centers_m.mean())
+
+    disp_profile = cube_n.sum(axis=(0, 1))
+    disp_total = float(disp_profile.sum())
+    disp_centroid_m = float(np.dot(disp_centers_m, disp_profile)
+                            / disp_total) if disp_total > 0 \
+        else float(disp_centers_m.mean())
+
+    # perpendicular axis: integrate exactly pixel_height_um centered on the
+    # band centroid (falls back to the single nearest sim row/column if
+    # pixel_height_um is narrower than one sim pixel, rather than reading
+    # zero)
+    pixel_height_m = float(entry["pixel_height_um"]) * 1e-6
+    perp_keep = np.abs(perp_centers_m - perp_centroid_m) <= pixel_height_m / 2.0
+    if not np.any(perp_keep):
+        perp_keep = np.zeros(perp_n, dtype=bool)
+        perp_keep[int(np.argmin(np.abs(perp_centers_m
+                                       - perp_centroid_m)))] = True
+    cube_band = cube_n[:, perp_keep, :].sum(axis=1)     # (bins, disp_n)
+
+    # dispersion axis: rebin onto the array's own n_px * pixel_pitch_um
+    # physical grid, centered on the same band centroid. A sim pixel is
+    # assigned to the array pixel containing its CENTER (the same
+    # center-in-bin convention radial_profile/lambda_centroid_map use);
+    # sim pixels whose center falls outside the array's window are simply
+    # not collected (light missing the array's physical aperture).
+    n_px = int(entry["n_px"])
+    pitch_m = float(entry["pixel_pitch_um"]) * 1e-6
+    array_lo_m = disp_centroid_m - 0.5 * n_px * pitch_m
+    px_centers_m = array_lo_m + (np.arange(n_px) + 0.5) * pitch_m
+    px_edges_m = array_lo_m + np.arange(n_px + 1) * pitch_m
+
+    in_window = (disp_centers_m >= px_edges_m[0]) \
+        & (disp_centers_m < px_edges_m[-1])
+    cube_array = np.zeros((bins, n_px), dtype=np.float64)
+    if np.any(in_window):
+        idx = np.clip(np.digitize(disp_centers_m[in_window], px_edges_m) - 1,
+                     0, n_px - 1)
+        for b in range(bins):
+            cube_array[b] = np.bincount(idx, weights=cube_band[b, in_window],
+                                        minlength=n_px)
+
+    # lambda(pixel) calibration: evaluate the SAME linear fit
+    # _pick_dispersion_axis returned (physical position -> wavelength is a
+    # property of the detector plane, independent of how it gets rebinned)
+    # at the array's own physical pixel centers.
+    lam_at_px_nm = None
+    if slope is not None:
+        lam_at_px_nm = slope * (px_centers_m / 1e-3) + intercept
+
+    # camera-style response chain: QE-weighted electrons (exact per-bin QE,
+    # the array's physical footprint is already baked into cube_array so
+    # pixel_area_ratio=1.0), deterministic stray-light floor (present in
+    # BOTH modes, matching render_instrument_spectrometer's convention),
+    # then 'full'-mode Poisson shot (signal+floor, no dark-current column in
+    # this schema) + Gaussian read noise, full-well clip, ADC quantization
+    # -- same order/rationale as render_instrument_camera.
+    t_int = float(entry["integration_time_s_default"])
+    signal_e = np.maximum(spectral_cube_to_electrons(
+        cube_array, lam_lo, lam_hi, entry["lam_um"], entry["qe"], t_int,
+        pixel_area_ratio=1.0), 0.0)
+    peak_signal_e = float(signal_e.max()) if signal_e.size else 0.0
+    floor_e = float(entry["stray_light_floor"]) * peak_signal_e
+    full_well = float(entry["full_well_e"])
+
+    seed_val = None
+    if mode == "full":
+        rng = np.random.default_rng(seed)
+        shot_e = rng.poisson(np.clip(signal_e + floor_e, 0.0, None)
+                             ).astype(np.float64)
+        read_e = rng.normal(0.0, entry["read_noise_e"], size=signal_e.shape)
+        electrons = np.clip(shot_e + read_e, 0.0, full_well)
+        seed_val = int(seed)
+    else:
+        electrons = np.clip(signal_e + floor_e, 0.0, full_well)
+
+    sat_mask = signal_e + floor_e >= full_well
+    sat_fraction = float(np.mean(sat_mask)) if sat_mask.size else 0.0
+    counts_max = (1 << int(entry["bit_depth"])) - 1
+    counts = np.clip(np.round(electrons / entry["adc_gain_e_per_dn"]),
+                     0, counts_max).astype(np.int64)
+
+    if outdir_instr is not None:
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        px_idx = np.arange(n_px)
+        ax.plot(px_idx, counts, lw=0.9)
+        ax.set_xlabel("pixel index")
+        ax.set_ylabel("counts [DN]")
+        ax.set_title("%s — diode array instrument (%s)" % (label, mode))
+        if lam_at_px_nm is not None:
+            top = ax.twiny()
+            top.set_xlim(ax.get_xlim())
+            n_ticks = min(9, n_px)
+            tick_idx = np.linspace(0, n_px - 1, n_ticks).astype(int)
+            top.set_xticks(px_idx[tick_idx])
+            top.set_xticklabels(["%.1f" % v for v in lam_at_px_nm[tick_idx]])
+            top.set_xlabel("wavelength [nm]")
+        fig.savefig(outdir_instr / ("diode_array_%s_%s.png" % (safe, mode)),
+                    bbox_inches="tight")
+        plt.close(fig)
+
+        with open(outdir_instr / ("diode_array_%s_%s.csv" % (safe, mode)),
+                 "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["pixel_index", "lambda_nm", "electrons", "DN"])
+            lam_col = lam_at_px_nm if lam_at_px_nm is not None \
+                else [None] * n_px
+            w.writerows(zip(px_idx.tolist(), lam_col, electrons.tolist(),
+                           counts.tolist()))
+        if csv_emitter is not None:
+            csv_emitter.emit(
+                "diode_array_%s_%s.csv" % (safe, mode),
+                ["pixel_index", "lambda_nm", "electrons", "DN"],
+                zip(px_idx.tolist(), lam_col, electrons.tolist(),
+                   counts.tolist()), entity=label, chart="diode_array",
+                units="DN",
+                image="instrument/diode_array_%s_%s.png" % (safe, mode))
+
+    block = {
+        "dispersion_axis": axis,
+        "n_px": n_px,
+        "integration_time_s": t_int,
+        "saturation_fraction": sat_fraction,
+        "saturated": bool(sat_fraction > 0.0),
+        "mean_counts": float(counts.mean()) if counts.size else 0.0,
+        "max_counts": float(counts.max()) if counts.size else 0.0,
+    }
+    if slope is not None:
+        block.update(dispersion_slope_nm_per_mm=slope,
+                     dispersion_intercept_nm=intercept,
+                     dispersion_fit_r2=r2,
+                     lambda_min_nm=float(lam_at_px_nm.min()),
+                     lambda_max_nm=float(lam_at_px_nm.max()))
+    else:
+        print("[post] NOTE: %s diode array dispersion fit skipped (fewer "
+              "than 2 valid detector pixels along either axis)" % label)
+    if seed_val is not None:
+        block["seed"] = seed_val
+    report["detectors"][label]["instrument"].update(block)
+    return lam_at_px_nm, counts
 
 
 def render_instrument(cube, lam_lo, lam_hi, pixel_area, outdir_instr,
                       outdir_spec, safe, label, report, instrument_bodies,
-                      instrument_registry, case_seed, csv_emitter=None):
+                      instrument_registry, case_seed, csv_emitter=None,
+                      pixel_m=None):
     """Dispatcher: resolve label -> owning body's instrument spec -> registry
-    row -> the per-class renderer. A no-op (no report block at all) when
-    the label's owning body carries no 'instrument' property -- exactly
-    like the qe_curve block, this never runs unless a scene author opted
-    in."""
+    row -> the per-class renderer. A no-op (returns None, no report block at
+    all) when the label's owning body carries no 'instrument' property --
+    exactly like the qe_curve block, this never runs unless a scene author
+    opted in.
+
+    Returns (row_name, mode, klass, x_array, y_array) for the two classes
+    with a spectral READOUT array (spectrometer: x=wavelength_nm, y=power_W;
+    diode_array: x=lambda_nm or None, y=counts_DN) -- consumed by
+    render_absorbance's --reference-case comparison; None for every other
+    outcome (no assignment, bad spec, unknown row, camera/powermeter/
+    placeholder classes)."""
     raw = detector_instrument_for_label(label, instrument_bodies)
     if raw is None:
-        return
+        return None
     try:
         row_name, mode = parse_instrument_spec(raw)
     except ValueError as exc:
         print("[post] NOTE: %s: bad instrument spec %r (%s) — skipping"
               % (label, raw, exc))
-        return
+        return None
     entry = (instrument_registry or {}).get(row_name)
     if entry is None:
         print("[post] NOTE: unknown instrument row %r — skipping" % row_name)
-        return
+        return None
     seed = _instrument_seed(case_seed, row_name, label) \
         if mode == "full" else None
     report["detectors"][label]["instrument"] = {
@@ -842,13 +1113,384 @@ def render_instrument(cube, lam_lo, lam_hi, pixel_area, outdir_instr,
         render_instrument_powermeter(cube, lam_lo, lam_hi, entry, mode,
                                      seed, report, label)
     elif klass == "spectrometer":
-        render_instrument_spectrometer(cube, lam_lo, lam_hi, entry, mode,
-                                       seed, outdir_spec, safe, label,
-                                       report, csv_emitter=csv_emitter)
+        x, y = render_instrument_spectrometer(
+            cube, lam_lo, lam_hi, entry, mode, seed, outdir_spec, safe,
+            label, report, csv_emitter=csv_emitter)
+        return row_name, mode, klass, x, y
+    elif klass == "diode_array":
+        if pixel_m is None:
+            print("[post] NOTE: %s: diode_array needs pixel_m — skipping"
+                  % label)
+            return None
+        x, y = render_diode_array(cube, lam_lo, lam_hi, pixel_m, entry,
+                                  mode, seed, outdir_instr, safe, label,
+                                  report, csv_emitter=csv_emitter)
+        return row_name, mode, klass, x, y
     else:
         print("[post] NOTE: instrument class %r (row %r) has no renderer "
               "yet (placeholder class) — report carries row/class/mode only"
               % (klass, row_name))
+    return None
+
+
+# =============================================================================
+# --reference-case: absorbance A(lambda) = -log10(I/I0) (samples-instruments
+# round). Compares THIS case's already-rendered spectrometer/diode_array
+# instrument product (I, the "sample" reading -- never re-derived, exactly
+# the array render_instrument returned) against a RECOMPUTE of the
+# reference case's own matching detector .h5 using the identical
+# (row_name, mode) -- never the reference case's own report.json/scene
+# assignment, which may not exist or may name a different row entirely.
+# Recomputing (rather than trusting a stray reference report.json) is what
+# makes the comparison apples-to-apples: both readings pass through the
+# exact same instrument response function, differing only in what light
+# actually hit each case's detector.
+#
+# A reference case simply missing this detector's .h5 is a silent skip
+# (not every scene shares every detector label -- e.g. a partial re-run).
+# A reference case whose OWN report.json (if one exists) recorded a
+# DIFFERENT instrument row for this label IS a hard error -- that is
+# exactly "apples vs oranges" and must not silently produce a number.
+# A pixel/bin GRID mismatch (H, W, or bins differing between the two
+# cases' raw cubes) is likewise a hard error -- the two spectra could not
+# have been produced by the same simulated detector.
+# =============================================================================
+def parse_ring_spec(raw):
+    """'n=32:rmin_mm=0.05:rmax_mm=10[:center=peak|chief|X,Y]' -> dict
+    {'n': int, 'rmin_mm': float, 'rmax_mm': float, 'center': None | 'peak' |
+    (x_mm, y_mm)}. center is optional; absent OR the explicit 'chief'
+    synonym both mean None (the image power centroid -- log_annular_power's
+    own default when center=None, and the same default every other
+    analysis_field radial function in this codebase already uses). Raises
+    ValueError naming the problem -- callers treat a bad --ring-profile
+    spec as a hard SystemExit (a CLI typo, not a per-scene condition)."""
+    raw = (raw or "").strip()
+    if not raw:
+        raise ValueError("empty --ring-profile spec")
+    out = {"n": None, "rmin_mm": None, "rmax_mm": None, "center": None}
+    for tok in raw.split(":"):
+        if "=" not in tok:
+            raise ValueError("token %r missing '='" % tok)
+        key, val = tok.split("=", 1)
+        key, val = key.strip().lower(), val.strip()
+        if key == "n":
+            try:
+                out["n"] = int(val)
+            except ValueError:
+                raise ValueError("n=%r is not an integer" % val)
+        elif key in ("rmin_mm", "rmax_mm"):
+            try:
+                out[key] = float(val)
+            except ValueError:
+                raise ValueError("%s=%r is not a number" % (key, val))
+        elif key == "center":
+            low = val.lower()
+            if low == "peak":
+                out["center"] = "peak"
+            elif low == "chief":
+                out["center"] = None
+            elif "," in val:
+                xs, ys = val.split(",", 1)
+                try:
+                    out["center"] = (float(xs), float(ys))
+                except ValueError:
+                    raise ValueError("center=%r is not 'X,Y' (mm)" % val)
+            else:
+                raise ValueError(
+                    "center=%r must be 'peak', 'chief', or 'X,Y' (mm)" % val)
+        else:
+            raise ValueError("unknown key %r" % key)
+    for req in ("n", "rmin_mm", "rmax_mm"):
+        if out[req] is None:
+            raise ValueError("missing required key %r" % req)
+    if out["n"] < 1:
+        raise ValueError("n must be >= 1 (got %d)" % out["n"])
+    if out["rmin_mm"] <= 0:
+        raise ValueError("rmin_mm must be > 0 (got %g)" % out["rmin_mm"])
+    if out["rmax_mm"] <= out["rmin_mm"]:
+        raise ValueError("rmax_mm must be > rmin_mm (got %g <= %g)"
+                         % (out["rmax_mm"], out["rmin_mm"]))
+    return out
+
+
+def render_ring_profile(h5path, adir, ring_spec, report, csv_emitter=None):
+    """--ring-profile (samples-instruments round): log-annular ring
+    integration of a detector's TOTAL power image (summed over spectral
+    bins, cube.sum(axis=0) -- the cube already stores absolute per-pixel
+    POWER in watts, not irradiance, so no pixel-area multiplication is
+    needed here; see render_detector's own irr = cube.sum(axis=0)/
+    pixel_area for the same fact used in reverse). Uses the UNCLIPPED
+    (possibly zero-mean-negative, per the project's MC-noise convention)
+    power image for the actual ring math -- closure has to check out
+    against the honest total, not a display-clipped copy -- and only
+    clips for the image inset.
+
+    center resolution ('peak'/'chief'/'X,Y' from parse_ring_spec):
+      None ('chief'/unset)  -> passed straight through to
+                              analysis_field.log_annular_power, which
+                              defaults to the image power centroid itself
+      'peak'                -> the brightest pixel's own array-index-frame
+                              coordinate (ix*pixel_mm, iy*pixel_mm) --
+                              matching _radial_grid's index*pixel (no
+                              +0.5) convention exactly, so R=0 lands
+                              precisely on that pixel
+      (x_mm, y_mm)           -> 'mm in the detector grid frame' means the
+                              same pos@xhat/pos@yhat*1e3 convention every
+                              other spot-diagram-style renderer in this
+                              module uses (render_ray_fans/
+                              render_ghost_analysis/render_pol_transport);
+                              converted into log_annular_power's array-
+                              index-frame via the h5's own x_lo/y_lo attrs
+                              (pixel j's frame coordinate is x_lo_mm +
+                              j*pixel_mm by that same grid definition, so
+                              the shift is center_mm = (x_mm - x_lo_mm,
+                              y_mm - y_lo_mm))
+
+    Writes analysis/rings_<label>.csv (always -- the CSV IS the
+    deliverable here, unlike --emit-csv's optional data/ mirrors) +
+    analysis/rings_<label>.png (log-log per-ring power + an image-with-
+    ring-overlay inset) + report['detectors'][label]['rings']. Also
+    registers the same rows with csv_emitter (if given) for data/index.csv
+    discoverability, matching render_field_analysis's --emit-csv
+    convention."""
+    with h5py.File(h5path) as h:
+        cube = h["spectral_cube_mean"][...]
+        attrs = dict(h.attrs)
+    label = attrs["label"]
+    safe = label.replace(".", "_")
+    pixel_m = float(attrs["pixel_m"])
+    pixel_mm = pixel_m / 1e-3
+
+    power_raw = cube.sum(axis=0)                 # (H, W) watts, UNBIASED
+    power_disp = np.maximum(power_raw, 0.0)       # display-only clip
+
+    center_spec = ring_spec["center"]
+    if center_spec == "peak":
+        if np.any(power_disp > 0):
+            iy, ix = np.unravel_index(int(np.argmax(power_disp)),
+                                      power_disp.shape)
+        else:
+            iy, ix = 0, 0
+        center = (ix * pixel_mm, iy * pixel_mm)
+    elif isinstance(center_spec, tuple):
+        x_lo_mm = float(attrs["x_lo"]) / 1e-3
+        y_lo_mm = float(attrs["y_lo"]) / 1e-3
+        center = (center_spec[0] - x_lo_mm, center_spec[1] - y_lo_mm)
+    else:
+        center = None
+
+    edges, ring_power, power_inside, power_outside = log_annular_power(
+        power_raw, pixel_mm, center, ring_spec["n"], ring_spec["rmin_mm"],
+        ring_spec["rmax_mm"])
+    total = float(power_raw.sum())
+    closure_residual = float(ring_power.sum() + power_inside
+                             + power_outside - total)
+    power_frac = ring_power / total if total != 0 else np.zeros_like(
+        ring_power)
+
+    adir = Path(adir)
+    adir.mkdir(parents=True, exist_ok=True)
+    rows = list(zip(range(ring_spec["n"]), edges[:-1], edges[1:],
+                    ring_power, power_frac))
+    with open(adir / ("rings_%s.csv" % safe), "w", newline="") as fh:
+        fh.write("# power_inside_rmin_W=%.9g power_outside_rmax_W=%.9g "
+                "total_power_W=%.9g closure_residual_W=%.3g\n"
+                % (power_inside, power_outside, total, closure_residual))
+        w = csv.writer(fh)
+        w.writerow(["ring_index", "r_inner_mm", "r_outer_mm", "power_W",
+                   "power_frac"])
+        w.writerows(rows)
+
+    fig = plt.figure(figsize=(8, 5.5))
+    ax = fig.add_axes([0.12, 0.12, 0.62, 0.8])
+    r_mid = 0.5 * (edges[:-1] + edges[1:])
+    ax.step(r_mid, np.maximum(ring_power, 1e-30), where="mid", color="C0")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("ring radius [mm]")
+    ax.set_ylabel("ring power [W]")
+    ax.set_title("%s — log-annular ring power" % label)
+    inset = fig.add_axes([0.78, 0.55, 0.2, 0.35])
+    inset.imshow(power_disp, origin="lower", cmap="magma")
+    theta = np.linspace(0, 2 * np.pi, 64)
+    if center is not None:
+        cx, cy = center[0] / pixel_mm, center[1] / pixel_mm
+    else:
+        # center=None means log_annular_power used its own power centroid
+        # (via _radial_grid -> _power_centroid, index*pixel convention) --
+        # recompute that same point here purely for the overlay (the
+        # numeric ring math above never needed the actual coordinate)
+        xs_px = np.arange(power_disp.shape[1])
+        ys_px = np.arange(power_disp.shape[0])
+        tot = float(power_raw.sum())
+        if tot > 0:
+            cx = float(np.sum(xs_px[None, :] * power_raw) / tot)
+            cy = float(np.sum(ys_px[:, None] * power_raw) / tot)
+        else:
+            cx, cy = float(xs_px.mean()), float(ys_px.mean())
+    for r_edge_mm in (ring_spec["rmin_mm"], ring_spec["rmax_mm"]):
+        r_px = r_edge_mm / pixel_mm
+        inset.plot(cx + r_px * np.cos(theta), cy + r_px * np.sin(theta),
+                  lw=0.6, color="cyan")
+    inset.set_xticks([])
+    inset.set_yticks([])
+    fig.savefig(adir / ("rings_%s.png" % safe), bbox_inches="tight")
+    plt.close(fig)
+
+    report.setdefault("detectors", {}).setdefault(label, {})["rings"] = {
+        "n_rings": ring_spec["n"], "r_min_mm": ring_spec["rmin_mm"],
+        "r_max_mm": ring_spec["rmax_mm"],
+        "center": center_spec if not isinstance(center_spec, tuple)
+                 else list(center_spec),
+        "power_inside_rmin_W": power_inside,
+        "power_outside_rmax_W": power_outside,
+        "total_power_W": total,
+        "closure_residual_W": closure_residual,
+    }
+
+    if csv_emitter is not None:
+        csv_emitter.emit(
+            "rings_%s.csv" % safe,
+            ["ring_index", "r_inner_mm", "r_outer_mm", "power_W",
+            "power_frac"], rows, entity=label, chart="ring_profile",
+            units="W", image="analysis/rings_%s.png" % safe)
+
+
+def _load_reference_cube(ref_dir, safe):
+    """reference case dir + safe label -> (cube, attrs) from
+    <ref_dir>/detectors/<safe>.h5, or None if that file does not exist
+    (a reference case need not carry every label the sample case does)."""
+    h5path = Path(ref_dir) / "detectors" / (safe + ".h5")
+    if not h5path.exists():
+        return None
+    with h5py.File(h5path) as h:
+        cube = h["spectral_cube_mean"][...]
+        attrs = dict(h.attrs)
+    return cube, attrs
+
+
+def render_absorbance(ref_dir, instrument_products, instrument_registry,
+                      outdir_instr, report, csv_emitter=None):
+    """--reference-case follow-on (see module note above). `instrument_products`
+    is {label: (row_name, mode, klass, x_array, y_array)} as returned by
+    render_instrument for every detector in THIS case (klass restricted to
+    'spectrometer'/'diode_array' -- the only two with a spectral readout
+    array; camera/powermeter never populate this dict). HARD SystemExit on
+    a pixel-grid mismatch or a reference report.json naming a different
+    instrument row for the same label; a reference case missing this
+    detector's .h5 entirely is a silent skip (printed as a NOTE)."""
+    ref_dir = Path(ref_dir)
+    ref_case_path = ref_dir / "case.json"
+    if not ref_case_path.exists():
+        raise SystemExit(
+            "--reference-case %s has no case.json (need a completed run "
+            "directory, e.g. results/<model>/<case>)" % ref_dir)
+    with open(ref_case_path) as fh:
+        ref_case = json.load(fh)
+    ref_case_seed = int(ref_case.get("seed", 0))
+    ref_report_path = ref_dir / "report.json"
+    ref_report = None
+    if ref_report_path.exists():
+        with open(ref_report_path) as fh:
+            ref_report = json.load(fh)
+
+    for label, (row_name, mode, klass, x_arr, y_arr) in \
+            instrument_products.items():
+        if klass not in ("spectrometer", "diode_array"):
+            continue
+        safe = label.replace(".", "_")
+
+        ref_instr = None
+        if ref_report is not None:
+            ref_instr = ref_report.get("detectors", {}).get(
+                label, {}).get("instrument")
+        if ref_instr is not None and ref_instr.get("row") != row_name:
+            raise SystemExit(
+                "--reference-case detector %r used instrument row %r but "
+                "this case uses %r — absorbance requires the SAME "
+                "instrument on both cases" % (label, ref_instr.get("row"),
+                                              row_name))
+
+        loaded = _load_reference_cube(ref_dir, safe)
+        if loaded is None:
+            print("[post] NOTE: --reference-case has no detector %r — "
+                  "skipping absorbance" % label)
+            continue
+        ref_cube, ref_attrs = loaded
+
+        sample_grid = tuple(report["detectors"][label]["resolution"])
+        ref_grid = (int(ref_attrs["H"]), int(ref_attrs["W"]))
+        if ref_grid != sample_grid:
+            raise SystemExit(
+                "--reference-case detector %r pixel grid %s does not match "
+                "this case's %s — absorbance requires both cases to share "
+                "the same detector geometry" % (label, ref_grid,
+                                                sample_grid))
+
+        entry = instrument_registry[row_name]
+        ref_lam_lo, ref_lam_hi = ref_attrs["lam_lo_m"], ref_attrs["lam_hi_m"]
+        ref_seed = _instrument_seed(ref_case_seed, row_name, label) \
+            if mode == "full" else None
+        ref_report_scratch = {"detectors": {label: {"instrument": {}}}}
+        if klass == "spectrometer":
+            ref_x, ref_y = render_instrument_spectrometer(
+                ref_cube, ref_lam_lo, ref_lam_hi, entry, mode, ref_seed,
+                None, safe, label, ref_report_scratch)
+            x_label, x_units = "wavelength_nm", "nm"
+        else:
+            ref_x, ref_y = render_diode_array(
+                ref_cube, ref_lam_lo, ref_lam_hi, ref_attrs["pixel_m"],
+                entry, mode, ref_seed, None, safe, label,
+                ref_report_scratch)
+            x_label, x_units = "pixel_or_lambda_nm", "px/nm"
+
+        I0 = np.asarray(ref_y, dtype=np.float64)
+        I = np.asarray(y_arr, dtype=np.float64)
+        threshold = float(entry["stray_light_floor"]) * float(
+            I0.max()) if I0.size else 0.0
+        mask = I0 <= threshold
+        with np.errstate(divide="ignore", invalid="ignore"):
+            A = -np.log10(np.where(mask, np.nan, I) /
+                         np.where(mask, np.nan, I0))
+        n_masked = int(np.sum(mask))
+        peak_A = float(np.nanmax(A)) if np.any(~mask) else float("nan")
+        if np.any(~mask):
+            peak_idx = int(np.nanargmax(A))
+            x_out = x_arr if x_arr is not None else np.arange(len(I))
+            lambda_peak = float(np.asarray(x_out)[peak_idx])
+        else:
+            lambda_peak = float("nan")
+
+        outdir_instr = Path(outdir_instr)
+        outdir_instr.mkdir(parents=True, exist_ok=True)
+        x_out = x_arr if x_arr is not None else np.arange(len(I))
+        with open(outdir_instr / ("absorbance_%s.csv" % safe), "w",
+                 newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow([x_label, "I", "I0", "A"])
+            w.writerows(zip(np.asarray(x_out).tolist(), I.tolist(),
+                           I0.tolist(), A.tolist()))
+        if csv_emitter is not None:
+            csv_emitter.emit(
+                "absorbance_%s.csv" % safe, [x_label, "I", "I0", "A"],
+                zip(np.asarray(x_out).tolist(), I.tolist(), I0.tolist(),
+                   A.tolist()), entity=label, chart="absorbance", units="A",
+                image="instrument/absorbance_%s.png" % safe)
+
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        ax.plot(x_out, A, lw=0.9)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("absorbance A = -log10(I/I0)")
+        ax.set_title("%s — absorbance (%s)" % (label, row_name))
+        fig.savefig(outdir_instr / ("absorbance_%s.png" % safe),
+                    bbox_inches="tight")
+        plt.close(fig)
+
+        report.setdefault("detectors", {}).setdefault(
+            label, {})["absorbance"] = {
+            "peak_A": peak_A, "lambda_peak_nm": lambda_peak,
+            "n_masked_px": n_masked,
+        }
 
 
 # =============================================================================
@@ -3493,26 +4135,65 @@ def main(argv=None):
         outdir_instr.mkdir(exist_ok=True)
     case_seed = int(case.get("seed", 0))
 
+    # --ring-profile: parse eagerly (a bad spec is a user typo -- fail fast
+    # before any rendering happens, not mid-run).
+    ring_spec = None
+    if args.ring_profile:
+        try:
+            ring_spec = parse_ring_spec(args.ring_profile)
+        except ValueError as exc:
+            raise SystemExit("--ring-profile %r: %s"
+                             % (args.ring_profile, exc))
+
     h5paths = sorted((case_dir / "detectors").glob("*.h5"))
+    # instrument_products: label -> (row_name, mode, class, x_array,
+    # y_array) for every detector whose owning body resolved to a
+    # spectrometer/diode_array instrument row -- the --reference-case
+    # absorbance follow-on below needs the EXACT arrays already rendered
+    # (never re-derived) to compare against a recompute of the reference
+    # case's own matching .h5.
+    instrument_products = {}
     for i, h5path in enumerate(h5paths):
         common.progress_emit("post", 0.8 * i / max(1, len(h5paths)),
                              "detector %s" % h5path.stem,
                              case_dir=case_dir)
-        render_detector(h5path, img, spec, report,
-                        photometric=args.photometric,
-                        spectrometer=args.spectrometer,
-                        qe_bodies=qe_bodies,
-                        detector_registry=detector_registry,
-                        csv_emitter=csv_emitter,
-                        instrument_bodies=instrument_bodies,
-                        instrument_registry=instrument_registry,
-                        outdir_instr=outdir_instr,
-                        case_seed=case_seed)
+        instr_result = render_detector(
+            h5path, img, spec, report,
+            photometric=args.photometric,
+            spectrometer=args.spectrometer,
+            qe_bodies=qe_bodies,
+            detector_registry=detector_registry,
+            csv_emitter=csv_emitter,
+            instrument_bodies=instrument_bodies,
+            instrument_registry=instrument_registry,
+            outdir_instr=outdir_instr,
+            case_seed=case_seed)
+        if instr_result is not None:
+            with h5py.File(h5path) as h:
+                det_label = h.attrs["label"]
+            instrument_products[det_label] = instr_result
         render_stokes_maps(h5path, img)
         # time products (pulsed-optics P4): no-op unless this .h5 carries
         # time_* datasets (run_trace --time-products / pulsed auto-rule)
         render_time_products(h5path, img, spec, report, case,
                              csv_emitter=csv_emitter)
+
+    # --ring-profile follow-on: one h5 at a time, independent of --spectrometer
+    # /--instruments (log-annular readout is its own product over the same
+    # TOTAL power image every detector already has).
+    if ring_spec is not None:
+        adir_rings = case_dir / "analysis"
+        adir_rings.mkdir(parents=True, exist_ok=True)
+        for h5path in h5paths:
+            render_ring_profile(h5path, adir_rings, ring_spec, report,
+                                csv_emitter=csv_emitter)
+
+    # --reference-case follow-on: absorbance for every detector that
+    # produced a spectrometer/diode_array instrument product in THIS case.
+    if args.reference_case:
+        render_absorbance(Path(args.reference_case), instrument_products,
+                          instrument_registry, outdir_instr, report,
+                          csv_emitter=csv_emitter)
 
     # dispersion budget (pulsed-optics P5): no-op unless the trace tracked
     # group delay (--gdd-budget or any active time product) and wrote

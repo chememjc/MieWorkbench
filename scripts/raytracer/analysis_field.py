@@ -216,6 +216,72 @@ def ensquared_energy(psf, center=None, pixel=1.0):
     return h_sorted, ee
 
 
+def log_annular_power(power_img, pixel, center, n_rings, r_min, r_max):
+    """(H,W) PER-PIXEL POWER image [W] (NOT irradiance -- caller multiplies
+    by pixel area first, e.g. render_detector's already-computed
+    irradiance*pixel_area) -> (edges, ring_power, power_inside_rmin,
+    power_outside_rmax):
+
+      edges              (n_rings+1,) log-spaced radii from r_min to r_max,
+                         same physical units as `pixel` (mm by convention
+                         in this codebase's detector-plane code, but the
+                         function itself is unit-agnostic)
+      ring_power         (n_rings,) exact SUM (not the mean radial_profile
+                         reports -- these are already per-pixel Watts) of
+                         power_img over pixels whose radius from `center`
+                         falls in ring i's half-open interval
+                         [edges[i], edges[i+1]) (the LAST ring is closed on
+                         the right, r <= r_max, so no boundary pixel at
+                         exactly r_max is dropped)
+      power_inside_rmin  sum of pixels with r < r_min (the log scale can't
+                         start at r=0, so this bucket + ring_power +
+                         power_outside_rmax is what makes the partition
+                         exhaustive)
+      power_outside_rmax sum of pixels with r > r_max
+
+    `center` follows _radial_grid's convention: (cx, cy) in physical units,
+    or None for the power centroid. The four returned quantities are an
+    EXACT partition of power_img (every pixel counted exactly once), so
+    ring_power.sum() + power_inside_rmin + power_outside_rmax ==
+    power_img.sum() to float64 roundoff (~1e-12 relative) regardless of
+    n_rings/r_min/r_max -- the "ring power closure" invariant callers are
+    expected to report alongside the per-ring table.
+
+    r_min must be > 0 (log spacing has no zero) and r_max > r_min."""
+    power_img = np.asarray(power_img, dtype=np.float64)
+    r_min = float(r_min)
+    r_max = float(r_max)
+    n_rings = int(n_rings)
+    if r_min <= 0:
+        raise ValueError("r_min must be > 0 for log spacing (got %g)" % r_min)
+    if r_max <= r_min:
+        raise ValueError(
+            "r_max must be > r_min (got %g <= %g)" % (r_max, r_min))
+    if n_rings < 1:
+        raise ValueError("n_rings must be >= 1 (got %d)" % n_rings)
+    _, _, R = _radial_grid(power_img, center, pixel)
+    edges = np.geomspace(r_min, r_max, n_rings + 1)
+    r_flat = R.ravel()
+    p_flat = power_img.ravel()
+
+    power_inside_rmin = float(p_flat[r_flat < r_min].sum())
+    power_outside_rmax = float(p_flat[r_flat > r_max].sum())
+    in_range = (r_flat >= r_min) & (r_flat <= r_max)
+    ring_power = np.zeros(n_rings, dtype=np.float64)
+    if np.any(in_range):
+        # digitize: edges[i-1] <= r < edges[i] -> bin i; r == edges[-1]
+        # (exactly r_max) digitizes one PAST the last bin, so clip it back
+        # into ring n_rings-1 (the "last ring closed on the right" rule) --
+        # harmless for everything else since in_range already excludes
+        # r < r_min (-> bin 0-1 = -1, would clip to 0 but is masked out)
+        # and r > r_max (masked out too).
+        idx = np.clip(np.digitize(r_flat[in_range], edges) - 1, 0,
+                      n_rings - 1)
+        ring_power = np.bincount(idx, weights=p_flat[in_range],
+                                 minlength=n_rings).astype(np.float64)
+    return edges, ring_power, power_inside_rmin, power_outside_rmax
+
+
 def ee_radius(radii, ee, frac):
     """(radii, ee) from encircled_energy/ensquared_energy + a target
     fraction (e.g. 0.5/0.8/0.9) -> the interpolated radius at which the

@@ -433,7 +433,8 @@ def test_instrument_classes_constant_includes_placeholders():
 # ---------------------------------------------------------------------------
 def test_shipped_instrument_generic_rows_load(shipped_props):
     assert set(shipped_props.instruments) == {
-        "camera_generic", "powermeter_generic", "spectrometer_generic"}
+        "camera_generic", "powermeter_generic", "spectrometer_generic",
+        "tcd1304_array"}
     cam = shipped_props.instruments["camera_generic"]
     assert cam["class"] == "camera"
     assert cam["width_px"] == 2448 and cam["height_px"] == 2048
@@ -451,6 +452,17 @@ def test_shipped_instrument_generic_rows_load(shipped_props):
     assert spec["class"] == "spectrometer"
     assert spec["lam_lo_nm"] < spec["lam_hi_nm"]
     assert "USB4000" in spec["reference"]
+
+    # tcd1304_array (samples-instruments round): a PHYSICAL linear-array
+    # counterpart to spectrometer_generic (which shares this same CCD as
+    # its idealized detector_qe_table)
+    diode = shipped_props.instruments["tcd1304_array"]
+    assert diode["class"] == "diode_array"
+    assert diode["pixel_pitch_um"] == pytest.approx(8.0)
+    assert diode["pixel_height_um"] == pytest.approx(200.0)
+    assert diode["n_px"] == 3648
+    assert np.all((diode["qe"] > 0) & (diode["qe"] <= 1))
+    assert "Toshiba" in diode["reference"]
 
 
 def test_optional_categories_absent(optroot):
