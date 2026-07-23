@@ -274,9 +274,26 @@ typedef struct {
 /* continuum-mode particle cloud (particles.py _continuum): all tables
  * pre-resolved per stratum wavelength by the glue; the phase-function
  * draw uses a per-(lam, radius-node) INVERSE CDF (mu at uniform u).
- * Explicit-realization mode is Python-routed. */
+ * Explicit-realization mode is Python-routed.
+ *
+ * Two REGION kinds (particles.py ParticleCloud vs BodyParticleMedium):
+ *   kind==PMED_BOX  — the CLI --particles world AABB (slab overlap over the
+ *                     segment); body_index unused.
+ *   kind==PMED_BODY — a `sample`-tagged body's interior: the in-region range
+ *                     is the WHOLE segment iff the ray's current medium-stack
+ *                     top == body_index (the LIFO stack already proves the
+ *                     segment lies inside the body), empty otherwise. No slab.
+ * `salt` = the medium's position in scene.particles; it decorrelates the RNG
+ * streams (draw base 1024 + 16*salt, child slot CHILD_SLOT_PARTICLE + salt)
+ * so two coexisting media never share a stream. `label` is the by_body_W
+ * ledger key ("particles" for the box, "sample:<body-label>" for a body). */
+enum { PMED_BOX = 0, PMED_BODY = 1 };
 typedef struct {
-    kvec3 box_lo, box_hi;
+    int kind;                   /* PMED_BOX | PMED_BODY */
+    int body_index;             /* PMED_BODY: host body index; PMED_BOX: -1 */
+    int salt;                   /* RNG decorrelation index (array position) */
+    char label[MIEWB_MAX_NAME]; /* by_body_W key */
+    kvec3 box_lo, box_hi;       /* PMED_BOX only */
     int n_quad;                 /* radius quadrature nodes */
     int n_u;                    /* inverse-CDF resolution */
     double *mu_ext;             /* [n_lams] */
@@ -334,7 +351,10 @@ typedef struct SceneC {
     ScatC *scats;
     int n_gratings;
     GratC *gratings;
-    ParticleC *particles;       /* NULL when no --particles */
+    ParticleC *particles;       /* NULL when no participating media */
+    int n_particles;            /* CLI box cloud (if any) + one per `sample`
+                                 * body; 0 = none. Media are applied in array
+                                 * order, each layering on the parent ray. */
 
     /* scene-level TLAS over face AABBs — the algorithmic win the Python
      * engine lacks (its Scene.intersect is a brute-force all-faces loop,

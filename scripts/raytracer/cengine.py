@@ -55,6 +55,16 @@ PORTED = frozenset({
                                 #   Python-routed via its own feature)
     "particles",                # phase G (continuum mode; the explicit
                                 #   realization keeps its own feature)
+    "sample_body",              # samples-instruments: body-bound CONTINUUM
+                                #   sample medium (the `sample` body property).
+                                #   Same continuum kernel as the CLI box cloud,
+                                #   region-gated by the medium stack (top ==
+                                #   the host body) instead of a slab; host
+                                #   material effects are pre-baked into the
+                                #   per-medium tables the glue serializes, so
+                                #   the C side needs zero body/solvent
+                                #   knowledge. Explicit/lattice sample rows
+                                #   emit the unported "sample_explicit" token.
     "export_rays",              # phase H (per-detector landing records)
     "ghost_analysis",           # phase H (refl_hist face-id history)
     "viz_pattern",              # phase H (glue-level: Python viz-only
@@ -225,12 +235,18 @@ def detect_features(args, scene):
             feats.add("kerr")
         # samples-instruments round: body-bound sample media (the `sample`
         # body property -> a particle population bounded by this body's
-        # interior, host = the body's material). Python-routes in tranche 1;
-        # the continuum case is a planned C port (medium-stack-gated
-        # particle medium reusing the ensemble tables). The defensive
-        # getattr keeps this inert until scene bodies grow the attribute.
+        # interior, host = the body's material). CONTINUUM mode is ported
+        # (medium-stack-gated particle medium reusing the ensemble tables);
+        # EXPLICIT/lattice realizations stay Python-routed. The effective mode
+        # is resolved exactly like BodyParticleMedium (registry mode override,
+        # else count vs threshold) so routing can never disagree with the
+        # medium the trace actually builds. The defensive getattr keeps this
+        # inert until scene bodies grow the attribute.
         if getattr(body, "sample", None) is not None:
-            feats.add("sample_body")
+            if _sample_body_mode(args, scene, body) == "continuum":
+                feats.add("sample_body")
+            else:
+                feats.add("sample_explicit")
         # BTDF (transmitted-side measured scatter, this round): the ported
         # "scatter" token covers BRDF-only ABg rows; a row carrying
         # transmitted-side (A_t/B_t/g_t) columns must emit the reserved
@@ -978,6 +994,7 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
         "scatters": scatters,
         "gratings": gratings,
         "particles": _particles_block(args, scene, lams),
+        "sample_media": _sample_media_block(args, scene, lams),
         "gather": {
             # map the Python gather's --backend to the C engine's kernels
             "backend": {"auto": "auto", "torch": "cuda",
@@ -1000,11 +1017,104 @@ def build_request(args, scene, seed, lam_range, grids, out_dir,
     }
 
 
+def _sample_body_mode(args, scene, body):
+    """Effective mode ('continuum' | 'explicit') of a `sample`-tagged body,
+    resolved EXACTLY as raytracer.particles.BodyParticleMedium does so the
+    routing decision matches the medium the trace actually builds:
+      * a registry `mode` of 'continuum' / 'explicit' forces that mode;
+      * 'auto' compares the phi/tau-derived particle count to the threshold
+        (count <= threshold -> explicit, like ParticleCloud), host = the body
+        material (real solvent contrast/density).
+    Any resolution failure returns 'explicit' — the conservative choice: the
+    Python engine then runs and raises the real error rather than the C engine
+    silently mis-tracing. Only the continuum verdict routes to C."""
+    import common
+    name = getattr(body, "sample", None)
+    reg = scene.optprops.samples if scene.optprops is not None else {}
+    row = reg.get(name)
+    if row is None:
+        return "explicit"
+    mode = row.get("mode", "auto")
+    if mode in ("continuum", "explicit"):
+        return mode
+    try:
+        from .mie import (LogNormalDistribution, MieEvaluator,
+                          number_density)
+        from .particles import resolve_tau_phi
+        from .sources import wavelength_strata
+        if body.bbox_m is None or body.material in (None, "", "none",
+                                                    "detector"):
+            return "explicit"
+        thr = args.particle_threshold if args.particle_threshold is not None \
+            else common.DEFAULTS["particle_threshold"]
+        lo, hi = body.bbox_m
+        box_size = [float(x) for x in (hi - lo)]
+        dist = LogNormalDistribution(
+            median_r=row["median_um"] * 1e-6 / 2.0, gsd=row["gsd"])
+        mat_p = scene.matdb.get(row["particle_material"])
+        host = scene.matdb.get(body.material)
+        rho_h = host.density if host.density > 0 else 1.204
+        phi = row.get("phi")
+        if phi is None:
+            lam_list = sorted({
+                float(l) for _, src in scene.sources
+                for l in wavelength_strata(src, args.nlambda)})
+            phi, _info = resolve_tau_phi(
+                row["tau"], float(box_size[0]),
+                MieEvaluator(mat_p, host), dist,
+                mat_p.density, rho_h, lam_list)
+        N, _ = number_density(phi, mat_p.density, rho_h, dist)
+        count = N * float(np.prod(box_size))
+        return "explicit" if count <= thr else "continuum"
+    except Exception:
+        return "explicit"
+
+
+def _medium_tables(cloud, lams, n_u):
+    """Continuum tables at the stratum wavelengths (plan D1) for ONE medium
+    (a box cloud or a body-bound sample medium — both are ParticleCloud
+    subclasses): mu_ext / albedo per lam (S(q)-corrected in-place by
+    EnsembleTables when a structure factor is set), the radius-node CDF, and
+    the per-(lam, node) INVERSE direction CDF. Returns
+    (n_quad, mu_ext, albedo, radius_cdf, inv_phase) with the flat [lam],
+    [lam][node], [lam][node][u] layouts the C ParticleC reader expects.
+
+    S(q) note (samples-instruments): when a structure factor is present the
+    Python sampler (mie.sample_direction) draws the cosine from a SINGLE
+    size-averaged, S(q)-corrected inverse CDF (`sq_cdf`/`sq_mu`) that ignores
+    the per-ray radius node. That reshaping lives ENTIRELY in the serialized
+    table: inv_phase is built by REPLICATING that one corrected CDF across
+    every radius node, so the C kernel (which still draws a node, then reads
+    inv_phase[node]) reproduces the S(q) direction law with no C changes.
+    mu_ext / albedo are already the S(q)-corrected values in `_nearest`."""
+    u_grid = np.linspace(0.0, 1.0, n_u)
+    radii = cloud.tables.radii
+    has_sq = cloud.tables._sq is not None
+    mu_ext, albedo, radius_cdf, inv_phase = [], [], [], []
+    for lam in lams:
+        t = cloud.tables._nearest(float(lam))
+        mu_ext.append(float(t["mu_ext"]))
+        albedo.append(float(t["albedo"]))
+        radius_cdf.extend(
+            float(x) for x in np.cumsum(t["radius_weights"]))
+        if has_sq:
+            inv = [float(x)
+                   for x in np.interp(u_grid, t["sq_cdf"], t["sq_mu"])]
+            for _rv in radii:
+                inv_phase.extend(inv)
+        else:
+            for rv in radii:
+                mu_g, _p, cdf = cloud.evaluator.phase_function(
+                    float(rv), float(lam))
+                inv_phase.extend(
+                    float(x) for x in np.interp(u_grid, cdf, mu_g))
+    return int(len(radii)), mu_ext, albedo, radius_cdf, inv_phase
+
+
 def _particles_block(args, scene, lams):
-    """Continuum particle-cloud tables at the stratum wavelengths (D1):
-    mu_ext / albedo per lam, the radius-node CDF, and a per-(lam, node)
-    inverse phase-function CDF built from the SAME
-    MieEvaluator.phase_function tables the Python engine samples from."""
+    """CLI --particles world-box continuum tables at the stratum wavelengths
+    (D1). Byte-identical to the pre-samples engine (sq is always None on the
+    CLI path)."""
     if not args.particles:
         return None
     import common
@@ -1020,30 +1130,68 @@ def _particles_block(args, scene, lams):
             "cengine: explicit-mode particles reached the C request "
             "builder — feature routing bug")
     n_u = 512
-    u_grid = np.linspace(0.0, 1.0, n_u)
-    radii = cloud.tables.radii
-    mu_ext, albedo, radius_cdf, inv_phase = [], [], [], []
-    for lam in lams:
-        t = cloud.tables._nearest(float(lam))
-        mu_ext.append(float(t["mu_ext"]))
-        albedo.append(float(t["albedo"]))
-        radius_cdf.extend(
-            float(x) for x in np.cumsum(t["radius_weights"]))
-        for rv in radii:
-            mu_g, _p, cdf = cloud.evaluator.phase_function(
-                float(rv), float(lam))
-            inv_phase.extend(
-                float(x) for x in np.interp(u_grid, cdf, mu_g))
+    n_quad, mu_ext, albedo, radius_cdf, inv_phase = \
+        _medium_tables(cloud, lams, n_u)
     return {
         "box_lo": [float(x) for x in cloud.lo],
         "box_hi": [float(x) for x in cloud.hi],
-        "n_quad": int(len(radii)),
+        "n_quad": n_quad,
         "n_u": n_u,
         "mu_ext": mu_ext,
         "albedo": albedo,
         "radius_cdf": radius_cdf,
         "inv_phase": inv_phase,
     }
+
+
+def _sample_media_block(args, scene, lams):
+    """One continuum-medium block per `sample`-tagged body (samples-
+    instruments round). Mirrors run_trace.build_particle_media /
+    particles.build_body_sample_media, but only for CONTINUUM-mode bodies —
+    routing (detect_features) guarantees an explicit-mode body forces Python,
+    so an explicit medium reaching here is a routing bug (hard error, never a
+    silent wrong answer). Each block carries the host body index (the C
+    medium-stack region test), the `sample:<label>` ledger key, and the
+    per-medium continuum tables (host solvent effects pre-baked)."""
+    import common
+    from .particles import BodyParticleMedium
+    reg = scene.optprops.samples if scene.optprops is not None else {}
+    thr = args.particle_threshold if args.particle_threshold is not None \
+        else common.DEFAULTS["particle_threshold"]
+    n_u = 512
+    blocks = []
+    for body in scene.bodies:
+        name = getattr(body, "sample", None)
+        if not name:
+            continue
+        if _sample_body_mode(args, scene, body) != "continuum":
+            raise SystemExit(
+                "cengine: explicit-mode sample body %s reached the C request "
+                "builder — feature routing bug" % body.label)
+        if name not in reg:
+            raise SystemExit(
+                "cengine: body %s sample %r not in the samples registry"
+                % (body.label, name))
+        medium = BodyParticleMedium(
+            name, reg[name], body, scene, threshold=thr,
+            seed=int(args.seed0), lam_list=[float(x) for x in lams])
+        if medium.mode != "continuum":
+            raise SystemExit(
+                "cengine: sample body %s resolved to %s in the C request "
+                "builder — routing bug" % (body.label, medium.mode))
+        n_quad, mu_ext, albedo, radius_cdf, inv_phase = \
+            _medium_tables(medium, lams, n_u)
+        blocks.append({
+            "body_index": int(body.index),
+            "label": "sample:%s" % body.label,
+            "n_quad": n_quad,
+            "n_u": n_u,
+            "mu_ext": mu_ext,
+            "albedo": albedo,
+            "radius_cdf": radius_cdf,
+            "inv_phase": inv_phase,
+        })
+    return blocks or None
 
 
 # ---------------------------------------------------------------------------

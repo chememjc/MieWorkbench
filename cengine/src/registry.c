@@ -39,6 +39,12 @@ static const struct tok_ent EXTRA_SUPPORTED[] = {
     /* filter = additive bulk alpha the homogeneous propagator carries.
      * (particles is now a registered PropagatorDef — step 8 — not here.) */
     { "filter",    "volume" },
+    /* samples-instruments round: body-bound CONTINUUM sample medium (the
+     * `sample` body property). Handled by the SAME "particles" PropagatorDef
+     * (region-gated by the medium stack instead of a slab); a gate token with
+     * no dedicated dispatch entry, so it lives here. Explicit/lattice sample
+     * rows emit the unported "sample_explicit" token and route to Python. */
+    { "sample_body", "volume" },
     /* pulsed-optics P7 tranche 2 NLO bulk effects (nlo.py). saturable / tpa
      * ride the SAME homogeneous-propagator alpha_add hook as filter (their
      * intensity-dependent absorption lands in absorbed_bulk); kerr adds an

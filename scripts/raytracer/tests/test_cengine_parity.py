@@ -20,6 +20,7 @@
 # Skipped entirely when the miewb-trace binary is not built.
 # =============================================================================
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -545,6 +546,163 @@ def test_particles_continuum_parity(tmp_path):
     for label in py["detected_W"]:
         rel_close(py["detected_W"][label], cc["detected_W"][label], 0.05,
                   "particles detected_W %s" % label)
+
+
+# ---------------------------------------------------------------------------
+# samples-instruments round: body-bound CONTINUUM sample media (the `sample`
+# body property). Same ensemble-table continuum kernel as the CLI box cloud,
+# but region-gated by the MEDIUM STACK (applies to rays whose current medium
+# is the host body) instead of a slab. Explicit/lattice realizations stay
+# Python-routed via the unported `sample_explicit` token.
+# ---------------------------------------------------------------------------
+def _samples_optroot(tmp_path):
+    """The shipped optical-properties tree + a custom samples.miesamp with:
+      * a plain CONTINUUM row (gold spheres in water — a real albedo loss, so
+        the particle_absorbed bucket AND the `sample:<label>` where-key are
+        both exercised, not just the ballistic decay);
+      * an S(q)=py CONTINUUM row (Percus-Yevick hard-sphere structure factor —
+        proves the pre-resolved tables alone carry S(q));
+      * an EXPLICIT row (frozen realization — must Python-route)."""
+    root = tmp_path / "opticalproperties"
+    shutil.copytree(REPO / "opticalproperties", root)
+    sd = root / "sample"
+    sd.mkdir(exist_ok=True)
+    header = ("name,particle_material,dist,median_um,gsd,phi,tau,mode,"
+              "sq_model,sq_params,solvent_visc_pas,reference,notes\n")
+    rows = [
+        "csamp,gold,lognormal,0.1,1.3,,0.15,continuum,none,,,test,cont",
+        "csamp_sq,polystyrene,lognormal,0.2,1.02,0.02,,continuum,py,"
+        "phi_hs:0.30,,test,sq",
+        "csamp_exp,polystyrene,mono,1.0,,,0.02,explicit,none,,1.0e-3,test,exp",
+    ]
+    (sd / "samples.miesamp").write_text(header + "\n".join(rows) + "\n")
+    return root
+
+
+def _sample_model(sample_name):
+    """A thin water cuvette (the `sample` body) between a source and an on-axis
+    detector. The ambient is index-matched to the cuvette host (water) so the
+    enclosing solid's walls do NOT Fresnel/TIR-trap the incoherent scattered
+    children (which turns a closed continuum cell pathologically slow) — the
+    medium-stack body gating is unaffected (it keys on the body index, not the
+    material): the sample medium still applies only while the ray's stack top
+    is the cuvette body, exactly as in a real glass-walled cuvette."""
+    import scenehelpers as sh
+    x0, x1, half = -0.001, 0.001, 0.005
+    cuv = sh.slab_body("Cuvette", "water", x0, x1, half=half)
+    cuv["sample"] = sample_name
+    cuv["bbox_m"] = {"min": [x0, -half, -half], "max": [x1, half, half]}
+    cuv["solid_closed"] = True
+    src = sh.source_body("Src", x=-0.01, half=0.0004, lambdac_nm=633.0)
+    det = sh.detector_body("Det", x=0.03, half=0.01)
+    model = sh.make_model([src, cuv, det])
+    model["ambient_material"] = "water"
+    return model
+
+
+def _run_sample(tmp_path, sample_name, engine, sub, optroot, extra=None):
+    import run_trace
+    import common
+    model = _sample_model(sample_name)
+    common.validate_model(model)
+    geo = tmp_path / sub / "geometry"
+    geo.mkdir(parents=True)
+    mj = geo / "model.json"
+    mj.write_text(json.dumps(model))
+    case = tmp_path / sub / "case"
+    argv = ["--model-json", str(mj), "--case-dir", str(case),
+            "--rays", "8000", "--resolution", "48", "--nlambda", "1",
+            "--spectral-bins", "4", "--engine", engine, "--workers", "1",
+            "--optical-properties", str(optroot)]
+    if extra:
+        argv += extra
+    rc = run_trace.main(argv)
+    assert rc == 0, "run_trace --engine %s exited %s" % (engine, rc)
+    return (json.loads((case / "case.json").read_text()),
+            json.loads((case / "audit.json").read_text())["per_seed"][0])
+
+
+def _assert_media_parity(py, cc, det_tol=0.12, where_keys=()):
+    """Statistical parity per the continuum-particle conventions: closure in
+    both engines, the particle/escape/bulk buckets within max(3%, 2e-3*emitted)
+    (lineage RNGs differ, so MC totals only agree statistically), and detected
+    power within det_tol. where_keys assert the per-medium `by_body` ledger
+    diagnostic (particle_absorbed credited under the medium's label) matches
+    AND is non-zero — the region-label port."""
+    for rep in (py, cc):
+        assert rep["closure_ok"], rep
+    ps, cs = py["sources"]["Src"], cc["sources"]["Src"]
+    emitted = ps["emitted_W"]
+    for b in ("particle_absorbed", "escaped", "absorbed_bulk"):
+        assert abs(ps[b] - cs[b]) <= max(0.03 * abs(ps[b]), 2e-3 * emitted), \
+            "%s: %g vs %g" % (b, ps[b], cs[b])
+    for label in py["detected_W"]:
+        rel_close(py["detected_W"][label], cc["detected_W"][label],
+                  det_tol, "detected_W %s" % label)
+    for wk in where_keys:
+        pv = py.get("by_body_W", {}).get(wk, 0.0)
+        cv = cc.get("by_body_W", {}).get(wk, 0.0)
+        assert pv > 0.0, "%s where-key not exercised (pv=0)" % wk
+        assert abs(pv - cv) <= max(0.03 * abs(pv), 2e-3 * emitted), \
+            "by_body_W[%r]: %g vs %g" % (wk, pv, cv)
+
+
+def test_sample_body_continuum_parity(tmp_path):
+    """A `sample`-tagged body -> a body-bound CONTINUUM particle medium, gated
+    by the medium stack (region = the ray's current medium is the host body).
+    Routes to C automatically (all features ported); ballistic decay,
+    scattered children, particle_absorbed, and the `sample:<label>` ledger
+    where-key all match the Python reference statistically."""
+    optroot = _samples_optroot(tmp_path)
+    py_cj, py = _run_sample(tmp_path, "csamp", "python", "py", optroot)
+    c_cj, cc = _run_sample(tmp_path, "csamp", "c", "c", optroot)
+    assert py_cj["engine"] == "python"
+    assert c_cj["engine"] == "c", c_cj.get("engine_reason")
+    _assert_media_parity(py, cc, where_keys=("sample:Cuvette",))
+
+
+def test_sample_body_and_box_media_parity(tmp_path):
+    """Media-list chaining: a CLI --particles world box AND a `sample` body in
+    ONE scene. Both engines apply the two media in the same order (box slab
+    overlap + the medium-stack body gate, each layering on the parent the
+    previous left), so the compounded attenuation matches and BOTH where-keys
+    (`particles` for the box, `sample:<label>` for the body) are present."""
+    optroot = _samples_optroot(tmp_path)
+    box = ["--particles",
+           "box=-6,-6,-6:12,12,12;material=gold;tau=0.1;"
+           "median_um=1.0;gsd=1.5"]
+    py_cj, py = _run_sample(tmp_path, "csamp", "python", "py", optroot,
+                            extra=box)
+    c_cj, cc = _run_sample(tmp_path, "csamp", "c", "c", optroot, extra=box)
+    assert c_cj["engine"] == "c", c_cj.get("engine_reason")
+    _assert_media_parity(py, cc, where_keys=("sample:Cuvette",))
+    for rep in (py, cc):
+        assert rep.get("by_body_W", {}).get("particles", 0.0) > 0.0, \
+            "box-cloud `particles` where-key missing"
+
+
+def test_sample_body_sq_parity(tmp_path):
+    """S(q) is captured ENTIRELY by the pre-resolved tables (no C change): an
+    S(q)=py (Percus-Yevick) continuum sample row routes to C and matches the
+    Python engine — the serialized mu_ext/albedo/direction-CDF fully carry the
+    structure factor, so ballistic transmission (S(q)-corrected extinction)
+    agrees to the statistical bar."""
+    optroot = _samples_optroot(tmp_path)
+    py_cj, py = _run_sample(tmp_path, "csamp_sq", "python", "py", optroot)
+    c_cj, cc = _run_sample(tmp_path, "csamp_sq", "c", "c", optroot)
+    assert c_cj["engine"] == "c", c_cj.get("engine_reason")
+    _assert_media_parity(py, cc)
+
+
+def test_sample_body_explicit_routes_python(tmp_path):
+    """Honest per-mode routing: an EXPLICIT/lattice sample row emits the
+    unported `sample_explicit` token, so --engine c hard-errors naming it
+    (and --engine auto therefore routes to Python — same detect_features +
+    PORTED check). The continuum sibling `sample_body` is ported."""
+    optroot = _samples_optroot(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _run_sample(tmp_path, "csamp_exp", "c", "c", optroot)
+    assert "sample_explicit" in str(exc.value), str(exc.value)
 
 
 def test_thread_count_invariance(tmp_path):

@@ -36,9 +36,15 @@ void ledger_init(LedgerC *l, const SceneC *s) {
     /* pulsed-optics P7: the bulk-path tally exists only under time tracking */
     l->path_tally = s->track_time
         ? (double *)calloc((size_t)l->n_bodies, sizeof(double)) : NULL;
+    /* per-participating-medium absorbed-power diagnostic (particles.py
+     * particle_absorbed `where` credit): one slot per medium. */
+    l->n_particles = s->n_particles;
+    l->by_particles = l->n_particles
+        ? (double *)calloc((size_t)l->n_particles, sizeof(double)) : NULL;
     if (!l->emitted || !l->buckets || !l->surf_by_body || !l->surf_by_det
             || !l->by_body || !l->flux_in || !l->flux_out || !l->detected
-            || (s->track_time && !l->path_tally))
+            || (s->track_time && !l->path_tally)
+            || (l->n_particles && !l->by_particles))
         die(EXIT_PHYSICS, "ledger: allocation failed");
 }
 
@@ -52,6 +58,7 @@ void ledger_free(LedgerC *l) {
     free(l->flux_out);
     free(l->detected);
     free(l->path_tally);
+    free(l->by_particles);
     memset(l, 0, sizeof *l);
 }
 
@@ -74,7 +81,8 @@ void ledger_merge(LedgerC *into, const LedgerC *from) {
         into->surf_by_det[i] += from->surf_by_det[i];
         into->detected[i] += from->detected[i];
     }
-    into->by_particles += from->by_particles;
+    for (int i = 0; i < into->n_particles; i++)
+        into->by_particles[i] += from->by_particles[i];
 }
 
 static double closure_err(const LedgerC *l, int i) {
@@ -153,9 +161,11 @@ void ledger_write_json(const LedgerC *l, const SceneC *s, const char *path,
         fprintf(f, ": %.17g", l->by_body[i]);
         first = 0;
     }
-    if (l->by_particles != 0.0) {
-        fprintf(f, "%s\n    \"particles\": %.17g", first ? "" : ",",
-                l->by_particles);
+    for (int i = 0; i < l->n_particles; i++) {
+        if (l->by_particles[i] == 0.0) continue;
+        fprintf(f, "%s\n    ", first ? "" : ",");
+        jesc(f, s->particles[i].label);
+        fprintf(f, ": %.17g", l->by_particles[i]);
         first = 0;
     }
     fprintf(f, "\n  },\n  \"element_flux_W\": {");

@@ -79,9 +79,12 @@ PYTHON_ONLY = frozenset({
     "conical",                          # samples-instruments: internal conical
                                         #   refraction fan (biaxial optic axis;
                                         #   Python physics, --conical)
-    "sample_body",                      # samples-instruments: body-bound sample
-                                        #   media (`sample` property; continuum
-                                        #   C port is a planned tranche)
+    "sample_explicit",                  # samples-instruments: EXPLICIT/lattice
+                                        #   sample realization (frozen spheres /
+                                        #   paracrystal). The continuum-mode
+                                        #   `sample_body` token is now PORTED (C
+                                        #   medium-stack-gated particle medium);
+                                        #   explicit rows still Python-route.
     # NOTE: "image_source" (extended image-emitting source) is now PORTED —
     # the C sampler (trace.c sample_image_pos_dir) alias-draws pixels + emits
     # Lambertian/cone; it lives in cengine.PORTED + the C registry, not here.

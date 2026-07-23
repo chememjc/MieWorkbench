@@ -48,7 +48,11 @@ typedef struct {
     double *by_body;            /* [n_bodies + 1] */
     double *flux_in, *flux_out; /* [n_bodies] element boundary tallies */
     double *detected;           /* [n_dets] detected_W */
-    double by_particles;        /* by_body_W["particles"] diagnostic */
+    int n_particles;            /* participating-media count (0 = none) */
+    double *by_particles;       /* [n_particles] absorbed W per medium; the
+                                 * by_body_W key is the medium's label
+                                 * ("particles" / "sample:<label>"). NULL when
+                                 * n_particles==0. */
     /* pulsed-optics P7 (track_time only): per-body power-weighted bulk path
      * Sum(surviving_power * segment) [W*m], the GDD-budget mean-path input
      * (tracer.py:466-468 path_tally). Linear tally: merges by sum, weighted

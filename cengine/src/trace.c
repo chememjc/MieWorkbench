@@ -1238,26 +1238,39 @@ static void detector_event(const SceneC *s, const FaceC *face, const Ray *r,
  * truncated-exponential scatter point; the absorbed remainder books to
  * 'particle_absorbed'. Runs BEFORE the surface interaction of the step,
  * exactly like tracer.step's intercept hook. */
-static void particle_intercept(const SceneC *s, Ray *r, int hit, double t,
-                               ThreadCtx *cx) {
-    const ParticleC *p = s->particles;
+static void particle_intercept(const SceneC *s, const ParticleC *p, Ray *r,
+                               int hit, double t, ThreadCtx *cx) {
     double seg_max = hit ? t : 1.0;    /* escapers still traverse */
-    /* slab overlap (particles._slab_overlap), scalar */
     double t0 = 0.0, t1 = seg_max;
-    const double *lo = &p->box_lo.x, *hi = &p->box_hi.x;
-    const double *o = &r->pos.x, *d = &r->dir.x;
-    for (int ax = 0; ax < 3; ax++) {
-        if (fabs(d[ax]) < 1e-300) {
-            if (o[ax] < lo[ax] || o[ax] > hi[ax]) return;   /* miss */
-            continue;
+    if (p->kind == PMED_BOX) {
+        /* slab overlap (particles._slab_overlap), scalar */
+        const double *lo = &p->box_lo.x, *hi = &p->box_hi.x;
+        const double *o = &r->pos.x, *d = &r->dir.x;
+        for (int ax = 0; ax < 3; ax++) {
+            if (fabs(d[ax]) < 1e-300) {
+                if (o[ax] < lo[ax] || o[ax] > hi[ax]) return;   /* miss */
+                continue;
+            }
+            double a = (lo[ax] - o[ax]) / d[ax];
+            double b = (hi[ax] - o[ax]) / d[ax];
+            double mn = a < b ? a : b, mx = a < b ? b : a;
+            if (mn > t0) t0 = mn;
+            if (mx < t1) t1 = mx;
         }
-        double a = (lo[ax] - o[ax]) / d[ax];
-        double b = (hi[ax] - o[ax]) / d[ax];
-        double mn = a < b ? a : b, mx = a < b ? b : a;
-        if (mn > t0) t0 = mn;
-        if (mx < t1) t1 = mx;
+    } else {
+        /* body-bound medium (BodyParticleMedium.segment_range): the entire
+         * segment lies inside the host body exactly when the medium-stack top
+         * is this body (the LIFO stack is the containment proof — no slab). */
+        if (ray_current_medium(r) != p->body_index) return;
+        /* t0 = 0, t1 = seg_max already */
     }
     if (!(t1 > t0)) return;
+
+    /* per-medium RNG salt: distinct draw-index range + child slot so two
+     * coexisting media never share a Philox stream (salt 0 == the historic
+     * single-cloud constants, so a lone box/sample cloud is bit-identical). */
+    uint32_t draw_base = 1024u + 16u * (uint32_t)p->salt;
+    uint32_t child_slot = (uint32_t)CHILD_SLOT_PARTICLE + (uint32_t)p->salt;
 
     double mu = p->mu_ext[r->lam_idx];
     double alb = p->albedo[r->lam_idx];
@@ -1269,30 +1282,30 @@ static void particle_intercept(const SceneC *s, Ray *r, int hit, double t,
     if (p_abs > 0.0) {
         ledger_credit(&cx->ledger, BK_PARTICLE_ABSORBED, r->source_id,
                       p_abs);
-        cx->ledger.by_particles += p_abs;
+        cx->ledger.by_particles[p->salt] += p_abs;
     }
     if (p_scat > 0.0) {
-        /* draws live in a reserved index range of THIS event */
+        /* draws live in a reserved index range of THIS event (per-medium) */
         uint32_t ev = r->event_ctr;
-        double u = rng_uniform(r->ray_key, ev, 1024);
+        double u = rng_uniform(r->ray_key, ev, draw_base + 0);
         double sdist = -log(1.0 - u * (1.0 - exp(-tau))) / mu;
         Ray child = *r;
         child.pos = v3_fma(r->pos, t0 + sdist, r->dir);
         /* radius node from the per-lam radius CDF */
-        double ur = rng_uniform(r->ray_key, ev, 1025);
+        double ur = rng_uniform(r->ray_key, ev, draw_base + 1);
         const double *rcdf = p->radius_cdf
                              + (size_t)r->lam_idx * p->n_quad;
         int node = 0;
         while (node < p->n_quad - 1 && rcdf[node] < ur) node++;
         /* scatter cosine from the (lam, node) inverse phase CDF */
-        double uu = rng_uniform(r->ray_key, ev, 1026);
+        double uu = rng_uniform(r->ray_key, ev, draw_base + 2);
         const double *inv = p->inv_phase
             + ((size_t)r->lam_idx * p->n_quad + node) * p->n_u;
         double x = uu * (p->n_u - 1);
         int i0 = (int)x;
         if (i0 > p->n_u - 2) i0 = p->n_u - 2;
         double mu_s = inv[i0] + (x - i0) * (inv[i0 + 1] - inv[i0]);
-        double phi = K_TWO_PI * rng_uniform(r->ray_key, ev, 1027);
+        double phi = K_TWO_PI * rng_uniform(r->ray_key, ev, draw_base + 3);
         /* frame around d_in (mie.sample_direction:216-225) */
         double axv = fabs(r->dir.x), ayv = fabs(r->dir.y),
                azv = fabs(r->dir.z);
@@ -1314,12 +1327,12 @@ static void particle_intercept(const SceneC *s, Ray *r, int hit, double t,
         fresnel_pol_basis(child.dir, rolled, &s_new, &p_new);
         child.s_hat = s_new;
         double amp = sqrt(p_scat / 2.0);
-        kcplx ph = kc_cis(K_TWO_PI * rng_uniform(r->ray_key, ev, 1028));
+        kcplx ph = kc_cis(K_TWO_PI * rng_uniform(r->ray_key, ev,
+                                                 draw_base + 4));
         child.Es = kc_scale(ph, amp);
         child.Ep = kc_scale(ph, amp);
         child.coherent = 0;
-        child.ray_key = rng_child_key(r->ray_key, ev,
-                                      CHILD_SLOT_PARTICLE);
+        child.ray_key = rng_child_key(r->ray_key, ev, child_slot);
         child.event_ctr = 0;
         push_child(s, cx, &child);
     }
@@ -1643,11 +1656,19 @@ static void homogeneous_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
  * hit distance t (t is unused for escapers, seg_max=1.0 inside). */
 static int m_particles(const SceneC *s, const Ray *r) {
     (void)r;
-    return s->particles != NULL;
+    return s->n_particles > 0;
 }
 static void particles_advance(const SceneC *s, ThreadCtx *cx, Ray *r,
                               double seg) {
-    particle_intercept(s, r, cx->seg_hit, seg, cx);
+    /* apply every participating medium in array order (tracer.py step's media
+     * chain): each layers its interception onto the parent ray the previous
+     * one left (a box cloud deliberately overlapping a sampled body compounds
+     * both attenuations; distinct body media are mutually exclusive via the
+     * medium-stack region test). Children queue for later steps, so a medium
+     * never re-intercepts this step's own child. The homogeneous segment OPL
+     * + bulk absorption run ONCE afterwards. */
+    for (int k = 0; k < s->n_particles; k++)
+        particle_intercept(s, &s->particles[k], r, cx->seg_hit, seg, cx);
     homogeneous_advance(s, cx, r, seg);
 }
 

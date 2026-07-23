@@ -753,12 +753,31 @@ SceneC *request_load(const char *path) {
         }
     }
 
-    /* continuum particle cloud (optional) */
+    /* participating media (continuum particle clouds), optional. The CLI
+     * --particles world box (JSON "particles", a single object) becomes
+     * medium 0; each `sample`-tagged body (JSON "sample_media", an array)
+     * follows. The combined array is s->particles[0..n_particles). Each
+     * medium's tables are pre-resolved per stratum wavelength by the glue;
+     * the region kind (box slab vs body medium-stack) is set here. */
     {
         yyjson_val *po = yyjson_obj_get(root, "particles");
-        if (po && !yyjson_is_null(po)) {
-            ParticleC *p = (ParticleC *)calloc(1, sizeof(ParticleC));
-            if (!p) die(EXIT_INPUT, "request: OOM (particles)");
+        int has_box = (po && !yyjson_is_null(po));
+        yyjson_val *sm = yyjson_obj_get(root, "sample_media");
+        int n_samp = (sm && yyjson_is_arr(sm)) ? (int)yyjson_arr_size(sm) : 0;
+        int n_med = (has_box ? 1 : 0) + n_samp;
+        if (n_med > 0) {
+            s->particles = (ParticleC *)calloc((size_t)n_med,
+                                               sizeof(ParticleC));
+            if (!s->particles) die(EXIT_INPUT, "request: OOM (particles)");
+            s->n_particles = n_med;
+        }
+        int slot = 0;
+        if (has_box) {
+            ParticleC *p = &s->particles[slot];
+            p->kind = PMED_BOX;
+            p->body_index = -1;
+            p->salt = slot;
+            snprintf(p->label, sizeof p->label, "particles");
             p->box_lo = need_vec3(po, "box_lo", "particles");
             p->box_hi = need_vec3(po, "box_hi", "particles");
             p->n_quad = (int)need_int(po, "n_quad", "particles");
@@ -773,7 +792,35 @@ SceneC *request_load(const char *path) {
             p->inv_phase = need_dbl_array(
                 po, "inv_phase", "particles",
                 (size_t)s->n_lams * p->n_quad * p->n_u);
-            s->particles = p;
+            slot++;
+        }
+        if (n_samp) {
+            size_t mi, mmax;
+            yyjson_val *mo;
+            yyjson_arr_foreach(sm, mi, mmax, mo) {
+                char ctx[48];
+                snprintf(ctx, sizeof ctx, "sample_media[%zu]", mi);
+                ParticleC *p = &s->particles[slot];
+                p->kind = PMED_BODY;
+                p->body_index = (int)need_int(mo, "body_index", ctx);
+                p->salt = slot;
+                need_str_into(mo, "label", ctx, p->label, sizeof p->label);
+                p->n_quad = (int)need_int(mo, "n_quad", ctx);
+                p->n_u = (int)need_int(mo, "n_u", ctx);
+                p->mu_ext = need_dbl_array(mo, "mu_ext", ctx,
+                                           (size_t)s->n_lams);
+                p->albedo = need_dbl_array(mo, "albedo", ctx,
+                                           (size_t)s->n_lams);
+                p->radius_cdf = need_dbl_array(
+                    mo, "radius_cdf", ctx, (size_t)s->n_lams * p->n_quad);
+                p->inv_phase = need_dbl_array(
+                    mo, "inv_phase", ctx,
+                    (size_t)s->n_lams * p->n_quad * p->n_u);
+                if (p->body_index < 0 || p->body_index >= s->n_bodies)
+                    die(EXIT_INPUT, "request: %s body_index %d out of range "
+                        "(%d bodies)", ctx, p->body_index, s->n_bodies);
+                slot++;
+            }
         }
     }
 
@@ -1077,13 +1124,13 @@ void scene_free(SceneC *s) {
     free(s->gratings);
     free(s->roughs);
     free(s->scats);
-    if (s->particles) {
-        free(s->particles->mu_ext);
-        free(s->particles->albedo);
-        free(s->particles->radius_cdf);
-        free(s->particles->inv_phase);
-        free(s->particles);
+    for (int i = 0; i < s->n_particles; i++) {
+        free(s->particles[i].mu_ext);
+        free(s->particles[i].albedo);
+        free(s->particles[i].radius_cdf);
+        free(s->particles[i].inv_phase);
     }
+    free(s->particles);
     for (int i = 0; i < s->n_faces; i++) {
         free((void *)s->faces[i].trim.loop_off);
         free((void *)s->faces[i].trim.pts_u);
