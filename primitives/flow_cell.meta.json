@@ -1,7 +1,7 @@
 {
  "category": "Samples & Cells",
  "kind": "flow_cell",
- "label": "Flow cell (process/Insitec)",
+ "label": "Flow cell (process/forward-scatter-diffraction)",
  "params": {
   "aperture": {
    "default": 10.0,
@@ -30,5 +30,5 @@
   }
  },
  "props": {},
- "tooltip": "Process/in-line particle-sizing flow cell (Malvern Insitec-style): a single glass block spans the full body_width x body_height outer footprint (the window mount along the beam), with the FLOWING LIQUID modeled as a thin aperture x aperture channel of path_length depth nested fully inside it (bs_cube-style nested pair: 'wall' is the window thickness on each side of the liquid channel along the beam/x; body_width/body_height set the outer glass block footprint, aperture the liquid channel's clear cross-section -- keep aperture smaller than body_width/body_height so the channel stays nested). The window/wall block is the primary body (element label/train props); set 'sample=' on the '<name>_liquid' body to bind a flowing particle population."
+ "tooltip": "Process/in-line particle-sizing flow cell (forward-scatter-diffraction-style): a single glass block spans the full body_width x body_height outer footprint (the window mount along the beam), with the FLOWING LIQUID modeled as a thin aperture x aperture channel of path_length depth nested fully inside it (bs_cube-style nested pair: 'wall' is the window thickness on each side of the liquid channel along the beam/x; body_width/body_height set the outer glass block footprint, aperture the liquid channel's clear cross-section -- keep aperture smaller than body_width/body_height so the channel stays nested). The window/wall block is the primary body (element label/train props); set 'sample=' on the '<name>_liquid' body to bind a flowing particle population."
 }

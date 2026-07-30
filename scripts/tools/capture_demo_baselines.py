@@ -50,7 +50,7 @@ DEMO_NAMES = [
     "speckle_mie_combo",
     # samples-instruments round demos (baseline placement + power gated)
     "conical_refraction", "colloidal_crystal", "goniometer_bath",
-    "uvvis_spectrometer", "insitec_sizer", "imaging_bench",
+    "uvvis_spectrometer", "forward_scatter_diffraction_sizer", "imaging_bench",
 ]
 
 

@@ -72,7 +72,7 @@ DEMO_NAMES = [
     "speckle_mie_combo",
     # samples-instruments round demos (placement + power + bespoke physics)
     "conical_refraction", "colloidal_crystal", "goniometer_bath",
-    "uvvis_spectrometer", "insitec_sizer", "imaging_bench",
+    "uvvis_spectrometer", "forward_scatter_diffraction_sizer", "imaging_bench",
 ]
 FRINGE_DEMOS = {"michelson"}
 # WP7 demos with a bespoke physics gate (implemented in wp7_gates.py-style
@@ -642,7 +642,7 @@ def gate_conical(name, case_dir, report):
     return fail, notes
 
 
-def gate_insitec(name, case_dir, report):
+def gate_forward_scatter_diffraction(name, case_dir, report):
     """Laser-diffraction sizer: the scattered forward-diffraction lobe (rings
     outside the DC focal spot) has its first-minimum (half-power outer edge)
     at r = f_eff*1.22*lambda/d within +/-1 log-ring, and the ring integration
@@ -651,18 +651,18 @@ def gate_insitec(name, case_dir, report):
     import glob as _glob
     f = _glob.glob(str(Path(case_dir) / "analysis" / "rings_*.csv"))
     if not f:
-        return ["insitec: no ring-profile CSV"], []
+        return ["forward-scatter-diffraction: no ring-profile CSV"], []
     rows = list(_csv.DictReader([ln for ln in open(f[0]) if not
                                  ln.startswith("#")]))
     if not rows:
-        return ["insitec: empty ring CSV"], []
+        return ["forward-scatter-diffraction: empty ring CSV"], []
     bfl, lam_mm, d_mm = 45.24, 633e-6, 0.010
     r_exp = bfl * 1.22 * lam_mm / d_mm            # first-null radius, mm
     def mid(x):
         return 0.5 * (float(x["r_inner_mm"]) + float(x["r_outer_mm"]))
     scat = [r for r in rows if mid(r) > 0.8]      # exclude the DC focal spot
     if not scat:
-        return ["insitec: no scattered rings past the DC spot"], []
+        return ["forward-scatter-diffraction: no scattered rings past the DC spot"], []
     pk = max(scat, key=lambda r: float(r["power_W"]))
     pk_i = scat.index(pk)
     p_pk = float(pk["power_W"])
@@ -674,24 +674,24 @@ def gate_insitec(name, case_dir, report):
             break
     fail, notes = [], []
     if r_half is None:
-        fail.append("insitec: lobe never falls to half-power (no first null)")
+        fail.append("forward-scatter-diffraction: lobe never falls to half-power (no first null)")
     else:
         # +/-1 ring: the log-ring width near r_exp (~0.7 mm at 3.5 mm)
         ring_w = float(pk["r_outer_mm"]) - float(pk["r_inner_mm"])
         tol = max(0.9, 1.5 * ring_w)
         if abs(r_half - r_exp) > tol:
-            fail.append("insitec: first-null r=%.3f mm vs r_exp=%.3f mm "
+            fail.append("forward-scatter-diffraction: first-null r=%.3f mm vs r_exp=%.3f mm "
                         "(|d|=%.3f > %.3f)" % (r_half, r_exp,
                                                abs(r_half - r_exp), tol))
         else:
-            notes.append("insitec: lobe first-null r=%.3f mm vs %.3f mm "
+            notes.append("forward-scatter-diffraction: lobe first-null r=%.3f mm vs %.3f mm "
                          "(tol %.2f)" % (r_half, r_exp, tol))
     det = list((report.get("detectors") or {}).values())
     rings = (det[0].get("rings") if det else None) or {}
     resid = abs(float(rings.get("closure_residual_W", 1.0)))
     tot = abs(float(rings.get("total_power_W", 0.0)))
     if tot > 0 and resid > 1e-3 * tot:
-        fail.append("insitec: ring closure residual %.3g of total %.3g"
+        fail.append("forward-scatter-diffraction: ring closure residual %.3g of total %.3g"
                     % (resid, tot))
     return fail, notes
 
@@ -902,7 +902,7 @@ PATTERN_GATES = {
     "quartz_rotator": gate_quartz,
     "speckle_mie_combo": gate_speckle,
     "conical_refraction": gate_conical,
-    "insitec_sizer": gate_insitec,
+    "forward_scatter_diffraction_sizer": gate_forward_scatter_diffraction,
     "goniometer_bath": gate_goniometer,
     "colloidal_crystal": gate_colloidal,
     "imaging_bench": gate_imaging,

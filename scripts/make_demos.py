@@ -2828,7 +2828,7 @@ def demo_colloidal_crystal(d):
     intractable explicit lattice. The beads sit in a BARE `sample_region`
     (air), not a glass cuvette, so wide-angle scatter escapes rather than
     TIR-trapping (the same C-engine continuum-in-glass divergence the
-    goniometer/insitec demos document).
+    goniometer/forward-scatter-diffraction demos document).
 
     GATE geometry (why a BS): the Bragg return travels back along -x; on the
     45 deg BS coated face a -x beam reflects to +y, while the immediate 50%
@@ -2998,8 +2998,8 @@ def demo_uvvis_spectrometer(d):
     return {"preset": "quick", "nlambda": 15}
 
 
-def demo_insitec_sizer(d):
-    """ISO-13320 laser-diffraction particle sizer (Malvern Insitec-style):
+def demo_forward_scatter_diffraction_sizer(d):
+    """ISO-13320 laser-diffraction particle sizer (forward-scatter-diffraction-style):
     a collimated 633 nm beam crosses a measurement volume of 10 um glass
     beads (sample=glass_beads_10um_water, continuum forward-diffraction
     regime) and a plano-convex Fourier lens focuses the diffraction onto a
@@ -3041,7 +3041,7 @@ def demo_insitec_sizer(d):
     d.expect("Fourier", (16.0, 0.0, 0.0))
     d.expect("RingDet", (16.0 + ct + bfl, 0.0, 0.0))
     d.pin_detector("RingDet", (1.0, 0.0, 0.0))
-    d.note("insitec_sizer: bare sample_region of 10 um beads + PCX Fourier "
+    d.note("forward_scatter_diffraction_sizer: bare sample_region of 10 um beads + PCX Fourier "
            "lens (flow_cell glass traps wide-angle scatter -> C-engine "
            "divergence, see UXNOTES); ring-profile peak at r=f*1.22 lambda/d "
            "(f_eff=BFL=%.2f mm, r=%.2f mm)"
@@ -3149,7 +3149,7 @@ DEMOS = {
     "colloidal_crystal": demo_colloidal_crystal,
     "goniometer_bath": demo_goniometer_bath,
     "uvvis_spectrometer": demo_uvvis_spectrometer,
-    "insitec_sizer": demo_insitec_sizer,
+    "forward_scatter_diffraction_sizer": demo_forward_scatter_diffraction_sizer,
     "imaging_bench": demo_imaging_bench,
     "dls_goniometer": demo_dls_goniometer,
     "fizeau_flats": demo_fizeau_flats,

@@ -73,7 +73,7 @@
    "primitive": "detector_plane"
   }
  },
- "demo": "insitec_sizer",
+ "demo": "forward_scatter_diffraction_sizer",
  "sheets": {
   "dim": {},
   "dim_Beam": {

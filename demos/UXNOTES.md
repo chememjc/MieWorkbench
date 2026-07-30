@@ -94,7 +94,7 @@ originals.
 ## Discovered building the samples-instruments demo galleries (2026-07-23)
 
 Seven demos (`conical_refraction`, `colloidal_crystal`, `goniometer_bath`,
-`uvvis_spectrometer`, `insitec_sizer`, `imaging_bench`, `dls_goniometer`)
+`uvvis_spectrometer`, `forward_scatter_diffraction_sizer`, `imaging_bench`, `dls_goniometer`)
 were built; several hit real engine/scale limits that forced documented,
 physics-preserving substitutions (all in `scripts/make_demos.py` docstrings
 + `demos/README.md`):
@@ -104,7 +104,7 @@ physics-preserving substitutions (all in `scripts/make_demos.py` docstrings
    TIR-traps in the cell, and the C-engine continuum-sample pop accounting
    then DIVERGES (closure blows to ~1e48–1e58; the trace itself prints
    `pop accounting diverged; investigate`). Reproduced with `flow_cell`
-   (insitec), the decalin `vat_cylindrical`/`vial_cylindrical` bath
+   (forward-scatter-diffraction), the decalin `vat_cylindrical`/`vial_cylindrical` bath
    (goniometer), and `cuvette_square` (colloidal). The Python reference
    engine does not diverge but runs away (multi-minute at a few thousand
    rays). WORKAROUND in every case: put the sample in a bare

@@ -1135,9 +1135,10 @@ PRIMITIVES = {
         "props": {},   # wall material=glass, liquid material=water (builder)
     },
     "flow_cell": {
-        "category": "Samples & Cells", "label": "Flow cell (process/Insitec)",
-        "tooltip": "Process/in-line particle-sizing flow cell (Malvern "
-                   "Insitec-style): a single glass block spans the full "
+        "category": "Samples & Cells", "label": "Flow cell (process/forward-scatter-diffraction)",
+        "tooltip": "Process/in-line particle-sizing flow cell "
+                   "(forward-scatter-diffraction-style): a single glass "
+                   "block spans the full "
                    "body_width x body_height outer footprint (the window "
                    "mount along the beam), with the FLOWING LIQUID modeled "
                    "as a thin aperture x aperture channel of path_length "

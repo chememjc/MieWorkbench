@@ -2,6 +2,18 @@
 
 Per-round changelog, maintained from the c-engine round onward. Earlier history (2026-07-06 through 2026-07-09, Phases A-C through object-placer) is in `git log`, not reconstructed here.
 
+## forward-scatter-diffraction rename — 2026-07-30
+
+All "Insitec" references renamed to "forward-scatter-diffraction" (vendor
+product name dropped): demo `forward_scatter_diffraction_sizer` (was
+`insitec_sizer` — builder, equivalence gate, baselines renamed; `.FCStd`/
+`.MieWB` rebuilt so the manifest `model_stem` matches), `flow_cell`
+label/tooltip, `glass_beads_10um_water` sample-row description (the Malvern
+QAS3002 bead-standard citation stays — it cites the beads, not the
+instrument), and README/UXNOTES/RAYTRACER.md prose. Equivalence gate
+re-run: PASS (placement exact, dP=0 W, first-null 3.838 mm vs 3.494 mm
+theory — unchanged).
+
 ## env-paths round — 2026-07-23
 
 Machine-specific paths (FreeCAD AppImage, optics-env python, ParaView

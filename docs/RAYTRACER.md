@@ -2378,7 +2378,7 @@ aspect_ratio, solvent_visc_pas, reference, notes`.
 
 7 rows ship: `latex_100nm_water` (the DLS standard reference sample —
 100 nm polystyrene latex spheres in water), `glass_beads_10um_water`
-(Insitec/ISO 13320-class calibration beads), `hard_sphere_py` (Percus-
+(forward-scatter-diffraction/ISO 13320-class calibration beads), `hard_sphere_py` (Percus-
 Yevick S(q), Pusey & van Megen's colloidal hard-sphere system),
 `sticky_sphere_baxter` (Baxter S(q)), `silica_gel_fractal` (Teixeira
 fractal, Schaefer/Teixeira `df=2.1` silica gel), `colloidal_crystal_fcc`
