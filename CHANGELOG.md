@@ -2,7 +2,35 @@
 
 Per-round changelog, maintained from the c-engine round onward. Earlier history (2026-07-06 through 2026-07-09, Phases A-C through object-placer) is in `git log`, not reconstructed here.
 
-## forward-scatter-diffraction rename — 2026-07-30
+## v1.1.0 -- FreeCAD 26.3 compatibility -- 2026-11-05
+
+Supported FreeCAD range is now **1.1.3 through 26.3** (26.3 bundles OCCT
+8.0 and Python 3.13; 1.1.3 ships OCCT 7.9). Source-level API audit of
+1.1.3 vs 26.3rc2 plus a runtime A/B on both builds.
+
+- PartDesign `FuzzyTolerance` default changed in 26.3 from -1 (OCC
+  auto-fuzzy) to 0. `make_test_scenes.pin_fuzzy_tolerance()` pins -1 on
+  every Pad/Pocket/Revolution the builders create, so primitive topology
+  never depends on the FreeCAD version's default (guarded on the property
+  existing).
+- fcserver: `fcops.freecad_version()` reports the release suffix
+  (`26.3.0RC2`) in the ready event and `ping`; `_validate_alias` refuses
+  aliases that are unit/constant tokens with a clear message (26.3 reserves
+  more: nA/uA/nW/uW/mT/Nmm/nmol/umol -- no shipped alias collides).
+- `mieworkbench.__version__ = "1.1.0"`; INSTALL/RAYTRACER/env templates
+  state the supported range.
+
+Verification (1.1.3/OCCT 7.9.3 vs 26.3rc2/OCCT 8.0.1, both Python 3.13):
+`make_primitives --kind all` 80/80 on both with identical validity, face
+count, face order, areas and volumes; `extract_geometry` on all 49 demos,
+39 basemodels, 2 root models and 80 primitives gives identical model.json
+contracts (only sub-2 um bbox noise on mesh/asphere bodies) and identical
+STL triangle counts; 26.3-saved files extract identically under 1.1.3;
+GUI `-m freecad` tier 59 pass on both (one undo-stack assertion in
+`test_apply_parameter_values_real_worker` fails identically on both --
+not version-related); FreeCAD-driven engine tests 203 pass on both; demo
+equivalence placements 27/27 and a 4-demo power-gate subset PASS on both.
+ — 2026-07-30
 
 All "Insitec" references renamed to "forward-scatter-diffraction" (vendor
 product name dropped): demo `forward_scatter_diffraction_sizer` (was

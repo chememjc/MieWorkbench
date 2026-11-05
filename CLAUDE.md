@@ -385,6 +385,12 @@ promote entries to the repo (system) library.
 
 ## Quirks / traps (each cost real debugging time)
 
+- **Supported FreeCAD = 1.1.3 through 26.3** (26.3: OCCT 8.0, Python
+  3.13). 26.3 changed PartDesign `FuzzyTolerance`'s default -1 -> 0;
+  builders pin -1 via `make_test_scenes.pin_fuzzy_tolerance` -- call it
+  on any new Pad/Pocket/Revolution. Keep FreeCAD-side scripts free of
+  stdlib modules removed by 3.12/3.13 (distutils, imp, ...).
+
 - **FreeCAD `-c`**: bare `--` before script args; script runs TWICE per
   invocation (writes must be idempotent; `fc_server` kills pass 2 with
   `os._exit(0)` after its serve loop); NO `if __name__=="__main__"` guard;

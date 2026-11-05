@@ -25,7 +25,7 @@ workbench at.
 | # | Tool | Used by | miewb.env key |
 |---|---|---|---|
 | 1 | System `python3` (3.10+) | `run_pipeline.py`, `sweep_variants.py`, `miewb_tool.py`, `common.py`, `cli_specs.py` | *(none — whatever `python3` resolves to)* |
-| 2 | FreeCAD 1.1+ AppImage | `extract_geometry.py`, `permute_model.py`, `make_test_scenes.py`, `make_primitives.py` | `MIEWB_FREECAD` (required) |
+| 2 | FreeCAD AppImage (1.1.3 through 26.3) | `extract_geometry.py`, `permute_model.py`, `make_test_scenes.py`, `make_primitives.py` | `MIEWB_FREECAD` (required) |
 | 3 | "The optics environment" — a Python env with numpy/scipy/torch(-CUDA)/h5py/miepython/matplotlib | `run_trace.py`, `post_process.py`, `compare_runs.py`, `optimize.py`, `tolerance.py`, `fast_eval.py`, the engine's own pytest suite | `MIEWB_OPTICS_PYTHON` (required) |
 | 4 | ParaView 5.13+/6.x with `pvpython` | `make_viz.py` | `MIEWB_PVPYTHON` (required key, empty value allowed — "no ParaView here") |
 | 5 | GUI venv (PySide6 + VTK + …) | `mieworkbench`, GUI pytest | *(none — defaults to `env/` inside this repo; `MIEWB_GUI_PYTHON` overrides)* |
@@ -72,11 +72,15 @@ gitignored (regenerated locally); everything else — `scripts/`,
 
 ### 3.1 FreeCAD
 
-Download the FreeCAD 1.1+ AppImage (https://www.freecad.org/downloads.php)
-and make it executable:
+Download a FreeCAD AppImage (https://www.freecad.org/downloads.php) and
+make it executable. Supported: **FreeCAD 1.1.3 through 26.3** (verified on
+1.1.3 / OCCT 7.9 / Python 3.11-3.13 and 26.3rc2 / OCCT 8.0 / Python 3.13 --
+primitives, extraction contract, worker ops and the demo placement/power
+gates are identical on both, and `.FCStd` files saved by either open in the
+other). Older 1.0.x / 1.1.0-1.1.2 builds are untested.
 
 ```bash
-chmod +x FreeCAD_1.1.1-Linux-x86_64-py311.AppImage
+chmod +x FreeCAD_26.3-Linux-x86_64-py313.AppImage   # or FreeCAD_1.1.3-...-py311.AppImage
 ```
 
 Put it wherever you like — record its path as `MIEWB_FREECAD` in step §5

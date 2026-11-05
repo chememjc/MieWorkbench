@@ -464,7 +464,7 @@ render_env_file() {
 # =============================================================================
 
 # --- required external tools -------------------------------------------------
-# FreeCAD 1.1.1 AppImage (runs extract_geometry / permute_model / fcserver).
+# FreeCAD 1.1.3 - 26.3 AppImage (runs extract_geometry / permute_model / fcserver).
 MIEWB_FREECAD=$FREECAD_VAL
 
 # The optics environment's python (numpy/scipy/torch-CUDA/miepython/h5py;

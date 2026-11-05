@@ -69,7 +69,7 @@ approximation.
 
 | Tool | Path | Notes |
 |---|---|---|
-| FreeCAD | `$MIEWB_FREECAD` | FreeCAD 1.1.1, headless `-c` console mode |
+| FreeCAD | `$MIEWB_FREECAD` | FreeCAD 1.1.3 through 26.3, headless `-c` console mode |
 | optics env python | `$MIEWB_OPTICS_PYTHON` | numpy/scipy/torch/miepython/h5py/matplotlib |
 | ParaView / pvpython | `$MIEWB_PVPYTHON` | ParaView 6.1.1 |
 | GUI venv python | `env/bin/python` | PySide6 GUI + the Optiland *sequential* preview/optimizer-evaluation bridge (not a pipeline stage) |
