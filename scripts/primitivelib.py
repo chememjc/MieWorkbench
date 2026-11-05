@@ -2052,6 +2052,7 @@ def _build_wedge_plate(doc, group, width_mm, thickness_mm, wedge_deg,
                                      App.Vector(-big, -big, 0)), False)
     pocket = body.newObject("PartDesign::Pocket", name + "_wedgepocket")
     pocket.Profile = sk2
+    mts.pin_fuzzy_tolerance(pocket)
     pocket.Type = "ThroughAll"
     pocket.Reversed = True
     sk2.Visibility = False
@@ -2411,6 +2412,7 @@ def _build_retro_corner_cube(doc, group, p):
                    False)
     pad = body.newObject("PartDesign::Pad", group + "_pad")
     pad.Profile = sk
+    mts.pin_fuzzy_tolerance(pad)
     pad.Length = L
     sk.Visibility = False
     doc.recompute()
@@ -2436,6 +2438,7 @@ def _build_retro_corner_cube(doc, group, p):
                                      App.Vector(-big, -big, 0)), False)
     pocket = body.newObject("PartDesign::Pocket", group + "_cutpocket")
     pocket.Profile = sk2
+    mts.pin_fuzzy_tolerance(pocket)
     pocket.Type = "ThroughAll"
     pocket.Reversed = True
     sk2.Visibility = False

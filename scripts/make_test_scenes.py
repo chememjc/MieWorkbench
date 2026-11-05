@@ -598,6 +598,17 @@ def set_props(body, props):
         setattr(body, k, v)
 
 
+def pin_fuzzy_tolerance(feature):
+    """Pin a PartDesign additive/subtractive feature's boolean fuzzy
+    tolerance to -1 (= OCC auto-fuzzy). FreeCAD 1.1.x defaults
+    FuzzyTolerance to -1; 26.3 changed the default to 0 (= plain OCC
+    tolerance), which can leave slivers/extra faces on the slanted pocket
+    cuts. Pinning keeps the built topology identical on every supported
+    FreeCAD version; a build without the property is left untouched."""
+    if "FuzzyTolerance" in feature.PropertiesList:
+        feature.FuzzyTolerance = -1.0
+
+
 def new_body_pad(doc, name, label, rects=None, circle=None,
                  x_start=0.0, length=1.0, props=None):
     """PartDesign Body with one sketch on its YZ plane (normal = +x),
@@ -617,6 +628,7 @@ def new_body_pad(doc, name, label, rects=None, circle=None,
         add_circle(sk, *circle)
     pad = body.newObject("PartDesign::Pad", name + "_pad")
     pad.Profile = sk
+    pin_fuzzy_tolerance(pad)
     pad.Length = length
     sk.Visibility = False
     set_props(body, props)
@@ -651,6 +663,7 @@ def pad_body(doc, name, geoms, plane="XY", offset=0.0, length=1.0,
         sk.addGeometry(g, False)
     pad = body.newObject("PartDesign::Pad", name + "_pad")
     pad.Profile = sk
+    pin_fuzzy_tolerance(pad)
     pad.Length = length
     sk.Visibility = False
     if placement is not None:
@@ -672,6 +685,7 @@ def revolve_body(doc, name, geoms, props=None, placement=None):
         sk.addGeometry(g, False)
     rev = body.newObject("PartDesign::Revolution", name + "_rev")
     rev.Profile = sk
+    pin_fuzzy_tolerance(rev)
     rev.ReferenceAxis = (sk, ["H_Axis"])
     rev.Angle = 360.0
     sk.Visibility = False

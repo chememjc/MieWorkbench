@@ -49,7 +49,7 @@ def _emit(obj):
 
 def _serve():
     _emit({"event": "ready", "protocol": PROTOCOL_VERSION,
-           "freecad": ".".join(FreeCAD.Version()[0:3]),
+           "freecad": fcops.freecad_version(),
            "pid": os.getpid()})
     for raw in sys.stdin:
         raw = raw.strip()

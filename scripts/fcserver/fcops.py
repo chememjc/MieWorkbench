@@ -332,9 +332,21 @@ def _mutation_result(doc, extra=None):
         out.update(extra)
     return out
 
+def freecad_version():
+    """'major.minor.patch' plus any release suffix ('26.3.0RC2'). Version()
+    returns strings on 1.1.x and 26.x alike; the RC/dev suffix is only in
+    the BuildVersionSuffix config key (absent or empty on final builds)."""
+    ver = ".".join(str(v) for v in FreeCAD.Version()[0:3])
+    try:
+        suffix = FreeCAD.ConfigGet("BuildVersionSuffix") or ""
+    except Exception:
+        suffix = ""
+    return ver + str(suffix)
+
+
 def op_ping(params):
     return {"pong": True, "pid": os.getpid(),
-            "freecad": ".".join(FreeCAD.Version()[0:3])}
+            "freecad": freecad_version()}
 
 
 def op_open_document(params):
@@ -536,6 +548,23 @@ def _validate_alias(alias):
         raise OpError(
             "alias %r is not a valid identifier: must match "
             "^[A-Za-z_][A-Za-z0-9_]*$" % alias)
+    if _alias_is_unit_token(alias):
+        raise OpError(
+            "alias %r is a unit or constant token of this FreeCAD's "
+            "expression engine (%s); FreeCAD rejects such aliases - pick "
+            "another name" % (alias, freecad_version()))
+
+
+def _alias_is_unit_token(alias):
+    """True if FreeCAD's quantity parser reads `alias` as a bare unit or
+    constant (mm, deg, pi, ... and, from FreeCAD 26.3 on, also nA/uA/nW/
+    uW/mT/Nmm/nmol/umol). Spreadsheet.setAlias refuses those on every
+    version; checking here gives a clear message instead of FreeCAD's."""
+    try:
+        FreeCAD.Units.Quantity(alias)
+    except Exception:
+        return False
+    return True
 
 
 def _sheet_by_label_or_name(doc, name):
