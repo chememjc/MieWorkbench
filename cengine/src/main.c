@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>   /* _exit */
 
 #define MIEWB_CENGINE_VERSION "0.1.0-phaseA"
 

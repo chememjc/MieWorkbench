@@ -1,0 +1,7 @@
+# GUI runtime pins bundled into the AppImage (see INSTALL.md section 4 for
+# the matching developer venv). Wheels only: nothing is built from source.
+PySide6==6.11.1
+vtk==9.6.2
+numpy==2.2.6
+scipy==1.15.3
+h5py==3.16.0

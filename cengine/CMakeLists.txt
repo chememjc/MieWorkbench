@@ -27,12 +27,17 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Packaging switches (defaults leave the normal developer build unchanged):
+#   MIEWB_PORTABLE=ON      no -march=native (binary runs on any x86-64 CPU)
+#   MIEWB_ENABLE_CUDA=OFF  never probe for a CUDA compiler (CPU-only build)
+option(MIEWB_PORTABLE "Portable build: no -march=native" OFF)
+option(MIEWB_ENABLE_CUDA "Probe for CUDA and build the GPU gather" ON)
+
 find_package(OpenMP REQUIRED COMPONENTS C)
 
 # strict-fp optimization flags (see header comment)
 set(MIEWB_C_FLAGS
   -O3
-  -march=native
   -g
   -fno-math-errno
   -ffp-contract=off
@@ -58,6 +63,9 @@ add_executable(miewb-trace
   vendor/yyjson/yyjson.c
 )
 
+if(NOT MIEWB_PORTABLE)
+  list(APPEND MIEWB_C_FLAGS -march=native)
+endif()
 target_compile_options(miewb-trace PRIVATE ${MIEWB_C_FLAGS})
 target_include_directories(miewb-trace PRIVATE src vendor)
 target_link_libraries(miewb-trace PRIVATE OpenMP::OpenMP_C m)
@@ -71,7 +79,8 @@ target_link_options(miewb-trace PRIVATE -rdynamic)
 # NOT be picked up: prefer $ENV{MIEWB_NVCC} (from miewb.env, machine
 # config) when set and unless CMAKE_CUDA_COMPILER/CUDACXX already pin one;
 # else fall back to the legacy hardcoded CUDA 13 toolkit path.
-if(NOT DEFINED CMAKE_CUDA_COMPILER AND NOT DEFINED ENV{CUDACXX})
+if(MIEWB_ENABLE_CUDA AND NOT DEFINED CMAKE_CUDA_COMPILER
+   AND NOT DEFINED ENV{CUDACXX})
   if(DEFINED ENV{MIEWB_NVCC} AND EXISTS "$ENV{MIEWB_NVCC}")
     set(CMAKE_CUDA_COMPILER "$ENV{MIEWB_NVCC}")
   elseif(EXISTS /usr/local/cuda-13/bin/nvcc)
@@ -80,7 +89,9 @@ if(NOT DEFINED CMAKE_CUDA_COMPILER AND NOT DEFINED ENV{CUDACXX})
   endif()
 endif()
 include(CheckLanguage)
-check_language(CUDA)
+if(MIEWB_ENABLE_CUDA)
+  check_language(CUDA)
+endif()
 if(CMAKE_CUDA_COMPILER)
   enable_language(CUDA)
   set(CMAKE_CUDA_STANDARD 17)

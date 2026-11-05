@@ -10,6 +10,27 @@ the engine itself see [docs/RAYTRACER.md](docs/RAYTRACER.md).
 
 ---
 
+## 0. AppImage (no clone, no GUI virtualenv)
+
+Release builds ship a single `MieWorkbench-<version>-x86_64.AppImage`
+that bundles Python 3.12, the GUI dependencies (PySide6, VTK, numpy,
+scipy, h5py), the repo payload and a CPU-only build of the C engine. It
+still needs FreeCAD, the optics environment and (optionally) ParaView
+installed separately - point it at them with the bundled helper:
+
+```bash
+chmod +x MieWorkbench-1.1.0-x86_64.AppImage
+./MieWorkbench-1.1.0-x86_64.AppImage setup-env      # writes ~/.config/mieworkbench/miewb.env
+./MieWorkbench-1.1.0-x86_64.AppImage                # GUI
+./MieWorkbench-1.1.0-x86_64.AppImage pipeline --models axicon_pcx.FCStd --preset quick
+```
+
+Building it yourself, the runtime layout and the environment variables
+are documented in [packaging/appimage/README.md](packaging/appimage/README.md).
+The rest of this document describes the clone-and-run install.
+
+---
+
 ## 1. What you need
 
 MieWorkbench composes **four independent interpreters**. Their paths are

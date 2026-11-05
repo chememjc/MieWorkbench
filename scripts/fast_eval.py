@@ -221,7 +221,7 @@ class Evaluator:
         self.worker_retries = int(worker_retries)
 
         self.workdir = Path(workdir) if workdir else (
-            PROJECT_DIR / "var" / "fasteval"
+            common.VAR_DIR / "fasteval"
             / ("%s-%s" % (self.model_path.stem, backend)))
         for sub in ("models", "geometry", "results", "logs"):
             (self.workdir / sub).mkdir(parents=True, exist_ok=True)

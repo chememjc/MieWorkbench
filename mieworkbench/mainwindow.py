@@ -108,6 +108,8 @@ _CHIP_DEFAULT = "#6b7280"
 _RAY_DIM_MODES = ("off", "linear", "sqrt", "log")
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+# writable scratch root; the AppImage redirects it via MIEWB_VAR_DIR
+VAR_DIR = os.environ.get("MIEWB_VAR_DIR") or os.path.join(REPO, "var")
 
 # Help menu: one action per docs/guide page, grouped into submenus that
 # mirror docs/guide/README.md's index tables. Paths are relative to
@@ -909,7 +911,7 @@ class MainWindow(QMainWindow):
             return self.workspace
         digest = hashlib.sha1(
             (self.model_path or "unsaved").encode("utf-8")).hexdigest()[:8]
-        ws = os.path.join(REPO, "var", "work", "preview-%s" % digest)
+        ws = os.path.join(VAR_DIR, "work", "preview-%s" % digest)
         os.makedirs(ws, exist_ok=True)
         return ws
 
@@ -2936,7 +2938,7 @@ class MainWindow(QMainWindow):
         digest = hashlib.sha1(
             os.path.abspath(path).encode("utf-8")).hexdigest()[:8]
         stem = os.path.splitext(os.path.basename(path))[0]
-        ws = os.path.join(REPO, "var", "work", "%s-%s" % (stem, digest))
+        ws = os.path.join(VAR_DIR, "work", "%s-%s" % (stem, digest))
         os.makedirs(ws, exist_ok=True)
         return ws
 

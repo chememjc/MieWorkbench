@@ -552,7 +552,7 @@ def main(argv=None):
 
     model_stem = Path(args.model).stem
     out_dir = Path(args.out) if args.out else (
-        PROJECT_DIR / "var" / "optimize" / model_stem)
+        common.VAR_DIR / "optimize" / model_stem)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     sequential = args.eval_backend == "sequential"

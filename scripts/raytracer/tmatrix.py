@@ -193,7 +193,9 @@ def default_cache_root():
     cache under) — this module keeps its entries in a private "tmatrix"
     subdirectory of that shared root."""
     root = os.environ.get(
-        "MIEWB_CACHE_DIR", os.path.join(_repo_root(), "var", "cache"))
+        "MIEWB_CACHE_DIR", os.path.join(
+            os.environ.get("MIEWB_VAR_DIR")
+            or os.path.join(_repo_root(), "var"), "cache"))
     return os.path.join(root, "tmatrix")
 
 

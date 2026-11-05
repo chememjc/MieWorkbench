@@ -18,7 +18,7 @@ REPO="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 # Output path. MIEWB_SETUP_OUT is an undocumented internal override used by
 # this script's own test suite to avoid touching the real miewb.env — not
 # part of the public contract, deliberately omitted from --help.
-OUT="${MIEWB_SETUP_OUT:-$REPO/miewb.env}"
+OUT="${MIEWB_SETUP_OUT:-${MIEWB_ENV_FILE:-$REPO/miewb.env}}"
 
 NON_INTERACTIVE=0
 PRINT_ONLY=0
@@ -500,6 +500,7 @@ if [ "$PRINT_ONLY" = "1" ]; then
     exit 0
 fi
 
+mkdir -p "$(dirname -- "$OUT")"
 TMP="$(mktemp "$(dirname -- "$OUT")/.miewb.env.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
 render_env_file > "$TMP"

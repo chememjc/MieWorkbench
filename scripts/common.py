@@ -40,6 +40,10 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_DIR / "scripts"
 BASEMODELS_DIR = PROJECT_DIR / "basemodels"
 ENV_FILE = Path(os.environ.get("MIEWB_ENV_FILE") or PROJECT_DIR / "miewb.env")
+# Writable scratch root (workspaces, caches, optimizer/tolerance output).
+# Defaults to <repo>/var; the AppImage (read-only mount) points it at
+# $XDG_DATA_HOME/mieworkbench/var via MIEWB_VAR_DIR.
+VAR_DIR = Path(os.environ.get("MIEWB_VAR_DIR") or PROJECT_DIR / "var")
 
 # Every key miewb.env may define (miewb.env.example must list them all;
 # pinned by test_env_config.py).
@@ -201,6 +205,7 @@ def update_env_file(updates, path=None):
     one-line header if absent."""
     import tempfile
     path = Path(path) if path is not None else ENV_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         with open(path, "r", encoding="utf-8") as fh:
             old_lines = fh.read().splitlines()

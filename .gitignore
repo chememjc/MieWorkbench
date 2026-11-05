@@ -27,3 +27,6 @@ cengine/vendor/finufft/
 # machine-local tool paths (create with scripts/setup_env.sh;
 # template: miewb.env.example)
 miewb.env
+
+# packaging build output (packaging/appimage/build_appimage.sh)
+build/

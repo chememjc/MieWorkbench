@@ -19,6 +19,15 @@ Supported FreeCAD range is now **1.1.3 through 26.3** (26.3 bundles OCCT
   more: nA/uA/nW/uW/mT/Nmm/nmol/umol -- no shipped alias collides).
 - `mieworkbench.__version__ = "1.1.0"`; INSTALL/RAYTRACER/env templates
   state the supported range.
+- AppImage packaging (`packaging/appimage/`): `build_appimage.sh` builds
+  `MieWorkbench-1.1.0-x86_64.AppImage` (relocatable Python 3.12 + PySide6/
+  VTK/numpy/scipy/h5py, repo payload, CPU-only OpenMP `miewb-trace`;
+  FreeCAD/optics env/ParaView/CUDA stay external via `miewb.env`) and
+  `.github/workflows/release-appimage.yml` publishes it on `v*` tags.
+  `AppRun` redirects all writable state to XDG dirs; new `MIEWB_VAR_DIR`
+  override (default `<repo>/var`), `python -m mieworkbench --version`,
+  `setup_env.sh` honors `MIEWB_ENV_FILE`, CMake `MIEWB_PORTABLE` /
+  `MIEWB_ENABLE_CUDA` switches (defaults unchanged).
 
 Verification (1.1.3/OCCT 7.9.3 vs 26.3rc2/OCCT 8.0.1, both Python 3.13):
 `make_primitives --kind all` 80/80 on both with identical validity, face

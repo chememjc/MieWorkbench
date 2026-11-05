@@ -19,6 +19,7 @@ import sys
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from . import __version__
 from .mainwindow import MainWindow
 
 SMOKE_QUIT_MS = 3000
@@ -34,6 +35,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="mieworkbench",
         description="MieWorkbench - optical ray-tracing pipeline GUI")
+    parser.add_argument(
+        "--version", action="version",
+        version="MieWorkbench %s" % __version__)
     parser.add_argument(
         "model", nargs="?", default=None,
         help="optional .FCStd/.MieWB/.MieSim model to open at startup")

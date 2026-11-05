@@ -1,0 +1,157 @@
+#!/bin/sh
+# AppRun for the MieWorkbench AppImage.
+#
+# The AppImage mount is READ-ONLY, so every writable location is pointed at
+# the user's XDG directories. Defaults are applied only when the variable is
+# neither exported nor defined in the miewb.env file, so a user's own
+# configuration always wins.
+#
+#   mieworkbench [model.FCStd|X.MieWB|X.MieSim]   GUI
+#   mieworkbench cli <script> [args]              run scripts/<script>.py
+#   mieworkbench pipeline|tool|trace|python|setup-env [args]
+#   mieworkbench --version | --help
+
+HERE="$(dirname "$(readlink -f "$0")")"
+APPDIR="${APPDIR:-$HERE}"
+export APPDIR
+USR="$APPDIR/usr"
+SHARE="$USR/share/mieworkbench"
+PY="$USR/bin/python3"
+
+if [ ! -x "$PY" ]; then
+    echo "mieworkbench: bundled python not found at $PY" >&2
+    exit 1
+fi
+
+VERSION="$(cat "$SHARE/VERSION" 2>/dev/null)"
+
+usage() {
+    cat <<USAGE
+MieWorkbench ${VERSION:-?} (AppImage)
+
+Usage:
+  mieworkbench [FILE]              start the GUI, optionally opening a
+                                   .FCStd / .MieWB / .MieSim file
+  mieworkbench cli SCRIPT [ARGS]   run scripts/SCRIPT.py with the bundled
+                                   python (e.g. cli miewb_tool --help)
+  mieworkbench pipeline [ARGS]     = cli run_pipeline  (extract/trace/post/viz)
+  mieworkbench tool [ARGS]         = cli miewb_tool    (pack/run .MieWB/.MieSim)
+  mieworkbench trace [ARGS]        bundled CPU C engine (miewb-trace)
+  mieworkbench setup-env [ARGS]    probe FreeCAD / optics python / ParaView and
+                                   write the miewb.env file
+  mieworkbench python [ARGS]       bundled python 3.12 interpreter
+  mieworkbench --version           print the version
+  mieworkbench --help              this text
+
+FreeCAD, the optics python env, ParaView and CUDA are NOT bundled; point
+MieWorkbench at them with 'setup-env' (or Settings -> Tool Paths in the GUI).
+
+Environment (defaults shown, applied only when not already configured):
+  MIEWB_ENV_FILE      \${XDG_CONFIG_HOME:-~/.config}/mieworkbench/miewb.env
+  MIEWB_GEOMETRY_DIR  \${XDG_DATA_HOME:-~/.local/share}/mieworkbench/geometry
+  MIEWB_RESULTS_DIR   \${XDG_DATA_HOME:-~/.local/share}/mieworkbench/results
+  MIEWB_VAR_DIR       \${XDG_DATA_HOME:-~/.local/share}/mieworkbench/var
+  MIEWB_CENGINE       bundled CPU miewb-trace
+  MIEWB_GUI_PYTHON    bundled python
+Current env file: ${MIEWB_ENV_FILE:-<unset>}
+USAGE
+}
+
+# --- writable locations ------------------------------------------------------
+XDG_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/mieworkbench"
+XDG_DAT="${XDG_DATA_HOME:-$HOME/.local/share}/mieworkbench"
+
+if [ -z "${MIEWB_ENV_FILE:-}" ]; then
+    MIEWB_ENV_FILE="$XDG_CFG/miewb.env"
+fi
+export MIEWB_ENV_FILE
+
+# true when KEY is exported (even empty) or has a line in the env file
+is_configured() {
+    eval "[ -n \"\${$1+x}\" ]" && return 0
+    [ -f "$MIEWB_ENV_FILE" ] && grep -q "^[[:space:]]*$1[[:space:]]*=" \
+        "$MIEWB_ENV_FILE" 2>/dev/null
+}
+
+# default_var KEY VALUE: export KEY=VALUE unless already configured
+default_var() {
+    if ! is_configured "$1"; then
+        eval "export $1=\"\$2\""
+    fi
+}
+
+default_var MIEWB_GEOMETRY_DIR "$XDG_DAT/geometry"
+default_var MIEWB_RESULTS_DIR "$XDG_DAT/results"
+default_var MIEWB_CENGINE "$USR/bin/miewb-trace"
+default_var MIEWB_GUI_PYTHON "$PY"
+# var/ (workspaces, geometry cache, optimizer scratch) is not an env-file key
+if [ -z "${MIEWB_VAR_DIR:-}" ]; then
+    MIEWB_VAR_DIR="$XDG_DAT/var"
+fi
+export MIEWB_VAR_DIR
+
+# a read-only mount cannot take .pyc files (they are precompiled at build)
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+unset PYTHONHOME
+
+# Qt: prefer X11/XWayland (the validated configuration) when a display exists
+if [ -z "${QT_QPA_PLATFORM:-}" ] && [ -n "${DISPLAY:-}" ]; then
+    export QT_QPA_PLATFORM=xcb
+fi
+
+run_script() {
+    name="$1"; shift
+    name="${name%.py}"
+    # packing/inspecting files and --help need no external tools: do not
+    # hard-fail on an unconfigured miewb.env for those
+    if [ "$name" = miewb_tool ] && [ "${1:-}" != run ]; then
+        MIEWB_ALLOW_UNCONFIGURED="${MIEWB_ALLOW_UNCONFIGURED:-1}"
+        export MIEWB_ALLOW_UNCONFIGURED
+    fi
+    for _a in "$@"; do
+        case "$_a" in -h|--help) MIEWB_ALLOW_UNCONFIGURED="${MIEWB_ALLOW_UNCONFIGURED:-1}"; export MIEWB_ALLOW_UNCONFIGURED ;; esac
+    done
+    if [ -f "$SHARE/scripts/$name.py" ]; then
+        exec "$PY" "$SHARE/scripts/$name.py" "$@"
+    fi
+    echo "mieworkbench: no script scripts/$name.py in this AppImage" >&2
+    echo "available:" >&2
+    ( cd "$SHARE/scripts" && ls *.py | sed 's/\.py$//' | tr '\n' ' ' ) >&2
+    echo >&2
+    exit 2
+}
+
+case "${1:-}" in
+    --help|-h|help)
+        usage
+        exit 0 ;;
+    --version|-V|version)
+        echo "MieWorkbench ${VERSION:-unknown}"
+        exit 0 ;;
+    cli)
+        shift
+        if [ $# -lt 1 ]; then
+            echo "usage: mieworkbench cli <script-name> [args]" >&2
+            ( cd "$SHARE/scripts" && ls *.py | sed 's/\.py$//' | tr '\n' ' ' ) >&2
+            echo >&2
+            exit 2
+        fi
+        run_script "$@" ;;
+    pipeline)
+        shift; run_script run_pipeline "$@" ;;
+    tool)
+        shift; run_script miewb_tool "$@" ;;
+    trace)
+        shift; exec "$USR/bin/miewb-trace" "$@" ;;
+    python|python3)
+        shift; exec "$PY" "$@" ;;
+    setup-env)
+        shift
+        # setup_env.sh validates with a bare 'python3': give it the bundled one
+        PATH="$USR/share/mieworkbench/.shim:$PATH"
+        export PATH
+        exec bash "$SHARE/scripts/setup_env.sh" "$@" ;;
+    *)
+        exec "$PY" -m mieworkbench "$@" ;;
+esac

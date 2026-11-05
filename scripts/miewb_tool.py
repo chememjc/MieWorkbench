@@ -340,10 +340,15 @@ def run_miewb(miewb_path, out_miesim, workdir=None, extra_args=None,
         raise MieFormatError("%s is not a .MieWB" % miewb_path)
 
     owns_workdir = workdir is None
-    workdir = Path(workdir) if workdir else Path(
-        tempfile.mkdtemp(prefix="miewb-run-",
-                         dir=str(common.PROJECT_DIR / "var" / "work")
-                         if (common.PROJECT_DIR / "var").is_dir() else None))
+    if workdir:
+        workdir = Path(workdir)
+    else:
+        _var_work = common.VAR_DIR / "work"
+        if os.environ.get("MIEWB_VAR_DIR"):
+            _var_work.mkdir(parents=True, exist_ok=True)
+        workdir = Path(tempfile.mkdtemp(
+            prefix="miewb-run-",
+            dir=str(_var_work) if _var_work.is_dir() else None))
     workdir.mkdir(parents=True, exist_ok=True)
     unpack(miewb_path, workdir)
 
